@@ -60,6 +60,25 @@ src/main/java/edu/cufe/auction/
 docs/       需求拆解、架构设计（类图/时序图）、接口定义、开发计划、运行与验证记录
 ```
 
+## 在 IntelliJ IDEA 中打开与运行
+
+1. `File → Open`，选目录 `G:\项目\java-stock-auction`（或直接选其中的 `pom.xml`）→ `Open as Project`。
+   右侧出现 **Maven** 面板、且模块名为 `stock-auction-sim`，即导入成功。仓库自带 Maven Wrapper，
+   不需要本机安装 Maven。
+2. **设置 JDK（必做）**：`File → Project Structure → SDKs → Add SDK → JDK`，
+   选 `C:\Users\JXGU\DevTools\Runtimes\Java\current`；再在 `Project` 页把 `SDK` 设为它、
+   `Language level` 设为 `17`。
+   > 实测提醒：本机 IDEA 里原本没有注册任何 Java JDK，不设这一项会全项目标红、无法运行。
+3. 运行入口（任选）：
+   - **图形界面**：Maven 面板 → `Plugins → javafx → javafx:run` 双击；
+   - **控制台演示**：Maven 面板 → `Plugins → exec → exec:java` 双击（默认跑 20 秒）；
+   - **测试**：右键 `src/test/java` → `Run 'All Tests'`；或 Maven 面板 `Lifecycle → test`。
+4. 关于"右键直接 Run"：
+   - `app/ConsoleApp`、`gui/Launcher` 可以直接右键 Run（走 classpath）；
+   - ⚠ **不要直接 Run `gui/AuctionApp`**：它继承 `javafx.application.Application`，JavaFX 启动器
+     会要求 JavaFX 位于 *module-path*，而 Maven 依赖是放在 classpath 上的，实测报
+     `错误: 缺少 JavaFX 运行时组件`。想在 IDE 里一键启动就用 `gui/Launcher`（它对 classpath 启动友好）。
+
 ## 配置
 
 配置文件在 `src/main/resources/config.properties`：标的与参考价、各类 agent 的数量/初始资金/初始持仓、
