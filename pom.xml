@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>edu.cufe</groupId>
+  <artifactId>stock-auction-sim</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+  <name>Multi-Agent Continuous Auction Stock Trading Simulation System</name>
+  <description>Java 课程项目：多智能体连续竞价股票交易模拟系统</description>
+
+  <properties>
+    <!-- 规格要求 Java SE 11+；JavaFX 21 要求 JDK 17+，故定位 17(LTS)。
+         若老师机器只有 JDK 11：把 javafx.version 降到 17.0.10，release 改 11。 -->
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <javafx.version>21.0.2</javafx.version>
+    <jackson.version>2.17.1</jackson.version>
+    <junit.version>5.10.2</junit.version>
+  </properties>
+
+  <dependencies>
+    <!-- GUI -->
+    <dependency>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-controls</artifactId>
+      <version>${javafx.version}</version>
+      <classifier>${javafx.platform}</classifier>
+    </dependency>
+    <dependency>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-fxml</artifactId>
+      <version>${javafx.version}</version>
+      <classifier>${javafx.platform}</classifier>
+    </dependency>
+
+    <!-- JSON：解析 LLM 返回、写 CSV 时的转义 -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+
+    <!-- 测试 -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>stock-auction-sim</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+      </plugin>
+
+      <!-- mvn javafx:run 直接启动 GUI -->
+      <plugin>
+        <groupId>org.openjfx</groupId>
+        <artifactId>javafx-maven-plugin</artifactId>
+        <version>0.0.8</version>
+        <configuration>
+          <mainClass>edu.cufe.auction.gui.AuctionApp</mainClass>
+        </configuration>
+      </plugin>
+
+      <!-- mvn javadoc:javadoc -> target/site/apidocs（交付物之一） -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <version>3.6.3</version>
+        <configuration>
+          <encoding>UTF-8</encoding>
+          <charset>UTF-8</charset>
+          <docencoding>UTF-8</docencoding>
+          <doclint>none</doclint>
+        </configuration>
+      </plugin>
+
+      <!-- mvn exec:java -Dexec.mainClass=edu.cufe.auction.app.ConsoleApp 跑无界面演示 -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.2.0</version>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <!-- JavaFX 需要按操作系统选择平台 jar -->
+    <profile>
+      <id>javafx-windows</id>
+      <activation><os><family>windows</family></os></activation>
+      <properties><javafx.platform>win</javafx.platform></properties>
+    </profile>
+    <profile>
+      <id>javafx-mac</id>
+      <activation><os><family>mac</family></os></activation>
+      <properties><javafx.platform>mac</javafx.platform></properties>
+    </profile>
+    <profile>
+      <id>javafx-linux</id>
+      <activation><os><family>unix</family></os></activation>
+      <properties><javafx.platform>linux</javafx.platform></properties>
+    </profile>
+  </profiles>
+</project>
