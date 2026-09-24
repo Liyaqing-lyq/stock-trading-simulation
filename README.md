@@ -8,6 +8,9 @@ Java 程序设计课程项目（中央财经大学）：用多智能体模拟真
 需要 JDK 17+（本机为 JDK 21）。仓库自带 Maven Wrapper，**无需安装 Maven**。
 
 ```bash
+# 0) 一键验证：测试套件 + 从 CSV 黑盒复算（加 --with-gui 会短暂弹出界面）
+bash scripts/verify.sh --with-gui
+
 # 1) 编译并跑测试（35 项）
 mvnw.cmd test
 
