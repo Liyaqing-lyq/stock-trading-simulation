@@ -59,7 +59,7 @@ src/main/java/edu/cufe/auction/
   config/   SimulationConfig
   sim/      SimulationRunner（装配与调度）
   app/      ConsoleApp（控制台演示）
-  gui/      AuctionApp（JavaFX 界面）
+  gui/      AuctionApp（GUI 入口）、AuctionUi（JavaFX 界面实现）
 docs/       需求拆解、架构设计（类图/时序图）、接口定义、开发计划、运行与验证记录
 ```
 
@@ -77,10 +77,11 @@ docs/       需求拆解、架构设计（类图/时序图）、接口定义、�
    - **控制台演示**：Maven 面板 → `Plugins → exec → exec:java` 双击（默认跑 20 秒）；
    - **测试**：右键 `src/test/java` → `Run 'All Tests'`；或 Maven 面板 `Lifecycle → test`。
 4. 关于"右键直接 Run"：
-   - `app/ConsoleApp`、`gui/Launcher` 可以直接右键 Run（走 classpath）；
-   - ⚠ **不要直接 Run `gui/AuctionApp`**：它继承 `javafx.application.Application`，JavaFX 启动器
-     会要求 JavaFX 位于 *module-path*，而 Maven 依赖是放在 classpath 上的，实测报
-     `错误: 缺少 JavaFX 运行时组件`。想在 IDE 里一键启动就用 `gui/Launcher`（它对 classpath 启动友好）。
+   - **入口是 `gui/AuctionApp`**：它有 `main`、且不继承 `Application`，右键 Run 即可（走 classpath）；
+   - `app/ConsoleApp`（控制台演示）同样可直接 Run；
+   - ⚠ 别直接 Run `gui/AuctionUi`（界面实现）：它继承 `javafx.application.Application`，JavaFX 启动器
+     会要求 JavaFX 位于 *module-path*，而 Maven 依赖在 classpath，实测报「缺少 JavaFX 运行时组件」。
+     入口与实现分离正是为了让"随手点入口"这件事不会失败。
 
 ## 配置
 

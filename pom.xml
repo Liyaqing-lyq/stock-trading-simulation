@@ -68,7 +68,7 @@
         <version>3.2.5</version>
       </plugin>
 
-      <!-- mvn javafx:run 直接启动 GUI -->
+      <!-- mvn javafx:run 直接启动 GUI（入口 = AuctionApp，界面实现在 AuctionUi） -->
       <plugin>
         <groupId>org.openjfx</groupId>
         <artifactId>javafx-maven-plugin</artifactId>

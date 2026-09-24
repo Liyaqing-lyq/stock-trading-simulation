@@ -82,7 +82,7 @@ echo "== 3/3 界面（可选）=="
 if [ "${1:-}" = "--with-gui" ]; then
   cmd.exe /c "mvnw.cmd -B -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt" > /dev/null 2>&1
   timeout -k 5 20 java -cp "target/classes;$(cat target/cp.txt)" \
-    edu.cufe.auction.gui.Launcher > "$LOG/gui.log" 2>&1
+    edu.cufe.auction.gui.AuctionApp > "$LOG/gui.log" 2>&1
   if gbk "$LOG/gui.log" | grep -q "界面已启动"; then
     ok "界面启动成功（日志：$LOG/gui.log）"
   else
