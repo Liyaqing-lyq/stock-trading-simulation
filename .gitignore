@@ -1,9 +1,38 @@
+# ---------- 构建产物 ----------
 target/
+build/
+out/
+
+# ---------- 运行时数据（每次跑都会变，不入库）----------
 data/
 logs/
+*.log
+
+# ---------- IDE ----------
 .idea/
 *.iml
 .vscode/
+*.ctxt
+.settings/
+.classpath
+.project
+
+# ---------- 编译产物 ----------
 *.class
-*.log
+
+# ---------- 归档文件 ----------
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# ---------- JVM 崩溃日志 ----------
+hs_err_pid*
+replay_pid*
+
+# ---------- 系统 ----------
 .DS_Store
+Thumbs.db
