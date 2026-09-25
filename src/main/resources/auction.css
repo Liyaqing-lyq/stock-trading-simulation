@@ -1,0 +1,150 @@
+/* 多智能体连续竞价模拟系统 —— 界面样式
+ * 配色口径：主色深蓝；涨/买＝红、跌/卖＝绿（中国市场习惯）。 */
+
+.root {
+    -fx-font-family: "Microsoft YaHei UI", "微软雅黑", "Segoe UI";
+    -fx-font-size: 12px;
+    -fx-background-color: #F4F6F9;
+}
+
+/* ---------- 顶部行情条 ---------- */
+.header {
+    -fx-background-color: linear-gradient(to right, #1E2C3C, #2E4E73);
+    -fx-padding: 8 14 8 14;
+}
+.header .label {
+    -fx-text-fill: #E9F0F8;
+}
+.header .field-label {
+    -fx-text-fill: #9FB6CE;
+}
+.price-big {
+    -fx-font-size: 23px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #FFFFFF;
+}
+.chip {
+    -fx-background-color: rgba(255, 255, 255, 0.13);
+    -fx-background-radius: 10;
+    -fx-padding: 3 10 3 10;
+}
+.chip .label {
+    -fx-text-fill: #DCE7F3;
+}
+
+/* ---------- 卡片 ---------- */
+.card {
+    -fx-background-color: white;
+    -fx-background-radius: 6;
+    -fx-border-color: #E3E9F0;
+    -fx-border-radius: 6;
+    -fx-padding: 8 10 8 10;
+}
+.card-title {
+    -fx-font-size: 12.5px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #35485C;
+}
+.muted {
+    -fx-text-fill: #8494A6;
+}
+.key-label {
+    -fx-text-fill: #6B7C8F;
+}
+.big-number {
+    -fx-font-size: 15px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #22303F;
+}
+
+/* ---------- 数值色（中国市场习惯） ---------- */
+.mono {
+    -fx-font-family: "Consolas";
+}
+.up {
+    -fx-text-fill: #D64545;
+}
+.down {
+    -fx-text-fill: #2E9E5B;
+}
+.flat {
+    -fx-text-fill: #5A6B7C;
+}
+.side-buy {
+    -fx-text-fill: #D64545;
+}
+.side-sell {
+    -fx-text-fill: #2E9E5B;
+}
+.error-text {
+    -fx-text-fill: #C0392B;
+}
+
+/* ---------- 表格 ---------- */
+.table-view {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 0;
+}
+.table-view .column-header-background {
+    -fx-background-color: #EDF2F7;
+}
+.table-view .column-header,
+.table-view .filler {
+    -fx-background-color: transparent;
+    -fx-size: 26px;
+}
+.table-view .column-header .label {
+    -fx-text-fill: #4A5B6D;
+    -fx-font-weight: bold;
+}
+.table-row-cell {
+    -fx-background-color: white;
+    -fx-table-cell-border-color: transparent;
+    -fx-cell-size: 26px;
+}
+.table-row-cell:odd {
+    -fx-background-color: #F2F7FC;
+}
+.table-row-cell:selected {
+    -fx-background-color: #DCEAFB;
+}
+.table-cell {
+    -fx-padding: 0 6 0 6;
+}
+
+/* ---------- 控件 ---------- */
+.button.primary {
+    -fx-background-color: #2D6FB8;
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+    -fx-background-radius: 4;
+}
+.button.primary:hover {
+    -fx-background-color: #3B82D6;
+}
+.button.ghost {
+    -fx-background-color: #E6EDF5;
+    -fx-text-fill: #2D6FB8;
+    -fx-background-radius: 4;
+}
+.button.ghost:hover {
+    -fx-background-color: #D6E4F3;
+}
+.tab-pane > .tab-header-area > .tab-header-background {
+    -fx-background-color: transparent;
+}
+.tab-pane > .tab-header-area > .headers-region > .tab {
+    -fx-background-color: #E7EDF4;
+    -fx-background-radius: 4 4 0 0;
+    -fx-padding: 4 12 4 12;
+}
+.tab-pane > .tab-header-area > .headers-region > .tab:selected {
+    -fx-background-color: white;
+}
+.status-bar {
+    -fx-background-color: #EDF2F7;
+    -fx-padding: 4 12 4 12;
+    -fx-border-color: #DCE4EC;
+    -fx-border-width: 1 0 0 0;
+}

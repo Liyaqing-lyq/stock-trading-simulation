@@ -273,6 +273,22 @@ public final class MatchingEngine implements OrderGateway {
     }
 
     /**
+     * 全部标的的挂单只读快照（用于界面展示"我的挂单"、撤单入口）。
+     *
+     * <p>返回列表本身不可变，但元素是挂单对象引用，其成交量/状态会随后续撮合变化；
+     * 因此只用于展示，不要据此做业务判断。</p>
+     *
+     * @return 当前挂单（按标的与价格-时间优先顺序拼接）
+     */
+    public List<Order> allRestingOrders() {
+        synchronized (lock) {
+            List<Order> all = new ArrayList<>();
+            books.values().forEach(book -> all.addAll(book.restingOrders()));
+            return List.copyOf(all);
+        }
+    }
+
+    /**
      * 各标的最新价（无成交时用配置参考价兜底）。
      *
      * @return 标的 → 价格
