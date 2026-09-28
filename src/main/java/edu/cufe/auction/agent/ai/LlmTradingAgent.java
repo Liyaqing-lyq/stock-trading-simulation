@@ -33,6 +33,9 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class LlmTradingAgent extends AbstractTradingAgent {
 
+    /** 单标的允许同时存在的挂单数量上限（超出则撤最旧的）。 */
+    private static final int MAX_QUOTES_PER_SYMBOL = 2;
+
     private final LlmClient client;
     private final BigDecimal priceBandPercent;
     private final long defaultQuantity;
@@ -93,6 +96,11 @@ public final class LlmTradingAgent extends AbstractTradingAgent {
         MarketSnapshot snapshot = snapshots.get(Math.abs(rotation.getAndIncrement()) % snapshots.size());
         String symbol = snapshot.getSymbol();
         Account account = getAccount();
+
+        // 报价刷新：该标的挂单过多时撤掉最旧的，回收被它们冻结的资金/持仓。
+        // 不做这一步的话，模型反复挂出的非跨价限价单会永久占住额度，
+        // 最终该 agent 再也下不出单（与 Noise/Momentum 同源的历史 bug）。
+        trimQuotes(symbol, MAX_QUOTES_PER_SYMBOL);
 
         String raw;
         llmCalls.incrementAndGet();
