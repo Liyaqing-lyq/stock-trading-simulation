@@ -279,11 +279,19 @@ public final class AuctionUi extends Application {
     }
 
     private VBox buildChartTab() {
-        priceChart = new LineChart<>(new CategoryAxis(), new NumberAxis());
+        CategoryAxis timeAxis = new CategoryAxis();
+        timeAxis.setLabel("时间");
+        NumberAxis priceAxis = new NumberAxis();
+        priceAxis.setLabel("价格");
+        priceAxis.setForceZeroInRange(false);
+
+        priceSeries.setName("最新成交价");
+        priceChart = new LineChart<>(timeAxis, priceAxis);
         priceChart.setAnimated(false);
         priceChart.setCreateSymbols(false);
         priceChart.setLegendVisible(false);
-        priceChart.getData().add(priceSeries);
+        priceChart.setAlternativeRowFillVisible(false);
+        priceChart.getData().setAll(priceSeries);
         priceChart.getStyleClass().add("mono");
         priceChart.setMinHeight(360);
 
@@ -643,10 +651,18 @@ public final class AuctionUi extends Application {
         }
     }
 
-    /** 最新价变化时向走势图追加一个点（相同价格不重复追加，避免平线噪声）。 */
+    /**
+     * 向走势图追加行情点。
+     *
+     * <p>开盘尚未产生成交时使用参考价作为第一点，避免图表在开盘阶段完全空白；
+     * 产生成交后切换为真实最新成交价。相同价格不重复追加，避免 500ms 刷新造成
+     * 大量没有信息量的水平线。</p>
+     */
     private void appendPricePoint(String symbol, MarketSnapshot market) {
-        BigDecimal last = market.getLastPrice();
-        if (last == null) {
+        BigDecimal pointPrice = market.getLastPrice() == null
+                ? market.getPreviousClose()
+                : market.getLastPrice();
+        if (pointPrice == null) {
             return;
         }
         if (!symbol.equals(chartSymbol)) {
@@ -654,12 +670,12 @@ public final class AuctionUi extends Application {
             chartSymbol = symbol;
             lastChartPrice = null;
         }
-        if (lastChartPrice != null && last.compareTo(lastChartPrice) == 0) {
+        if (lastChartPrice != null && pointPrice.compareTo(lastChartPrice) == 0) {
             return;
         }
-        lastChartPrice = last;
+        lastChartPrice = pointPrice;
         priceSeries.getData().add(new XYChart.Data<>(
-                CLOCK.format(Instant.ofEpochMilli(market.getTimestampMillis())), last));
+                CLOCK.format(Instant.ofEpochMilli(market.getTimestampMillis())), pointPrice));
         while (priceSeries.getData().size() > MAX_POINTS) {
             priceSeries.getData().remove(0);
         }
