@@ -49,7 +49,25 @@ jobs:
 
       - name: 跑 scripts/verify.sh（唯一验证入口）
         shell: bash
-        run: bash scripts/verify.sh
+        run: |
+          # set +e：下面的诊断逻辑要在 verify.sh 失败后继续执行。
+          # 最终仍用 verify.sh 的真实退出码收尾，不改变这个步骤的判定语义。
+          set +e
+          bash scripts/verify.sh
+          ec=$?
+          if [ "$ec" -ne 0 ]; then
+            # 失败时把关键日志转成注解。注解是服务器渲染的，会直接出现在公开的
+            # job 页面里，不需要 token、也不用下载 artifact 就能读到失败原因。
+            echo "::error title=verify.sh 退出码::exit=$ec"
+            for f in logs/verify/suite.log logs/verify/demo.log; do
+              [ -f "$f" ] || continue
+              line=$( { iconv -f GBK -t UTF-8 "$f" 2>/dev/null || cat "$f"; } \
+                | tr -d '\r' | tail -25 \
+                | sed 's/%/%25/g' | awk 'NR>1{printf "%%0A"}{printf "%s",$0}' )
+              echo "::error title=日志 $f::${line}"
+            done
+          fi
+          exit $ec
 
       - name: 上传验证日志（失败时也上传）
         if: always()
