@@ -41,7 +41,20 @@ else
 fi
 
 echo "== 2/3 黑盒复算：真跑一次模拟，从原始产物核对口径 =="
+# 清空输出目录不能只敲一次 rm -rf。上一个 JVM 刚退出时，Windows 可能还没释放文件句柄，
+# rm 会报 "Directory not empty" 而残留 trades.csv/orders.csv（实测约 2/12 次）。
+# 此时旧进程若仍在收尾追加，它的成交 ID 会从 1 重新开始，与本轮新生成的 ID 撞车，
+# 表现为「成交 ID 重复」——看着像撮合出错，其实与代码无关，纯粹是验证环境没清干净。
+# 所以重试到真的删掉为止；确实删不掉就明确报错，别把这种脏现场留给后面的断言去误报。
 rm -rf data
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -e data ] || break
+  sleep 0.5
+  rm -rf data
+done
+if [ -e data ]; then
+  bad "无法清空 data 目录（可能仍有实例在写它）；请先停掉再跑验证"
+fi
 cmd.exe "$CMD_C" "mvnw.cmd -B -q exec:java -Dexec.mainClass=edu.cufe.auction.app.ConsoleApp -Dexec.args=8" \
   > "$LOG/demo.log" 2>&1
 # 判据不能依赖日志里的中文：控制台编码随运行环境的区域设置变化——中文 Windows 输出
