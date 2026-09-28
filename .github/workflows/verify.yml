@@ -47,6 +47,23 @@ jobs:
           path: ~/.m2/wrapper
           key: maven-wrapper-${{ runner.os }}-3.9.9
 
+      # 探针：CI 上 cmd.exe 的实际行为与本地不一致（verify.sh 的 cmd.exe /c 在 runner 上
+      # 只吐出 cmd 横幅，见注解）。这里把关键环境差异吐成注解，注解是服务器渲染的，
+      # 公开 job 页面直接可读，便于在没有 token 的情况下定位。
+      - name: 环境探针（诊断 cmd.exe 调用方式）
+        shell: bash
+        run: |
+          set +e
+          w() { echo "::warning title=$1::${2:0:400}"; }
+          w "uname"          "$(uname -a)"
+          w "bash-ver"       "$(bash --version | head -1)"
+          w "which-cmd.exe"  "$(command -v cmd.exe)"
+          w "MSYSTEM"        "${MSYSTEM:-<unset>}"
+          w "MSYS_NO_PATHCONV" "${MSYS_NO_PATHCONV:-<unset>}"
+          w "MSYS2_ARG_CONV_EXCL" "${MSYS2_ARG_CONV_EXCL:-<unset>}"
+          w "cmd.exe-slash-c"   "$(cmd.exe /c 'echo PROBE_SLASH_C' 2>&1 | tr -d '\r' | tr '\n' '|')"
+          w "cmd.exe-dbl-slash" "$(cmd.exe //c 'echo PROBE_DOUBLE' 2>&1 | tr -d '\r' | tr '\n' '|')"
+
       - name: 跑 scripts/verify.sh（唯一验证入口）
         shell: bash
         run: |
