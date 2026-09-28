@@ -18,11 +18,24 @@ import java.util.Map;
  *
  * <ul>
  *   <li>维护每个标的最近 N 个最新价；</li>
- *   <li>短均线 &gt; 长均线 → 动量向上，挂买单；反之挂卖单（仅卖出已持有的数量）；</li>
+ *   <li>短均线 &gt; 长均线 → 动量向上，主动买入；反之卖出已持有的数量；</li>
  *   <li>单标的持仓占用不超过账户可用现金的一定比例，避免一把梭。</li>
  * </ul>
+ *
+ * <p><b>为什么必须主动吃对手价</b>：最新价是「上一笔成交价」，它必然落在买一与卖一之间
+ * （撮合后订单簿不交叉）。因此一张价格等于最新价的限价买单永远低于卖一，一张价格等于
+ * 最新价的限价卖单永远高于买一——两张都只会静静挂在簿上，永远不成交。
+ * 历史 bug：此前的实现正是挂「最新价」，导致动量 agent 实际上一笔都成交不了，
+ * 却持续冻结资金与持仓。现在改为以对手价（买用卖一、卖用买一）报价，才能真正成交。</p>
+ *
+ * <p><b>报价刷新</b>：每轮 tick 开始先撤销自己上一轮未成交的挂单，回收冻结额度，
+ * 避免陈旧挂单堆积并锁死账户资金。</p>
  */
 public final class MomentumAgent extends AbstractTradingAgent {
+
+    private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
+    /** 对手盘为空时的激进报价偏离比例（0.5%）。 */
+    private static final BigDecimal FALLBACK_OFFSET = new BigDecimal("1.005");
 
     private final int windowSize;
     private final long orderQuantity;
@@ -66,6 +79,9 @@ public final class MomentumAgent extends AbstractTradingAgent {
 
     @Override
     public void onTick() {
+        // 报价刷新：动量策略需要的是成交，不是排队；先撤掉上一轮残留挂单并回收冻结额度
+        cancelAllOpenOrders();
+
         for (MarketSnapshot snapshot : latestSnapshots()) {
             String symbol = snapshot.getSymbol();
             BigDecimal last = snapshot.getLastPrice();
@@ -78,23 +94,42 @@ public final class MomentumAgent extends AbstractTradingAgent {
             }
             Account account = getAccount();
             if (last.compareTo(average) > 0) {
+                BigDecimal price = aggressivePrice(snapshot, Side.BUY);
                 BigDecimal budget = account.getAvailableCash()
                         .multiply(positionBudgetPercent)
-                        .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
-                long affordable = budget.divide(last, 0, RoundingMode.DOWN).longValue();
+                        .divide(HUNDRED, 2, RoundingMode.HALF_UP);
+                long affordable = budget.divide(price, 0, RoundingMode.DOWN).longValue();
                 long quantity = Math.min(orderQuantity, affordable);
                 if (quantity > 0) {
-                    submit(OrderRequest.limit(getAgentId(), symbol, Side.BUY,
-                            last.setScale(2, RoundingMode.HALF_UP), quantity));
+                    submit(OrderRequest.limit(getAgentId(), symbol, Side.BUY, price, quantity));
                 }
             } else if (last.compareTo(average) < 0) {
                 long quantity = Math.min(orderQuantity, account.getAvailableQuantity(symbol));
                 if (quantity > 0) {
                     submit(OrderRequest.limit(getAgentId(), symbol, Side.SELL,
-                            last.setScale(2, RoundingMode.HALF_UP), quantity));
+                            aggressivePrice(snapshot, Side.SELL), quantity));
                 }
             }
         }
+    }
+
+    /**
+     * 计算主动成交价：买用卖一（对手价），卖用买一；对手盘为空时退回最新价加偏移。
+     *
+     * @param snapshot 行情快照
+     * @param side     方向
+     * @return 限价
+     */
+    private BigDecimal aggressivePrice(MarketSnapshot snapshot, Side side) {
+        BigDecimal counterParty = side == Side.BUY ? snapshot.getBestAsk() : snapshot.getBestBid();
+        if (counterParty != null && counterParty.signum() > 0) {
+            return counterParty.setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal last = snapshot.getLastPrice();
+        if (side == Side.SELL) {
+            return last.divide(FALLBACK_OFFSET, 2, RoundingMode.HALF_UP);
+        }
+        return last.multiply(FALLBACK_OFFSET).setScale(2, RoundingMode.HALF_UP);
     }
 
     private BigDecimal movingAverage(String symbol) {
