@@ -1,0 +1,61 @@
+name: verify
+
+# 把项目的唯一验证入口 scripts/verify.sh 挂到 PR 与 main 上，自动跑。
+#
+# 为什么用 windows-latest 而不是 ubuntu-latest：
+#   verify.sh 依赖 cmd.exe / mvnw.cmd / iconv（Git Bash 自带），是 Windows 专用脚本。
+#   换到 Linux 就得把验证逻辑重写一份，CI 与「本地唯一验证入口」就此脱节——
+#   那正是这个项目最不该出现的分叉。GitHub 的 windows runner 自带 Git Bash，可直接跑。
+#
+# 为什么不跑 --with-gui：
+#   runner 没有图形环境，JavaFX 起不来，属于假失败。
+#   界面启动仍靠本地 `bash scripts/verify.sh --with-gui` 手动验一次。
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 测试套件 + 黑盒复算
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 装 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # mvnw 是 only-script 模式，首次运行会自己下载 Maven 3.9.9 到 ~/.m2/wrapper。
+      # setup-java 的 cache 只覆盖 ~/.m2/repository，不含这份发行包，所以单独缓存。
+      - name: 缓存 Maven 发行包
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/wrapper
+          key: maven-wrapper-${{ runner.os }}-3.9.9
+
+      - name: 跑 scripts/verify.sh（唯一验证入口）
+        shell: bash
+        run: bash scripts/verify.sh
+
+      - name: 上传验证日志（失败时也上传）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs
+          path: logs/verify/
+          if-no-files-found: ignore
+          retention-days: 14
