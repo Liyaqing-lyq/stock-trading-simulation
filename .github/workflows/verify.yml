@@ -47,23 +47,6 @@ jobs:
           path: ~/.m2/wrapper
           key: maven-wrapper-${{ runner.os }}-3.9.9
 
-      # 探针：CI 上 cmd.exe 的实际行为与本地不一致（verify.sh 的 cmd.exe /c 在 runner 上
-      # 只吐出 cmd 横幅，见注解）。这里把关键环境差异吐成注解，注解是服务器渲染的，
-      # 公开 job 页面直接可读，便于在没有 token 的情况下定位。
-      - name: 环境探针（诊断 cmd.exe 调用方式）
-        shell: bash
-        run: |
-          set +e
-          w() { echo "::warning title=$1::${2:0:400}"; }
-          w "uname"          "$(uname -a)"
-          w "bash-ver"       "$(bash --version | head -1)"
-          w "which-cmd.exe"  "$(command -v cmd.exe)"
-          w "MSYSTEM"        "${MSYSTEM:-<unset>}"
-          w "MSYS_NO_PATHCONV" "${MSYS_NO_PATHCONV:-<unset>}"
-          w "MSYS2_ARG_CONV_EXCL" "${MSYS2_ARG_CONV_EXCL:-<unset>}"
-          w "cmd.exe-slash-c"   "$(cmd.exe /c 'echo PROBE_SLASH_C' 2>&1 | tr -d '\r' | tr '\n' '|')"
-          w "cmd.exe-dbl-slash" "$(cmd.exe //c 'echo PROBE_DOUBLE' 2>&1 | tr -d '\r' | tr '\n' '|')"
-
       - name: 跑 scripts/verify.sh（唯一验证入口）
         shell: bash
         run: |
@@ -76,9 +59,18 @@ jobs:
             # 失败时把关键日志转成注解。注解是服务器渲染的，会直接出现在公开的
             # job 页面里，不需要 token、也不用下载 artifact 就能读到失败原因。
             echo "::error title=verify.sh 退出码::exit=$ec"
-            for f in logs/verify/suite.log logs/verify/demo.log; do
+            # 日志编码随运行环境变化：中文 Windows 是 GBK，英文环境是 cp1252/UTF-8。
+            # 先按 UTF-8 试，不合法再按 GBK 解，免得诊断本身把内容弄花。
+            show() {
+              if iconv -f UTF-8 -t UTF-8 "$1" >/dev/null 2>&1; then
+                cat "$1"
+              else
+                iconv -f GBK -t UTF-8 "$1" 2>/dev/null || cat "$1"
+              fi
+            }
+            for f in logs/verify/suite.log logs/verify/demo.log logs/verify/csv.log; do
               [ -f "$f" ] || continue
-              line=$( { iconv -f GBK -t UTF-8 "$f" 2>/dev/null || cat "$f"; } \
+              line=$( show "$f" \
                 | tr -d '\r' | tail -25 \
                 | sed 's/%/%25/g' | awk 'NR>1{printf "%%0A"}{printf "%s",$0}' )
               echo "::error title=日志 $f::${line}"

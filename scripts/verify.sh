@@ -53,7 +53,12 @@ if [ -s data/ranking.csv ] && grep -qa "ranking\.csv" "$LOG/demo.log"; then
 else
   bad "模拟未正常收盘，详见 $LOG/demo.log"
 fi
-if python - > "$LOG/csv.log" 2>&1 <<'PY'
+# PYTHONIOENCODING=utf-8：下面这段会 print 中文，而 Python 的 stdout 编码跟随区域设置。
+# 英文环境（CI runner）下是 cp1252，打印中文会直接抛 UnicodeEncodeError，让检查在跑完之前
+# 就死掉——失败与数据无关，只是「本机恰好是中文环境」这个隐藏前提。这里把检查自身的输出
+# 钉成 UTF-8，使结果不再取决于运行环境的区域设置。
+# （脚本读 CSV 已逐个显式写 encoding="utf-8"，本来就不受区域设置影响。）
+if PYTHONIOENCODING=utf-8 python - > "$LOG/csv.log" 2>&1 <<'PY'
 import csv, sys, pathlib
 d = pathlib.Path("data")
 ok = True
