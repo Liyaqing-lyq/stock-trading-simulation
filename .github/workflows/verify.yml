@@ -1,0 +1,88 @@
+name: verify
+
+# 把项目的唯一验证入口 scripts/verify.sh 挂到 PR 与 main 上，自动跑。
+#
+# 为什么用 windows-latest 而不是 ubuntu-latest：
+#   verify.sh 依赖 cmd.exe / mvnw.cmd / iconv（Git Bash 自带），是 Windows 专用脚本。
+#   换到 Linux 就得把验证逻辑重写一份，CI 与「本地唯一验证入口」就此脱节——
+#   那正是这个项目最不该出现的分叉。GitHub 的 windows runner 自带 Git Bash，可直接跑。
+#
+# 为什么不跑 --with-gui：
+#   runner 没有图形环境，JavaFX 起不来，属于假失败。
+#   界面启动仍靠本地 `bash scripts/verify.sh --with-gui` 手动验一次。
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 测试套件 + 黑盒复算
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 装 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # mvnw 是 only-script 模式，首次运行会自己下载 Maven 3.9.9 到 ~/.m2/wrapper。
+      # setup-java 的 cache 只覆盖 ~/.m2/repository，不含这份发行包，所以单独缓存。
+      - name: 缓存 Maven 发行包
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/wrapper
+          key: maven-wrapper-${{ runner.os }}-3.9.9
+
+      - name: 跑 scripts/verify.sh（唯一验证入口）
+        shell: bash
+        run: |
+          # set +e：下面的诊断逻辑要在 verify.sh 失败后继续执行。
+          # 最终仍用 verify.sh 的真实退出码收尾，不改变这个步骤的判定语义。
+          set +e
+          bash scripts/verify.sh
+          ec=$?
+          if [ "$ec" -ne 0 ]; then
+            # 失败时把关键日志转成注解。注解是服务器渲染的，会直接出现在公开的
+            # job 页面里，不需要 token、也不用下载 artifact 就能读到失败原因。
+            echo "::error title=verify.sh 退出码::exit=$ec"
+            # 日志编码随运行环境变化：中文 Windows 是 GBK，英文环境是 cp1252/UTF-8。
+            # 先按 UTF-8 试，不合法再按 GBK 解，免得诊断本身把内容弄花。
+            show() {
+              if iconv -f UTF-8 -t UTF-8 "$1" >/dev/null 2>&1; then
+                cat "$1"
+              else
+                iconv -f GBK -t UTF-8 "$1" 2>/dev/null || cat "$1"
+              fi
+            }
+            for f in logs/verify/suite.log logs/verify/demo.log logs/verify/csv.log; do
+              [ -f "$f" ] || continue
+              line=$( show "$f" \
+                | tr -d '\r' | tail -25 \
+                | sed 's/%/%25/g' | awk 'NR>1{printf "%%0A"}{printf "%s",$0}' )
+              echo "::error title=日志 $f::${line}"
+            done
+          fi
+          exit $ec
+
+      - name: 上传验证日志（失败时也上传）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs
+          path: logs/verify/
+          if-no-files-found: ignore
+          retention-days: 14
