@@ -8,6 +8,7 @@ import edu.cufe.auction.model.Order;
 import edu.cufe.auction.model.OrderRequest;
 import edu.cufe.auction.model.OrderResult;
 import edu.cufe.auction.model.Side;
+import edu.cufe.auction.model.Trade;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -15,6 +16,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
@@ -45,6 +47,7 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
     private final AtomicLong submittedCount = new AtomicLong();
     private final AtomicLong rejectedCount = new AtomicLong();
     private final AtomicLong filledQuantity = new AtomicLong();
+    private final Set<Long> countedTradeIds = ConcurrentHashMap.newKeySet();
     private final AtomicLong cancelledCount = new AtomicLong();
     /** 存活挂单：key = 订单 id，value = 该单的本地快照。 */
     private final Map<Long, LiveOrder> liveOrders = new ConcurrentHashMap<>();
@@ -114,6 +117,11 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
         latestSnapshots.put(snapshot.getSymbol(), snapshot);
     }
 
+    @Override
+    public void onTrade(Trade trade) {
+        recordTrade(trade);
+    }
+
     /**
      * 取某标的最新行情快照。
      *
@@ -142,10 +150,9 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
     /**
      * 累计成交股数。
      *
-     * <p><b>口径提示</b>：该值只统计「提交瞬间立即成交」的部分；挂单后被对手方吃掉的成交
-     * 不计入，因此会系统性低估真实成交量。做严谨对比请以 {@code trades.csv} 为准。</p>
+     * <p>主动成交由下单结果记录，被动挂单成交由行情广播记录；两条路径按成交 id 去重。</p>
      *
-     * @return 累计立即成交股数
+     * @return 累计成交股数
      */
     public long getFilledQuantity() {
         return filledQuantity.get();
@@ -186,7 +193,7 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
         try {
             OrderResult result = gateway.submit(request);
             if (result.isAccepted()) {
-                filledQuantity.addAndGet(result.getFilledQuantity());
+                result.getTrades().forEach(this::recordTrade);
                 trackIfResting(result.getOrder());
             } else {
                 rejectedCount.incrementAndGet();
@@ -196,6 +203,13 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
             rejectedCount.incrementAndGet();
             System.err.printf("[%s] 下单异常：%s%n", agentId, ex);
             return null;
+        }
+    }
+
+    private void recordTrade(Trade trade) {
+        if ((agentId.equals(trade.getBuyAgentId()) || agentId.equals(trade.getSellAgentId()))
+                && countedTradeIds.add(trade.getTradeId())) {
+            filledQuantity.addAndGet(trade.getQuantity());
         }
     }
 
