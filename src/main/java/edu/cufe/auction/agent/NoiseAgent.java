@@ -49,6 +49,7 @@ public final class NoiseAgent extends AbstractTradingAgent {
         Account account = getAccount();
         for (MarketSnapshot snapshot : latestSnapshots()) {
             String symbol = snapshot.getSymbol();
+            trimQuotes(symbol, 1);
             BigDecimal anchor = anchorPrice(snapshot);
             if (anchor == null) {
                 continue;
@@ -71,6 +72,9 @@ public final class NoiseAgent extends AbstractTradingAgent {
                     continue;
                 }
                 side = Side.BUY;
+            }
+            if (!ensureCapacityFor(symbol, side, price, quantity)) {
+                continue;
             }
             submit(OrderRequest.limit(getAgentId(), symbol, side, price, quantity));
         }

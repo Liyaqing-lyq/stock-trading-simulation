@@ -4,13 +4,22 @@ import edu.cufe.auction.account.Account;
 import edu.cufe.auction.engine.OrderGateway;
 import edu.cufe.auction.market.MarketDataListener;
 import edu.cufe.auction.model.MarketSnapshot;
+import edu.cufe.auction.model.Order;
 import edu.cufe.auction.model.OrderRequest;
 import edu.cufe.auction.model.OrderResult;
+import edu.cufe.auction.model.Side;
+import edu.cufe.auction.model.Trade;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Predicate;
 
 /**
  * agent 基类：缓存最新行情、统一处理下单异常与统计。
@@ -25,6 +34,7 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
     private final Account account;
     private final OrderGateway gateway;
     private final Map<String, MarketSnapshot> latestSnapshots = new ConcurrentHashMap<>();
+    private final Map<Long, OpenOrder> openOrders = new ConcurrentHashMap<>();
     private final AtomicLong submittedCount = new AtomicLong();
     private final AtomicLong rejectedCount = new AtomicLong();
     private final AtomicLong filledQuantity = new AtomicLong();
@@ -77,6 +87,18 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
         latestSnapshots.put(snapshot.getSymbol(), snapshot);
     }
 
+    @Override
+    public void onTrade(Trade trade) {
+        if (agentId.equals(trade.getBuyAgentId())) {
+            filledQuantity.addAndGet(trade.getQuantity());
+            reduceOpenOrder(trade.getBuyOrderId(), trade.getQuantity());
+        }
+        if (agentId.equals(trade.getSellAgentId())) {
+            filledQuantity.addAndGet(trade.getQuantity());
+            reduceOpenOrder(trade.getSellOrderId(), trade.getQuantity());
+        }
+    }
+
     /**
      * 取某标的最新行情快照。
      *
@@ -118,7 +140,7 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
         try {
             OrderResult result = gateway.submit(request);
             if (result.isAccepted()) {
-                filledQuantity.addAndGet(result.getFilledQuantity());
+                registerOpenOrder(result.getOrder());
             } else {
                 rejectedCount.incrementAndGet();
             }
@@ -138,10 +160,141 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
      */
     protected boolean cancel(long orderId) {
         try {
-            return gateway.cancel(orderId);
+            boolean cancelled = gateway.cancel(orderId);
+            // false 也表示订单已不在订单簿中（已成交、已撤销或不存在），本地记录同样应清理。
+            openOrders.remove(orderId);
+            return cancelled;
         } catch (RuntimeException ex) {
             System.err.printf("[%s] 撤单异常：%s%n", agentId, ex);
             return false;
+        }
+    }
+
+    /**
+     * 当前仍在订单簿中的本 agent 委托数量。
+     *
+     * @return 未终结委托数
+     */
+    protected int openOrderCount() {
+        return openOrders.size();
+    }
+
+    /**
+     * 撤销全部未终结委托，释放被冻结的资金和持仓。
+     *
+     * @return 成功撤销的委托数
+     */
+    protected int cancelAllOpenOrders() {
+        return cancelOpenOrders(order -> true);
+    }
+
+    /**
+     * 为某标的新报价腾出名额。上限包含调用方随后准备提交的新委托。
+     *
+     * @param symbol        标的代码
+     * @param maxOpenOrders 新委托提交后允许保留的最大委托数，必须为正
+     * @return 成功撤销的旧委托数
+     */
+    protected int trimQuotes(String symbol, int maxOpenOrders) {
+        if (maxOpenOrders <= 0) {
+            throw new IllegalArgumentException("maxOpenOrders 必须为正数");
+        }
+        List<OpenOrder> matching = openOrders().stream()
+                .filter(order -> order.symbol.equals(symbol))
+                .toList();
+        int toCancel = Math.max(0, matching.size() - maxOpenOrders + 1);
+        int cancelled = 0;
+        for (int i = 0; i < toCancel; i++) {
+            if (cancel(matching.get(i).orderId)) {
+                cancelled++;
+            }
+        }
+        return cancelled;
+    }
+
+    /**
+     * 检查下单额度；不足时先撤销会占用同一资源的旧委托，再重新检查。
+     *
+     * <p>买单共享账户现金，因此会撤销所有标的的旧买单；卖单只会撤销同一标的的旧卖单。</p>
+     *
+     * @param symbol   标的代码
+     * @param side     买卖方向
+     * @param price    用于检查资金的价格
+     * @param quantity 数量
+     * @return 刷新旧委托后是否具备足够可用额度
+     */
+    protected boolean ensureCapacityFor(String symbol, Side side, BigDecimal price, long quantity) {
+        Objects.requireNonNull(symbol, "symbol");
+        Objects.requireNonNull(side, "side");
+        if (quantity <= 0) {
+            return false;
+        }
+        if (hasCapacity(symbol, side, price, quantity)) {
+            return true;
+        }
+        if (side == Side.BUY) {
+            cancelOpenOrders(order -> order.side == Side.BUY);
+        } else {
+            cancelOpenOrders(order -> order.side == Side.SELL && order.symbol.equals(symbol));
+        }
+        return hasCapacity(symbol, side, price, quantity);
+    }
+
+    private boolean hasCapacity(String symbol, Side side, BigDecimal price, long quantity) {
+        if (side == Side.BUY) {
+            return price != null && price.signum() > 0 && account.canAfford(price, quantity);
+        }
+        return account.getAvailableQuantity(symbol) >= quantity;
+    }
+
+    private int cancelOpenOrders(Predicate<OpenOrder> predicate) {
+        int cancelled = 0;
+        for (OpenOrder order : openOrders()) {
+            if (predicate.test(order) && cancel(order.orderId)) {
+                cancelled++;
+            }
+        }
+        return cancelled;
+    }
+
+    private List<OpenOrder> openOrders() {
+        List<OpenOrder> snapshot = new ArrayList<>(openOrders.values());
+        snapshot.sort(Comparator.comparingLong(order -> order.sequence));
+        return snapshot;
+    }
+
+    private void registerOpenOrder(Order order) {
+        if (order == null || order.getStatus().isTerminal() || order.getRemainingQuantity() <= 0) {
+            return;
+        }
+        openOrders.put(order.getOrderId(), new OpenOrder(order.getOrderId(), order.getSequence(),
+                order.getSymbol(), order.getSide(), order.getRemainingQuantity()));
+    }
+
+    private void reduceOpenOrder(long orderId, long filled) {
+        openOrders.computeIfPresent(orderId, (ignored, order) -> {
+            long remaining = order.remainingQuantity - filled;
+            return remaining <= 0 ? null : order.withRemainingQuantity(remaining);
+        });
+    }
+
+    private static final class OpenOrder {
+        private final long orderId;
+        private final long sequence;
+        private final String symbol;
+        private final Side side;
+        private final long remainingQuantity;
+
+        private OpenOrder(long orderId, long sequence, String symbol, Side side, long remainingQuantity) {
+            this.orderId = orderId;
+            this.sequence = sequence;
+            this.symbol = symbol;
+            this.side = side;
+            this.remainingQuantity = remainingQuantity;
+        }
+
+        private OpenOrder withRemainingQuantity(long quantity) {
+            return new OpenOrder(orderId, sequence, symbol, side, quantity);
         }
     }
 

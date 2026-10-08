@@ -66,6 +66,7 @@ public final class MomentumAgent extends AbstractTradingAgent {
 
     @Override
     public void onTick() {
+        cancelAllOpenOrders();
         for (MarketSnapshot snapshot : latestSnapshots()) {
             String symbol = snapshot.getSymbol();
             BigDecimal last = snapshot.getLastPrice();
@@ -78,20 +79,28 @@ public final class MomentumAgent extends AbstractTradingAgent {
             }
             Account account = getAccount();
             if (last.compareTo(average) > 0) {
+                BigDecimal buyPrice = snapshot.getBestAsk();
+                if (buyPrice == null) {
+                    continue;
+                }
                 BigDecimal budget = account.getAvailableCash()
                         .multiply(positionBudgetPercent)
                         .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
-                long affordable = budget.divide(last, 0, RoundingMode.DOWN).longValue();
+                long affordable = budget.divide(buyPrice, 0, RoundingMode.DOWN).longValue();
                 long quantity = Math.min(orderQuantity, affordable);
-                if (quantity > 0) {
+                if (quantity > 0 && ensureCapacityFor(symbol, Side.BUY, buyPrice, quantity)) {
                     submit(OrderRequest.limit(getAgentId(), symbol, Side.BUY,
-                            last.setScale(2, RoundingMode.HALF_UP), quantity));
+                            buyPrice.setScale(2, RoundingMode.HALF_UP), quantity));
                 }
             } else if (last.compareTo(average) < 0) {
+                BigDecimal sellPrice = snapshot.getBestBid();
+                if (sellPrice == null) {
+                    continue;
+                }
                 long quantity = Math.min(orderQuantity, account.getAvailableQuantity(symbol));
-                if (quantity > 0) {
+                if (quantity > 0 && ensureCapacityFor(symbol, Side.SELL, sellPrice, quantity)) {
                     submit(OrderRequest.limit(getAgentId(), symbol, Side.SELL,
-                            last.setScale(2, RoundingMode.HALF_UP), quantity));
+                            sellPrice.setScale(2, RoundingMode.HALF_UP), quantity));
                 }
             }
         }

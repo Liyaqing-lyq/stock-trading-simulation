@@ -93,6 +93,7 @@ public final class LlmTradingAgent extends AbstractTradingAgent {
         MarketSnapshot snapshot = snapshots.get(Math.abs(rotation.getAndIncrement()) % snapshots.size());
         String symbol = snapshot.getSymbol();
         Account account = getAccount();
+        trimQuotes(symbol, 1);
 
         String raw;
         llmCalls.incrementAndGet();
@@ -117,22 +118,30 @@ public final class LlmTradingAgent extends AbstractTradingAgent {
         }
 
         Side side = decision.getAction() == TradingDecision.Action.BUY ? Side.BUY : Side.SELL;
-        long quantity = decision.getQuantity() > 0 ? decision.getQuantity() : defaultQuantity;
+        long requestedQuantity = decision.getQuantity() > 0 ? decision.getQuantity() : defaultQuantity;
+        long quantity = requestedQuantity;
         BigDecimal limit = clampPrice(decision.getPrice(), anchor);
+        BigDecimal capacityPrice = limit == null && side == Side.BUY && snapshot.getBestAsk() != null
+                ? snapshot.getBestAsk() : (limit == null ? anchor : limit);
 
         if (side == Side.BUY) {
-            BigDecimal unitPrice = limit == null ? anchor : limit;
+            ensureCapacityFor(symbol, side, capacityPrice, requestedQuantity);
             long affordable = account.getAvailableCash()
-                    .divide(unitPrice, 0, RoundingMode.DOWN).longValue();
+                    .divide(capacityPrice, 0, RoundingMode.DOWN).longValue();
             quantity = Math.min(quantity, affordable);
             if (quantity <= 0) {
                 return;
             }
         } else {
+            ensureCapacityFor(symbol, side, capacityPrice, requestedQuantity);
             quantity = Math.min(quantity, account.getAvailableQuantity(symbol));
             if (quantity <= 0) {
                 return;
             }
+        }
+
+        if (!ensureCapacityFor(symbol, side, capacityPrice, quantity)) {
+            return;
         }
 
         OrderRequest request = limit == null
