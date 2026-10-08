@@ -1,6 +1,8 @@
 package edu.cufe.auction.agent;
 
 import edu.cufe.auction.account.Account;
+import edu.cufe.auction.account.AccountManager;
+import edu.cufe.auction.engine.MatchingEngine;
 import edu.cufe.auction.engine.OrderGateway;
 import edu.cufe.auction.market.MarketDataPublisher;
 import edu.cufe.auction.model.Order;
@@ -33,7 +35,7 @@ class AbstractTradingAgentTradeStatsTest {
     }
 
     @Test
-    void countsSubmitResultOnceWhenSameTradeIsBroadcast() {
+    void countsTradeFromBroadcastAfterSubmit() {
         Trade trade = trade(3L, AGENT_ID, "other-seller", 12L);
         Order order = new Order(10L, AGENT_ID, "AAPL", Side.BUY, OrderType.LIMIT,
                 new BigDecimal("100.00"), 12L, 1L);
@@ -57,6 +59,26 @@ class AbstractTradingAgentTradeStatsTest {
         assertEquals(12L, agent.getFilledQuantity());
     }
 
+    @Test
+    void countsBothSidesOfSelfTradeThroughMatchingEngineBroadcast() {
+        AccountManager accounts = new AccountManager();
+        Account account = accounts.createAccount(AGENT_ID, "Agent A", new BigDecimal("10000.00"));
+        account.seedPosition("AAPL", 20L, new BigDecimal("100.00"));
+        MarketDataPublisher publisher = new MarketDataPublisher();
+        MatchingEngine engine = new MatchingEngine(accounts, publisher,
+                java.util.Map.of("AAPL", new BigDecimal("100.00")));
+        TestAgent agent = new TestAgent(account, engine);
+        publisher.subscribe(agent);
+
+        agent.place(OrderRequest.limit(AGENT_ID, "AAPL", Side.SELL,
+                new BigDecimal("100.00"), 20L));
+        agent.place(OrderRequest.limit(AGENT_ID, "AAPL", Side.BUY,
+                new BigDecimal("100.00"), 20L));
+
+        assertEquals(40L, agent.getFilledQuantity(),
+                "自成交应分别计入买方和卖方成交量，且广播与 submit 返回不能重复计数");
+    }
+
     private static Trade trade(long tradeId, String buyer, String seller, long quantity) {
         return new Trade(tradeId, "AAPL", new BigDecimal("100.00"), quantity,
                 10L, buyer, 11L, seller, 1_000L);
@@ -78,8 +100,11 @@ class AbstractTradingAgentTradeStatsTest {
 
     private static final class TestAgent extends AbstractTradingAgent {
         private TestAgent(OrderGateway gateway) {
-            super(AGENT_ID, "Agent A", AgentType.AI,
-                    new Account(AGENT_ID, "Agent A", new BigDecimal("1000.00")), gateway);
+            this(new Account(AGENT_ID, "Agent A", new BigDecimal("1000.00")), gateway);
+        }
+
+        private TestAgent(Account account, OrderGateway gateway) {
+            super(AGENT_ID, "Agent A", AgentType.AI, account, gateway);
         }
 
         private OrderResult place(OrderRequest request) {

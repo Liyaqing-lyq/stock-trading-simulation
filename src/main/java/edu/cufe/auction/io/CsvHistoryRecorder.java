@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 
 /**
  * CSV 历史记录器：订单流水、成交流水、期末排行榜（对应评分项“数据持久化”）。
@@ -36,7 +37,7 @@ public final class CsvHistoryRecorder implements EngineListener, MarketDataListe
     private static final String TRADE_HEADER =
             "时间,成交ID,symbol,成交价,数量,买方订单,买方agent,卖方订单,卖方agent,成交金额";
     private static final String RANK_HEADER =
-            "名次,agent,名称,初始权益,期末权益,收益率,已实现盈亏,最大回撤%,平仓笔数,胜率";
+            "名次,agent,名称,初始权益,期末权益,收益率,已实现盈亏,最大回撤%,平仓笔数,胜率,累计成交股数";
 
     private final Path directory;
     private final Path ordersFile;
@@ -107,6 +108,18 @@ public final class CsvHistoryRecorder implements EngineListener, MarketDataListe
      * @throws IOException 写文件失败
      */
     public void writeRanking(List<PerformanceRank> ranks) throws IOException {
+        writeRanking(ranks, Map.of());
+    }
+
+    /**
+     * 写期末排行榜，并附带每个 agent 的累计成交股数。
+     *
+     * @param ranks 排行榜（按名次）
+     * @param filledQuantities agent id 到累计成交股数；缺失时写 0
+     * @throws IOException 写文件失败
+     */
+    public void writeRanking(List<PerformanceRank> ranks, Map<String, Long> filledQuantities)
+            throws IOException {
         StringBuilder sb = new StringBuilder(RANK_HEADER).append(System.lineSeparator());
         for (PerformanceRank r : ranks) {
             sb.append(String.join(",",
@@ -114,7 +127,9 @@ public final class CsvHistoryRecorder implements EngineListener, MarketDataListe
                     r.getInitialBalance().toPlainString(), r.getEquity().toPlainString(),
                     r.getReturnRate().toPlainString(), r.getRealizedPnl().toPlainString(),
                     r.getMaxDrawdown().toPlainString(), String.valueOf(r.getClosedTradeCount()),
-                    r.getWinRate().toPlainString())).append(System.lineSeparator());
+                    r.getWinRate().toPlainString(),
+                    String.valueOf(filledQuantities.getOrDefault(r.getAgentId(), 0L))))
+                    .append(System.lineSeparator());
         }
         synchronized (lock) {
             Files.writeString(rankingFile, sb.toString(), StandardCharsets.UTF_8,

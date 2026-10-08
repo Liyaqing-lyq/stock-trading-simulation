@@ -3,6 +3,7 @@ package edu.cufe.auction.sim;
 import edu.cufe.auction.account.Account;
 import edu.cufe.auction.account.AccountManager;
 import edu.cufe.auction.account.PerformanceRank;
+import edu.cufe.auction.agent.AbstractTradingAgent;
 import edu.cufe.auction.agent.AgentType;
 import edu.cufe.auction.agent.HumanBrokerAgent;
 import edu.cufe.auction.agent.MomentumAgent;
@@ -204,7 +205,13 @@ public final class SimulationRunner implements AutoCloseable {
         Map<String, BigDecimal> prices = engine.lastPrices();
         accountManager.markAllEquity(prices);
         List<PerformanceRank> ranks = accountManager.ranking(prices);
-        recorder.writeRanking(ranks);
+        Map<String, Long> filledQuantities = new java.util.LinkedHashMap<>();
+        for (TradingAgent agent : agents) {
+            if (agent instanceof AbstractTradingAgent tradingAgent) {
+                filledQuantities.put(agent.getAgentId(), tradingAgent.getFilledQuantity());
+            }
+        }
+        recorder.writeRanking(ranks, filledQuantities);
         System.out.printf("[SimulationRunner] 收盘：撤销挂单 %d 笔，排行榜已写入 %s%n",
                 cancelled, recorder.getDirectory().resolve("ranking.csv").toAbsolutePath());
         return ranks;

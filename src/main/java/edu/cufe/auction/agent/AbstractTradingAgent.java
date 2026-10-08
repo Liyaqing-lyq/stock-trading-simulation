@@ -16,7 +16,6 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
@@ -37,7 +36,6 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
 
     /** 单次「腾额度」最多连续撤单的次数，防止在极端情况下空转。 */
     protected static final int MAX_EVICT_ATTEMPTS = 8;
-
     private final String agentId;
     private final String displayName;
     private final AgentType type;
@@ -47,7 +45,6 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
     private final AtomicLong submittedCount = new AtomicLong();
     private final AtomicLong rejectedCount = new AtomicLong();
     private final AtomicLong filledQuantity = new AtomicLong();
-    private final Set<Long> countedTradeIds = ConcurrentHashMap.newKeySet();
     private final AtomicLong cancelledCount = new AtomicLong();
     /** 存活挂单：key = 订单 id，value = 该单的本地快照。 */
     private final Map<Long, LiveOrder> liveOrders = new ConcurrentHashMap<>();
@@ -150,7 +147,10 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
     /**
      * 累计成交股数。
      *
-     * <p>主动成交由下单结果记录，被动挂单成交由行情广播记录；两条路径按成交 id 去重。</p>
+     * <p>主动和被动成交统一由撮合引擎的成交广播记录，避免 submit 返回值与广播双重计数，
+     * 也不需要保存持续增长的成交 id 集合。自成交同时产生一笔买方成交和一笔卖方成交，
+     * 因此按两侧各计一次，与从
+     * {@code trades.csv} 分别按买方和卖方归集的口径一致。</p>
      *
      * @return 累计成交股数
      */
@@ -193,7 +193,6 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
         try {
             OrderResult result = gateway.submit(request);
             if (result.isAccepted()) {
-                result.getTrades().forEach(this::recordTrade);
                 trackIfResting(result.getOrder());
             } else {
                 rejectedCount.incrementAndGet();
@@ -207,10 +206,12 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
     }
 
     private void recordTrade(Trade trade) {
-        if ((agentId.equals(trade.getBuyAgentId()) || agentId.equals(trade.getSellAgentId()))
-                && countedTradeIds.add(trade.getTradeId())) {
-            filledQuantity.addAndGet(trade.getQuantity());
+        int sides = (agentId.equals(trade.getBuyAgentId()) ? 1 : 0)
+                + (agentId.equals(trade.getSellAgentId()) ? 1 : 0);
+        if (sides == 0) {
+            return;
         }
+        filledQuantity.addAndGet(Math.multiplyExact(trade.getQuantity(), sides));
     }
 
     /** 把仍有剩余、尚未终结的订单登记为存活挂单。 */
@@ -379,8 +380,8 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
 
     @Override
     public String toString() {
-        return String.format("%s[%s 类型=%s 下单=%d 被拒=%d 撤单=%d 存活挂单=%d]",
+        return String.format("%s[%s 类型=%s 下单=%d 被拒=%d 成交=%d股 撤单=%d 存活挂单=%d]",
                 displayName, agentId, type, getSubmittedCount(), getRejectedCount(),
-                getCancelledCount(), getLiveOrderCount());
+                getFilledQuantity(), getCancelledCount(), getLiveOrderCount());
     }
 }

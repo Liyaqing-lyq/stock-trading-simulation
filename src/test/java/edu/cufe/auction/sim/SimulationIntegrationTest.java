@@ -10,7 +10,9 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -61,11 +63,29 @@ class SimulationIntegrationTest {
             assertTrue(tradeLines.size() > 1, "模拟应至少产生一笔成交，实际行数 " + tradeLines.size());
             assertEquals(5, Files.readAllLines(rankingFile, StandardCharsets.UTF_8).size(),
                     "ranking.csv = 表头 + 4 个 agent");
+            List<String> rankingLines = Files.readAllLines(rankingFile, StandardCharsets.UTF_8);
+            String rankingHeader = rankingLines.get(0);
+            assertTrue(rankingHeader.endsWith(",累计成交股数"),
+                    "ranking.csv 应输出可与 trades.csv 交叉验证的 Agent 成交统计");
 
             long tradedQuantity = tradeLines.subList(1, tradeLines.size()).stream()
                     .mapToLong(line -> Long.parseLong(line.split(",")[4]))
                     .sum();
             assertTrue(tradedQuantity > 0, "累计成交量应大于 0");
+
+            Map<String, Long> quantitiesFromTrades = new HashMap<>();
+            for (String line : tradeLines.subList(1, tradeLines.size())) {
+                String[] columns = line.split(",", -1);
+                long quantity = Long.parseLong(columns[4]);
+                quantitiesFromTrades.merge(columns[6], quantity, Long::sum);
+                quantitiesFromTrades.merge(columns[8], quantity, Long::sum);
+            }
+            for (String line : rankingLines.subList(1, rankingLines.size())) {
+                String[] columns = line.split(",", -1);
+                assertEquals(quantitiesFromTrades.getOrDefault(columns[1], 0L),
+                        Long.parseLong(columns[10]),
+                        columns[1] + " 的 ranking.csv 成交量应与 trades.csv 买卖双边汇总一致");
+            }
 
             for (Account account : runner.getAccountManager().all()) {
                 assertTrue(account.getAvailableCash().signum() >= 0,
