@@ -111,6 +111,7 @@ public final class AuctionUi extends Application {
     private ComboBox<String> symbolBox;
     private Label priceLabel;
     private Label changeLabel;
+    private Label priceLimitsLabel;
     private Label bidLabel;
     private Label askLabel;
     private Label volumeLabel;
@@ -194,6 +195,8 @@ public final class AuctionUi extends Application {
         priceLabel.getStyleClass().add("price-big");
         changeLabel = new Label("—");
         changeLabel.getStyleClass().add("mono");
+        priceLimitsLabel = new Label("—");
+        priceLimitsLabel.getStyleClass().add("mono");
         bidLabel = new Label("—");
         askLabel = new Label("—");
         volumeLabel = new Label("—");
@@ -201,6 +204,7 @@ public final class AuctionUi extends Application {
         HBox header = new HBox(12,
                 fieldLabel("标的"), symbolBox,
                 priceLabel, framed(changeLabel),
+                fieldLabel("昨收 / 跌停 / 涨停"), framed(priceLimitsLabel),
                 fieldLabel("买一"), framed(bidLabel),
                 fieldLabel("卖一"), framed(askLabel),
                 fieldLabel("成交量"), framed(volumeLabel),
@@ -579,6 +583,9 @@ public final class AuctionUi extends Application {
             BigDecimal change = market.getChangePercent();
             changeLabel.setText(String.format("%+.2f%%", change.doubleValue()));
             styleBySign(changeLabel, change);
+            priceLimitsLabel.setText(String.format("%s / %s / %s",
+                    priceText(market.getPreviousClose()), priceText(market.getLowerLimit()),
+                    priceText(market.getUpperLimit())));
             bidLabel.setText(market.getBestBid() == null ? "—" : market.getBestBid().toPlainString());
             askLabel.setText(market.getBestAsk() == null ? "—" : market.getBestAsk().toPlainString());
             volumeLabel.setText(String.valueOf(market.getCumulativeVolume()));
@@ -592,6 +599,10 @@ public final class AuctionUi extends Application {
                 CLOCK.format(Instant.now()),
                 broker == null ? 0 : broker.getManualOrderCount(),
                 runner.getPublisher().getListenerErrorCount()));
+    }
+
+    private String priceText(BigDecimal price) {
+        return price == null ? "—" : price.toPlainString();
     }
 
     private void refreshAccount(Map<String, BigDecimal> lastPrices) {

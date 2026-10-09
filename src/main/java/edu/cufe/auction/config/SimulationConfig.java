@@ -1,5 +1,7 @@
 package edu.cufe.auction.config;
 
+import edu.cufe.auction.model.InstrumentProfile;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
@@ -8,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 
@@ -145,6 +148,22 @@ public final class SimulationConfig {
             throw new IllegalStateException("配置 stocks 为空");
         }
         return stocks;
+    }
+
+    /**
+     * 构造带 A 股交易制度参数的标的档案。
+     *
+     * <p>每个标的可用 {@code SYMBOL.limit.percent} 配置涨跌幅，未配置时默认 10%；
+     * {@code SYMBOL.tick.size} 配置最小价格变动单位，默认 0.01 元。</p>
+     *
+     * @return 按 stocks 配置顺序排列的标的档案
+     */
+    public List<InstrumentProfile> getInstrumentProfiles() {
+        return getStocks().entrySet().stream()
+                .map(entry -> new InstrumentProfile(entry.getKey(), entry.getValue(),
+                        getDecimal(entry.getKey() + ".limit.percent", new BigDecimal("10")),
+                        getDecimal(entry.getKey() + ".tick.size", new BigDecimal("0.01"))))
+                .toList();
     }
 
     /** @return 人类 broker 数量 */
