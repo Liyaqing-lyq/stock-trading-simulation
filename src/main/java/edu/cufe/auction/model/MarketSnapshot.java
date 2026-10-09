@@ -15,6 +15,8 @@ public final class MarketSnapshot {
     private final String symbol;
     private final BigDecimal lastPrice;
     private final BigDecimal previousClose;
+    private final BigDecimal lowerLimit;
+    private final BigDecimal upperLimit;
     private final BigDecimal bestBid;
     private final BigDecimal bestAsk;
     private final long cumulativeVolume;
@@ -38,9 +40,22 @@ public final class MarketSnapshot {
     public MarketSnapshot(String symbol, BigDecimal lastPrice, BigDecimal previousClose,
                           BigDecimal bestBid, BigDecimal bestAsk, long cumulativeVolume,
                           List<PriceLevel> bids, List<PriceLevel> asks, long timestampMillis) {
+        this(symbol, lastPrice, previousClose, null, null, bestBid, bestAsk,
+                cumulativeVolume, bids, asks, timestampMillis);
+    }
+
+    /**
+     * 构造带涨跌停价的行情快照。
+     */
+    public MarketSnapshot(String symbol, BigDecimal lastPrice, BigDecimal previousClose,
+                          BigDecimal lowerLimit, BigDecimal upperLimit,
+                          BigDecimal bestBid, BigDecimal bestAsk, long cumulativeVolume,
+                          List<PriceLevel> bids, List<PriceLevel> asks, long timestampMillis) {
         this.symbol = symbol;
         this.lastPrice = lastPrice;
         this.previousClose = previousClose;
+        this.lowerLimit = lowerLimit;
+        this.upperLimit = upperLimit;
         this.bestBid = bestBid;
         this.bestAsk = bestAsk;
         this.cumulativeVolume = cumulativeVolume;
@@ -62,6 +77,16 @@ public final class MarketSnapshot {
     /** @return 参考价/昨收 */
     public BigDecimal getPreviousClose() {
         return previousClose;
+    }
+
+    /** @return 跌停价；未配置交易制度时为 null */
+    public BigDecimal getLowerLimit() {
+        return lowerLimit;
+    }
+
+    /** @return 涨停价；未配置交易制度时为 null */
+    public BigDecimal getUpperLimit() {
+        return upperLimit;
     }
 
     /** @return 买一价 */

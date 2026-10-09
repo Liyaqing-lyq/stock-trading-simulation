@@ -11,6 +11,7 @@ import edu.cufe.auction.model.OrderResult;
 import edu.cufe.auction.model.OrderType;
 import edu.cufe.auction.model.Side;
 import edu.cufe.auction.model.Trade;
+import edu.cufe.auction.model.InstrumentProfile;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -20,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Collection;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -50,6 +52,7 @@ public final class MatchingEngine implements OrderGateway {
     private final Object lock = new Object();
     private final Map<String, OrderBook> books = new LinkedHashMap<>();
     private final Map<String, BigDecimal> referencePrices = new LinkedHashMap<>();
+    private final Map<String, InstrumentProfile> instrumentProfiles = new LinkedHashMap<>();
     private final AccountManager accounts;
     private final MarketDataPublisher publisher;
     private final List<EngineListener> listeners = new CopyOnWriteArrayList<>();
@@ -69,6 +72,24 @@ public final class MatchingEngine implements OrderGateway {
      */
     public MatchingEngine(AccountManager accounts, MarketDataPublisher publisher,
                           Map<String, BigDecimal> referencePrices) {
+        this(accounts, publisher, referencePrices, Map.of());
+    }
+
+    /**
+     * 构造带标的交易制度的撮合引擎。
+     *
+     * @param accounts 账户管理器
+     * @param publisher 行情发布者
+     * @param profiles 标的档案，必须覆盖所有交易标的
+     */
+    public MatchingEngine(AccountManager accounts, MarketDataPublisher publisher,
+                          Collection<InstrumentProfile> profiles) {
+        this(accounts, publisher, referencePricesOf(profiles), profilesBySymbol(profiles));
+    }
+
+    private MatchingEngine(AccountManager accounts, MarketDataPublisher publisher,
+                           Map<String, BigDecimal> referencePrices,
+                           Map<String, InstrumentProfile> profiles) {
         this.accounts = Objects.requireNonNull(accounts, "accounts");
         this.publisher = Objects.requireNonNull(publisher, "publisher");
         Objects.requireNonNull(referencePrices, "referencePrices");
@@ -82,6 +103,33 @@ public final class MatchingEngine implements OrderGateway {
             this.books.put(symbol, new OrderBook(symbol));
             this.referencePrices.put(symbol, price);
         });
+        this.instrumentProfiles.putAll(profiles);
+        if (!this.instrumentProfiles.isEmpty()
+                && !this.instrumentProfiles.keySet().equals(this.referencePrices.keySet())) {
+            throw new IllegalArgumentException("标的档案必须与参考价标的完全一致");
+        }
+    }
+
+    private static Map<String, BigDecimal> referencePricesOf(Collection<InstrumentProfile> profiles) {
+        Objects.requireNonNull(profiles, "profiles");
+        Map<String, BigDecimal> prices = new LinkedHashMap<>();
+        for (InstrumentProfile profile : profiles) {
+            if (profile == null || prices.put(profile.getSymbol(), profile.getPreviousClose()) != null) {
+                throw new IllegalArgumentException("标的档案为空或代码重复");
+            }
+        }
+        return prices;
+    }
+
+    private static Map<String, InstrumentProfile> profilesBySymbol(Collection<InstrumentProfile> profiles) {
+        Objects.requireNonNull(profiles, "profiles");
+        Map<String, InstrumentProfile> result = new LinkedHashMap<>();
+        for (InstrumentProfile profile : profiles) {
+            if (profile == null || result.put(profile.getSymbol(), profile) != null) {
+                throw new IllegalArgumentException("标的档案为空或代码重复");
+            }
+        }
+        return result;
     }
 
     /**
@@ -122,6 +170,13 @@ public final class MatchingEngine implements OrderGateway {
             }
             if (!accounts.contains(request.getAgentId())) {
                 return reject(request, "未知账户：" + request.getAgentId());
+            }
+            InstrumentProfile profile = instrumentProfiles.get(request.getSymbol());
+            if (request.getType() == OrderType.LIMIT && profile != null) {
+                String priceError = validateLimitPrice(profile, request.getPrice());
+                if (priceError != null) {
+                    return reject(request, priceError);
+                }
             }
 
             BigDecimal freezePrice = null;
@@ -372,9 +427,29 @@ public final class MatchingEngine implements OrderGateway {
 
     private MarketSnapshot buildSnapshot(OrderBook book, int depth) {
         OrderBookSnapshot s = book.snapshot(depth);
+        InstrumentProfile profile = instrumentProfiles.get(book.getSymbol());
+        BigDecimal lowerLimit = profile == null ? null : profile.getLowerLimit();
+        BigDecimal upperLimit = profile == null ? null : profile.getUpperLimit();
         return new MarketSnapshot(book.getSymbol(), book.getLastPrice(),
-                referencePrices.get(book.getSymbol()), s.getBestBid(), s.getBestAsk(),
+                referencePrices.get(book.getSymbol()), lowerLimit, upperLimit,
+                s.getBestBid(), s.getBestAsk(),
                 book.getCumulativeVolume(), s.getBids(), s.getAsks(), System.currentTimeMillis());
+    }
+
+    private String validateLimitPrice(InstrumentProfile profile, BigDecimal price) {
+        if (!profile.isOnTick(price)) {
+            return String.format("INVALID_PRICE_TICK: 委托价格 %s 不符合最小变动价位 %s",
+                    price.toPlainString(), profile.getTickSize().toPlainString());
+        }
+        if (price.compareTo(profile.getUpperLimit()) > 0) {
+            return String.format("PRICE_OUT_OF_LIMIT: 委托价格 %s 超过涨停价 %s",
+                    price.toPlainString(), profile.getUpperLimit().toPlainString());
+        }
+        if (price.compareTo(profile.getLowerLimit()) < 0) {
+            return String.format("PRICE_OUT_OF_LIMIT: 委托价格 %s 低于跌停价 %s",
+                    price.toPlainString(), profile.getLowerLimit().toPlainString());
+        }
+        return null;
     }
 
     private OrderResult reject(OrderRequest request, String reason) {

@@ -61,7 +61,7 @@ public final class SimulationRunner implements AutoCloseable {
     public SimulationRunner(SimulationConfig config) throws IOException {
         this.config = config;
         this.recorder = new CsvHistoryRecorder(config.getDataDir());
-        this.engine = new MatchingEngine(accountManager, publisher, config.getStocks());
+        this.engine = new MatchingEngine(accountManager, publisher, config.getInstrumentProfiles());
         this.engine.addListener(recorder);
         this.publisher.subscribe(recorder);
 

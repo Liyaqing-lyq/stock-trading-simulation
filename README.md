@@ -38,7 +38,8 @@ mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.ConsoleApp -Dexec.args=
 ## 功能一览
 
 - **撮合引擎**：价格-时间优先；限价单挂簿、市价单扫簿后剩余自动撤销；部分成交；撤单；收盘清算。
-- **多标的**：每个标的独立订单簿（AAPL / GOOGL / TSLA）。
+- **多标的**：每个标的独立订单簿；默认配置使用 V001 / G001 / T001 / S001 四个 A 股模拟标的。
+- **A 股价格制度**：按标的档案执行涨跌停限制和 0.01 元最小变动价位，越界委托由撮合引擎拒绝并返回原因。
 - **账户**：初始资金 + 初始持仓、下单冻结/成交结算、摊薄成本、已实现盈亏、权益、收益率、胜率、最大回撤。
 - **行情广播**：成交与盘口快照推送给全部监听者（GUI、CSV、agent），监听者异常被隔离；Agent 成交统计以成交广播为唯一来源，覆盖主动与被动成交，自成交按买卖两侧各计一次。
 - **Agent**：人类 broker（GUI/控制台手工下单）、LLM 交易员（DeepSeek，含限流/价格边界/JSON 校验/失败回退）、
@@ -50,7 +51,7 @@ mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.ConsoleApp -Dexec.args=
 
 ```
 src/main/java/edu/cufe/auction/
-  model/    不可变领域对象：Order/OrderRequest/OrderResult/Trade/快照
+  model/    不可变领域对象：Order/OrderRequest/OrderResult/Trade/InstrumentProfile/快照
   engine/   MatchingEngine（撮合）、OrderBook（订单簿）、OrderGateway（下单接口）
   account/  Account/AccountManager/Position/PerformanceTracker/PerformanceRank
   market/   MarketDataPublisher / MarketDataListener
@@ -91,6 +92,7 @@ AI 决策间隔、LLM 端点与限流、输出目录。要点：
 
 - `agent.<类型>.initial.holdings` 是**必需**的（原始规格只给初始资金，会导致市场上没有任何可卖股票，
   首笔成交永远无法产生，见 `docs/01` 第 5.1 节）。
+- 每个标的可配置 `<SYMBOL>.limit.percent` 和 `<SYMBOL>.tick.size`；默认分别为 `10` 和 `0.01`。
 - `llm.api.key=${LLM_API_KEY}` 从环境变量注入，密钥不进仓库。
 - 需要 JDK 11 环境时：把 `pom.xml` 的 `javafx.version` 降到 `17.0.10`，并把 `maven.compiler.release` 改为 `11`。
 
@@ -107,7 +109,7 @@ AI 决策间隔、LLM 端点与限流、输出目录。要点：
 
 ## 已知边界
 
-- GUI 为可运行骨架：深度、最新价、排行榜、手动下单已具备；价格走势图与 P&L 配色待第 12 周阶段补。
+- GUI 已具备深度、最新价、涨跌停价格区间、排行榜、手动下单和价格走势图；P&L 配色待第 12 周阶段补。
 - 尚未实现：夏普比率、最活跃交易员、AI 专项排名（规格第 10 节的其余奖项）。
 - 远端仓库（GitHub/Gitee）与 PR 讨论需要账号后才可推送；本地 git 历史与 PR 流程已就绪。
 - 个人实验报告（Human vs AI 策略对比）待撰写，数据来自 `data/*.csv`。
