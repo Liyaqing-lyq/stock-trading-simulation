@@ -5,10 +5,13 @@ import edu.cufe.auction.account.AccountManager;
 import edu.cufe.auction.account.PerformanceRank;
 import edu.cufe.auction.agent.AbstractTradingAgent;
 import edu.cufe.auction.agent.AgentType;
+import edu.cufe.auction.agent.ContrarianAgent;
 import edu.cufe.auction.agent.HumanBrokerAgent;
+import edu.cufe.auction.agent.MarketMakerAgent;
 import edu.cufe.auction.agent.MomentumAgent;
 import edu.cufe.auction.agent.NoiseAgent;
 import edu.cufe.auction.agent.TradingAgent;
+import edu.cufe.auction.agent.ValueAgent;
 import edu.cufe.auction.agent.ai.DeepSeekClient;
 import edu.cufe.auction.agent.ai.LlmTradingAgent;
 import edu.cufe.auction.config.SimulationConfig;
@@ -68,6 +71,9 @@ public final class SimulationRunner implements AutoCloseable {
         createHumanAgents();
         createAiAgents();
         createNoiseAgents();
+        createValueAgents();
+        createContrarianAgents();
+        createMarketMakerAgents();
 
         // agent 必须订阅行情总线，否则拿不到行情快照就永远不下单（价格发现无从谈起）
         for (TradingAgent agent : agents) {
@@ -143,6 +149,38 @@ public final class SimulationRunner implements AutoCloseable {
             seedHoldings(account, "agent.noise.initial.holdings");
             agents.add(new NoiseAgent(id, name, account, engine, 20260924L + i,
                     new BigDecimal("1.5"), 50L, 300L));
+        }
+    }
+
+    private void createValueAgents() {
+        for (int i = 1; i <= config.getValueCount(); i++) {
+            String id = "value-" + i;
+            String name = "价值型-" + i;
+            Account account = accountManager.createAccount(id, name, config.getValueInitialBalance());
+            seedHoldings(account, "agent.value.initial.holdings");
+            agents.add(new ValueAgent(id, name, account, engine, new BigDecimal("2.0"), 200L));
+        }
+    }
+
+    private void createContrarianAgents() {
+        for (int i = 1; i <= config.getContrarianCount(); i++) {
+            String id = "contrarian-" + i;
+            String name = "逆势型-" + i;
+            Account account = accountManager.createAccount(id, name, config.getContrarianInitialBalance());
+            seedHoldings(account, "agent.contrarian.initial.holdings");
+            agents.add(new ContrarianAgent(id, name, account, engine, 6, new BigDecimal("1.5"), 150L));
+        }
+    }
+
+    private void createMarketMakerAgents() {
+        for (int i = 1; i <= config.getMakerCount(); i++) {
+            String id = "maker-" + i;
+            String name = "做市商-" + i;
+            Account account = accountManager.createAccount(id, name, config.getMakerInitialBalance());
+            seedHoldings(account, "agent.maker.initial.holdings");
+            agents.add(new MarketMakerAgent(id, name, account, engine,
+                    new BigDecimal("0.4"), new BigDecimal("0.3"), 200L,
+                    config.getInitialHoldings("agent.maker.initial.holdings")));
         }
     }
 

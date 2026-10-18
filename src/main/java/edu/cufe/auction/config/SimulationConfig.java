@@ -201,6 +201,36 @@ public final class SimulationConfig {
         return getDecimal("agent.noise.initial.balance", new BigDecimal("80000"));
     }
 
+    /** @return 价值型 agent 数量 */
+    public int getValueCount() {
+        return getInt("agent.value.count", 0);
+    }
+
+    /** @return 价值型 agent 初始资金 */
+    public BigDecimal getValueInitialBalance() {
+        return getDecimal("agent.value.initial.balance", new BigDecimal("150000"));
+    }
+
+    /** @return 逆势型 agent 数量 */
+    public int getContrarianCount() {
+        return getInt("agent.contrarian.count", 0);
+    }
+
+    /** @return 逆势型 agent 初始资金 */
+    public BigDecimal getContrarianInitialBalance() {
+        return getDecimal("agent.contrarian.initial.balance", new BigDecimal("150000"));
+    }
+
+    /** @return 做市商 agent 数量 */
+    public int getMakerCount() {
+        return getInt("agent.maker.count", 0);
+    }
+
+    /** @return 做市商 agent 初始资金 */
+    public BigDecimal getMakerInitialBalance() {
+        return getDecimal("agent.maker.initial.balance", new BigDecimal("200000"));
+    }
+
     /** @return LLM 接口地址 */
     public String getLlmEndpoint() {
         return getString("llm.endpoint", "https://api.deepseek.com/v1/chat/completions");

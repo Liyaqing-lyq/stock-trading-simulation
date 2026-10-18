@@ -43,7 +43,8 @@ mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.ConsoleApp -Dexec.args=
 - **账户**：初始资金 + 初始持仓、下单冻结/成交结算、摊薄成本、已实现盈亏、权益、收益率、胜率、最大回撤。
 - **行情广播**：成交与盘口快照推送给全部监听者（GUI、CSV、agent），监听者异常被隔离；Agent 成交统计以成交广播为唯一来源，覆盖主动与被动成交，自成交按买卖两侧各计一次。
 - **Agent**：人类 broker（GUI/控制台手工下单）、LLM 交易员（DeepSeek，含限流/价格边界/JSON 校验/失败回退）、
-  规则型动量 agent（对照组）、噪音做市 agent（提供初始流动性）。
+  规则型动量 agent（对照组）、噪音做市 agent（提供初始流动性）、价值型 agent（昨收估值锚）、
+  逆势型 agent（均值回归）、做市商 agent（双边报价 + 库存偏斜）。
 - **多线程**：agent 在调度线程池中并发决策，撮合走单锁临界区，锁外做广播与落盘。
 - **持久化**：`data/orders.csv`、`data/trades.csv`、`data/ranking.csv`；排行榜包含每个 Agent 的累计成交股数，便于与成交流水交叉验证。
 
@@ -55,7 +56,7 @@ src/main/java/edu/cufe/auction/
   engine/   MatchingEngine（撮合）、OrderBook（订单簿）、OrderGateway（下单接口）
   account/  Account/AccountManager/Position/PerformanceTracker/PerformanceRank
   market/   MarketDataPublisher / MarketDataListener
-  agent/    TradingAgent 及实现：Human / Noise / Momentum / ai（LLM 交易员）
+  agent/    TradingAgent 及实现：Human / Noise / Momentum / Value / Contrarian / MarketMaker / ai（LLM 交易员）
   io/       CsvHistoryRecorder
   config/   SimulationConfig
   sim/      SimulationRunner（装配与调度）
