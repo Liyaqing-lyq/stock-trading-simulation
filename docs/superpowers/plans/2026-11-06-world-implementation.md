@@ -283,7 +283,7 @@ M3b.2的预算同批经营、持久会议与固定截止复盘按[治理接入�
 
 M4b.1在隔离树执行[资料版本与实际阅读纯核](2026-11-06-information-core.md)，复用RoleAccess；M6a的[离线审计观察页](2026-11-06-audit-observer.md)只在忽略目录准备，尚未进入正式代码分支，浏览器验收状态单独保留。
 
-M4a.2/M4b.2按[人物阅读运行施工单](2026-11-06-role-reading-runtime.md)接入schema6。当前已完成代码、标准及独审验收，草稿PR收尾中。下一执行单元先固定可信人物工具网关、经理母任务/风险限制/执行员子单合同，再写四岗交易；六层认知和媒体仍保留独立验收。离线观察页未通过浏览器实点，不计M6完成。
+M4a.2/M4b.2按[人物阅读运行施工单](2026-11-06-role-reading-runtime.md)接入schema6。当前已完成代码、标准及独审验收，草稿[PR #13](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/13)依赖#12，待人工review。下一执行单元先固定可信人物工具网关、经理母任务/风险限制/执行员子单合同，再写四岗交易；六层认知和媒体仍保留独立验收。离线观察页未通过浏览器实点，不计M6完成。
 
 ## 进入后续阶段前必须冻结的规格
 
@@ -395,3 +395,4 @@ M2.4a 共享纯撮合 → 审查/标准验收 → M2.4b 世界订单接入；制
 - M4a.2/M4b.2实施20261106_054749_91e011、独审20261106_061240_1c6562。首稿359项不能作为最终验收；Codex真实复现命令换due/task仍幂等、同人同毫秒旧引用误取消新单，原RED保留codex-run-1。修复为从原TASK_SCHEDULED比较完整请求，以及所属人物+本人实例序号引用；不增加资产副本或改旧schema5线格式。作者交回361项后Codex补完整Snapshot断言和同毫秒公平排序回归，最终362项标准/GUI/CSV全绿（79成交/221订单/11排名），JavaDoc06:52:22真生成。
 - M4最终私有证据codex-run-2：95检查通过；同毫秒start/cancel/restart旧ref→NOT_FOUND active=1、同刻同版本跨人ref拒绝；真实ClosedByInterruptException当场完整Snapshot相等并暂停，两次重启只完成一次；正式Demo prepare/full/full保持position18、1经历/1DENIED；bbd5181真实旧schema5→新续写→旧回读通过。独审按最终B7CE83D0/085D2564冻结源码复测46条自有检查、31条重放及91条旧版Root检查，全过且本人视图差异0。原作者交接旧hash与审查中旧API文字的时间差已在docs/05 §16校正，不把历史发现当当前未修项。
 - 下一施工口：在本地已验收schema6上固定人物身份绑定工具网关与四岗交易母任务/风险额度/执行员子单，不直接给RoleAccess.ALLOW接旧引擎submit。媒体/六层认知/银行/现金分红/TWR/完整白色工作台仍未完成；离线观察页只在忽略目录有静态数据验证，没有浏览器实点，未计M6通过。所有草稿仍须人工review，未合入main。
+- M4运行桥已提交3a60017dbef5481e85952ffb1451dc1eac208245并推送，草稿[PR #13](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/13)以world-role-information为base，已附当前会话。创建时verify run42125539654实际in_progress；远端最新结果以PR Checks为准，不把本地全绿冒充远端结论。config.properties/PROJECT_MEMORY的开工前SHA256保持，未纳入提交。草稿依赖链#6→#7→#8→#9→#10→#11→#12→#13，均未合入。
