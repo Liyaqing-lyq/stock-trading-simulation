@@ -113,6 +113,31 @@
 
 明确记录运行 ID/父分支、规则/资料/模块/模型配置版本、初始资源、事件位置和随机状态；保存只发生在完整提交边界。恢复读取历史结果，不重新调用模型；缺版本明确拒绝继续。仅有调度或日志分别通过不能宣称本项完成。
 
+#### M1.3a 当前施工单：现金子集的可恢复运行（Hermes）
+
+**范围裁决：** 先把已启用现金能力接成一个可恢复运行，不建尚无第二实现的 WorldModule/CashModule/TaskHandler 抽象，不升级无必要的 WorldCommit 存储格式。沿用单一 WorldJournal，每个提交保存完整不可变子集状态；当前小规模以正确性优先，未宣称大规模存储性能。分支创建、证券/公司/银行/角色恢复仍在 M1.3 后续单元，不能打整阶段完成。
+
+**Files:** 新增 `world/RunManifest.java`、`world/PendingTask.java`、`world/WorldRuntime.java`、测试 `world/WorldRuntimeTest.java`；必要修改 `CashLedger.java` 提取可复用纯计算、`WorldScheduler.java` 复用公平排序键、`app/WorldFoundationDemo.java` 改用可恢复运行。其他文件不改，共享文档由 Codex 管理。
+
+**Interfaces:**
+- `RunManifest(runId, seed, rulesVersion, moduleVersions, dataVersions, modelConfigVersion)` 为不可变 record。当前只接受 `rulesVersion=cash-world-v1`、模块 `{cash:1,scheduler:1}`、`modelConfigVersion=none`；资料版本表可空。运行清单、精确开局现金清单在第一个提交内绑定，任何不一致拒绝续跑。
+- `PendingTask(taskId, dueTimeMillis, phase, kind, payload)` 是可序列化数据，当前只有 `CASH_TRANSFER_V1`（COMPLETION）与 `TRANSFER_NOTICE_V1`（DELIVERY）；未知 kind 拒绝。模型推理对象/任意 Runnable 不进入运行状态。
+- `WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings)`；`scheduleTransfer(String commandId, String taskId, long dueTimeMillis, String actorOwnerId, String fromId, String toId, BigDecimal amount, long receiptDelayMillis)`；`advanceTo(long inclusiveMillis)`；`snapshot()`；`isPaused()`；`close()`。快照包含完整提交位置、时钟/阶段、现金账户、待办、已投递回报、已用任务 ID（只读管理视图）。
+- Runtime 是唯一日志所有者。`CashLedger` 只提取 package-private 的纯候选计算供 Runtime 使用，保留现有独立子账入口/测试，Runtime 不再打开第二个子账日志。公平键复用 `WorldScheduler` 的同一 seed/id 算法。
+
+**提交规则：**
+- 排程本身持久提交。新转账到期必须晚于当前时点；任务 ID 运行内不复用。外部命令与内部任务/时钟命令采用隔离命名空间，同命令重发先查原回报，不能因当前时间已过而再排一次。
+- 一任务一批：纯计算形成现金效果 + 完成标记 + 后续投递待办 + 全量子集状态 → 同一个 WorldCommit 持久确认 → 一次发布。先 peek 到期待办，成功后才从新状态移除。未确认不得丢任务。
+- 所有回报最早下一模拟毫秒，满足渠道延迟；业务拒绝也完成任务并保留原因。时钟到目标但无任务也形成完整边界，重开不倒退到最后一笔转账时间。固定阶段和种子顺序不得由文件/网络线程改变。
+- 失败保留旧快照、待办与资金，Runtime 暂停且报错；恢复只解码并验证已记录状态，不调用动作处理或模型。每批状态校验位置、时间、非负余额、总额、账户权属不变、待办唯一性及已启用版本。不冒充硬件断电恢复保证。
+
+**验收步骤：**
+- [ ] RED：`manifestMismatchRejectsResume`（规则/模块/开局不同均拒绝）、`pendingTransferSurvivesRestartWithoutExecution`（重开时不付款）、`cashEffectAndFollowUpShareCommit`（资金与新回报待办同一位置）。
+- [ ] RED：`duplicateScheduleDoesNotPayTwiceAfterRestart`、`commitFailureLeavesCashAndPendingUnchanged`（实际中断 I/O、暂停）、`truncatedCompletionKeepsOriginalPendingTask`（截到未确认完成帧时旧资金与待办保留）。
+- [ ] RED：`clockAndNoticeSurviveRestart`、`sameSeedTaskOrderIgnoresScheduleInsertionOrder`、`unsupportedCapabilityAndPastTimeRejectedWithoutCommit`、`snapshotIsImmutableAndWriterIsUnique`。
+- [ ] 最小实现，保留原 82 项；精确记录 RED/GREEN、必要失败修复、全套结果和未完成项。更新可恢复调试入口，实际两次进程验证待办恢复和不重付。
+- [ ] Codex 独立检查实现与日志；专项 + 标准 `verify.sh --with-gui`；新鲜审查覆盖新增 Runtime，修复重要项后再提交到草稿 PR。
+
 ### M2.1 现金权利子账的提交—恢复竖切（Codex；只覆盖基础子集）
 
 **Files:** 新增 `world/CashLedger.java`、测试目录 `world/CashLedgerTest.java`。本步不迁移旧 Account、不声明已有银行/托管完整对账；用于以真实双边资金变更验证 M1.2 的持久协议。
@@ -152,9 +177,11 @@
 - Final: minor (deferred): 帧头以长度反码检查常见损坏，未为“长度及反码同时协调损坏成另一合法长度”提供额外摘要；本次证明进程故障/显式截断恢复，未证明硬件断电重排或全部磁盘损坏情形。
 - Final: minor (deferred): CashLedger 写失败通过异常和阻止后续写显露，尚无专用可写状态观察字段；运行器接入时须把该故障映射为世界暂停，不能只展示旧余额。
 - M0.3 真实 CSV 原因回归先红后绿，定向 3/3，原回调兼容。最终标准验收（`review-fixed-verify.log`）：82/82、76 笔成交/215 条订单/11 行排名、CSV 复算与 JavaFX 启动，全绿。未调用真实 LLM；已有用户 agent 数量配置保留。本阶段“本地已验收”不等于已人工 review/合入，更不等于全部世界已完成。
+- 首批提交 `25ded88` 已推送到功能分支。GitHub 连接器建 PR 返回 403，改用本机已有 gh 登录并仅在该子进程绕过失效代理后成功创建草稿 PR [#6](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/6)。未更改系统代理/登录配置，没有合入。
+- M1.3 提案由原 Hermes 会话给出（`hermes-m13-proposal.md`）；Codex 采纳单一日志与持久待办，裁掉尚无必要的多模块抽象、格式升级与假模型端口。上面 M1.3a 是施工规格，提案不自动成为实现或验收。
+- PR #6 的首批远端 CI 已实际通过：`verify` run `42069135406`，状态 completed / conclusion success，提交 `25ded88fb80b91ae8d92886180e568749836edfe`。这只验证该提交的无 GUI 入口，不代替本地界面实跑或后续提交验证。PR 仍为 draft/open，未合入。
 - 方案取舍：总 Plan 采用滚动细化，避免给银行/认知等未到施工点的模块虚设签名。用户已明确执行方式为 Codex + Hermes，且要求今晚持续推进，因此不再增加一轮纯计划批准；涉及改变既定需求/架构或人工 review 合入时仍遵守仓库要求。
 
 ## 下一步
 
 把当前已验收增量整理为 `[AI-Generated]` 草稿 PR（不合入）→ 核对 Hermes 的 M1.3 最小施工建议 → 固定运行清单/可序列化待办/唯一提交的接口和失败测试 → 持续实现。M1/M2 只有上述子集有证据，其他任务继续按依赖施工；不把“已派发”写成“已完成”。
-
