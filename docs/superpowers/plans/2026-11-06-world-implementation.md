@@ -132,11 +132,11 @@
 - 失败保留旧快照、待办与资金，Runtime 暂停且报错；恢复只解码并验证已记录状态，不调用动作处理或模型。每批状态校验位置、时间、非负余额、总额、账户权属不变、待办唯一性及已启用版本。不冒充硬件断电恢复保证。
 
 **验收步骤：**
-- [ ] RED：`manifestMismatchRejectsResume`（规则/模块/开局不同均拒绝）、`pendingTransferSurvivesRestartWithoutExecution`（重开时不付款）、`cashEffectAndFollowUpShareCommit`（资金与新回报待办同一位置）。
-- [ ] RED：`duplicateScheduleDoesNotPayTwiceAfterRestart`、`commitFailureLeavesCashAndPendingUnchanged`（实际中断 I/O、暂停）、`truncatedCompletionKeepsOriginalPendingTask`（截到未确认完成帧时旧资金与待办保留）。
-- [ ] RED：`clockAndNoticeSurviveRestart`、`sameSeedTaskOrderIgnoresScheduleInsertionOrder`、`unsupportedCapabilityAndPastTimeRejectedWithoutCommit`、`snapshotIsImmutableAndWriterIsUnique`。
-- [ ] 最小实现，保留原 82 项；精确记录 RED/GREEN、必要失败修复、全套结果和未完成项。更新可恢复调试入口，实际两次进程验证待办恢复和不重付。
-- [ ] Codex 独立检查实现与日志；专项 + 标准 `verify.sh --with-gui`；新鲜审查覆盖新增 Runtime，修复重要项后再提交到草稿 PR。
+- [x] RED：`manifestMismatchRejectsResume`（规则/模块/开局不同均拒绝）、`pendingTransferSurvivesRestartWithoutExecution`（重开时不付款）、`cashEffectAndFollowUpShareCommit`（资金与新回报待办同一位置）。
+- [x] RED：`duplicateScheduleDoesNotPayTwiceAfterRestart`、`commitFailureLeavesCashAndPendingUnchanged`（实际中断 I/O、暂停）、`truncatedCompletionKeepsOriginalPendingTask`（截到未确认完成帧时旧资金与待办保留）。
+- [x] RED：`clockAndNoticeSurviveRestart`、`sameSeedTaskOrderIgnoresScheduleInsertionOrder`、`unsupportedCapabilityAndPastTimeRejectedWithoutCommit`、`snapshotIsImmutableAndWriterIsUnique`。
+- [x] 最小实现，保留原 82 项；精确记录 RED/GREEN、必要失败修复、全套结果和未完成项。更新可恢复调试入口，实际两次进程验证待办恢复和不重付。
+- [x] Codex 独立检查实现与日志；专项 + 标准 `verify.sh --with-gui`；新鲜审查覆盖新增 Runtime，修复重要项后再提交到草稿 PR。
 
 ### M2.1 现金权利子账的提交—恢复竖切（Codex；只覆盖基础子集）
 
@@ -149,6 +149,35 @@
 - [x] 实现唯一同步写入者形成不可变候选 → journal 持久确认 → 发布新快照。持久失败不发布；快照读者只见完整版本。金额固定两位，绝不 double 记账。
 - [x] 恢复按已记录批次重建并校验结果；夹具直接在 journal 写入一条完整转账批次而不更新 ledger，模拟提交后退出，重开应恢复 900/100，重试仍不重付。关闭后提交失败必须保持快照不变。
 - [x] 专项/全套，独立审计。通过仅证明现金子账，不把它扩大为完整 V02/V11 或全部世界检查点。
+
+### M2.2 显式身份、资产归属与开局股份登记（下一施工单，依赖 M1.3a 验收）
+
+**目标边界：** 先实现不可变开局登记，不启用证券交易、T+1、基金申赎或公司经营。持仓数量只有开局分配表一份权威；不另存一份 Issuer.holdings。新 Agent 配置不创建现金或股份；新实验的明确历史禀赋与同一运行复制对象区分。
+
+**Files:** 新增 `world/OpeningRegistry.java`（数据与验证，嵌套 record/enum）与 `world/OpeningRegistryTest.java`；修改 `RunManifest.java`、`WorldRuntime.java` 与 `WorldRuntimeTest.java` 接入。保留旧现金子集的存储/恢复与原入口，不碰课程 `Account`/`seedPosition`/配置。
+
+**数据契约：**
+- `Party(partyId, kind, name)`，kind=PERSON/ORGANIZATION。人物/组织不包含资金；产品财产主体不冒充人物或雇主。
+- `PropertyOwner(ownerId, kind, partyId)`，kind=PERSON/ORGANIZATION/PRODUCT/AGGREGATE。前两类必须引用同类 Party；PRODUCT/AGGREGATE 的 partyId 为空，独立持有财产；产品管理授权后续单独实现，本步不启用基金经营模板。
+- `Security(symbol, issuerOrganizationId, issuedShares, initialReferencePrice)`：发行人必须是组织，股数 long >0，参考估值 BigDecimal 正数精确到分。
+- `ShareAllocation(accountId, symbol, quantity, costPrice, classification)`：quantity long >0，成本精确 4 位；本轮开局成本等于参考估值，历史成本导入另做。classification=FLOAT/LOCKED/TREASURY；库存股账户须归发行组织。尚无解锁/转让动作，不能凭分类自动交易。
+- `OpeningRegistry(parties, owners, securities, allocations)`：集合不可变、按稳定键规范化，拒绝各表重复主键；`validateAgainst(List<OpeningAccount>)` 使用既有现金开局账户的 accountId/ownerId，不复制现金表。所有账户属主可解析，所有持股账户/证券已登记，逐证券用 Math.addExact 核对所有分类持有人之和等于已发行股数。额外现金或股票须在新开局明确列示，运行中无隐式增发。
+
+**Runtime 接入：**
+- 保留 `cash-world-v1 + {cash:1,scheduler:1}` 原样；新增明确组合 `cash-registry-world-v1 + {cash:1,scheduler:1,registry:1}`。继续 model=none，未知或缺依赖模块拒绝，不做任意组合框架。
+- 新构造重载 `(Path, RunManifest, List<OpeningAccount>, OpeningRegistry)`。旧构造用于现金模式；新档案没有 registry / 旧档案传了 registry 均在写盘前拒绝。
+- Registry 是此单元不变的开局状态，同现金禀赋/清单写在第一批 `RUN_MANIFEST_V1` 内容中，可额外记录 `OPENING_REGISTRY_V1` 事件；其余每批继续同一条世界日志。WorldState 的现金 schema v1 不为尚无持仓变动的登记强行升级，旧现金日志继续可读可运行；注册表在首批完整绑定并在续跑严格比对，不在旁边再开文件。
+- `openingRegistry()` 返回 `Optional<OpeningRegistry>` 管理视图（明确为**开局分配**，不宣称实时持仓）。股票变动将在 M2.3 引入新的已声明状态/规则版本；不提前伪造交易能力。
+
+**验收步骤：**
+- [ ] RED：发行 1000，A600/B300/外部100 通过；改 999 或1001 拒绝且不创建日志；所有分类都计入总股份，按可卖量漏算锁定股份必须失败。
+- [ ] RED：未知财产主体、未知持有人账户/发行人/证券、重复 symbol、负数/溢出数量、成本/精度错误、非发行组织库存股，均在开局持久提交前拒绝。
+- [ ] RED：人物 Alice 与雇主 Org、产品财产主体 Product、账户 P 不混同；以人物/岗位名称自报不获得 Product 资金权（只证明本步映射，不宣称任职授权已实现）。
+- [ ] RED：增加新人物/财产主体及零余额账户但没有股权分配，总发行与原持有人股份不变；重复原底仓给新账户导致超发必须拒绝。
+- [ ] RED：同清单重开不发钱/不发股；有效登记内容变化拒绝续跑；旧 cash-only 日志照常继续且 Optional.empty；旧新模式互开拒绝，不静默装最新模块。
+- [ ] 最小实现、专项/全套、独立审查与标准验收；记录这是开局登记能力，不能升级 V05/T+1、撮合、银行或整个 M2 状态。
+
+**M2.3 进入施工前的固定口径：** 剩余持仓含冻结，冻结是其子集，不能用 remaining+frozen 再算一份库存；可卖量为 `Σ(remaining−frozen)` 且 `eligibleFromDay <= 当前实验交易日`。当日买入资格日=当前日+1。昨日100，今卖60/回补60后仅40合格，再冻结30仅10可用，撤单恢复40。本轮不以 UTC 自然日冒充真实交易日历，具体实验日规则在 M2.3 单元中版本化。
 
 ## 进入后续阶段前必须冻结的规格
 
@@ -180,8 +209,16 @@
 - 首批提交 `25ded88` 已推送到功能分支。GitHub 连接器建 PR 返回 403，改用本机已有 gh 登录并仅在该子进程绕过失效代理后成功创建草稿 PR [#6](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/6)。未更改系统代理/登录配置，没有合入。
 - M1.3 提案由原 Hermes 会话给出（`hermes-m13-proposal.md`）；Codex 采纳单一日志与持久待办，裁掉尚无必要的多模块抽象、格式升级与假模型端口。上面 M1.3a 是施工规格，提案不自动成为实现或验收。
 - PR #6 的首批远端 CI 已实际通过：`verify` run `42069135406`，状态 completed / conclusion success，提交 `25ded88fb80b91ae8d92886180e568749836edfe`。这只验证该提交的无 GUI 入口，不代替本地界面实跑或后续提交验证。PR 仍为 draft/open，未合入。
+- M1.3a 初稿：Hermes 新增 10 场景先因能力占位失败，后专项 10/10、全套 92/92，独立进程 schedule/full/full 验证位置 5、900/100 不重付（`hermes-m13-handoff.md`）。尚未验收/提交：新鲜会话 `20261106_010714_b6dff1` 的实测发现溢出和内部回报 ID 碰撞会永久卡住运行，以及线程/暂停契约未落实；Codex 另指出测试钩子、整帧删除冒充短写和首快照未与开局资产核对。当前进入一次 RED→GREEN 修复，任务/证据在 `hermes-m13-fix-query.txt`、`hermes-m13-fix.log`，不是完成记录。
+- Ruling: 内部回报 ID 在整个已用任务集合中确定性找空闲标识，不通过限制用户 taskId 前缀掩盖碰撞；同 ID 异内容仍拒绝，外部命令已有 `cmd:` 命名空间，无须多设保留字。代价是内部回报 ID 不保证总等于简单的 `notice:<source>`，必须在回报中显式保留源任务 ID。
+- Ruling: 恢复读取并验证完整已记录状态，不重新执行处理器；首快照必须与清单的开局资产一致，后续阶段/待办/幂等记录均检查不倒退或改写。代价是当前全量状态验证成本随历史增长；未宣称规模性能。
+- M2 初步提案已保存 `hermes-m2-opening-proposal.md`，未授权按原文施工。Codex 核对发现可卖日应 `eligibleFromDay <= day`（提案 `<` 会多锁一天）、冻结属于剩余库存的子集不能再相加、同一运行复制配置与新实验开局/分支不能混淆；人物/组织/产品财产主体和持仓数量唯一权威还需收束。进入 M2 前必须纠正这些接口/算例。
+- M1.3a 阻断修复：真实 RED 为 16 项中 5 失败/2 错误；改为前置精确时间、内部标识找空闲、线程绑定/暂停、首快照与状态链验证后 98/98。Codex 把碰撞测试改为真正交换到期顺序，又补同刻阶段/较早阶段待办恢复反例，2 项实际失败后修复，最终 Runtime 18/18。
+- M1.3a 本地最终验收（`m13-final-verify.log`）：100/100、98 笔成交/226 条订单/11 行排名、CSV 复算与 JavaFX 全绿。Codex 三进程演示位置固定 5、900/100、1 个回报（`codex-runtime-demo-1/2/3.log`）；`javadoc:javadoc` BUILD SUCCESS（`m13-javadoc.log`）。详见 `docs/05` §8。首批 82 项断言未放宽。此处仅现金启用子集完成本地验收，M1 整阶段/全部世界仍未完成。
+- Final: Ruling: Runtime 审查中的“外部 __open__ 需禁用”和“重算 due 仍返回原回报”不采纳：`cmd:` 已隔离外部命令，同标识异内容必须拒绝；代价是调用者须保存原规范化请求重发，不能改时间后仍称原请求。
+- Final: minor (deferred): Runtime.close 仍未向调用方传播关闭异常；与已记录的 Journal 极端释放失败路径一并留到资源生命周期单元，当前未对该路径作成功保证。运行公开暂停标志现已 volatile，写失败状态观察在 Runtime 中已补齐。
 - 方案取舍：总 Plan 采用滚动细化，避免给银行/认知等未到施工点的模块虚设签名。用户已明确执行方式为 Codex + Hermes，且要求今晚持续推进，因此不再增加一轮纯计划批准；涉及改变既定需求/架构或人工 review 合入时仍遵守仓库要求。
 
 ## 下一步
 
-把当前已验收增量整理为 `[AI-Generated]` 草稿 PR（不合入）→ 核对 Hermes 的 M1.3 最小施工建议 → 固定运行清单/可序列化待办/唯一提交的接口和失败测试 → 持续实现。M1/M2 只有上述子集有证据，其他任务继续按依赖施工；不把“已派发”写成“已完成”。
+将 M1.3a 已验收增量补入草稿 PR #6（不合入）→ 按 M2.2 已固定的显式身份/财产归属/开局股份契约施工 → 专项、独立审计与标准验收 → 再细化 M2.3 的交易批次。M1/M2 只有上述子集有证据，其他任务继续按依赖施工；不把“已派发”写成“已完成”。

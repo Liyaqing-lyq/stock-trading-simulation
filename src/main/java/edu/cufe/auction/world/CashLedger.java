@@ -80,6 +80,51 @@ public final class CashLedger implements AutoCloseable {
     private record Prepared(Snapshot state, TransferResult result, List<WorldEvent> events) {}
 
     /**
+     * 纯候选计算的结果：不做 I/O、不改任何既有状态。
+     *
+     * @param accepted 是否允许转移
+     * @param reason   结果代码
+     * @param accounts 候选账户表（未接受时与原表相同）
+     */
+    record TransferOutcome(boolean accepted, String reason, Map<String, CashAccount> accounts) {}
+
+    /**
+     * 计算一次双边转移的候选结果（纯函数，供独立子账与可恢复运行共用）。
+     *
+     * <p>不做 I/O、不发布状态；调用方负责在持久确认之后再应用。</p>
+     *
+     * @param accounts      当前账户表
+     * @param actorOwnerId  可信调用方解析的财产主体
+     * @param fromAccountId 付款账户
+     * @param toAccountId   收款账户
+     * @param amount        正数、精确到分的金额
+     * @return 候选结果
+     */
+    static TransferOutcome computeTransfer(Map<String, CashAccount> accounts, String actorOwnerId,
+                                           String fromAccountId, String toAccountId,
+                                           BigDecimal amount) {
+        CashAccount from = fromAccountId == null ? null : accounts.get(fromAccountId);
+        CashAccount to = toAccountId == null ? null : accounts.get(toAccountId);
+        String reason = "TRANSFERRED";
+        if (from == null || to == null || !from.ownerId().equals(actorOwnerId)
+                || fromAccountId.equals(toAccountId)) {
+            reason = "TRANSFER_NOT_ALLOWED";
+        } else if (from.cash().compareTo(amount) < 0) {
+            reason = "INSUFFICIENT_CASH";
+        }
+        boolean accepted = "TRANSFERRED".equals(reason);
+        Map<String, CashAccount> next = accounts;
+        if (accepted) {
+            next = new LinkedHashMap<>(accounts);
+            next.put(fromAccountId, new CashAccount(from.ownerId(),
+                    from.cash().subtract(amount), from.source()));
+            next.put(toAccountId, new CashAccount(to.ownerId(),
+                    to.cash().add(amount), to.source()));
+        }
+        return new TransferOutcome(accepted, reason, next);
+    }
+
+    /**
      * 新建或恢复子账。既有日志必须与给定开局清单一致，不重新发放初始资金。
      * @param file 运行专用日志
      * @param runId 运行标识
@@ -186,38 +231,25 @@ public final class CashLedger implements AutoCloseable {
     }
 
     private Prepared prepare(String commandId, TransferCommand command, long position) throws IOException {
-        Map<String, CashAccount> accounts = current.accounts();
-        CashAccount from = command.fromAccountId() == null ? null : accounts.get(command.fromAccountId());
-        CashAccount to = command.toAccountId() == null ? null : accounts.get(command.toAccountId());
-        String reason = "TRANSFERRED";
-        if (from == null || to == null || !from.ownerId().equals(command.actorOwnerId())
-                || command.fromAccountId().equals(command.toAccountId())) {
-            reason = "TRANSFER_NOT_ALLOWED";
-        } else if (from.cash().compareTo(command.amount()) < 0) {
-            reason = "INSUFFICIENT_CASH";
-        }
-        boolean accepted = "TRANSFERRED".equals(reason);
+        TransferOutcome outcome = computeTransfer(current.accounts(), command.actorOwnerId(),
+                command.fromAccountId(), command.toAccountId(), command.amount());
         List<WorldEvent> events = List.of();
-        if (accepted) {
-            Map<String, CashAccount> next = new LinkedHashMap<>(accounts);
-            next.put(command.fromAccountId(), new CashAccount(from.ownerId(),
-                    from.cash().subtract(command.amount()), from.source()));
-            next.put(command.toAccountId(), new CashAccount(to.ownerId(),
-                    to.cash().add(command.amount()), to.source()));
-            accounts = next;
+        if (outcome.accepted()) {
             events = List.of(new WorldEvent(commandId + ":transfer", "CASH_TRANSFERRED_V1",
                     mapper.writeValueAsString(command)));
         }
-        return new Prepared(new Snapshot(position, accounts), new TransferResult(accepted, reason, position), events);
+        return new Prepared(new Snapshot(position, outcome.accounts()),
+                new TransferResult(outcome.accepted(), outcome.reason(), position), events);
     }
 
-    private static void validateAmount(BigDecimal amount) {
+    private static BigDecimal validateAmount(BigDecimal amount) {
         if (money(amount).signum() <= 0) {
             throw new IllegalArgumentException("转账金额必须为正");
         }
+        return money(amount);
     }
 
-    private static BigDecimal money(BigDecimal value) {
+    static BigDecimal money(BigDecimal value) {
         if (value == null) {
             throw new IllegalArgumentException("金额不能为空");
         }

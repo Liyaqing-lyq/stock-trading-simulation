@@ -165,7 +165,7 @@ public final class WorldScheduler {
         }
     }
 
-    private String fairOrder(String eventId) {
+    static String fairOrder(long seed, String eventId) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest((seed + ":" + eventId).getBytes(StandardCharsets.UTF_8));
@@ -173,5 +173,9 @@ public final class WorldScheduler {
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("Java 运行环境缺少 SHA-256", impossible);
         }
+    }
+
+    private String fairOrder(String eventId) {
+        return fairOrder(seed, eventId);
     }
 }
