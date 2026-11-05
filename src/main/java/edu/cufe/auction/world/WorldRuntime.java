@@ -2,9 +2,12 @@ package edu.cufe.auction.world;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import edu.cufe.auction.model.OrderType;
+import edu.cufe.auction.model.Side;
 import edu.cufe.auction.world.CashLedger.OpeningAccount;
 import edu.cufe.auction.world.SecuritiesLedger.ActionReport;
 import edu.cufe.auction.world.SecuritiesLedger.SellReservation;
+import edu.cufe.auction.world.WorldExchange.OrderReport;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -32,10 +35,11 @@ import java.util.TreeMap;
  * <p><b>恢复</b>：只解码并校验已提交状态，不重跑任务处理、不询问模型、不重新发放开局。
  * 恢复出来的是“待办数据”，执行器由 {@link #advanceTo(long)} 按 kind 解析。</p>
  *
- * <p><b>能力边界</b>：当前只启用现金转账、回报投递，以及可选的开局登记与证券清算夹具
- * （批次、卖出冻结、撤销、同批清算成交）。证券部分只有受信的系统夹具，没有订单簿、撮合、
- * 角色交易授权、费用或价格限制。规则、模块、模型版本在构造期校验，未启用能力在提交前即被拒绝。
- * 快照是管理端只读视图，不面向不可信角色。</p>
+ * <p><b>能力边界</b>：当前只启用现金转账、回报投递，以及可选的开局登记、证券清算夹具
+ * （批次、卖出冻结、撤销、同批清算成交）与世界订单撮合（限价/市价、T+1 实验日、撤单、收盘）。
+ * 撮合档案下现金冻结由活动买限价单派生、卖单预留由批次台账唯一维护；仍没有角色交易授权、
+ * 费用、涨跌停、手数或真实交易日历。规则、模块、模型版本在构造期校验，未启用能力在提交前
+ * 即被拒绝。快照是管理端只读视图，不面向不可信角色。</p>
  */
 public final class WorldRuntime implements AutoCloseable {
 
@@ -45,6 +49,8 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA = 1;
     /** 含完整证券子集状态的世界状态版本（M2.3）。 */
     private static final int STATE_SCHEMA_SECURITIES = 2;
+    /** 含完整世界订单/成交子集状态的世界状态版本（M2.4b）。 */
+    private static final int STATE_SCHEMA_EXCHANGE = 3;
 
     /** 同一受益主体的两个账户不能通过清算夹具自成交。 */
     public static final String REASON_SELF_TRADE_PREVENTED = "SELF_TRADE_PREVENTED";
@@ -94,6 +100,7 @@ public final class WorldRuntime implements AutoCloseable {
      * @param lastPhase   最后完成的阶段名
      * @param accounts    现金账户（不可变）
      * @param securities  证券子集；未启用时为空
+     * @param exchange    世界订单/成交子集；仅撮合档案存在
      * @param pending     未完成待办（不可变）
      * @param delivered   已投递回报（不可变）
      * @param usedTaskIds 已用任务标识（不可变）
@@ -101,12 +108,14 @@ public final class WorldRuntime implements AutoCloseable {
     public record Snapshot(long position, long timeMillis, String lastPhase,
                            Map<String, CashLedger.CashAccount> accounts,
                            Optional<SecuritiesLedger.State> securities,
+                           Optional<WorldExchange.State> exchange,
                            List<PendingTask> pending, List<Notice> delivered,
                            Set<String> usedTaskIds) {
         /** 防御性冻结所有集合。 */
         public Snapshot {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
             securities = Objects.requireNonNull(securities, "securities");
+            exchange = Objects.requireNonNull(exchange, "exchange");
             pending = List.copyOf(pending);
             delivered = List.copyOf(delivered);
             usedTaskIds = Collections.unmodifiableSet(new LinkedHashSet<>(usedTaskIds));
@@ -161,6 +170,35 @@ public final class WorldRuntime implements AutoCloseable {
                                BigDecimal price, long quantity) {
     }
 
+    /** 世界订单的规范化命令内容（幂等比对用）。 */
+    private record OrderCommand(String commandId, String taskId, long dueTimeMillis,
+                                String actorOwnerId, String accountId, String symbol,
+                                Side side, OrderType type, BigDecimal price, long quantity) {
+    }
+
+    /** 世界订单任务参数。 */
+    private record OrderPayload(String commandId, String actorOwnerId, String accountId,
+                                String symbol, Side side, OrderType type, BigDecimal price,
+                                long quantity) {
+    }
+
+    /** 撤单命令内容。 */
+    private record CancelOrderCommand(String commandId, String taskId, long dueTimeMillis,
+                                      String actorOwnerId, long orderId) {
+    }
+
+    /** 撤单任务参数。 */
+    private record CancelOrderPayload(String commandId, String actorOwnerId, long orderId) {
+    }
+
+    /** 收盘命令内容。 */
+    private record CloseMarketCommand(String commandId, String taskId, long dueTimeMillis) {
+    }
+
+    /** 收盘任务参数。 */
+    private record CloseMarketPayload(String commandId) {
+    }
+
     /** 完整不可变子集状态；每批提交保存一份，恢复逐批校验后取最后一份。 */
     private record WorldState(int schemaVersion, String runId, long position, long timeMillis,
                               String lastPhase, Map<String, CashLedger.CashAccount> accounts,
@@ -168,7 +206,9 @@ public final class WorldRuntime implements AutoCloseable {
                               Set<String> usedTaskIds, Map<String, String> commandContents,
                               Map<String, String> commandOutcomes,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              SecuritiesLedger.State securities) {
+                              SecuritiesLedger.State securities,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              WorldExchange.State exchange) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -337,7 +377,8 @@ public final class WorldRuntime implements AutoCloseable {
         outcomes.put(commandId, outcome);
 
         WorldState candidate = next(state.timeMillis(), state.lastPhase(), state.accounts(),
-                pending, state.delivered(), used, contents, outcomes, state.securities());
+                pending, state.delivered(), used, contents, outcomes, state.securities(),
+                state.exchange());
         commitAndApply("cmd:" + commandId, content, outcome,
                 List.of(new WorldEvent("task-scheduled:" + taskId, "TASK_SCHEDULED_V1",
                         mapper.writeValueAsString(task))), candidate);
@@ -381,6 +422,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (quantity <= 0) {
             throw new IllegalArgumentException("预留数量必须为正：" + quantity);
         }
+        requireClearingFixture();
         ReserveCommand command = new ReserveCommand(commandId, taskId, dueTimeMillis, actorOwnerId,
                 accountId, symbol, reservationId, quantity);
         String content = mapper.writeValueAsString(command);
@@ -407,7 +449,7 @@ public final class WorldRuntime implements AutoCloseable {
         PendingTask task = new PendingTask(taskId, dueTimeMillis,
                 WorldScheduler.Phase.COMPLETION, PendingTask.SELL_RESERVE_V1,
                 mapper.writeValueAsString(payload));
-        return scheduleSecuritiesTask(task, commandId, content);
+        return scheduleCompletionTask(task, commandId, content);
     }
 
     /**
@@ -436,6 +478,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(taskId, "任务标识");
         requireText(actorOwnerId, "财产主体");
         requireText(reservationId, "预留标识");
+        requireClearingFixture();
         CancelCommand command = new CancelCommand(commandId, taskId, dueTimeMillis, actorOwnerId,
                 reservationId);
         String content = mapper.writeValueAsString(command);
@@ -451,7 +494,7 @@ public final class WorldRuntime implements AutoCloseable {
         PendingTask task = new PendingTask(taskId, dueTimeMillis,
                 WorldScheduler.Phase.COMPLETION, PendingTask.SELL_CANCEL_V1,
                 mapper.writeValueAsString(payload));
-        return scheduleSecuritiesTask(task, commandId, content);
+        return scheduleCompletionTask(task, commandId, content);
     }
 
     /**
@@ -486,6 +529,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (quantity <= 0) {
             throw new IllegalArgumentException("成交数量必须为正：" + quantity);
         }
+        requireClearingFixture();
         BigDecimal normalized = CashLedger.money(price);
         if (normalized.signum() <= 0) {
             throw new IllegalArgumentException("成交价必须为正");
@@ -509,7 +553,162 @@ public final class WorldRuntime implements AutoCloseable {
         PendingTask task = new PendingTask(taskId, dueTimeMillis,
                 WorldScheduler.Phase.COMPLETION, PendingTask.FILL_SETTLE_V1,
                 mapper.writeValueAsString(payload));
-        return scheduleSecuritiesTask(task, commandId, content);
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /**
+     * 排程一笔世界订单：排程本身持久提交，到期才按最新簿/资格受理并分配订单号。
+     *
+     * <p>这里只做可提前判定的结构校验：账户属主、证券登记、方向/类型、价格精度、数量、时点与
+     * 标识唯一。现金可用与可卖批次在到期时按最新状态复核；业务拒绝形成
+     * {@link OrderReport}，不分配订单号、不产生成交、不改变资产。同一命令重发返回原
+     * {@code SCHEDULED} 回报，不因时点已过再排一次。</p>
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param actorOwnerId  可信调用方解析的财产主体
+     * @param accountId     下单账户
+     * @param symbol        证券代码
+     * @param side          买卖方向
+     * @param type          限价或市价
+     * @param price         限价；市价必须为空，限价精确到分且为正
+     * @param quantity      数量，必须为正
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、权属、能力或时间非法
+     */
+    public synchronized String scheduleOrder(String commandId, String taskId, long dueTimeMillis,
+                                             String actorOwnerId, String accountId,
+                                             String symbol, Side side, OrderType type,
+                                             BigDecimal price, long quantity)
+            throws IOException {
+        requireMatchingEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(actorOwnerId, "财产主体");
+        requireText(accountId, "账户");
+        requireText(symbol, "证券代码");
+        if (side == null) {
+            throw new IllegalArgumentException("买卖方向不能为空");
+        }
+        if (type == null) {
+            throw new IllegalArgumentException("订单类型不能为空");
+        }
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("订单数量必须为正：" + quantity);
+        }
+        BigDecimal normalized = null;
+        if (type == OrderType.LIMIT) {
+            normalized = CashLedger.money(price);
+            if (normalized.signum() <= 0) {
+                throw new IllegalArgumentException("限价必须为正：" + price);
+            }
+        } else if (price != null) {
+            throw new IllegalArgumentException("市价单不得携带限价");
+        }
+        OrderCommand command = new OrderCommand(commandId, taskId, dueTimeMillis, actorOwnerId,
+                accountId, symbol, side, type, normalized, quantity);
+        String content = mapper.writeValueAsString(command);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        CashLedger.CashAccount account = state.accounts().get(accountId);
+        if (account == null || !account.ownerId().equals(actorOwnerId)) {
+            throw new IllegalArgumentException("该财产主体无权动用账户：" + accountId);
+        }
+        if (registry.security(symbol) == null) {
+            throw new IllegalArgumentException("未知证券：" + symbol);
+        }
+        OrderPayload payload = new OrderPayload(commandId, actorOwnerId, accountId, symbol,
+                side, type, normalized, quantity);
+        PendingTask task = new PendingTask(taskId, dueTimeMillis,
+                WorldScheduler.Phase.COMPLETION, PendingTask.EXCHANGE_ORDER_V1,
+                mapper.writeValueAsString(payload));
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /**
+     * 排程撤销一笔世界订单：只释放剩余量；未知/非属主/终态在到期时形成明确业务拒绝。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param actorOwnerId  可信调用方解析的财产主体
+     * @param orderId       订单号
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、能力或时间非法
+     */
+    public synchronized String scheduleCancelOrder(String commandId, String taskId,
+                                                   long dueTimeMillis, String actorOwnerId,
+                                                   long orderId) throws IOException {
+        requireMatchingEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(actorOwnerId, "财产主体");
+        if (orderId <= 0) {
+            throw new IllegalArgumentException("订单号必须为正：" + orderId);
+        }
+        CancelOrderCommand command = new CancelOrderCommand(commandId, taskId, dueTimeMillis,
+                actorOwnerId, orderId);
+        String content = mapper.writeValueAsString(command);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        CancelOrderPayload payload = new CancelOrderPayload(commandId, actorOwnerId, orderId);
+        PendingTask task = new PendingTask(taskId, dueTimeMillis,
+                WorldScheduler.Phase.COMPLETION, PendingTask.EXCHANGE_CANCEL_V1,
+                mapper.writeValueAsString(payload));
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /**
+     * 排程收盘：受信系统动作，撤销全簿并释放冻结；收盘后申报（含此前已排未执行的）被拒绝。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、能力或时间非法
+     */
+    public synchronized String scheduleCloseMarket(String commandId, String taskId,
+                                                   long dueTimeMillis) throws IOException {
+        requireMatchingEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        CloseMarketCommand command = new CloseMarketCommand(commandId, taskId, dueTimeMillis);
+        String content = mapper.writeValueAsString(command);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        CloseMarketPayload payload = new CloseMarketPayload(commandId);
+        PendingTask task = new PendingTask(taskId, dueTimeMillis,
+                WorldScheduler.Phase.COMPLETION, PendingTask.EXCHANGE_CLOSE_V1,
+                mapper.writeValueAsString(payload));
+        return scheduleCompletionTask(task, commandId, content);
     }
 
     /**
@@ -539,6 +738,9 @@ public final class WorldRuntime implements AutoCloseable {
                     case PendingTask.SELL_RESERVE_V1 -> completeReserve(next);
                     case PendingTask.SELL_CANCEL_V1 -> completeCancel(next);
                     case PendingTask.FILL_SETTLE_V1 -> completeFill(next);
+                    case PendingTask.EXCHANGE_ORDER_V1 -> completeOrder(next);
+                    case PendingTask.EXCHANGE_CANCEL_V1 -> completeCancelOrder(next);
+                    case PendingTask.EXCHANGE_CLOSE_V1 -> completeCloseMarket(next);
                     default -> throw new IllegalStateException("未启用的任务种类：" + next.kind());
                 }
             }
@@ -547,7 +749,7 @@ public final class WorldRuntime implements AutoCloseable {
                 WorldState candidate = next(inclusiveMillis,
                         WorldScheduler.Phase.OBSERVATION.name(), state.accounts(), state.pending(),
                         state.delivered(), state.usedTaskIds(), state.commandContents(),
-                        state.commandOutcomes(), state.securities());
+                        state.commandOutcomes(), state.securities(), state.exchange());
                 commitAndApply("clock:" + inclusiveMillis, content, "ADVANCED",
                         List.of(new WorldEvent("clock:" + inclusiveMillis, "CLOCK_ADVANCED_V1",
                                 content)), candidate);
@@ -562,7 +764,8 @@ public final class WorldRuntime implements AutoCloseable {
     /** @return 当前管理端快照（只读、同一提交位置） */
     public synchronized Snapshot snapshot() {
         return new Snapshot(state.position(), state.timeMillis(), state.lastPhase(),
-                state.accounts(), Optional.ofNullable(state.securities()), state.pending(),
+                state.accounts(), Optional.ofNullable(state.securities()),
+                Optional.ofNullable(state.exchange()), state.pending(),
                 state.delivered(), state.usedTaskIds());
     }
 
@@ -604,8 +807,7 @@ public final class WorldRuntime implements AutoCloseable {
 
     private void completeTransfer(PendingTask task) throws IOException {
         TransferPayload payload = mapper.readValue(task.payload(), TransferPayload.class);
-        CashLedger.TransferOutcome outcome = CashLedger.computeTransfer(state.accounts(),
-                payload.actorOwnerId(), payload.fromId(), payload.toId(), payload.amount());
+        CashLedger.TransferOutcome outcome = transferOutcome(payload);
 
         List<PendingTask> pending = new ArrayList<>(state.pending());
         pending.remove(task);
@@ -633,7 +835,7 @@ public final class WorldRuntime implements AutoCloseable {
 
         WorldState candidate = next(task.dueTimeMillis(), task.phase().name(),
                 outcome.accounts(), pending, state.delivered(), used, state.commandContents(),
-                state.commandOutcomes(), state.securities());
+                state.commandOutcomes(), state.securities(), state.exchange());
         commitAndApply("task:" + task.taskId(), task.payload(), outcome.reason(), events, candidate);
     }
 
@@ -649,7 +851,7 @@ public final class WorldRuntime implements AutoCloseable {
                 payload.amount(), task.dueTimeMillis()));
         WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
                 pending, delivered, used, state.commandContents(), state.commandOutcomes(),
-                state.securities());
+                state.securities(), state.exchange());
         commitAndApply("task:" + task.taskId(), task.payload(), "DELIVERED",
                 List.of(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                                 task.payload()),
@@ -787,6 +989,89 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 世界订单到期：按最新状态复核并撮合。
+     *
+     * <p>订单表、逐笔成交、现金、持仓批次、预留、订单结果与完整状态在同一个批次持久确认后
+     * 才发布；业务拒绝（现金/批次不足、收盘）也保存结果，但不分配订单号、不改变资产。</p>
+     */
+    private void completeOrder(PendingTask task) throws IOException {
+        OrderPayload payload = mapper.readValue(task.payload(), OrderPayload.class);
+        long now = task.dueTimeMillis();
+        if (registry.security(payload.symbol()) == null) {
+            OrderReport report = new OrderReport(task.taskId(), payload.commandId(),
+                    task.kind(), false, WorldExchange.REASON_UNKNOWN_SYMBOL, null, List.of(),
+                    List.of(), now, state.position() + 1);
+            finishExchangeTask(task, state.accounts(), state.securities(), state.exchange(),
+                    report);
+            return;
+        }
+        WorldExchange.Outcome outcome = WorldExchange.submit(state.exchange(), state.accounts(),
+                state.securities(), task.taskId(), payload.commandId(), payload.actorOwnerId(),
+                payload.accountId(), payload.symbol(), payload.side(), payload.type(),
+                payload.price(), payload.quantity(), now);
+        OrderReport report = new OrderReport(task.taskId(), payload.commandId(), task.kind(),
+                outcome.accepted(), outcome.reason(), outcome.orderId(), outcome.tradeIds(),
+                outcome.cancelledOrderIds(), now, state.position() + 1);
+        finishExchangeTask(task, outcome.accounts(), outcome.securities(),
+                outcome.exchange().withReport(report), report);
+    }
+
+    /** 到期撤单：未知/非属主/终态是业务拒绝，不改变挂单与冻结。 */
+    private void completeCancelOrder(PendingTask task) throws IOException {
+        CancelOrderPayload payload = mapper.readValue(task.payload(), CancelOrderPayload.class);
+        long now = task.dueTimeMillis();
+        WorldExchange.Outcome outcome = WorldExchange.cancel(state.exchange(), state.accounts(),
+                state.securities(), payload.actorOwnerId(), payload.orderId(), now);
+        OrderReport report = new OrderReport(task.taskId(), payload.commandId(), task.kind(),
+                outcome.accepted(), outcome.reason(), outcome.orderId(), outcome.tradeIds(),
+                outcome.cancelledOrderIds(), now, state.position() + 1);
+        finishExchangeTask(task, outcome.accounts(), outcome.securities(),
+                outcome.exchange().withReport(report), report);
+    }
+
+    /** 到期收盘：撤销全簿、释放预留与派生冻结；历史成交保留。 */
+    private void completeCloseMarket(PendingTask task) throws IOException {
+        CloseMarketPayload payload = mapper.readValue(task.payload(), CloseMarketPayload.class);
+        long now = task.dueTimeMillis();
+        WorldExchange.Outcome outcome = WorldExchange.close(state.exchange(), state.accounts(),
+                state.securities(), now);
+        OrderReport report = new OrderReport(task.taskId(), payload.commandId(), task.kind(),
+                outcome.accepted(), outcome.reason(), outcome.orderId(), outcome.tradeIds(),
+                outcome.cancelledOrderIds(), now, state.position() + 1);
+        finishExchangeTask(task, outcome.accounts(), outcome.securities(),
+                outcome.exchange().withReport(report), report);
+    }
+
+    /** 世界订单任务的统一收尾：完成待办、写入成交与结果、保存全量状态并持久确认后发布。 */
+    private void finishExchangeTask(PendingTask task,
+                                    Map<String, CashLedger.CashAccount> accounts,
+                                    SecuritiesLedger.State securities,
+                                    WorldExchange.State exchange, OrderReport report)
+            throws IOException {
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        for (Long tradeId : report.tradeIds()) {
+            WorldExchange.Trade trade = exchange.trades().stream()
+                    .filter(item -> item.tradeId() == tradeId).findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "订单结果引用了未登记成交：" + tradeId));
+            events.add(new WorldEvent("exchange-trade:" + tradeId, "EXCHANGE_TRADE_V1",
+                    mapper.writeValueAsString(trade)));
+        }
+        events.add(new WorldEvent("exchange-report:" + task.taskId(),
+                "EXCHANGE_ORDER_REPORT_V1", mapper.writeValueAsString(report)));
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
+                state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                securities, exchange);
+        commitAndApply("task:" + task.taskId(), task.payload(), report.reason(), events, candidate);
+    }
+
+    /**
      * 清算夹具任务的统一收尾：完成待办、追加报告、保存全量状态并在持久确认后发布。
      */
     private void finishSecuritiesTask(PendingTask task,
@@ -806,7 +1091,7 @@ public final class WorldRuntime implements AutoCloseable {
                 mapper.writeValueAsString(report)));
         WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
                 state.delivered(), used, state.commandContents(), state.commandOutcomes(),
-                securities);
+                securities, state.exchange());
         commitAndApply("task:" + task.taskId(), task.payload(), report.reason(), events, candidate);
     }
 
@@ -938,6 +1223,95 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         validateSecurities(candidate, previous);
+        validateExchange(candidate, previous);
+    }
+
+    /**
+     * 校验世界订单子集：版本与档案一致、证券引用有效、旧订单/成交/结果不可改写、
+     * 计数器只增、收盘不可撤销，以及 {@link WorldExchange#validate} 的结构不变量。
+     */
+    private void validateExchange(WorldState candidate, WorldState previous) throws IOException {
+        WorldExchange.State exchange = candidate.exchange();
+        if (expectedSchema() != STATE_SCHEMA_EXCHANGE) {
+            if (exchange != null) {
+                throw new IOException("旧档案不得包含世界订单子集状态");
+            }
+            return;
+        }
+        if (exchange == null) {
+            throw new IOException("撮合档案缺少订单子集状态");
+        }
+        if (candidate.securities() == null) {
+            throw new IOException("撮合档案缺少持仓子集状态");
+        }
+        WorldExchange.validate(exchange, candidate.accounts(), candidate.securities());
+        for (WorldExchange.Order order : exchange.orders()) {
+            if (registry.security(order.symbol()) == null) {
+                throw new IOException("订单引用了未登记证券：" + order.orderId());
+            }
+        }
+        for (OrderReport report : exchange.reports().values()) {
+            if (report.position() > candidate.position()) {
+                throw new IOException("订单结果出现在未来的提交位置：" + report.taskId());
+            }
+            if (report.timeMillis() > candidate.timeMillis()) {
+                throw new IOException("订单结果时点晚于快照时点：" + report.taskId());
+            }
+            if (!candidate.usedTaskIds().contains(report.taskId())) {
+                throw new IOException("订单结果缺少对应的已用任务：" + report.taskId());
+            }
+        }
+        if (previous == null || previous.exchange() == null) {
+            return;
+        }
+        WorldExchange.State before = previous.exchange();
+        Map<Long, WorldExchange.Order> current = new LinkedHashMap<>();
+        for (WorldExchange.Order order : exchange.orders()) {
+            current.put(order.orderId(), order);
+        }
+        for (WorldExchange.Order old : before.orders()) {
+            WorldExchange.Order now = current.get(old.orderId());
+            if (now == null) {
+                throw new IOException("状态旧订单被删除：" + old.orderId());
+            }
+            if (!now.accountId().equals(old.accountId()) || !now.symbol().equals(old.symbol())
+                    || now.side() != old.side() || now.type() != old.type()
+                    || now.quantity() != old.quantity() || now.sequence() != old.sequence()
+                    || now.acceptedAtMillis() != old.acceptedAtMillis()
+                    || !Objects.equals(now.limitPrice(), old.limitPrice())
+                    || !Objects.equals(now.reservationId(), old.reservationId())) {
+                throw new IOException("状态旧订单字段被改写：" + old.orderId());
+            }
+            if (now.filled() < old.filled()) {
+                throw new IOException("状态旧订单的成交量回退：" + old.orderId());
+            }
+            if (old.status() != WorldExchange.OrderStatus.ACTIVE
+                    && now.status() != old.status()) {
+                throw new IOException("状态终态订单的状态被改写：" + old.orderId());
+            }
+        }
+        if (exchange.trades().size() < before.trades().size()) {
+            throw new IOException("状态成交明细被删除");
+        }
+        for (int i = 0; i < before.trades().size(); i++) {
+            if (!before.trades().get(i).equals(exchange.trades().get(i))) {
+                throw new IOException("状态旧成交被改写：" + before.trades().get(i).tradeId());
+            }
+        }
+        for (OrderReport older : before.reports().values()) {
+            OrderReport now = exchange.reports().get(older.taskId());
+            if (now == null || !now.equals(older)) {
+                throw new IOException("状态旧订单结果被删除或改写：" + older.taskId());
+            }
+        }
+        if (before.closed() && !exchange.closed()) {
+            throw new IOException("状态收盘标志被撤销");
+        }
+        if (exchange.nextOrderId() < before.nextOrderId()
+                || exchange.nextSequence() < before.nextSequence()
+                || exchange.nextTradeId() < before.nextTradeId()) {
+            throw new IOException("状态订单/成交计数器回退");
+        }
     }
 
     /**
@@ -1072,6 +1446,7 @@ public final class WorldRuntime implements AutoCloseable {
     private WorldState decodeSnapshot(WorldCommit commit) throws IOException {
         WorldState found = null;
         List<ActionReport> reported = new ArrayList<>();
+        List<OrderReport> exchangeReports = new ArrayList<>();
         for (WorldEvent event : commit.events()) {
             if (SNAPSHOT_TYPE.equals(event.type())) {
                 if (found != null) {
@@ -1080,6 +1455,8 @@ public final class WorldRuntime implements AutoCloseable {
                 found = mapper.readValue(event.payload(), WorldState.class);
             } else if ("SECURITIES_REPORT_V1".equals(event.type())) {
                 reported.add(mapper.readValue(event.payload(), ActionReport.class));
+            } else if ("EXCHANGE_ORDER_REPORT_V1".equals(event.type())) {
+                exchangeReports.add(mapper.readValue(event.payload(), OrderReport.class));
             }
         }
         if (found == null) {
@@ -1092,6 +1469,14 @@ public final class WorldRuntime implements AutoCloseable {
             if (!report.equals(stored)) {
                 throw new IOException("批次 " + commit.position()
                         + " 的证券结果与状态快照不一致：" + report.taskId());
+            }
+        }
+        for (OrderReport report : exchangeReports) {
+            OrderReport stored = found.exchange() == null ? null
+                    : found.exchange().reports().get(report.taskId());
+            if (!report.equals(stored)) {
+                throw new IOException("批次 " + commit.position()
+                        + " 的订单结果与状态快照不一致：" + report.taskId());
             }
         }
         return found;
@@ -1153,6 +1538,28 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * 普通付款的候选结果。
+     *
+     * <p>撮合档案下必须按<b>可用现金</b>（总余额减活动买单冻结）复核，不能花掉挂单冻结；
+     * 这一口径对所有后续经营付款同样适用。旧档案仍按原余额口径，保持原行为。</p>
+     */
+    private CashLedger.TransferOutcome transferOutcome(TransferPayload payload) {
+        if (manifest.hasMatching() && state.exchange() != null) {
+            CashLedger.CashAccount from = state.accounts().get(payload.fromId());
+            if (from != null && from.ownerId().equals(payload.actorOwnerId())) {
+                BigDecimal free = WorldExchange.freeCash(state.exchange(), state.accounts(),
+                        payload.fromId());
+                if (free.compareTo(payload.amount()) < 0) {
+                    return new CashLedger.TransferOutcome(false, REASON_INSUFFICIENT_CASH,
+                            state.accounts());
+                }
+            }
+        }
+        return CashLedger.computeTransfer(state.accounts(), payload.actorOwnerId(),
+                payload.fromId(), payload.toId(), payload.amount());
+    }
+
     /** 证券清算接口只对声明了 securities 模块的运行开放。 */
     private void requireSecuritiesEnabled() {
         if (!manifest.hasSecurities()) {
@@ -1163,8 +1570,29 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
-    /** 排程一个清算夹具待办：待办、已用标识、命令内容与回报同一批持久提交。 */
-    private String scheduleSecuritiesTask(PendingTask task, String commandId, String content)
+    /**
+     * 清算夹具接口只对证券清算档案开放；撮合档案必须走订单簿，不能绕过订单改预留。
+     */
+    private void requireClearingFixture() {
+        if (manifest.hasMatching()) {
+            throw new IllegalStateException("撮合档案禁用证券清算夹具，请使用世界订单接口");
+        }
+        requireSecuritiesEnabled();
+    }
+
+    /** 世界订单接口只对声明了 matching 模块的运行开放。 */
+    private void requireMatchingEnabled() {
+        if (!manifest.hasMatching()) {
+            throw new IllegalStateException("当前运行未启用世界订单撮合模块："
+                    + manifest.rulesVersion());
+        }
+        if (state.exchange() == null) {
+            throw new IllegalStateException("当前运行没有订单子集状态");
+        }
+    }
+
+    /** 排程一个到期任务：待办、已用标识、命令内容与回报同一批持久提交。 */
+    private String scheduleCompletionTask(PendingTask task, String commandId, String content)
             throws IOException {
         List<PendingTask> pending = new ArrayList<>(state.pending());
         pending.add(task);
@@ -1176,7 +1604,8 @@ public final class WorldRuntime implements AutoCloseable {
         String outcome = "SCHEDULED:" + task.taskId();
         outcomes.put(commandId, outcome);
         WorldState candidate = next(state.timeMillis(), state.lastPhase(), state.accounts(),
-                pending, state.delivered(), used, contents, outcomes, state.securities());
+                pending, state.delivered(), used, contents, outcomes, state.securities(),
+                state.exchange());
         commitAndApply("cmd:" + commandId, content, outcome,
                 List.of(new WorldEvent("task-scheduled:" + task.taskId(), "TASK_SCHEDULED_V1",
                         mapper.writeValueAsString(task))), candidate);
@@ -1187,11 +1616,15 @@ public final class WorldRuntime implements AutoCloseable {
         return new WorldState(expectedSchema(), manifest.runId(), 1, 0L,
                 WorldScheduler.Phase.OBSERVATION.name(), accounts, List.of(), List.of(), Set.of(),
                 Map.of(), Map.of(),
-                manifest.hasSecurities() ? SecuritiesLedger.opening(registry) : null);
+                manifest.hasSecurities() ? SecuritiesLedger.opening(registry) : null,
+                manifest.hasMatching() ? WorldExchange.opening() : null);
     }
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasMatching()) {
+            return STATE_SCHEMA_EXCHANGE;
+        }
         return manifest.hasSecurities() ? STATE_SCHEMA_SECURITIES : STATE_SCHEMA;
     }
 
@@ -1203,10 +1636,11 @@ public final class WorldRuntime implements AutoCloseable {
                             List<PendingTask> pending, List<Notice> delivered,
                             Set<String> usedTaskIds, Map<String, String> commandContents,
                             Map<String, String> commandOutcomes,
-                            SecuritiesLedger.State securities) {
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
-                commandContents, commandOutcomes, securities);
+                commandContents, commandOutcomes, securities, exchange);
     }
 
     /**
