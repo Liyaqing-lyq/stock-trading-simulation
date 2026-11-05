@@ -23,20 +23,33 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                           Map<String, String> dataVersions,
                           String modelConfigVersion) {
 
-    /** 当前唯一支持的规则档案版本。 */
+    /** 现金子集规则档案版本（旧组合，保持完全兼容）。 */
     public static final String RULES_CASH_WORLD_V1 = "cash-world-v1";
+
+    /** 现金 + 开局登记规则档案版本（M2.2 新增的明确组合）。 */
+    public static final String RULES_CASH_REGISTRY_WORLD_V1 = "cash-registry-world-v1";
 
     /** 未接入模型时使用的模型配置版本。 */
     public static final String MODEL_NONE = "none";
+
+    /**
+     * 是否启用开局登记模块。
+     *
+     * @return 模块表包含 registry 时返回 true
+     */
+    public boolean hasRegistry() {
+        return moduleVersions.containsKey("registry");
+    }
 
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
             throw new IllegalArgumentException("运行标识不能为空");
         }
-        if (!RULES_CASH_WORLD_V1.equals(rulesVersion)) {
+        if (!RULES_CASH_WORLD_V1.equals(rulesVersion)
+                && !RULES_CASH_REGISTRY_WORLD_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
-                    + "，收到 " + rulesVersion);
+                    + " 或 " + RULES_CASH_REGISTRY_WORLD_V1 + "，收到 " + rulesVersion);
         }
         Map<String, Integer> modules = new TreeMap<>();
         if (moduleVersions != null) {
@@ -50,8 +63,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         Map<String, Integer> expected = new TreeMap<>();
         expected.put("cash", 1);
         expected.put("scheduler", 1);
+        if (RULES_CASH_REGISTRY_WORLD_V1.equals(rulesVersion)) {
+            expected.put("registry", 1);
+        }
         if (!expected.equals(modules)) {
-            throw new IllegalArgumentException("当前只启用 " + expected + "，收到 " + modules);
+            throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "
+                    + expected + "，收到 " + modules);
         }
         moduleVersions = Collections.unmodifiableMap(modules);
 

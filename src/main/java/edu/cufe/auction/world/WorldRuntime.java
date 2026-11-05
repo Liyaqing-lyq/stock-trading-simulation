@@ -14,6 +14,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 
@@ -39,6 +40,7 @@ public final class WorldRuntime implements AutoCloseable {
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final RunManifest manifest;
+    private final OpeningRegistry registry;
     private final long seed;
     private final WorldJournal journal;
     private final Thread writerThread = Thread.currentThread();
@@ -132,7 +134,32 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings)
             throws IOException {
+        this(file, manifest, openings, null);
+    }
+
+    /**
+     * 打开或恢复一次带开局登记的运行。
+     *
+     * <p>登记与清单必须成对：registry 清单缺登记、或现金清单多带登记，都在创建任何文件之前拒绝。
+     * 登记先与现有现金账户对齐（属主可解析、持股账户存在、库存股归发行组织），再写入第一批。</p>
+     *
+     * @param file     运行日志（本类独占）
+     * @param manifest 运行清单
+     * @param openings 现金开局清单
+     * @param registry 开局登记；现金模式为 null
+     * @throws IOException 日志不可用、清单/开局/登记与持久记录不一致
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                        OpeningRegistry registry) throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
+        if (manifest.hasRegistry() && registry == null) {
+            throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                    + " 必须提供开局登记");
+        }
+        if (!manifest.hasRegistry() && registry != null) {
+            throw new IllegalArgumentException("现金模式运行不接受开局登记");
+        }
+        this.registry = registry;
         this.seed = manifest.seed();
         List<OpeningAccount> ordered = new ArrayList<>(Objects.requireNonNull(openings, "openings"));
         ordered.sort(Comparator.comparing(OpeningAccount::accountId));
@@ -147,14 +174,23 @@ public final class WorldRuntime implements AutoCloseable {
         if (accounts.isEmpty()) {
             throw new IllegalArgumentException("开局账户不能为空");
         }
+        if (registry != null) {
+            // 在创建日志文件之前完成对齐：属主可解析、持股账户存在、库存股归发行组织
+            registry.validateAgainst(ordered);
+        }
         WorldState initial = initialState(accounts);
         this.journal = new WorldJournal(file, manifest.runId());
         try {
             if (journal.commits().isEmpty()) {
                 String content = openingContent(ordered);
-                journal.commit(OPEN_COMMAND, content, "OPENED", List.of(
-                        new WorldEvent(OPEN_COMMAND + ":manifest", "RUN_MANIFEST_V1", content),
-                        snapshotEvent(initial)));
+                List<WorldEvent> events = new ArrayList<>();
+                events.add(new WorldEvent(OPEN_COMMAND + ":manifest", "RUN_MANIFEST_V1", content));
+                if (registry != null) {
+                    events.add(new WorldEvent(OPEN_COMMAND + ":registry", "OPENING_REGISTRY_V1",
+                            mapper.writeValueAsString(registry)));
+                }
+                events.add(snapshotEvent(initial));
+                journal.commit(OPEN_COMMAND, content, "OPENED", events);
             }
             this.state = restore(ordered, initial);
         } catch (IOException | RuntimeException failure) {
@@ -302,6 +338,18 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized Snapshot snapshot() {
         return new Snapshot(state.position(), state.timeMillis(), state.lastPhase(),
                 state.accounts(), state.pending(), state.delivered(), state.usedTaskIds());
+    }
+
+    /**
+     * 开局登记的管理端视图。
+     *
+     * <p>这是**开局分配**的只读快照，不是实时持仓：本单元没有证券交易、解锁或分红动作，
+     * 因此持仓数量变化要等 M2.3 引入新的已声明状态版本后再提供。</p>
+     *
+     * @return 现金模式为空；带登记的运行返回开局分配
+     */
+    public Optional<OpeningRegistry> openingRegistry() {
+        return Optional.ofNullable(registry);
     }
 
     /** @return 是否因提交失败而暂停 */
@@ -558,6 +606,10 @@ public final class WorldRuntime implements AutoCloseable {
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("manifest", manifest);
         content.put("openings", ordered);
+        if (registry != null) {
+            // 只有登记模式才加这个键：旧现金日志的开局内容保持逐字节不变
+            content.put("registry", registry);
+        }
         return mapper.writeValueAsString(content);
     }
 

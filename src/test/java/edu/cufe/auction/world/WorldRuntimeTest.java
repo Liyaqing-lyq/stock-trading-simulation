@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -525,6 +526,167 @@ class WorldRuntimeTest {
     }
 
     // ------------------------------------------------------------------
+    // 开局登记（M2.2）
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("带登记的运行绑定开局分配，重启不重发资产、不重复发行")
+    void registryRunBindsOpeningAndRestoresWithoutReissue() throws IOException {
+        Path file = tempDir.resolve("registry.journal");
+        OpeningRegistry registry = registry();
+        try (WorldRuntime runtime = new WorldRuntime(file, registryManifest(RUN, SEED),
+                registryOpenings(), registry)) {
+            assertEquals(1L, runtime.snapshot().position(), "开局只写一个批次");
+            assertEquals(1000L, runtime.openingRegistry().orElseThrow()
+                    .securities().get(0).issuedShares());
+            assertEquals(3, runtime.openingRegistry().orElseThrow().allocations().size());
+            assertEquals(0, cash(runtime, "A").compareTo(new BigDecimal("1000.00")),
+                    "登记股份不改变现金余额");
+        }
+        try (WorldRuntime reopened = new WorldRuntime(file, registryManifest(RUN, SEED),
+                registryOpenings(), registry)) {
+            assertEquals(1L, reopened.snapshot().position(), "重启不得新增开局批次");
+            assertEquals(registry.allocations(), reopened.openingRegistry().orElseThrow().allocations());
+            assertEquals(0, cash(reopened, "A").compareTo(new BigDecimal("1000.00")));
+        }
+    }
+
+    @Test
+    @DisplayName("有效登记内容变化拒绝续跑；新旧 profile 互开也拒绝")
+    void registryMismatchAndCrossProfileRejected() throws IOException {
+        Path file = tempDir.resolve("registry-mismatch.journal");
+        try (WorldRuntime runtime = new WorldRuntime(file, registryManifest(RUN, SEED),
+                registryOpenings(), registry())) {
+            assertEquals(1L, runtime.snapshot().position());
+        }
+
+        OpeningRegistry changed = new OpeningRegistry(registryParties(), registryOwners(),
+                List.of(new OpeningRegistry.Security("ACME1", "acme", 1000, new BigDecimal("10.00"))),
+                List.of(new OpeningRegistry.ShareAllocation("A", "ACME1", 599,
+                                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT),
+                        new OpeningRegistry.ShareAllocation("B", "ACME1", 301,
+                                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT),
+                        new OpeningRegistry.ShareAllocation("EXT", "ACME1", 100,
+                                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT)));
+        assertThrows(IOException.class, () -> new WorldRuntime(file, registryManifest(RUN, SEED),
+                registryOpenings(), changed).close(), "同一 run 换登记必须拒绝");
+
+        assertThrows(IOException.class, () -> new WorldRuntime(file, manifest(RUN, SEED, Map.of()),
+                registryOpenings()).close(), "旧 profile 打开新日志必须拒绝");
+    }
+
+    @Test
+    @DisplayName("旧 cash-only 日志在新代码下继续可推进，登记视图为空")
+    void cashOnlyLogStillRunsWithEmptyRegistry() throws IOException {
+        Path file = tempDir.resolve("cash-only.journal");
+        try (WorldRuntime runtime = new WorldRuntime(file, manifest(RUN, SEED, Map.of()), openings())) {
+            runtime.scheduleTransfer("c1", "t1", 10, "alice", "A", "B", new BigDecimal("100.00"), 0);
+        }
+        try (WorldRuntime runtime = new WorldRuntime(file, manifest(RUN, SEED, Map.of()), openings())) {
+            assertTrue(runtime.openingRegistry().isEmpty(), "现金模式没有开局登记");
+            runtime.advanceTo(20);
+            assertEquals(0, cash(runtime, "A").compareTo(new BigDecimal("900.00")));
+        }
+        assertThrows(IOException.class, () -> new WorldRuntime(file, registryManifest(RUN, SEED),
+                registryOpenings(), registry()).close(), "新 profile 打开旧日志必须拒绝");
+    }
+
+    @Test
+    @DisplayName("清单与登记必须成对：缺登记或旧清单带登记都在写盘前拒绝")
+    void registryProfileRequiresRegistryAndViceVersa() {
+        Path without = tempDir.resolve("missing-registry.journal");
+        assertThrows(IllegalArgumentException.class, () -> new WorldRuntime(without,
+                registryManifest(RUN, SEED), registryOpenings()));
+        assertFalse(Files.exists(without), "拒绝时不得创建日志");
+
+        Path extra = tempDir.resolve("extra-registry.journal");
+        assertThrows(IllegalArgumentException.class, () -> new WorldRuntime(extra,
+                manifest(RUN, SEED, Map.of()), openings(), registry()));
+        assertFalse(Files.exists(extra), "拒绝时不得创建日志");
+    }
+
+    @Test
+    @DisplayName("登记与现金开局不符（持股账户不存在）在创建日志文件之前拒绝")
+    void invalidRegistryRejectedBeforeFileCreated() {
+        Path file = tempDir.resolve("invalid-registry.journal");
+        OpeningRegistry foreignAccount = new OpeningRegistry(registryParties(), registryOwners(),
+                List.of(new OpeningRegistry.Security("ACME1", "acme", 1000, new BigDecimal("10.00"))),
+                List.of(new OpeningRegistry.ShareAllocation("A", "ACME1", 600,
+                                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT),
+                        new OpeningRegistry.ShareAllocation("B", "ACME1", 300,
+                                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT),
+                        new OpeningRegistry.ShareAllocation("GHOST", "ACME1", 100,
+                                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT)));
+        assertThrows(IllegalArgumentException.class, () -> new WorldRuntime(file,
+                registryManifest(RUN, SEED), registryOpenings(), foreignAccount));
+        assertFalse(Files.exists(file), "登记校验失败不得留下日志文件");
+
+        assertThrows(IllegalArgumentException.class, () -> new OpeningRegistry(
+                registryParties(), registryOwners(),
+                List.of(new OpeningRegistry.Security("ACME1", "acme", 1000,
+                        new BigDecimal("10.00"))),
+                List.of(new OpeningRegistry.ShareAllocation("A", "ACME1", 999,
+                        new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT))),
+                "少发行在构造登记时就拒绝");
+    }
+
+    @Test
+    @DisplayName("新增人物与零现金账户但没有股份分配，不改变发行与原持有人")
+    void newOwnerWithZeroCashDoesNotChangeIssuance() throws IOException {
+        Path file = tempDir.resolve("new-owner.journal");
+        List<OpeningAccount> withCarol = new ArrayList<>(registryOpenings());
+        withCarol.add(new OpeningAccount("C", "carol", new BigDecimal("0.00"), "实验开局历史禀赋"));
+        try (WorldRuntime runtime = new WorldRuntime(file, registryManifest(RUN, SEED), withCarol,
+                registryWithCarol())) {
+            OpeningRegistry view = runtime.openingRegistry().orElseThrow();
+            assertEquals(1000L, view.securities().get(0).issuedShares(), "发行总数不变");
+            assertEquals(3, view.allocations().size(), "新账户没有自动获得股份");
+            assertEquals(0, cash(runtime, "C").signum(), "新账户没有自动获得现金");
+        }
+    }
+
+    @Test
+    @DisplayName("产品资金不因人物姓名或岗位自报而获得权限")
+    void productFundsNotReachableByPersonOrJobTitle() throws IOException {
+        Path file = tempDir.resolve("product-funds.journal");
+        try (WorldRuntime runtime = new WorldRuntime(file, registryManifest(RUN, SEED),
+                registryOpenings(), registry())) {
+            assertThrows(IllegalArgumentException.class, () -> runtime.scheduleTransfer(
+                    "c1", "t1", 10, "alice", "FUND", "A", new BigDecimal("1.00"), 0),
+                    "人物不能动用产品账户");
+            assertThrows(IllegalArgumentException.class, () -> runtime.scheduleTransfer(
+                    "c2", "t2", 10, "alice.manager", "FUND", "A", new BigDecimal("1.00"), 0),
+                    "岗位名称自报不获得权限");
+            String outcome = runtime.scheduleTransfer("c3", "t3", 10, "prod-1", "FUND", "A",
+                    new BigDecimal("1.00"), 0);
+            assertTrue(outcome.startsWith("SCHEDULED:"), "产品主体自身可以排程");
+        }
+    }
+
+    @Test
+    @DisplayName("同一账户混合分类登记可开局，换插入顺序重开内容不变")
+    void mixedClassificationOpeningRestores() throws IOException {
+        Path file = tempDir.resolve("mixed-class.journal");
+        OpeningRegistry forward = mixedRegistry(false);
+        try (WorldRuntime runtime = new WorldRuntime(file, registryManifest(RUN, SEED),
+                registryOpenings(), forward)) {
+            assertEquals(1L, runtime.snapshot().position());
+            assertEquals(2, runtime.openingRegistry().orElseThrow().allocations().size());
+            assertEquals(0, cash(runtime, "A").compareTo(new BigDecimal("1000.00")),
+                    "分类分的是股份，不是现金");
+        }
+        OpeningRegistry reversed = mixedRegistry(true);
+        try (WorldRuntime reopened = new WorldRuntime(file, registryManifest(RUN, SEED),
+                registryOpenings(), reversed)) {
+            assertEquals(1L, reopened.snapshot().position(), "换插入顺序不得改变开局内容");
+            assertEquals(forward.allocations(),
+                    reopened.openingRegistry().orElseThrow().allocations());
+            assertEquals(1000L, reopened.openingRegistry().orElseThrow()
+                    .securities().get(0).issuedShares(), "总股份不变");
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 工具
     // ------------------------------------------------------------------
 
@@ -565,6 +727,79 @@ class WorldRuntimeTest {
         } catch (IOException failure) {
             throw new IllegalStateException("无法写出状态快照", failure);
         }
+    }
+
+    private static OpeningRegistry mixedRegistry(boolean reverse) {
+        List<OpeningRegistry.ShareAllocation> allocations = new ArrayList<>(List.of(
+                new OpeningRegistry.ShareAllocation("A", "ACME1", 600,
+                        new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT),
+                new OpeningRegistry.ShareAllocation("A", "ACME1", 400,
+                        new BigDecimal("10.0000"), OpeningRegistry.ShareClass.LOCKED)));
+        if (reverse) {
+            java.util.Collections.reverse(allocations);
+        }
+        return new OpeningRegistry(registryParties(), registryOwners(),
+                List.of(new OpeningRegistry.Security("ACME1", "acme", 1000,
+                        new BigDecimal("10.00"))), allocations);
+    }
+
+    private static RunManifest registryManifest(String runId, long seed) {
+        Map<String, Integer> modules = new TreeMap<>();
+        modules.put("cash", 1);
+        modules.put("registry", 1);
+        modules.put("scheduler", 1);
+        return new RunManifest(runId, seed, RunManifest.RULES_CASH_REGISTRY_WORLD_V1, modules,
+                Map.of(), RunManifest.MODEL_NONE);
+    }
+
+    private static List<OpeningAccount> registryOpenings() {
+        return List.of(
+                new OpeningAccount("A", "alice", new BigDecimal("1000.00"), "实验开局历史禀赋"),
+                new OpeningAccount("B", "bob", new BigDecimal("0.00"), "实验开局历史禀赋"),
+                new OpeningAccount("EXT", "ext-org", new BigDecimal("0.00"), "实验开局历史禀赋"),
+                new OpeningAccount("TREAS", "acme", new BigDecimal("0.00"), "实验开局历史禀赋"),
+                new OpeningAccount("FUND", "prod-1", new BigDecimal("0.00"), "实验开局历史禀赋"));
+    }
+
+    private static List<OpeningRegistry.Party> registryParties() {
+        return List.of(
+                new OpeningRegistry.Party("alice", OpeningRegistry.PartyKind.PERSON, "Alice"),
+                new OpeningRegistry.Party("bob", OpeningRegistry.PartyKind.PERSON, "Bob"),
+                new OpeningRegistry.Party("acme", OpeningRegistry.PartyKind.ORGANIZATION, "Acme 制造"),
+                new OpeningRegistry.Party("ext-org", OpeningRegistry.PartyKind.ORGANIZATION, "外部持有人"));
+    }
+
+    private static List<OpeningRegistry.PropertyOwner> registryOwners() {
+        return List.of(
+                new OpeningRegistry.PropertyOwner("alice", OpeningRegistry.OwnerKind.PERSON, "alice"),
+                new OpeningRegistry.PropertyOwner("bob", OpeningRegistry.OwnerKind.PERSON, "bob"),
+                new OpeningRegistry.PropertyOwner("acme", OpeningRegistry.OwnerKind.ORGANIZATION, "acme"),
+                new OpeningRegistry.PropertyOwner("ext-org",
+                        OpeningRegistry.OwnerKind.ORGANIZATION, "ext-org"),
+                new OpeningRegistry.PropertyOwner("prod-1", OpeningRegistry.OwnerKind.PRODUCT, null));
+    }
+
+    private static OpeningRegistry registry() {
+        return new OpeningRegistry(registryParties(), registryOwners(),
+                List.of(new OpeningRegistry.Security("ACME1", "acme", 1000,
+                        new BigDecimal("10.00"))),
+                List.of(
+                        new OpeningRegistry.ShareAllocation("A", "ACME1", 600,
+                                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT),
+                        new OpeningRegistry.ShareAllocation("B", "ACME1", 300,
+                                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT),
+                        new OpeningRegistry.ShareAllocation("EXT", "ACME1", 100,
+                                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT)));
+    }
+
+    private static OpeningRegistry registryWithCarol() {
+        List<OpeningRegistry.Party> parties = new ArrayList<>(registryParties());
+        parties.add(new OpeningRegistry.Party("carol", OpeningRegistry.PartyKind.PERSON, "Carol"));
+        List<OpeningRegistry.PropertyOwner> owners = new ArrayList<>(registryOwners());
+        owners.add(new OpeningRegistry.PropertyOwner("carol",
+                OpeningRegistry.OwnerKind.PERSON, "carol"));
+        OpeningRegistry base = registry();
+        return new OpeningRegistry(parties, owners, base.securities(), base.allocations());
     }
 
     private RunManifest manifest(String runId, long seed, Map<String, String> dataVersions) {
