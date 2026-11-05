@@ -149,9 +149,24 @@ public final class LlmTradingAgent extends AbstractTradingAgent {
         OrderResult result = submit(request);
         llmOrdersPlaced.incrementAndGet();
         System.out.printf("[%s] LLM 决策 %s -> %s%n", getAgentId(), decision,
-                result == null ? "提交异常" : (result.isAccepted()
-                        ? String.format("受理，成交 %d 股", result.getFilledQuantity())
-                        : "被拒：" + result.getReason()));
+                result == null ? "提交异常" : describeResult(result));
+    }
+
+    /**
+     * 把下单结果转成一行可读日志；受理后剩余量被业务规则取消时带上原因。
+     *
+     * @param result 下单结果
+     * @return 日志文本
+     */
+    private static String describeResult(OrderResult result) {
+        if (!result.isAccepted()) {
+            return "被拒：" + result.getReason();
+        }
+        if (result.getReason() != null) {
+            return String.format("受理，成交 %d 股，剩余被取消：%s",
+                    result.getFilledQuantity(), result.getReason());
+        }
+        return String.format("受理，成交 %d 股", result.getFilledQuantity());
     }
 
     /**

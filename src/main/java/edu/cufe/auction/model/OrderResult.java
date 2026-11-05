@@ -23,7 +23,9 @@ public final class OrderResult {
     }
 
     /**
-     * 构造受理结果。
+     * 构造受理结果（无业务取消原因）。
+     *
+     * <p>等价于 {@code accepted(order, trades, null)}；全部成交或正常挂簿时使用本重载。</p>
      *
      * @param order  受理的订单
      * @param trades 本次产生的成交（可能为空）
@@ -31,6 +33,23 @@ public final class OrderResult {
      */
     public static OrderResult accepted(Order order, List<Trade> trades) {
         return new OrderResult(true, null, order, trades);
+    }
+
+    /**
+     * 构造带业务取消原因的受理结果。
+     *
+     * <p><b>什么时候用</b>：订单已经入场受理、也可能已经与第三方部分成交，之后因交易所业务规则
+     * 取消其剩余量（例如自成交防护），而不是“入场前校验失败”。这类结果
+     * {@link #isAccepted()} 仍为 true、{@link #getTrades()} 保留已发生的真实成交，
+     * 原因只说明剩余量为何被取消。</p>
+     *
+     * @param order  受理的订单（状态通常是 {@link OrderStatus#CANCELLED}）
+     * @param trades 本次已产生的成交（不可回滚，可能为空）
+     * @param reason 业务取消原因，约定以稳定的 ASCII 代码开头，例如 {@code SELF_TRADE_PREVENTED}
+     * @return 结果对象
+     */
+    public static OrderResult accepted(Order order, List<Trade> trades, String reason) {
+        return new OrderResult(true, reason, order, trades);
     }
 
     /**
@@ -48,7 +67,18 @@ public final class OrderResult {
         return accepted;
     }
 
-    /** @return 拒绝原因；被受理时为 null */
+    /**
+     * 结果原因。
+     *
+     * <p>两种情形都可读：</p>
+     * <ul>
+     *   <li>未受理（{@link #isAccepted()} 为 false）：整单被拒的原因，见 {@link #rejected(String)}；</li>
+     *   <li>已受理但剩余量被业务规则取消：取消原因，见 {@link #accepted(Order, List, String)}，
+     *       此时 {@link #getTrades()} 里的成交仍真实有效。</li>
+     * </ul>
+     *
+     * @return 原因文本；正常全部受理且无业务取消时为 null
+     */
     public String getReason() {
         return reason;
     }

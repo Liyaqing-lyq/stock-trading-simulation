@@ -41,7 +41,10 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>成交价取**被动方（先挂在簿上的那一方）的价格**，与真实交易所连续竞价一致；</li>
  *   <li>限价单未成交部分挂入订单簿；市价单未成交部分立即撤销并释放冻结；</li>
  *   <li>买入在下单时按限价（市价单按当时卖一价）冻结资金，成交时按实际价结算，
- *       价格改善的差额自动退回可用现金。</li>
+ *       价格改善的差额自动退回可用现金；</li>
+ *   <li>禁止同一账户自成交：撮合遇到自有可交叉挂单时取消主动单剩余量并释放冻结，
+ *       此前与第三方的成交不回滚（返回 {@code SELF_TRADE_PREVENTED} 业务原因）；</li>
+ *   <li>拒单通知与受理通知、成交与行情广播一样，都在释放撮合锁之后触发。</li>
  * </ul>
  */
 public final class MatchingEngine implements OrderGateway {
@@ -153,84 +156,131 @@ public final class MatchingEngine implements OrderGateway {
         return closed;
     }
 
+    /**
+     * 受理订单：校验、冻结、撮合、记账、改簿都在引擎锁内完成；广播与监听者通知在锁外。
+     *
+     * <p>拒单（入场前校验失败）与受理（含“自成交防护”取消剩余量）是两种不同结果：
+     * 前者返回 {@link OrderResult#rejected(String)}，后者返回
+     * {@link OrderResult#accepted(Order, List, String)}，并保留已与第三方发生的真实成交。</p>
+     *
+     * @param request 下单请求
+     * @return 受理或拒绝结果
+     */
     @Override
     public OrderResult submit(OrderRequest request) {
         Objects.requireNonNull(request, "request");
-        List<Trade> trades = new ArrayList<>();
-        Order order;
-        MarketSnapshot snapshot;
-
+        Submission submission;
         synchronized (lock) {
-            if (closed) {
-                return reject(request, "市场已收盘，不再接受新订单");
-            }
-            OrderBook book = books.get(request.getSymbol());
-            if (book == null) {
-                return reject(request, "未知标的：" + request.getSymbol());
-            }
-            if (!accounts.contains(request.getAgentId())) {
-                return reject(request, "未知账户：" + request.getAgentId());
-            }
-            InstrumentProfile profile = instrumentProfiles.get(request.getSymbol());
-            if (request.getType() == OrderType.LIMIT && profile != null) {
-                String priceError = validateLimitPrice(profile, request.getPrice());
-                if (priceError != null) {
-                    return reject(request, priceError);
-                }
-            }
-
-            BigDecimal freezePrice = null;
-            if (request.getSide() == Side.BUY) {
-                if (request.getType() == OrderType.LIMIT) {
-                    freezePrice = request.getPrice();
-                } else {
-                    Order bestAsk = book.bestOpposite(Side.BUY);
-                    if (bestAsk == null) {
-                        return reject(request, "市价买单无对手方卖盘（订单簿卖盘为空），已拒绝");
-                    }
-                    freezePrice = bestAsk.getLimitPrice();
-                }
-            }
-
-            order = new Order(orderIdSeq.incrementAndGet(), request.getAgentId(), request.getSymbol(),
-                    request.getSide(), request.getType(), request.getPrice(), request.getQuantity(),
-                    sequenceSeq.incrementAndGet());
-            Account account = accounts.getAccount(request.getAgentId());
-            boolean reserved = account.reserve(order.getOrderId(), request.getSymbol(),
-                    request.getSide(), freezePrice, request.getQuantity());
-            if (!reserved) {
-                if (request.getSide() == Side.BUY) {
-                    BigDecimal need = freezePrice.multiply(BigDecimal.valueOf(request.getQuantity()))
-                            .setScale(2, RoundingMode.HALF_UP);
-                    return reject(request, String.format("可用资金不足：需 %s，可用 %s",
-                            need.toPlainString(), account.getAvailableCash().toPlainString()));
-                }
-                return reject(request, String.format("可卖持仓不足：需 %d 股，可用 %d 股",
-                        request.getQuantity(), account.getAvailableQuantity(request.getSymbol())));
-            }
-
-            match(order, book, trades);
-
-            if (order.getRemainingQuantity() > 0 && order.getType() == OrderType.MARKET) {
-                order.markCancelled();
-                account.release(order.getOrderId());
-            }
-            snapshot = buildSnapshot(book, DEFAULT_DEPTH);
+            submission = processLocked(request);
         }
 
-        // ---- 锁外副作用：广播 + 通知监听者 ----
-        for (Trade trade : trades) {
+        // ---- 锁外副作用：拒单通知 / 成交与行情广播 / 受理通知 ----
+        // 监听者可能做 I/O（CSV 落盘）或读引擎状态，绝不能在持有撮合锁时回调。
+        if (submission.rejectionReason() != null) {
+            notifyRejected(request, submission.rejectionReason());
+            return OrderResult.rejected(submission.rejectionReason());
+        }
+        for (Trade trade : submission.trades()) {
             publisher.publishTrade(trade);
         }
-        publisher.publishSnapshot(snapshot);
+        publisher.publishSnapshot(submission.snapshot());
+        OrderResult result = OrderResult.accepted(submission.order(), submission.trades(),
+                submission.businessReason());
         for (EngineListener listener : listeners) {
             try {
-                listener.onOrderAccepted(order, trades);
+                listener.onOrderAccepted(result);
             } catch (RuntimeException ex) {
                 System.err.println("[MatchingEngine] 监听者 onOrderAccepted 异常：" + ex);
             }
         }
-        return OrderResult.accepted(order, trades);
+        return result;
+    }
+
+    /**
+     * 一次受理尝试的中间结果：要么只带拒单原因（订单与成交为空），
+     * 要么是已入场订单的完整结果（含可选的业务取消原因）。
+     *
+     * @param order           已入场订单；拒单时为 null
+     * @param trades          本次真实成交；拒单时为空列表
+     * @param snapshot        撮合后行情快照；拒单时为 null
+     * @param rejectionReason 入场前拒绝原因；受理时为 null
+     * @param businessReason  受理后取消剩余量的原因；无则为 null
+     */
+    private record Submission(Order order, List<Trade> trades, MarketSnapshot snapshot,
+                              String rejectionReason, String businessReason) {
+
+        private static Submission rejected(String reason) {
+            return new Submission(null, List.of(), null, reason, null);
+        }
+    }
+
+    /**
+     * 在引擎锁内完成一次受理：校验 → 冻结 → 撮合 → 记账 → 生成快照。
+     *
+     * <p>要求调用方持有 {@link #lock}；本方法不得回调监听者或做 I/O。</p>
+     *
+     * @param request 下单请求
+     * @return 中间结果
+     */
+    private Submission processLocked(OrderRequest request) {
+        if (closed) {
+            return Submission.rejected("市场已收盘，不再接受新订单");
+        }
+        OrderBook book = books.get(request.getSymbol());
+        if (book == null) {
+            return Submission.rejected("未知标的：" + request.getSymbol());
+        }
+        if (!accounts.contains(request.getAgentId())) {
+            return Submission.rejected("未知账户：" + request.getAgentId());
+        }
+        InstrumentProfile profile = instrumentProfiles.get(request.getSymbol());
+        if (request.getType() == OrderType.LIMIT && profile != null) {
+            String priceError = validateLimitPrice(profile, request.getPrice());
+            if (priceError != null) {
+                return Submission.rejected(priceError);
+            }
+        }
+
+        BigDecimal freezePrice = null;
+        if (request.getSide() == Side.BUY) {
+            if (request.getType() == OrderType.LIMIT) {
+                freezePrice = request.getPrice();
+            } else {
+                Order bestAsk = book.bestOpposite(Side.BUY);
+                if (bestAsk == null) {
+                    return Submission.rejected("市价买单无对手方卖盘（订单簿卖盘为空），已拒绝");
+                }
+                freezePrice = bestAsk.getLimitPrice();
+            }
+        }
+
+        Order order = new Order(orderIdSeq.incrementAndGet(), request.getAgentId(), request.getSymbol(),
+                request.getSide(), request.getType(), request.getPrice(), request.getQuantity(),
+                sequenceSeq.incrementAndGet());
+        Account account = accounts.getAccount(request.getAgentId());
+        boolean reserved = account.reserve(order.getOrderId(), request.getSymbol(),
+                request.getSide(), freezePrice, request.getQuantity());
+        if (!reserved) {
+            if (request.getSide() == Side.BUY) {
+                BigDecimal need = freezePrice.multiply(BigDecimal.valueOf(request.getQuantity()))
+                        .setScale(2, RoundingMode.HALF_UP);
+                return Submission.rejected(String.format("可用资金不足：需 %s，可用 %s",
+                        need.toPlainString(), account.getAvailableCash().toPlainString()));
+            }
+            return Submission.rejected(String.format("可卖持仓不足：需 %d 股，可用 %d 股",
+                    request.getQuantity(), account.getAvailableQuantity(request.getSymbol())));
+        }
+
+        List<Trade> trades = new ArrayList<>();
+        String businessReason = match(order, book, trades);
+
+        // 市价单剩余部分立即撤销并释放冻结；自成交取消已把订单置为终态，不能重复撤销。
+        if (order.getRemainingQuantity() > 0 && order.getType() == OrderType.MARKET
+                && !order.getStatus().isTerminal()) {
+            order.markCancelled();
+            account.release(order.getOrderId());
+        }
+        return new Submission(order, trades, buildSnapshot(book, DEFAULT_DEPTH), null, businessReason);
     }
 
     @Override
@@ -364,11 +414,16 @@ public final class MatchingEngine implements OrderGateway {
     /**
      * 撮合主循环。要求调用方持有 {@link #lock}。
      *
+     * <p><b>自成交规则</b>：价格-时间优先不变；一旦对手方最优挂单属于同一账户，
+     * 立即取消主动单的全部剩余量并释放其剩余冻结。此前与第三方的成交保留，
+     * 不跳过自有的更优价去吃更差的价，也不改动原挂单。</p>
+     *
      * @param taker 新来的主动单
      * @param book  该标的订单簿
      * @param trades 成交结果输出
+     * @return 受理后剩余量被业务规则取消的原因；正常全部成交或挂簿时为 null
      */
-    private void match(Order taker, OrderBook book, List<Trade> trades) {
+    private String match(Order taker, OrderBook book, List<Trade> trades) {
         while (taker.getRemainingQuantity() > 0) {
             Order maker = book.bestOpposite(taker.getSide());
             if (maker == null) {
@@ -377,6 +432,9 @@ public final class MatchingEngine implements OrderGateway {
             BigDecimal tradePrice = maker.getLimitPrice();
             if (!taker.canMatchAt(tradePrice)) {
                 break;
+            }
+            if (maker.getAgentId().equals(taker.getAgentId())) {
+                return cancelRemainderForSelfTrade(taker, maker);
             }
             long quantity = Math.min(taker.getRemainingQuantity(), maker.getRemainingQuantity());
             if (taker.getSide() == Side.BUY) {
@@ -393,6 +451,26 @@ public final class MatchingEngine implements OrderGateway {
         if (taker.getRemainingQuantity() > 0 && taker.getType() == OrderType.LIMIT) {
             book.post(taker);
         }
+        return null;
+    }
+
+    /**
+     * 自成交防护：取消主动单剩余量并释放其剩余冻结，原挂单保持不动。
+     *
+     * <p>要求调用方持有 {@link #lock}。已发生的成交不回滚、不改动，因此调用方
+     * 必须把本方法返回的原因随受理结果一起返回，而不是当作整单拒绝。</p>
+     *
+     * @param taker 主动单（可能有部分成交）
+     * @param maker 触发拦截的自有挂单
+     * @return 以 {@code SELF_TRADE_PREVENTED} 开头的业务取消原因
+     */
+    private String cancelRemainderForSelfTrade(Order taker, Order maker) {
+        long remaining = taker.getRemainingQuantity();
+        taker.markCancelled();
+        accounts.getAccount(taker.getAgentId()).release(taker.getOrderId());
+        return String.format(
+                "SELF_TRADE_PREVENTED: 剩余 %d 股将与自有挂单 #%d 自成交，已取消剩余量并释放冻结",
+                remaining, maker.getOrderId());
     }
 
     /**
@@ -452,7 +530,13 @@ public final class MatchingEngine implements OrderGateway {
         return null;
     }
 
-    private OrderResult reject(OrderRequest request, String reason) {
+    /**
+     * 通知监听者订单已被拒绝。要求调用方**不持有** {@link #lock}。
+     *
+     * @param request 原始请求
+     * @param reason  拒绝原因
+     */
+    private void notifyRejected(OrderRequest request, String reason) {
         for (EngineListener listener : listeners) {
             try {
                 listener.onOrderRejected(request, reason);
@@ -460,7 +544,6 @@ public final class MatchingEngine implements OrderGateway {
                 System.err.println("[MatchingEngine] 监听者 onOrderRejected 异常：" + ex);
             }
         }
-        return OrderResult.rejected(reason);
     }
 
     @Override
