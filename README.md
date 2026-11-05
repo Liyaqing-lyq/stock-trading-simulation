@@ -5,9 +5,20 @@ Java 程序设计课程项目（中央财经大学）：用多智能体模拟真
 
 ## 快速开始
 
-设计扩展请先读[总体设计基线](docs/design/总体设计基线.md)与[本轮复审及争议处置](docs/research/2026-11-05-设计复审与争议处置.md)。它们是待实施设计；下述运行入口仍是现有课程系统，HTML 草图不代表新世界已实现。
+设计扩展请先读[总体设计基线](docs/design/总体设计基线.md)与[本轮复审及争议处置](docs/research/2026-11-05-设计复审与争议处置.md)。目标与已实现子集分开记录；下述主界面仍是课程系统，HTML 草图不代表新世界已实现。
 
 持续施工与接续见[实施 Plan](docs/superpowers/plans/2026-11-06-world-implementation.md)。世界基础调试夹具可运行 `mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldFoundationDemo`；同一路径重跑复用原付款回报，不重复发钱。它尚未接入股票、公司、银行或模型。
+
+世界交易与制造实验另有`WorldExchangeDemo`、`WorldManufacturingDemo`入口，均为不调用模型的管理夹具：
+
+```bash
+# 制造：先保存已交付但尚未收款的状态，再用另一个进程恢复到期末与回款后
+mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldManufacturingDemo -Dexec.args="logs/my-company prepare"
+mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldManufacturingDemo -Dexec.args="logs/my-company full"
+# 原命令再跑一次不重复收付款。世界存档放logs，课程验收会清理data目录。
+```
+
+制造夹具已连接同一世界交易/现金日志，仍无董事会、角色授权、银行或新世界界面；具体能力与证据见实施Plan和[运行记录](docs/05-运行与验证记录.md)。
 
 需要 JDK 17+（本机为 JDK 21）。仓库自带 Maven Wrapper，**无需安装 Maven**。
 
@@ -15,7 +26,7 @@ Java 程序设计课程项目（中央财经大学）：用多智能体模拟真
 # 0) 一键验证：测试套件 + 从 CSV 黑盒复算（加 --with-gui 会短暂弹出界面）
 bash scripts/verify.sh --with-gui
 
-# 1) 编译并跑测试（35 项）
+# 1) 编译并跑完整测试套件（当前数量见运行记录）
 mvnw.cmd test
 
 # 2) 控制台演示：跑 15 秒行情，结束后输出排行榜与 CSV 路径

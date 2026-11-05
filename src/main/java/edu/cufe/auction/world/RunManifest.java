@@ -39,6 +39,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String RULES_SECURITIES_MATCHING_EXPERIMENT_V1 =
             "securities-matching-experiment-v1";
 
+    /** 现金 + 登记 + 证券 + 撮合 + 制造经营（M3a.2 新增的明确组合，model=none）。 */
+    public static final String RULES_STOCK_COMPANY_EXPERIMENT_V1 = "stock-company-experiment-v1";
+
     /** 未接入模型时使用的模型配置版本。 */
     public static final String MODEL_NONE = "none";
 
@@ -69,6 +72,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("matching");
     }
 
+    /**
+     * 是否启用制造经营模块。
+     *
+     * @return 模块表包含 manufacturing 时返回 true
+     */
+    public boolean hasManufacturing() {
+        return moduleVersions.containsKey("manufacturing");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -77,11 +89,13 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         if (!RULES_CASH_WORLD_V1.equals(rulesVersion)
                 && !RULES_CASH_REGISTRY_WORLD_V1.equals(rulesVersion)
                 && !RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
-                    + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + " 或 "
-                    + RULES_SECURITIES_MATCHING_EXPERIMENT_V1 + "，收到 " + rulesVersion);
+                    + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
+                    + RULES_SECURITIES_MATCHING_EXPERIMENT_V1 + " 或 "
+                    + RULES_STOCK_COMPANY_EXPERIMENT_V1 + "，收到 " + rulesVersion);
         }
         Map<String, Integer> modules = new TreeMap<>();
         if (moduleVersions != null) {
@@ -97,15 +111,21 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         expected.put("scheduler", 1);
         if (RULES_CASH_REGISTRY_WORLD_V1.equals(rulesVersion)
                 || RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)) {
+                || RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("registry", 1);
         }
         if (RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)) {
+                || RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("securities", 1);
         }
-        if (RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)) {
+        if (RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("matching", 1);
+        }
+        if (RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
+            expected.put("manufacturing", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "
