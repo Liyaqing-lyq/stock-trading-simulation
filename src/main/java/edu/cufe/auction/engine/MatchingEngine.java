@@ -412,10 +412,15 @@ public final class MatchingEngine implements OrderGateway {
     // ------------------------------------------------------------------
 
     /**
-     * 撮合主循环。要求调用方持有 {@link #lock}。
+     * 撮合主循环：只负责把 {@link MatchPlanner} 的计划应用到簿与账户。要求调用方持有 {@link #lock}。
      *
-     * <p><b>自成交规则</b>：价格-时间优先不变；一旦对手方最优挂单属于同一账户，
-     * 立即取消主动单的全部剩余量并释放其剩余冻结。此前与第三方的成交保留，
+     * <p><b>分工</b>：算法（价格-时间优先、被动价成交、预算递减、自成交停止）全部在纯函数
+     * {@link MatchPlanner#plan} 里算完；本方法只按计划回找原挂单对象、调 {@link #executeTrade}
+     * 记账改簿，并保持原有终态处理。因此同一套撮合规则可以给扩展侧的世界订单复用，
+     * 而不需要在应用计划时再改一次口径。</p>
+     *
+     * <p><b>自成交规则</b>：价格-时间优先不变；一旦对手方最优挂单属于同一账户，计划立即停止，
+     * 本方法取消主动单的全部剩余量并释放其剩余冻结。此前与第三方的成交保留，
      * 不跳过自有的更优价去吃更差的价，也不改动原挂单。</p>
      *
      * @param taker 新来的主动单
@@ -424,29 +429,33 @@ public final class MatchingEngine implements OrderGateway {
      * @return 受理后剩余量被业务规则取消的原因；正常全部成交或挂簿时为 null
      */
     private String match(Order taker, OrderBook book, List<Trade> trades) {
-        while (taker.getRemainingQuantity() > 0) {
-            Order maker = book.bestOpposite(taker.getSide());
+        MatchPlanner.Plan plan = MatchPlanner.plan(
+                new MatchPlanner.Incoming(taker.getSide(), taker.getType(), taker.getLimitPrice(),
+                        taker.getRemainingQuantity(), taker.getAgentId(), buyBudget(taker)),
+                book.oppositeQuotes(taker.getSide()));
+
+        for (MatchPlanner.Fill fill : plan.fills()) {
+            Order maker = book.findResting(fill.makerOrderId());
             if (maker == null) {
-                break;
+                throw new IllegalStateException("撮合计划引用的挂单已不在簿中：#" + fill.makerOrderId());
             }
-            BigDecimal tradePrice = maker.getLimitPrice();
-            if (!taker.canMatchAt(tradePrice)) {
-                break;
-            }
-            if (maker.getAgentId().equals(taker.getAgentId())) {
-                return cancelRemainderForSelfTrade(taker, maker);
-            }
-            long quantity = Math.min(taker.getRemainingQuantity(), maker.getRemainingQuantity());
-            if (taker.getSide() == Side.BUY) {
-                quantity = Math.min(quantity, affordableQuantity(taker, tradePrice));
-                if (quantity <= 0) {
-                    break;
-                }
-            }
-            executeTrade(book, taker, maker, tradePrice, quantity, trades);
+            executeTrade(book, taker, maker, fill.price(), fill.quantity(), trades);
             if (maker.isFilled()) {
                 book.remove(maker);
             }
+        }
+        if (taker.getRemainingQuantity() != plan.remaining()) {
+            throw new IllegalStateException(String.format(
+                    "成交计划与订单状态不一致：订单剩余 %d，计划剩余 %d",
+                    taker.getRemainingQuantity(), plan.remaining()));
+        }
+
+        if (plan.stopReason() == MatchPlanner.StopReason.SELF_TRADE) {
+            Order selfMaker = book.findResting(plan.selfMakerId());
+            if (selfMaker == null) {
+                throw new IllegalStateException("触发自成交拦截的挂单已不在簿中：#" + plan.selfMakerId());
+            }
+            return cancelRemainderForSelfTrade(taker, selfMaker);
         }
         if (taker.getRemainingQuantity() > 0 && taker.getType() == OrderType.LIMIT) {
             book.post(taker);
@@ -474,13 +483,20 @@ public final class MatchingEngine implements OrderGateway {
     }
 
     /**
-     * 买单当前可承受的最大成交量 = 该单剩余冻结 + 账户可用现金。
-     * 这样即使市价买单在扫簿过程中价格逐步抬高，也不会把账户打成负现金。
+     * 主动买单的可用预算 = 本单剩余冻结 + 账户可用现金；主动卖单不需要预算。
+     *
+     * <p>冻结在受理时按限价（市价单按当时卖一价）预扣，成交时按实际价结算，所以“剩余冻结 + 可用现金”
+     * 才是这张单真正还能动用的钱；它也让市价买单在扫簿抬价时不会把账户打成负现金。</p>
+     *
+     * @param taker 主动单
+     * @return 买方预算；卖方返回 null
      */
-    private long affordableQuantity(Order taker, BigDecimal price) {
+    private BigDecimal buyBudget(Order taker) {
+        if (taker.getSide() != Side.BUY) {
+            return null;
+        }
         Account buyer = accounts.getAccount(taker.getAgentId());
-        BigDecimal budget = buyer.getReservedAmount(taker.getOrderId()).add(buyer.getAvailableCash());
-        return budget.divide(price, 0, RoundingMode.DOWN).longValue();
+        return buyer.getReservedAmount(taker.getOrderId()).add(buyer.getAvailableCash());
     }
 
     private void executeTrade(OrderBook book, Order taker, Order maker, BigDecimal price,

@@ -164,6 +164,34 @@ public final class OrderBook {
     }
 
     /**
+     * 生成对手方报价的不可变值视图，顺序即撮合顺序：价格优先、同价 FIFO。
+     *
+     * <p>返回的是**值快照**：每笔报价复制当时的 {@code orderId / ownerId / price / remaining}，
+     * 之后原 {@code Order} 再成交或被撤都不会回写这份视图。调用方因此可以在不改动簿与
+     * {@code Order} 的前提下把报价交给 {@link MatchPlanner} 计算计划。</p>
+     *
+     * <p>本方法要求调用方持有 {@link MatchingEngine} 的锁（与订单簿其他访问一致）。</p>
+     *
+     * @param incomingSide 新来订单的方向；本方法返回其对手侧的报价
+     * @return 不可变报价列表；对手盘为空时返回空列表
+     */
+    List<MatchPlanner.RestingQuote> oppositeQuotes(Side incomingSide) {
+        NavigableMap<BigDecimal, Deque<Order>> opposite = bookOf(incomingSide.opposite());
+        List<MatchPlanner.RestingQuote> quotes = new ArrayList<>();
+        for (Map.Entry<BigDecimal, Deque<Order>> entry : opposite.entrySet()) {
+            for (Order order : entry.getValue()) {
+                long remaining = order.getRemainingQuantity();
+                if (remaining <= 0) {
+                    continue;
+                }
+                quotes.add(new MatchPlanner.RestingQuote(order.getOrderId(), order.getAgentId(),
+                        order.getLimitPrice(), remaining));
+            }
+        }
+        return List.copyOf(quotes);
+    }
+
+    /**
      * 更新最新成交价（仅引擎调用）。
      *
      * @param price 成交价
