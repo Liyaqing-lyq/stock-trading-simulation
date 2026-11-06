@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -34,7 +35,22 @@ import java.util.TreeSet;
  * @param archives   旧回执归档（只增不改）
  */
 public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindings,
-                          Map<String, ActionRef> actionRefs, List<Archive> archives) {
+                          Map<String, ActionRef> actionRefs, List<Archive> archives,
+                          @JsonInclude(JsonInclude.Include.NON_NULL)
+                          Map<String, Dispatch> dispatches) {
+
+    /**
+     * 旧四参构造：没有派发映射，保持 schema1..9 的 JSON 形状。
+     *
+     * @param state      纯核决定状态
+     * @param bindings   观察绑定
+     * @param actionRefs 任务引用
+     * @param archives   旧回执归档
+     */
+    public DecisionRun(DecisionModel.State state, Map<String, Binding> bindings,
+                       Map<String, ActionRef> actionRefs, List<Archive> archives) {
+        this(state, bindings, actionRefs, archives, null);
+    }
 
     /** 工具合同版本；输入摘要把它与规范化输入一起冻结。 */
     public static final String TOOL_CONTRACT_VERSION = "role-decision-tools-v1";
@@ -73,6 +89,20 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
         actionRefs = Collections.unmodifiableMap(frozenRefs);
         archives = List.copyOf(archives == null ? List.of() : archives);
+        Map<String, Dispatch> frozenDispatches = null;
+        if (dispatches != null) {
+            frozenDispatches = new TreeMap<>();
+            for (Map.Entry<String, Dispatch> entry : dispatches.entrySet()) {
+                Dispatch dispatch = Objects.requireNonNull(entry.getValue(), "派发事实");
+                if (!entry.getKey().equals(dispatch.attemptId())) {
+                    throw new IllegalArgumentException("派发索引键与尝试标识不一致："
+                            + entry.getKey());
+                }
+                frozenDispatches.put(entry.getKey(), dispatch);
+            }
+            frozenDispatches = Collections.unmodifiableMap(frozenDispatches);
+        }
+        dispatches = frozenDispatches;
     }
 
     /**
@@ -85,7 +115,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
      */
     public static DecisionRun opening(String runId, long seed, DecisionModel.Config config) {
         return new DecisionRun(DecisionModel.open(runId, seed, config), Map.of(), Map.of(),
-                List.of());
+                List.of(), config.live() ? Map.of() : null);
     }
 
     /**
@@ -95,7 +125,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
      * @return 替换后的子集
      */
     public DecisionRun withState(DecisionModel.State next) {
-        return new DecisionRun(next, bindings, actionRefs, archives);
+        return new DecisionRun(next, bindings, actionRefs, archives, dispatches);
     }
 
     /**
@@ -114,7 +144,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
         Map<String, Binding> next = new TreeMap<>(bindings);
         next.put(binding.actionId(), binding);
-        return new DecisionRun(state, next, actionRefs, archives);
+        return new DecisionRun(state, next, actionRefs, archives, dispatches);
     }
 
     /**
@@ -133,7 +163,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
         Map<String, ActionRef> next = new TreeMap<>(actionRefs);
         next.put(ref.actionId(), ref);
-        return new DecisionRun(state, bindings, next, archives);
+        return new DecisionRun(state, bindings, next, archives, dispatches);
     }
 
     /**
@@ -155,7 +185,39 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
         List<Archive> next = new ArrayList<>(archives);
         next.add(archive);
-        return new DecisionRun(state, bindings, actionRefs, next);
+        return new DecisionRun(state, bindings, actionRefs, next, dispatches);
+    }
+
+    /**
+     * 追加一条持久派发事实；同一尝试同一事实幂等，异事实拒绝。
+     *
+     * @param dispatch 派发事实
+     * @return 追加后的子集
+     */
+    public DecisionRun withDispatch(Dispatch dispatch) {
+        Objects.requireNonNull(dispatch, "派发事实");
+        Dispatch existing = dispatch(dispatch.attemptId());
+        if (existing != null) {
+            if (!existing.equals(dispatch)) {
+                throw new IllegalArgumentException("同一尝试的派发事实不得改写："
+                        + dispatch.attemptId());
+            }
+            return this;
+        }
+        Map<String, Dispatch> next = dispatches == null
+                ? new TreeMap<>() : new TreeMap<>(dispatches);
+        next.put(dispatch.attemptId(), dispatch);
+        return new DecisionRun(state, bindings, actionRefs, archives, next);
+    }
+
+    /**
+     * 按尝试标识取派发事实。
+     *
+     * @param attemptId 尝试标识
+     * @return 派发事实；没有返回 null
+     */
+    public Dispatch dispatch(String attemptId) {
+        return dispatches == null ? null : dispatches.get(attemptId);
     }
 
     /**
@@ -407,7 +469,14 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
     }
 
     /** 一次开决定的请求；字段全部由可信宿主填充，模型不可见。 */
-    public record Request(String personPartyId, String actionId, String wakeReason) {
+    public record Request(String personPartyId, String actionId, String wakeReason,
+                          @JsonInclude(JsonInclude.Include.NON_NULL)
+                          DecisionModel.Route route) {
+
+        /** 旧三参构造：没有场景路由（schema1..9）。 */
+        public Request(String personPartyId, String actionId, String wakeReason) {
+            this(personPartyId, actionId, wakeReason, null);
+        }
 
         /** 校验静态字段。 */
         public Request {
@@ -420,7 +489,17 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
     /** 一次派发描述：只含程序绑定字段与冻结输入，不含人物、任职或命令标识。 */
     public record Call(String runId, String actionId, String attemptId, int attemptNo,
                        long recoveryGeneration, String wakeReason, List<String> allowedTools,
-                       String inputText) {
+                       String inputText,
+                       @JsonInclude(JsonInclude.Include.NON_NULL)
+                       DecisionModel.ProviderPlan plan) {
+
+        /** 旧八参构造：没有冻结计划（schema1..9）。 */
+        public Call(String runId, String actionId, String attemptId, int attemptNo,
+                    long recoveryGeneration, String wakeReason, List<String> allowedTools,
+                    String inputText) {
+            this(runId, actionId, attemptId, attemptNo, recoveryGeneration, wakeReason,
+                    allowedTools, inputText, null);
+        }
 
         /** 冻结集合。 */
         public Call {
@@ -549,11 +628,56 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
     }
 
+    /**
+     * 一次已持久派发的授权事实：先于网络返回、永不删除，重启后仍阻止同一尝试再次授权。
+     *
+     * @param attemptId              尝试标识（同时是索引键）
+     * @param actionId               动作标识
+     * @param attemptNo              尝试序号
+     * @param recoveryGeneration     恢复代次
+     * @param planDigest             冻结计划的稳定序列化摘要
+     * @param inputDigest            冻结输入摘要
+     * @param dispatchPosition       授权批次的已确认提交位置
+     * @param dispatchTimeMillis     授权批次的世界时间
+     * @param authorizedAtEpochMillis 宿主许可墙钟（只是审计点，不是提供方物理起点）
+     */
+    public record Dispatch(String attemptId, String actionId, int attemptNo,
+                           long recoveryGeneration, String planDigest, String inputDigest,
+                           long dispatchPosition, long dispatchTimeMillis,
+                           long authorizedAtEpochMillis) {
+
+        private static final java.util.regex.Pattern DIGEST =
+                java.util.regex.Pattern.compile("[0-9a-f]{64}");
+
+        /** 校验身份、序号、位置时间与 64 位小写十六进制摘要。 */
+        public Dispatch {
+            requireText(attemptId, "尝试标识");
+            requireText(actionId, "动作标识");
+            if (attemptNo < 1) {
+                throw new IllegalArgumentException("派发尝试序号从 1 开始：" + attemptNo);
+            }
+            if (recoveryGeneration < 1) {
+                throw new IllegalArgumentException("派发恢复代次从 1 开始：" + recoveryGeneration);
+            }
+            if (planDigest == null || !DIGEST.matcher(planDigest).matches()) {
+                throw new IllegalArgumentException("计划摘要必须是 64 位小写十六进制");
+            }
+            if (inputDigest == null || !DIGEST.matcher(inputDigest).matches()) {
+                throw new IllegalArgumentException("输入摘要必须是 64 位小写十六进制");
+            }
+            if (dispatchPosition < 1) {
+                throw new IllegalArgumentException("派发提交位置必须为正：" + dispatchPosition);
+            }
+            if (dispatchTimeMillis < 0 || authorizedAtEpochMillis < 0) {
+                throw new IllegalArgumentException("派发时间不能为负");
+            }
+        }
+    }
+
     /** 旧代次或重复回执的只读归档；不参与预算结算。 */
     public record Archive(String actionId, String attemptId, int attemptNo, long generation,
                           String body, DecisionModel.Usage usage, String usageSource,
                           String verdict, String reason) {
-
         /** 校验身份字段。 */
         public Archive {
             requireText(actionId, "动作标识");

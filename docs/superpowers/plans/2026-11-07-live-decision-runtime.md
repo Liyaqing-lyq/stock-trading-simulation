@@ -1,0 +1,37 @@
+# B2b 真实模型持久派发与schema10 Plan
+
+目标：将已验收的场景预算接入唯一WorldJournal，在返回一次可执行Call前持久确认派发事实，重启不重发同attempt。真实网络与Web pump属于B2c，本单不使用真实keys。依赖B2a PR28实际CI成功；总体Web基线仍未完成。
+
+## Root裁决
+
+1. 新RunManifest常量RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1="live-decision-world-experiment-v1"、LIVE_DECISIONS_V1="live-decisions-v1"、hasLiveDecisions()。模块严格为旧schema9全部模块加live-decisions:1；新state schema10。仅新manifest配LIVE_HTTP_V1/DEEPSEEK_HTTP，旧1..9继续拒新profile。新开局全部原制造/治理/任职/阅读/分红能力保留，不静默升级旧档或重用旧runId文件。
+2. 生产限RunManifest/DecisionRun/WorldRuntime；DecisionModel保持B2a冻结。DecisionRun尾加@JsonInclude(NON_NULL) Map<String,Dispatch> dispatches，旧4参传null，新live开局empty map。所有with方法保持null或原map。Request尾加nullable Route及旧3参，Call尾加nullable ProviderPlan及旧8参，旧JSON无新键。
+3. Dispatch固定字段：attemptId,actionId,int attemptNo,long recoveryGeneration,String planDigest,String inputDigest,long dispatchPosition,long dispatchTimeMillis,long authorizedAtEpochMillis。索引attemptId；构造核非空/正序号/非负时间/64位小写hex摘要；withDispatch同attempt同事实幂等、异事实拒绝。world runtime内按decisionMapper稳定序列化ProviderPlan再SHA256，不新增平行计划账。
+4. 新公开DispatchResult(String verdict,String reason,DecisionRun.Call call)，仅DISPATCHED带非空call；ALREADY_DISPATCHED/EMPTY/REJECTED均null。dispatchLiveDecision(String commandId,String actionId) throws IOException：要求writer、未暂停、明确live、已begin会话。未知/已终态动作EMPTY；已持久同attempt或同command同action重放ALREADY_DISPATCHED，无新批次且绝不返回旧Call；同command异action抛IAE。其余不可派发返回REJECTED固定原因，不写日志。outstandingLiveDispatches()按持久dispatch及未结算attempt派生。
+5. 派发要求OPEN、最后未结算、当前generation、有plan、非liveBudgetBlocked；run和scene实际在途必须分别低于maxInFlight与最新已观察Route.maxConcurrency。scene取旧plan的稳定sceneId，实际slot/model/output仍冻结。预算已在open/retry预留，不二次扣；不得只用内存map作为派发许可。新DECISION_DISPATCH_V1事件、原命令及含dispatch候选同批commit成功后才放内存DispatchMark并返回一次Call。提交失败暂停，throw且不授权联网；即使磁盘已提交也不能返回Call。
+6. openDecisions在live要求Request.route非null，旧档拒非null，先合法性和身份重放核对再投影；既有action还须原Route相同。同一已确认截止RoleTradingView生成准确input后构造ProviderPlan，避免外部调用方伪造input字节。同batch按原请求顺序使用DecisionModel校预算。四岗输入及工具授权保持。
+7. 旧dispatchDecision只允许scripted，live必须拒，不能旁路。live回执/失败/超时必须有相应已持久dispatch；旧代次回执仍可真实归档，不能借未知attempt制造网络事实。恢复即保守结算旧代次/有界创建新attempt，沿原beginDecisionSession语义；新的attempt需要新的显式派发调用。恢复本身不联网，不把“新attempt可派发”误测为旧attempt重复授权。
+8. validateDecisions隔离旧档plan/dispatch非null，新档全部决定有plan且dispatch map非null，前缀包括plan。派发事实核对应完整attempt身份、plan/input摘要、唯一授权批次位置/世界时间及同事件；不能只校hash。未知额外dispatch及删改历史都拒。
+9. 在现有validateAudits调用链加schema10逐批决定转换审计：从previous及原commandContent/唯一决定领域事件，用原DecisionModel的recover/begin/resume、open、submit/reject、fail函数重建；精确比state/bindings/actionRefs/archives/dispatches及实际result。open的输入/任职来自previous；INTENT复用planAction作DTO校验及ActionRef重建，不能信任候选reason决定是否reject。缺事件/多互斥事件/命令内容与结果不符均拒。无决定领域事件的批次不得改变决定子集。初始帧必须为空live opening。允许提取必要的小型共享转换helper；不要求把全部旧Runtime重构成通用框架，不复制预算算法。
+10. 逐批审计必须包括正常/技术失败/WAIT/INTENT/静态参数拒绝/旧回执归档/身份复用拒绝/session/open/failure/timeout/dispatch。既有审计事件另行绑定原文和时间，不能用快照自报理由冒充原始输入。live无回执failure内容用Jackson生成包含完整身份的安全JSON；旧schema1..9命令原文保持不变。
+11. 时间与真实网络到达期限留B2c：本单的authorizedAt仅宿主许可，不是提供方物理起点；nanoTime不可跨进程恢复。不增加后台线程或从HTTP worker修改world。五scene均可作为纯核计划，Web仅真实有执行映射的场景方可显示connected。
+
+## 验收顺序
+
+- [x] 两个新正式测试类WorldRuntimeLiveDecisionTest、DecisionRunDispatchTest先RED；保留原976测试。必要测试：manifest严格成对/旧档隔离；旧构造及JSON；准确输入冻结/route重放冲突；先持久后返回；同command和同attempt不同command均只授一次；旧入口拒live；未派发回执拒绝；run/scene并发与降cap；全局超额停发；失败不返回Call；重启新attempt须新授权；原dispatch保留；无关批次改决定拒绝；所有转换合法对照和重新签帧篡改拒绝。
+- [x] 最小生产实现、新旧全套绿。真实旧编译4/3/8构造客户端及旧schema9新旧进程交替；三进程真实重启确认旧attempt永不再授权、预算不复原，无网络请求。
+- [x] Root独立边界与真实Hermes冻结源独审；标准verify含GUI/CSV、JavaDoc、评分/接口/证据/总Plan同步。
+- [ ] AI草稿PR、实际CI、人工review待办；随后B2c，完整总体基线继续。
+
+独审反例必须从合法journal完整复制/重签再改目标字段，同时有原日志可恢复对照；不能因为无关缺字段失败就宣称目标已防护。旧9由实际旧二进制生成，不拿新程序的旧schema选项代替旧程序兼容验证。
+
+## 独审准备后的明确口径
+
+- 同command同action即历史重放，即使已产生新attempt，也固定ALREADY_DISPATCHED/call=null/no commit；不得抛错或偷偷改为给新attempt授权。新attempt要新command。
+- stale回执也要求该原attempt有持久dispatch；不存在就拒绝且不归档。已有dispatch的旧代次才可归档。
+- 在途三处口径相同：dispatch引用的attempt未结算；结算立即释放并发，但dispatch历史永不删除，累计预算仍按原attempt核算。
+- dispatches是整个DecisionRun的映射，零尝试终态自身没有dispatch，不能让它清空其它决定历史；新档map非null可以为空。
+- 开局帧等于DecisionModel.open的新零状态（sessionOpen=false，generation=0），begin会话另成下一批。failure完整身份绑定已有dispatch即可，不复制它的位置/时间。
+- 三进程测试应按先begin后重放旧command核没有Call；新attempt的显式新command可以授权。审计条数只统计实际DECISION_AUDIT_V1事件，不等于所有journal帧数。position/快照用于公开观测提交变化，关闭后可用WorldJournal重读完整日志。
+- live决定领域批次不得顺便改经济或世界时间：accounts、securities、exchange、manufacturing、governance、roles、information、trading、dividends、delivered、time/phase保持前帧；pending/usedTaskIds仅INTENT按真实planAction新增那一项；commandContents/outcomes仅该操作规定的原请求/回报（包括业务计划与拒绝幂等键）。新增dispatch批尤其须全状态除规定元数据外保持，不能仅凭现金总额守恒放行同批私转。非决定领域批次仍按各原模块验收，不在本单重构整个世界。
+- 持久命令幂等覆盖已确认的派发命令；EMPTY/REJECTED或同attempt换命令得到的无变化ALREADY不另写一批登记命令别名。后续宿主必须按完整attempt身份生成唯一派发commandId，不复用未获授权的查询命令去隐式跟随重试。核心保证是每个attempt最多一次可执行Call，不声称记录了所有未提交请求。

@@ -70,6 +70,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 分红世界桥：在决定档案之上增加唯一 D0 状态。 */
     private static final int STATE_SCHEMA_DIVIDEND = 9;
+
+    /** live 决定：持久派发事实与冻结场景计划（B2b schema10）。 */
+    private static final int STATE_SCHEMA_LIVE_DECISIONS = 10;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -515,9 +518,14 @@ public final class WorldRuntime implements AutoCloseable {
                         InformationRun.Config information, DecisionModel.Config decisions)
             throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
-        if (decisions != null && decisions.profile() != null) {
-            // 旧档案（schema 1..9）只允许脚本决定；live profile 必须等新的版本化运行桥
+        boolean liveProfile = decisions != null && decisions.profile() != null;
+        if (liveProfile && !manifest.hasLiveDecisions()) {
+            // 旧档案（schema 1..9）只允许脚本决定；live profile 只能配新版本化档案
             throw new IllegalArgumentException("旧规则档案不接受 live 决定配置："
+                    + manifest.rulesVersion());
+        }
+        if (!liveProfile && manifest.hasLiveDecisions()) {
+            throw new IllegalArgumentException("live 决定档案必须提供 LIVE_HTTP_V1 决定配置："
                     + manifest.rulesVersion());
         }
         if (manifest.hasRegistry() && registry == null) {
@@ -2341,9 +2349,9 @@ public final class WorldRuntime implements AutoCloseable {
             }
             ValuationModel.Price reference = null;
             if (manifest.hasDividend()) {
-                reference = ValuationModel.priceOf(ValuationModel.prices(state.position(),
-                        state.timeMillis(), state.exchange(), registry, List.of(symbol),
-                        state.dividends()), symbol);
+                reference = ValuationModel.priceOf(ValuationModel.prices(snap.position(),
+                        snap.timeMillis(), snap.exchange(), registry, List.of(symbol),
+                        snap.dividends()), symbol);
             }
             market.add(new RoleView.Market(symbol,
                     lastTrade == null ? null : lastTrade.price(),
@@ -2728,6 +2736,14 @@ public final class WorldRuntime implements AutoCloseable {
             requireText(request.personPartyId(), "人物");
             requireText(request.actionId(), "动作标识");
             requireText(request.wakeReason(), "唤醒原因");
+            if (decisionConfig.live() && request.route() == null) {
+                throw new IllegalArgumentException("live 请求必须提供场景路由："
+                        + request.actionId());
+            }
+            if (!decisionConfig.live() && request.route() != null) {
+                throw new IllegalArgumentException("旧档案请求不得携带场景路由："
+                        + request.actionId());
+            }
             if (!persons.add(request.personPartyId())) {
                 throw new IllegalArgumentException("同一批不得给同一人物两个决定："
                         + request.personPartyId());
@@ -2741,7 +2757,9 @@ public final class WorldRuntime implements AutoCloseable {
             DecisionModel.Decision existing = DecisionModel.decision(run.state(),
                     request.actionId()).orElse(null);
             if (existing != null && (!existing.personPartyId().equals(request.personPartyId())
-                    || !existing.wakeReason().equals(request.wakeReason()))) {
+                    || !existing.wakeReason().equals(request.wakeReason())
+                    || !Objects.equals(existing.plan() == null ? null : existing.plan().route(),
+                            request.route()))) {
                 throw new IllegalArgumentException("同一动作标识不能对应不同请求："
                         + request.actionId());
             }
@@ -2777,10 +2795,14 @@ public final class WorldRuntime implements AutoCloseable {
             List<String> tools = allowedToolsOf(view);
             String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
                     pendingActionsAt(state, run, request.personPartyId()), tools, decisionConfig);
+            DecisionModel.ProviderPlan plan = decisionConfig.live()
+                    ? new DecisionModel.ProviderPlan(request.route(),
+                            input.getBytes(java.nio.charset.StandardCharsets.UTF_8).length)
+                    : null;
             DecisionModel.OpenRequest openRequest = new DecisionModel.OpenRequest(
                     model.runId(), request.actionId(), request.personPartyId(),
                     request.wakeReason(), cutoffTime, cutoffPosition, cutoffTime,
-                    DecisionRun.TOOL_CONTRACT_VERSION, tools, input);
+                    DecisionRun.TOOL_CONTRACT_VERSION, tools, input, plan);
             DecisionModel.Result result = DecisionModel.openDecision(model, openRequest,
                     cutoffPosition, cutoffTime);
             switch (result.verdict()) {
@@ -2879,6 +2901,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (reply.recoveryGeneration() != attempt.recoveryGeneration()) {
             return "REJECTED:GENERATION_MISMATCH";
         }
+        if (run.state().config().live() && run.dispatch(reply.attemptId()) == null) {
+            // 没有已持久派发事实的回执（含旧代次）不得制造提供方事实或归档
+            return "REJECTED:NO_DISPATCH";
+        }
         if (reply.recoveryGeneration() != run.state().recoveryGeneration()) {
             return archiveStale(commandId, content, run, reply, attempt, receipt);
         }
@@ -2933,7 +2959,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         PlacedAction placed;
         try {
-            placed = planAction(binding, recorded, accepted, null);
+            placed = planAction(binding, recorded, accepted, null, state);
         } catch (IOException | RuntimeException failure) {
             // 静态参数失败必须落在**原未消费状态**上：不能先持久 RECORDED 再改回。
             DecisionModel.Result rejected = DecisionModel.rejectReply(run.state(), reply,
@@ -3103,6 +3129,190 @@ public final class WorldRuntime implements AutoCloseable {
                 state.information(), state.trading(), candidate);
     }
 
+    /** live 派发结果：只有 {@code DISPATCHED} 带非空 Call，其余一律 null。 */
+    public record DispatchResult(String verdict, String reason, DecisionRun.Call call) {
+    }
+
+    /**
+     * live 派发：先持久确认派发事实，成功后只返回一次可执行 Call。
+     *
+     * <p>授权只发生一次：同一命令同 action 重放、或同一 attempt 已有派发事实，都只返回
+     * {@code ALREADY_DISPATCHED} 且 call 为 null；未知或已终态动作为 {@code EMPTY}；
+     * 其余不可派发返回 {@code REJECTED} 固定原因，均不写日志。提交失败则抛出且绝不返回 Call。</p>
+     *
+     * @param commandId 可信宿主命令标识；同标识同内容重放返回原结果
+     * @param actionId  动作标识
+     * @return 派发结果
+     * @throws IOException 持久提交失败；此时不授权任何调用
+     */
+    public synchronized DispatchResult dispatchLiveDecision(String commandId, String actionId)
+            throws IOException {
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireDecisionsEnabled();
+        requireLiveDecisions();
+        requireDecisionGate();
+        requireText(commandId, "命令标识");
+        requireText(actionId, "动作标识");
+        DecisionRun run = requireDecisions();
+        String internalCommand = "dec-dispatch:" + commandId;
+        String content = dispatchCommandContent(actionId);
+        String replay = decisionCommandResult(internalCommand, content);
+        if (replay != null) {
+            return new DispatchResult("ALREADY_DISPATCHED", "", null);
+        }
+        DecisionModel.Decision decision = DecisionModel.decision(run.state(), actionId)
+                .orElse(null);
+        if (decision == null || decision.status() != DecisionModel.Status.OPEN
+                || decision.lastAttempt().settledDone()) {
+            return new DispatchResult("EMPTY", "", null);
+        }
+        DecisionModel.Attempt attempt = decision.lastAttempt();
+        if (decision.plan() == null) {
+            return new DispatchResult("REJECTED", "NO_PLAN", null);
+        }
+        if (attempt.recoveryGeneration() != run.state().recoveryGeneration()) {
+            return new DispatchResult("REJECTED", "STALE_GENERATION", null);
+        }
+        if (run.dispatch(attempt.attemptId()) != null) {
+            return new DispatchResult("ALREADY_DISPATCHED", "", null);
+        }
+        if (DecisionModel.liveBudgetBlocked(run.state())) {
+            return new DispatchResult("REJECTED", "LIVE_BUDGET_BLOCKED", null);
+        }
+        if (outstandingDispatches(run, null) >= decisionConfig.limits().maxInFlight()) {
+            return new DispatchResult("REJECTED", "MAX_IN_FLIGHT", null);
+        }
+        String sceneId = decision.plan().route().sceneId();
+        if (outstandingDispatches(run, sceneId) >= latestSceneConcurrency(run.state(), sceneId)) {
+            return new DispatchResult("REJECTED", "SCENE_CONCURRENCY", null);
+        }
+        long position = state.position() + 1L;
+        DecisionRun.Dispatch fact = new DecisionRun.Dispatch(attempt.attemptId(), actionId,
+                attempt.attemptNo(), attempt.recoveryGeneration(), planDigest(decision.plan()),
+                decision.inputDigest(), position, state.timeMillis(),
+                System.currentTimeMillis());
+        String outcome = "DISPATCHED:" + attempt.attemptId();
+        DecisionRun candidate = run.withDispatch(fact);
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(internalCommand, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        outcomes.put(internalCommand, outcome);
+        WorldState world = next(state.timeMillis(), state.lastPhase(), state.accounts(),
+                state.pending(), state.delivered(), state.usedTaskIds(), contents, outcomes,
+                state.securities(), state.exchange(), state.manufacturing(), state.governance(),
+                state.roles(), state.information(), state.trading(), candidate);
+        List<WorldEvent> events = List.of(new WorldEvent("dec-dispatch:" + commandId,
+                "DECISION_DISPATCH_V1", mapper.writeValueAsString(fact)));
+        commitAndApply(internalCommand, content, outcome, events, world);
+        decisionInFlight.put(attempt.attemptId(),
+                new DispatchMark(System.nanoTime(), System.currentTimeMillis()));
+        return new DispatchResult("DISPATCHED", "", new DecisionRun.Call(state.runId(),
+                decision.actionId(), attempt.attemptId(), attempt.attemptNo(),
+                attempt.recoveryGeneration(), decision.wakeReason(), decision.allowedTools(),
+                decision.inputText(), decision.plan()));
+    }
+
+    /**
+     * 已持久派发且尝试仍未结算的条数；只从决定与派发事实派生，跨重启保留。
+     *
+     * @return 实际在途派发数
+     */
+    public synchronized int outstandingLiveDispatches() {
+        requireOpen();
+        if (state.decisions() == null || !state.decisions().state().config().live()) {
+            return 0;
+        }
+        return outstandingDispatches(state.decisions(), null);
+    }
+
+    /** 派发命令原文：只含动作标识，不含任何凭据。 */
+    private String dispatchCommandContent(String actionId) throws IOException {
+        com.fasterxml.jackson.databind.node.ObjectNode node = mapper.createObjectNode();
+        node.put("actionId", actionId);
+        return mapper.writeValueAsString(node);
+    }
+
+    /** live 无回执失败/超时的命令原文：Jackson 生成，含完整尝试身份。 */
+    private record LiveFailureContent(String actionId, String attemptId, int attemptNo,
+                                      long recoveryGeneration, String reason) {
+
+        LiveFailureContent {
+            requireText(actionId, "动作标识");
+            requireText(attemptId, "尝试标识");
+            requireText(reason, "失败原因");
+            if (attemptNo < 1 || recoveryGeneration < 1) {
+                throw new IllegalArgumentException("失败身份序号必须从 1 开始");
+            }
+        }
+    }
+
+    /** 旧 schema1..9 的无回执失败原文：保持原字节形状，不新增字段。 */
+    private static String legacyFailureContent(String actionId, String attemptId, String reason) {
+        return "{\"actionId\":\"" + actionId + "\",\"attemptId\":\"" + attemptId
+                + "\",\"reason\":\"" + reason + "\"}";
+    }
+
+    /** live 失败原文：安全转义并绑定完整尝试身份。 */
+    private String liveFailureContent(String actionId, int attemptNo, String attemptId,
+                                      long recoveryGeneration, String reason)
+            throws IOException {
+        return decisionMapper.writeValueAsString(new LiveFailureContent(actionId, attemptId,
+                attemptNo, recoveryGeneration, reason));
+    }
+
+    /** 已持久派发且未结算的条数；sceneId 非空时只数该场景。 */
+    private static int outstandingDispatches(DecisionRun run, String sceneId) {
+        if (run.dispatches() == null) {
+            return 0;
+        }
+        int count = 0;
+        for (DecisionRun.Dispatch fact : run.dispatches().values()) {
+            DecisionModel.Decision decision = DecisionModel.decision(run.state(), fact.actionId())
+                    .orElse(null);
+            if (decision == null) {
+                continue;
+            }
+            if (sceneId != null && (decision.plan() == null
+                    || !sceneId.equals(decision.plan().route().sceneId()))) {
+                continue;
+            }
+            DecisionModel.Attempt attempt = attemptOf(run.state(), fact.actionId(),
+                    fact.attemptId());
+            if (attempt != null && !attempt.settledDone()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** 场景并发上限取该场景最新已观察 Route；没有路由即运行状态损坏。 */
+    private static int latestSceneConcurrency(DecisionModel.State model, String sceneId) {
+        return DecisionModel.latestRoute(model, sceneId)
+                .orElseThrow(() -> new IllegalStateException("场景没有可观察路由：" + sceneId))
+                .maxConcurrency();
+    }
+
+    /** 冻结计划的稳定摘要：strict mapper 序列化 ProviderPlan 后取 SHA-256。 */
+    private String planDigest(DecisionModel.ProviderPlan plan) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(decisionMapper.writeValueAsBytes(plan)));
+        } catch (IOException | java.security.NoSuchAlgorithmException failure) {
+            throw new IllegalStateException("无法计算计划摘要", failure);
+        }
+    }
+
+    /** live 档案才允许持久派发。 */
+    private void requireLiveDecisions() {
+        if (!manifest.hasLiveDecisions() || state.decisions() == null
+                || !state.decisions().state().config().live()) {
+            throw new IllegalStateException("当前运行未启用 live 决定派发："
+                    + manifest.rulesVersion());
+        }
+    }
+
     /**
      * 派发一次调用：只返回程序绑定的身份与冻结输入，不写盘、不推进世界时间。
      * 同一尝试重复派发返回同一描述；并发派发受 {@code maxInFlight} 限制。
@@ -3115,6 +3325,9 @@ public final class WorldRuntime implements AutoCloseable {
         requireWriter();
         requireDecisionsEnabled();
         requireDecisionGate();
+        if (state.decisions().state().config().live()) {
+            throw new IllegalStateException("live 决定必须走 dispatchLiveDecision 持久派发");
+        }
         if (paused) {
             throw new IllegalStateException("运行已暂停，不接受新的派发");
         }
@@ -3227,6 +3440,11 @@ public final class WorldRuntime implements AutoCloseable {
         requireNotPaused();
         DecisionRun run = requireDecisions();
         DecisionModel.Attempt failed = attemptOf(run.state(), actionId, attemptId);
+        if (failed != null && decisionConfig.live() && run.dispatch(attemptId) == null) {
+            // 未持久派发的尝试不得借失败入口制造提供方事实
+            decisionInFlight.remove(attemptId);
+            return "REJECTED:NO_DISPATCH";
+        }
         DecisionModel.Result result = DecisionModel.failAttempt(run.state(), actionId, attemptNo,
                 attemptId, recoveryGeneration, reason);
         if (result.verdict() != DecisionModel.Verdict.ACCEPTED) {
@@ -3237,8 +3455,10 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalStateException("已结算失败缺少对应尝试：" + attemptId);
         }
         DecisionRun candidate = run.withState(result.state());
-        String content = "{\"actionId\":\"" + actionId + "\",\"attemptId\":\"" + attemptId
-                + "\",\"reason\":\"" + reason + "\"}";
+        String content = decisionConfig.live()
+                ? liveFailureContent(actionId, failed.attemptNo(), attemptId,
+                        failed.recoveryGeneration(), reason)
+                : legacyFailureContent(actionId, attemptId, reason);
         WorldState world = next(state.timeMillis(), state.lastPhase(), state.accounts(),
                 state.pending(), state.delivered(), state.usedTaskIds(), state.commandContents(),
                 state.commandOutcomes(), state.securities(), state.exchange(),
@@ -3346,8 +3566,10 @@ public final class WorldRuntime implements AutoCloseable {
                 continue;
             }
             DecisionRun candidate = run.withState(result.state());
-            String content = "{\"actionId\":\"" + decision.actionId() + "\",\"attemptId\":\""
-                    + attemptId + "\",\"reason\":\"TIMEOUT\"}";
+            String content = decisionConfig.live()
+                    ? liveFailureContent(decision.actionId(), attempt.attemptNo(), attemptId,
+                            attempt.recoveryGeneration(), "TIMEOUT")
+                    : legacyFailureContent(decision.actionId(), attemptId, "TIMEOUT");
             WorldState world = next(state.timeMillis(), state.lastPhase(), state.accounts(),
                     state.pending(), state.delivered(), state.usedTaskIds(),
                     state.commandContents(), state.commandOutcomes(), state.securities(),
@@ -3501,7 +3723,8 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private PlacedAction planAction(DecisionRun.Binding binding,
                                     DecisionModel.Decision recorded,
-                                    DecisionModel.State model, String forcedTaskId)
+                                    DecisionModel.State model, String forcedTaskId,
+                                    WorldState base)
             throws IOException {
         String tool = recorded.recordedTool();
         if (DecisionModel.TOOL_WAIT.equals(tool)) {
@@ -3570,7 +3793,7 @@ public final class WorldRuntime implements AutoCloseable {
             default -> throw new IOException("未知业务工具：" + tool);
         }
         long dueMillis = DecisionModel.actionDueMillis(model, recorded.actionId());
-        String taskId = forcedTaskId != null ? forcedTaskId : freeTaskId(
+        String taskId = forcedTaskId != null ? forcedTaskId : freeTaskId(base,
                 DecisionRun.actionTaskId(recorded.actionId()));
         String commandId = DecisionRun.actionCommandId(recorded.actionId());
         RoleActionPayload payload = new RoleActionPayload(commandId, recorded.actionId(),
@@ -3600,20 +3823,20 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 确定性找空闲任务标识：基名被占时追加后缀，仍保留原动作标识。 */
-    private String freeTaskId(String base) {
-        String candidate = base;
+    private static String freeTaskId(WorldState base, String baseId) {
+        String candidate = baseId;
         int suffix = 1;
-        while (takenTaskId(candidate)) {
-            candidate = base + "-" + (++suffix);
+        while (takenTaskId(base, candidate)) {
+            candidate = baseId + "-" + (++suffix);
         }
         return candidate;
     }
 
-    private boolean takenTaskId(String taskId) {
-        if (state.usedTaskIds().contains(taskId)) {
+    private static boolean takenTaskId(WorldState base, String taskId) {
+        if (base.usedTaskIds().contains(taskId)) {
             return true;
         }
-        for (PendingTask task : state.pending()) {
+        for (PendingTask task : base.pending()) {
             if (task.taskId().equals(taskId)) {
                 return true;
             }
@@ -3649,6 +3872,29 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (!run.state().config().equals(decisionConfig)) {
             throw new IOException("决定配置与冻结开局不一致");
+        }
+        boolean liveSchema = expectedSchema() >= STATE_SCHEMA_LIVE_DECISIONS;
+        if (liveSchema) {
+            if (!run.state().config().live()) {
+                throw new IOException("live 档案必须使用 live 决定配置");
+            }
+            if (run.dispatches() == null) {
+                throw new IOException("live 档案必须有派发映射");
+            }
+            for (DecisionModel.Decision decision : run.state().decisions()) {
+                if (decision.plan() == null) {
+                    throw new IOException("live 决定必须冻结计划：" + decision.actionId());
+                }
+            }
+        } else {
+            for (DecisionModel.Decision decision : run.state().decisions()) {
+                if (decision.plan() != null) {
+                    throw new IOException("旧档案不得包含场景计划：" + decision.actionId());
+                }
+            }
+            if (run.dispatches() != null) {
+                throw new IOException("旧档案不得包含派发事实");
+            }
         }
         if (!run.state().config().live()) {
             for (DecisionRun.Archive archive : run.archives()) {
@@ -3723,6 +3969,7 @@ public final class WorldRuntime implements AutoCloseable {
                 validateReopenedInput(previous, run, decision, binding);
             }
         }
+        validateDispatchFacts(candidate, run, previous == null ? null : previous.decisions());
         if (!run.bindings().keySet().equals(decisionIds)) {
             throw new IOException("观察绑定必须与决定逐项对应");
         }
@@ -3740,7 +3987,7 @@ public final class WorldRuntime implements AutoCloseable {
                     ref.actionId()).orElseThrow(() -> new IOException(
                             "动作引用指向不存在的决定：" + ref.actionId()));
             PlacedAction replanned = planAction(run.binding(ref.actionId()), decision,
-                    run.state(), ref.taskId());
+                    run.state(), ref.taskId(), candidate);
             if (!ref.tool().equals(replanned.tool()) || ref.dueMillis() != replanned.dueMillis()
                     || !replanned.payloadJson().equals(candidate.commandContents().get(replanned.commandId()))
                     || !("SCHEDULED:" + ref.actionId()).equals(candidate.commandOutcomes().get(replanned.commandId()))) {
@@ -3761,6 +4008,578 @@ public final class WorldRuntime implements AutoCloseable {
                 throw new IOException("已记录意图缺少待办或准确完成回报：" + ref.actionId());
             }
         }
+    }
+
+    /**
+     * 派发事实与决定/尝试/计划逐项核验：身份、摘要、授权位置与世界时间、唯一性，历史只增不改。
+     */
+    private void validateDispatchFacts(WorldState candidate, DecisionRun run, DecisionRun before)
+            throws IOException {
+        if (run.dispatches() == null) {
+            return;
+        }
+        Set<Long> positions = new HashSet<>();
+        for (DecisionRun.Dispatch fact : run.dispatches().values()) {
+            DecisionModel.Decision decision = DecisionModel.decision(run.state(), fact.actionId())
+                    .orElse(null);
+            if (decision == null) {
+                throw new IOException("派发事实指向不存在的决定：" + fact.attemptId());
+            }
+            if (decision.plan() == null) {
+                throw new IOException("派发事实缺少冻结计划：" + fact.attemptId());
+            }
+            DecisionModel.Attempt attempt = attemptOf(run.state(), fact.actionId(),
+                    fact.attemptId());
+            if (attempt == null || attempt.attemptNo() != fact.attemptNo()
+                    || attempt.recoveryGeneration() != fact.recoveryGeneration()) {
+                throw new IOException("派发事实与尝试身份不一致：" + fact.attemptId());
+            }
+            if (!decision.inputDigest().equals(fact.inputDigest())
+                    || !attempt.inputDigest().equals(fact.inputDigest())) {
+                throw new IOException("派发事实的输入摘要与决定不一致：" + fact.attemptId());
+            }
+            if (!planDigest(decision.plan()).equals(fact.planDigest())) {
+                throw new IOException("派发事实的计划摘要与冻结计划不一致：" + fact.attemptId());
+            }
+            if (fact.dispatchPosition() > candidate.position()
+                    || fact.dispatchTimeMillis() > candidate.timeMillis()) {
+                throw new IOException("派发事实出现在未来的位置或时点：" + fact.attemptId());
+            }
+            if (!positions.add(fact.dispatchPosition())) {
+                throw new IOException("同一提交位置出现多条派发事实：" + fact.dispatchPosition());
+            }
+            if (before != null && before.dispatch(fact.attemptId()) != null
+                    && !before.dispatch(fact.attemptId()).equals(fact)) {
+                throw new IOException("派发事实被改写：" + fact.attemptId());
+            }
+        }
+        if (before != null && before.dispatches() != null) {
+            for (DecisionRun.Dispatch fact : before.dispatches().values()) {
+                if (!fact.equals(run.dispatch(fact.attemptId()))) {
+                    throw new IOException("历史派发事实被删除或改写：" + fact.attemptId());
+                }
+            }
+        }
+    }
+
+    /** 一次决定批次的期望候选：决定子集与操作规定的四类元数据。 */
+    private record DecisionBatch(DecisionRun decisions, List<PendingTask> pending,
+                                 Set<String> usedTaskIds, Map<String, String> commandContents,
+                                 Map<String, String> commandOutcomes, String outcome) {
+    }
+
+    private static DecisionBatch batchWithCommand(WorldState previous, DecisionRun decisions,
+                                                  String commandId, String content,
+                                                  String outcome, boolean addCommand) {
+        Map<String, String> contents = new TreeMap<>(previous.commandContents());
+        Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+        if (addCommand) {
+            contents.put(commandId, content);
+            outcomes.put(commandId, outcome);
+        }
+        return new DecisionBatch(decisions, previous.pending(), previous.usedTaskIds(),
+                contents, outcomes, outcome);
+    }
+
+    /** 会改变决定子集的领域事件；审计要求每批至多一个。 */
+    private static final List<String> MUTATING_DECISION_EVENTS = List.of(
+            "DECISION_SESSION_OPEN_V1", "DECISION_OPENED_V1", "DECISION_REPLIED_V1",
+            "DECISION_ACTION_SCHEDULED_V1", "DECISION_FAILED_V1", "DECISION_TIMEOUT_V1",
+            "DECISION_STALE_ARCHIVED_V1", "DECISION_DISPATCH_V1");
+
+    /**
+     * schema10 逐批决定转换审计：从 previous 与原命令/唯一决定领域事件重建期望候选，
+     * 精确比较决定子集与规定元数据，并禁止决定批次改经济、时间或无关状态。
+     */
+    private void validateDecisionFrame(WorldCommit commit, WorldState candidate,
+                                       WorldState previous) throws IOException {
+        if (expectedSchema() < STATE_SCHEMA_LIVE_DECISIONS) {
+            return;
+        }
+        if (previous == null) {
+            DecisionRun expectedOpening = DecisionRun.opening(manifest.runId(), seed,
+                    decisionConfig);
+            if (!expectedOpening.equals(candidate.decisions())) {
+                throw new IOException("live 开局必须等于 DecisionModel.open 的未接续空状态");
+            }
+            return;
+        }
+        List<WorldEvent> mutating = new ArrayList<>();
+        int auditCount = 0;
+        for (WorldEvent event : commit.events()) {
+            if (MUTATING_DECISION_EVENTS.contains(event.type())) {
+                mutating.add(event);
+            }
+            if (DECISION_AUDIT_V1.equals(event.type())) {
+                auditCount++;
+            }
+        }
+        if (mutating.isEmpty() && auditCount == 0) {
+            if (!Objects.equals(candidate.decisions(), previous.decisions())) {
+                throw new IOException("无决定领域事件的批次不得改变决定子集或派发事实");
+            }
+            return;
+        }
+        if (mutating.size() > 1) {
+            throw new IOException("同一批次出现多个互斥决定领域事件");
+        }
+        int expectedAudits = mutating.isEmpty() || List.of("DECISION_REPLIED_V1",
+                "DECISION_ACTION_SCHEDULED_V1", "DECISION_FAILED_V1", "DECISION_TIMEOUT_V1",
+                "DECISION_STALE_ARCHIVED_V1").contains(mutating.get(0).type()) ? 1 : 0;
+        if (auditCount != expectedAudits) {
+            throw new IOException("决定批次的审计数量与操作不一致");
+        }
+        DecisionBatch expected = mutating.isEmpty() ? expectedIdentityRejection(previous, commit)
+                : expectedDecisionBatch(previous, commit, mutating.get(0));
+        if (!expected.decisions().equals(candidate.decisions())
+                || !expected.pending().equals(candidate.pending())
+                || !expected.usedTaskIds().equals(candidate.usedTaskIds())
+                || !expected.commandContents().equals(candidate.commandContents())
+                || !expected.commandOutcomes().equals(candidate.commandOutcomes())
+                || !expected.outcome().equals(commit.result())) {
+            throw new IOException("决定批次与从原命令重建的转换不一致");
+        }
+        if (candidate.timeMillis() != previous.timeMillis()
+                || !candidate.lastPhase().equals(previous.lastPhase())
+                || !candidate.accounts().equals(previous.accounts())
+                || !Objects.equals(candidate.securities(), previous.securities())
+                || !Objects.equals(candidate.exchange(), previous.exchange())
+                || !Objects.equals(candidate.manufacturing(), previous.manufacturing())
+                || !Objects.equals(candidate.governance(), previous.governance())
+                || !Objects.equals(candidate.roles(), previous.roles())
+                || !Objects.equals(candidate.information(), previous.information())
+                || !Objects.equals(candidate.trading(), previous.trading())
+                || !Objects.equals(candidate.dividends(), previous.dividends())
+                || !candidate.delivered().equals(previous.delivered())) {
+            throw new IOException("决定批次不得改经济、时间或非规定状态");
+        }
+    }
+
+    /** 身份复用拒绝只新增两个幂等索引；同样执行完整批次隔离校验。 */
+    private DecisionBatch expectedIdentityRejection(WorldState previous, WorldCommit commit)
+            throws IOException {
+        DecisionModel.Reply reply = decisionMapper.readValue(commit.commandContent(),
+                DecisionModel.Reply.class);
+        DecisionRun run = previous.decisions();
+        DecisionModel.Attempt attempt = attemptOf(run.state(), reply.actionId(), reply.attemptId());
+        String rejectId = "dec-reject:" + sha256Hex(commit.commandContent());
+        if (!commit.commandId().startsWith("dec-reply:")
+                || !run.state().runId().equals(reply.runId())
+                || attempt == null || !attempt.settledDone()
+                || attempt.attemptNo() != reply.attemptNo()
+                || attempt.recoveryGeneration() != reply.recoveryGeneration()
+                || reply.recoveryGeneration() != run.state().recoveryGeneration()
+                || run.dispatch(reply.attemptId()) == null
+                || previous.commandContents().containsKey(commit.commandId())
+                || previous.commandContents().containsKey(rejectId)
+                || (attempt.replyReceived() && attempt.replyBody().equals(reply.body())
+                    && Objects.equals(attempt.declaredUsage(), reply.usage())
+                    && attempt.usageSource().equals(reply.usageSource()))) {
+            throw new IOException("身份复用拒绝无法由此前尝试与原回执重建");
+        }
+        String outcome = "REJECTED:IDENTITY_REUSE";
+        Map<String, String> contents = new TreeMap<>(previous.commandContents());
+        Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+        for (String id : List.of(rejectId, commit.commandId())) {
+            contents.put(id, commit.commandContent());
+            outcomes.put(id, outcome);
+        }
+        return new DecisionBatch(run, previous.pending(), previous.usedTaskIds(), contents,
+                outcomes, outcome);
+    }
+
+    private DecisionBatch expectedDecisionBatch(WorldState previous, WorldCommit commit,
+                                                WorldEvent event) throws IOException {
+        return switch (event.type()) {
+            case "DECISION_SESSION_OPEN_V1" -> expectedSessionOpen(previous, commit, event);
+            case "DECISION_OPENED_V1" -> expectedOpen(previous, commit, event);
+            case "DECISION_REPLIED_V1" -> expectedReply(previous, commit, event, false);
+            case "DECISION_ACTION_SCHEDULED_V1" -> expectedReply(previous, commit, event, true);
+            case "DECISION_FAILED_V1" -> expectedFailure(previous, commit, event, false);
+            case "DECISION_TIMEOUT_V1" -> expectedFailure(previous, commit, event, true);
+            case "DECISION_STALE_ARCHIVED_V1" -> expectedArchive(previous, commit, event);
+            case "DECISION_DISPATCH_V1" -> expectedDispatch(previous, commit, event);
+            default -> throw new IOException("未知决定领域事件：" + event.type());
+        };
+    }
+
+    private DecisionBatch expectedSessionOpen(WorldState previous, WorldCommit commit,
+                                              WorldEvent event) throws IOException {
+        if (!commit.commandId().startsWith("dec-session:")) {
+            throw new IOException("会话批次命令前缀不符：" + commit.commandId());
+        }
+        DecisionRun run = previous.decisions();
+        DecisionModel.State raw = run.state();
+        DecisionModel.State ready = raw.sessionOpen() ? DecisionModel.recover(raw) : raw;
+        DecisionModel.Result begun = DecisionModel.beginSession(ready);
+        if (begun.verdict() != DecisionModel.Verdict.ACCEPTED) {
+            throw new IOException("无法重建会话接续：" + begun.reason());
+        }
+        DecisionModel.State model = begun.state();
+        for (DecisionModel.Decision decision : resumeOrder(model)) {
+            DecisionModel.Result resumed = DecisionModel.resumeDecision(model,
+                    decision.actionId());
+            if (resumed.verdict() == DecisionModel.Verdict.ACCEPTED) {
+                model = resumed.state();
+            }
+        }
+        String content = "{\"generation\":" + model.recoveryGeneration() + "}";
+        String outcome = "SESSION_OPEN:" + model.recoveryGeneration();
+        if (!content.equals(commit.commandContent()) || !outcome.equals(commit.result())
+                || !content.equals(event.payload())) {
+            throw new IOException("会话批次原文或回报与重建不一致");
+        }
+        return batchWithCommand(previous, run.withState(model), commit.commandId(), content,
+                outcome, true);
+    }
+
+    private DecisionBatch expectedOpen(WorldState previous, WorldCommit commit, WorldEvent event)
+            throws IOException {
+        if (!commit.commandId().startsWith("dec-open:")) {
+            throw new IOException("开决定批次命令前缀不符：" + commit.commandId());
+        }
+        List<DecisionRun.Request> requests;
+        try {
+            requests = mapper.readValue(commit.commandContent(), mapper.getTypeFactory()
+                    .constructCollectionType(List.class, DecisionRun.Request.class));
+        } catch (IOException invalid) {
+            throw new IOException("开决定命令原文不合法", invalid);
+        }
+        if (requests.isEmpty()) {
+            throw new IOException("开决定批次不得为空");
+        }
+        DecisionRun run = previous.decisions();
+        long cutoffPosition = previous.position();
+        long cutoffTime = previous.timeMillis();
+        Set<String> persons = new LinkedHashSet<>();
+        Set<String> newPersons = new LinkedHashSet<>();
+        Set<String> actionIds = new LinkedHashSet<>();
+        for (DecisionRun.Request request : requests) {
+            requireText(request.personPartyId(), "人物");
+            requireText(request.actionId(), "动作标识");
+            requireText(request.wakeReason(), "唤醒原因");
+            if (request.route() == null) {
+                throw new IOException("live 开决定必须提供场景路由：" + request.actionId());
+            }
+            if (!persons.add(request.personPartyId())) {
+                throw new IOException("同一批给同一人物两个决定：" + request.personPartyId());
+            }
+            if (!actionIds.add(request.actionId())) {
+                throw new IOException("同一批复用动作标识：" + request.actionId());
+            }
+            if (!decisionConfig.thinkMillisByWake().containsKey(request.wakeReason())) {
+                throw new IOException("未知唤醒原因：" + request.wakeReason());
+            }
+            DecisionModel.Decision existing = DecisionModel.decision(run.state(),
+                    request.actionId()).orElse(null);
+            if (existing != null && (!existing.personPartyId().equals(request.personPartyId())
+                    || !existing.wakeReason().equals(request.wakeReason())
+                    || existing.plan() == null
+                    || !existing.plan().route().equals(request.route()))) {
+                throw new IOException("同一动作标识对应不同请求：" + request.actionId());
+            }
+            if (existing == null) {
+                newPersons.add(request.personPartyId());
+            }
+        }
+        for (String person : newPersons) {
+            for (DecisionModel.Decision decision : run.state().decisions()) {
+                if (decision.personPartyId().equals(person)
+                        && decision.status() == DecisionModel.Status.OPEN) {
+                    throw new IOException("同一人物至多一个未解决决定：" + person);
+                }
+            }
+        }
+        Optional<DecisionModel.Decision> barrier = DecisionModel.earliestBarrier(run.state());
+        if (!newPersons.isEmpty() && barrier.isPresent()
+                && cutoffTime >= barrier.get().barrierAtMillis()) {
+            throw new IOException("未解决屏障之前不能建立新的观察");
+        }
+        DecisionRun candidate = run;
+        DecisionModel.State model = run.state();
+        int opened = 0;
+        int created = 0;
+        for (DecisionRun.Request request : requests) {
+            if (DecisionModel.decision(model, request.actionId()).isPresent()) {
+                continue;
+            }
+            WorldRoleSession session = openRoleSessionAt(previous, request.personPartyId(),
+                    cutoffTime);
+            RoleTradingView view = roleTradingViewAt(previous, session);
+            List<String> tools = allowedToolsOf(view);
+            String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
+                    pendingActionsAt(previous, run, request.personPartyId()), tools,
+                    decisionConfig);
+            DecisionModel.ProviderPlan plan = new DecisionModel.ProviderPlan(request.route(),
+                    input.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+            DecisionModel.OpenRequest openRequest = new DecisionModel.OpenRequest(model.runId(),
+                    request.actionId(), request.personPartyId(), request.wakeReason(), cutoffTime,
+                    cutoffPosition, cutoffTime, DecisionRun.TOOL_CONTRACT_VERSION, tools, input,
+                    plan);
+            DecisionModel.Result result = DecisionModel.openDecision(model, openRequest,
+                    cutoffPosition, cutoffTime);
+            switch (result.verdict()) {
+                case ACCEPTED, BUDGET_EXHAUSTED -> {
+                    model = result.state();
+                    candidate = candidate.withState(model).withBinding(new DecisionRun.Binding(
+                            request.actionId(), request.personPartyId(), request.wakeReason(),
+                            session.appointments()));
+                    created++;
+                    if (result.verdict() == DecisionModel.Verdict.ACCEPTED) {
+                        opened++;
+                    }
+                }
+                case DUPLICATE -> {
+                }
+                default -> throw new IOException("无法重建开决定：" + result.reason());
+            }
+        }
+        if (created == 0) {
+            throw new IOException("持久化开决定批次必须新建决定");
+        }
+        String outcome = "DECIDING:" + opened;
+        if (!outcome.equals(commit.result())
+                || !commit.commandContent().equals(event.payload())) {
+            throw new IOException("开决定批次原文或回报与重建不一致");
+        }
+        return batchWithCommand(previous, candidate, commit.commandId(), commit.commandContent(),
+                outcome, true);
+    }
+
+    private DecisionBatch expectedReply(WorldState previous, WorldCommit commit, WorldEvent event,
+                                        boolean requireIntent) throws IOException {
+        if (!commit.commandId().startsWith("dec-reply:")) {
+            throw new IOException("回执批次命令前缀不符：" + commit.commandId());
+        }
+        DecisionModel.Reply reply;
+        try {
+            reply = decisionMapper.readValue(commit.commandContent(), DecisionModel.Reply.class);
+        } catch (IOException invalid) {
+            throw new IOException("回执命令原文不合法", invalid);
+        }
+        DecisionRun run = previous.decisions();
+        DecisionModel.Result result = DecisionModel.submitReply(run.state(), reply);
+        if (result.verdict() != DecisionModel.Verdict.ACCEPTED) {
+            throw new IOException("回执无法由原命令重建：" + result.reason());
+        }
+        DecisionModel.Decision recorded = result.decision();
+        DecisionRun withState = run.withState(result.state());
+        if (recorded.outcome() == DecisionModel.Outcome.INTENT) {
+            DecisionRun.Binding binding = run.binding(recorded.actionId());
+            if (binding == null) {
+                throw new IOException("意图缺少观察绑定：" + recorded.actionId());
+            }
+            PlacedAction placed = null;
+            Throwable dtoFailure = null;
+            try {
+                placed = planAction(binding, recorded, result.state(), null, previous);
+            } catch (IOException | RuntimeException failure) {
+                dtoFailure = failure;
+            }
+            if (!requireIntent) {
+                // DECISION_REPLIED_V1 承载 INTENT 只在静态 DTO 校验真实失败时合法：
+                // 用同一 planAction 判定，失败才按原 rejectReply 重建技术失败，合法意图不得冒充失败。
+                if (dtoFailure == null) {
+                    throw new IOException("DECISION_REPLIED_V1 不得承载合法业务计划");
+                }
+                DecisionModel.Result rejected = DecisionModel.rejectReply(run.state(), reply,
+                        DecisionModel.REASON_TOOL_ARGS_INVALID + ":" + shortReason(dtoFailure));
+                if (rejected.verdict() != DecisionModel.Verdict.ACCEPTED
+                        && rejected.verdict() != DecisionModel.Verdict.DUPLICATE) {
+                    throw new IOException("无法重建静态参数技术失败：" + rejected.reason());
+                }
+                String outcome = "TECHNICAL_FAILED:" + DecisionModel.REASON_TOOL_ARGS_INVALID;
+                if (!outcome.equals(commit.result()) || !outcome.equals(event.payload())) {
+                    throw new IOException("静态参数拒绝批次原文或回报与重建不一致");
+                }
+                return batchWithCommand(previous, run.withState(rejected.state()),
+                        commit.commandId(), commit.commandContent(), outcome, true);
+            }
+            if (placed == null) {
+                throw new IOException("业务计划批次的 DTO 校验失败", dtoFailure);
+            }
+            DecisionRun withRef = withState.withActionRef(new DecisionRun.ActionRef(
+                    placed.actionId(), placed.taskId(), placed.tool(), placed.dueMillis()));
+            List<PendingTask> pending = new ArrayList<>(previous.pending());
+            pending.add(new PendingTask(placed.taskId(), placed.dueMillis(),
+                    WorldScheduler.Phase.COMPLETION, placed.kind(), placed.payloadJson()));
+            Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+            used.add(placed.taskId());
+            Map<String, String> contents = new TreeMap<>(previous.commandContents());
+            contents.put(placed.commandId(), placed.payloadJson());
+            contents.put(commit.commandId(), commit.commandContent());
+            Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+            outcomes.put(placed.commandId(), "SCHEDULED:" + placed.actionId());
+            outcomes.put(commit.commandId(), "RECORDED");
+            if (!"RECORDED".equals(commit.result())
+                    || !placed.payloadJson().equals(event.payload())) {
+                throw new IOException("业务计划批次原文或回报与重建不一致");
+            }
+            return new DecisionBatch(withRef, List.copyOf(pending), used, contents, outcomes,
+                    "RECORDED");
+        }
+        if (requireIntent) {
+            throw new IOException("业务计划批次必须是 INTENT");
+        }
+        DecisionRun candidate = withState;
+        String outcome;
+        if (recorded.outcome() == DecisionModel.Outcome.TECHNICAL_FAILED) {
+            outcome = "TECHNICAL_FAILED:" + recorded.lastAttempt().reason();
+        } else if (recorded.outcome() == DecisionModel.Outcome.WAIT) {
+            outcome = "RECORDED";
+        } else {
+            throw new IOException("未知回执结果：" + recorded.outcome());
+        }
+        if (!outcome.equals(commit.result()) || !outcome.equals(event.payload())) {
+            throw new IOException("回执批次原文或回报与重建不一致");
+        }
+        return batchWithCommand(previous, candidate, commit.commandId(), commit.commandContent(),
+                outcome, true);
+    }
+
+    private DecisionBatch expectedFailure(WorldState previous, WorldCommit commit,
+                                          WorldEvent event, boolean timeout) throws IOException {
+        String prefix = timeout ? "dec-timeout:" : "dec-fail:";
+        if (!commit.commandId().startsWith(prefix)) {
+            throw new IOException("失败批次命令前缀不符：" + commit.commandId());
+        }
+        if (!decisionConfig.live()) {
+            throw new IOException("旧档案不得出现 live 失败批次");
+        }
+        LiveFailureContent parsed;
+        try {
+            parsed = decisionMapper.readValue(commit.commandContent(), LiveFailureContent.class);
+        } catch (IOException invalid) {
+            throw new IOException("失败命令原文不合法", invalid);
+        }
+        if (!commit.commandContent().equals(decisionMapper.writeValueAsString(parsed))) {
+            throw new IOException("失败命令原文不是规定形状");
+        }
+        String actionId = parsed.actionId();
+        String attemptId = parsed.attemptId();
+        String reason = parsed.reason();
+        if (timeout && !"TIMEOUT".equals(reason)) {
+            throw new IOException("超时批次原因必须是 TIMEOUT");
+        }
+        DecisionRun run = previous.decisions();
+        DecisionModel.Attempt attempt = attemptOf(run.state(), actionId, attemptId);
+        if (attempt == null) {
+            throw new IOException("失败批次指向未知尝试：" + attemptId);
+        }
+        if (attempt.attemptNo() != parsed.attemptNo()
+                || attempt.recoveryGeneration() != parsed.recoveryGeneration()) {
+            throw new IOException("失败命令的身份序号与尝试不一致：" + attemptId);
+        }
+        if (run.dispatch(attemptId) == null) {
+            throw new IOException("失败批次缺少持久派发事实：" + attemptId);
+        }
+        DecisionModel.Result result = DecisionModel.failAttempt(run.state(), actionId,
+                parsed.attemptNo(), attemptId, parsed.recoveryGeneration(), reason);
+        if (result.verdict() != DecisionModel.Verdict.ACCEPTED) {
+            throw new IOException("失败无法由原命令重建：" + result.reason());
+        }
+        String outcome = timeout ? "TIMEOUT" : "TECHNICAL_FAILED:" + reason;
+        if (!outcome.equals(commit.result()) || !commit.commandContent().equals(event.payload())) {
+            throw new IOException("失败批次原文或回报与重建不一致");
+        }
+        return new DecisionBatch(run.withState(result.state()), previous.pending(),
+                previous.usedTaskIds(), previous.commandContents(), previous.commandOutcomes(),
+                outcome);
+    }
+
+    private DecisionBatch expectedArchive(WorldState previous, WorldCommit commit,
+                                          WorldEvent event) throws IOException {
+        DecisionModel.Reply reply;
+        try {
+            reply = decisionMapper.readValue(commit.commandContent(), DecisionModel.Reply.class);
+        } catch (IOException invalid) {
+            throw new IOException("旧回执命令原文不合法", invalid);
+        }
+        DecisionRun run = previous.decisions();
+        if (run.dispatch(reply.attemptId()) == null) {
+            throw new IOException("旧回执缺少持久派发事实：" + reply.attemptId());
+        }
+        DecisionRun.Archive archive = new DecisionRun.Archive(reply.actionId(),
+                reply.attemptId(), reply.attemptNo(), reply.recoveryGeneration(), reply.body(),
+                reply.usage(), reply.usageSource(), "STALE_GENERATION", "OLD_GENERATION");
+        if (run.archived(archive)) {
+            throw new IOException("旧回执归档批次不得重复归档：" + reply.attemptId());
+        }
+        if (!"STALE_GENERATION".equals(commit.result())
+                || !commit.commandContent().equals(event.payload())) {
+            throw new IOException("旧回执批次原文或回报与重建不一致");
+        }
+        return batchWithCommand(previous, run.withArchive(archive), commit.commandId(),
+                commit.commandContent(), "STALE_GENERATION", true);
+    }
+
+    private DecisionBatch expectedDispatch(WorldState previous, WorldCommit commit,
+                                           WorldEvent event) throws IOException {
+        if (!commit.commandId().startsWith("dec-dispatch:")) {
+            throw new IOException("派发批次命令前缀不符：" + commit.commandId());
+        }
+        JsonNode node;
+        try {
+            node = mapper.readTree(commit.commandContent());
+        } catch (IOException invalid) {
+            throw new IOException("派发命令原文不合法", invalid);
+        }
+        String actionId = node.path("actionId").asText();
+        if (!dispatchCommandContent(actionId).equals(commit.commandContent())) {
+            throw new IOException("派发命令原文不是规定形状");
+        }
+        DecisionRun.Dispatch fact;
+        try {
+            fact = decisionMapper.readValue(event.payload(), DecisionRun.Dispatch.class);
+        } catch (IOException invalid) {
+            throw new IOException("派发事件原文不合法", invalid);
+        }
+        if (!fact.actionId().equals(actionId)) {
+            throw new IOException("派发事实与命令动作不一致");
+        }
+        if (fact.dispatchPosition() != commit.position()) {
+            throw new IOException("派发事实位置与批次不一致");
+        }
+        if (fact.dispatchTimeMillis() != previous.timeMillis()) {
+            throw new IOException("派发事实时点与前帧不一致");
+        }
+        DecisionRun run = previous.decisions();
+        DecisionModel.Decision decision = DecisionModel.decision(run.state(), actionId)
+                .orElse(null);
+        if (decision == null || decision.status() != DecisionModel.Status.OPEN
+                || decision.plan() == null || decision.lastAttempt().settledDone()) {
+            throw new IOException("派发批次对应的决定不可派发：" + actionId);
+        }
+        DecisionModel.Attempt attempt = decision.lastAttempt();
+        if (!attempt.attemptId().equals(fact.attemptId())
+                || attempt.attemptNo() != fact.attemptNo()
+                || attempt.recoveryGeneration() != fact.recoveryGeneration()
+                || attempt.recoveryGeneration() != run.state().recoveryGeneration()) {
+            throw new IOException("派发事实与当前尝试不一致");
+        }
+        if (!decision.inputDigest().equals(fact.inputDigest())
+                || !planDigest(decision.plan()).equals(fact.planDigest())) {
+            throw new IOException("派发事实摘要与冻结决定不一致");
+        }
+        if (run.dispatch(fact.attemptId()) != null) {
+            throw new IOException("同一尝试出现第二条派发事实");
+        }
+        if (DecisionModel.liveBudgetBlocked(run.state())) {
+            throw new IOException("全局阻断期间不得新增派发");
+        }
+        if (outstandingDispatches(run, null) >= decisionConfig.limits().maxInFlight()) {
+            throw new IOException("派发批次超过 run 在途上限");
+        }
+        String sceneId = decision.plan().route().sceneId();
+        if (outstandingDispatches(run, sceneId) >= latestSceneConcurrency(run.state(), sceneId)) {
+            throw new IOException("派发批次超过场景并发上限");
+        }
+        String outcome = "DISPATCHED:" + fact.attemptId();
+        if (!outcome.equals(commit.result())) {
+            throw new IOException("派发批次回报与重建不一致");
+        }
+        return batchWithCommand(previous, run.withDispatch(fact), commit.commandId(),
+                commit.commandContent(), outcome, true);
     }
 
     /** 逐字重生成新决定的输入：只能来自打开前的已确认快照。 */
@@ -3803,7 +4622,8 @@ public final class WorldRuntime implements AutoCloseable {
                 || older.cutoffTimeMillis() != now.cutoffTimeMillis()
                 || !older.inputText().equals(now.inputText())
                 || !older.inputDigest().equals(now.inputDigest())
-                || !older.allowedTools().equals(now.allowedTools())) {
+                || !older.allowedTools().equals(now.allowedTools())
+                || !Objects.equals(older.plan(), now.plan())) {
             return false;
         }
         if (now.attempts().size() < older.attempts().size()) {
@@ -7272,6 +8092,7 @@ public final class WorldRuntime implements AutoCloseable {
         validateDividendReports(commit, previous);
         validateDividendBatch(commit, snapshot, previous);
         validateCapitalFlows(commit, snapshot, previous);
+        validateDecisionFrame(commit, snapshot, previous);
         for (WorldEvent event : commit.events()) {
             if (!DECISION_AUDIT_V1.equals(event.type())) {
                 continue;
@@ -7961,6 +8782,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasLiveDecisions()) {
+            return STATE_SCHEMA_LIVE_DECISIONS;
+        }
         if (manifest.hasDividend()) {
             return STATE_SCHEMA_DIVIDEND;
         }
