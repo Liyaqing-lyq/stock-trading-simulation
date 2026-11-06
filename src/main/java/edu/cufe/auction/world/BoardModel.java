@@ -1,6 +1,10 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
@@ -9,6 +13,9 @@ import edu.cufe.auction.world.OpeningRegistry.PartyKind;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -86,6 +93,8 @@ public final class BoardModel {
     public static final String REASON_NOT_CHAIR = "NOT_CHAIR";
     /** 时点顺序不满足 创建≤材料截止≤开会<表决截止。 */
     public static final String REASON_INVALID_TIMELINE = "INVALID_TIMELINE";
+    /** 参数缺失或为空。 */
+    public static final String REASON_INVALID_ARGUMENT = "INVALID_ARGUMENT";
     /** 到会或回避名单不合法。 */
     public static final String REASON_INVALID_ATTENDANCE = "INVALID_ATTENDANCE";
     /** 会议或决议状态不允许该动作。 */
@@ -146,18 +155,25 @@ public final class BoardModel {
     public static final String REASON_REVIEW_EXISTS = "REVIEW_EXISTS";
 
     private static final BigDecimal HUNDRED = new BigDecimal("100");
+    private static final String AUTHORIZATION_DOMAIN = "board-dividend-v1";
     private static final ObjectMapper MAPPER = new ObjectMapper()
-            .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+            .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+            .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+            .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
+            .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
 
     private BoardModel() {
     }
 
-    /** 议题；首版只有预算与经营考核，不预埋未实现动作。 */
+    /** 议题：预算、经营考核与现金分红授权；各自路径互不替代。 */
     public enum Topic {
         /** 预算授权。 */
         BUDGET,
         /** 经营考核。 */
-        OPERATING_REVIEW
+        OPERATING_REVIEW,
+        /** 现金分红授权（只产生授权引用，不派息）。 */
+        DIVIDEND_AUTHORIZATION
     }
 
     /** 预算类别，对应未来制造新承诺。 */
@@ -539,6 +555,62 @@ public final class BoardModel {
     }
 
     /**
+     * 已受理的分红提案：经济内容已规范，关联席位为可信场景事实。
+     *
+     * <p>请求本身是 D0 的原始载体；本记录构造时统一规范每股金额到 2 位、校验正值与时点顺序，
+     * 因此越界或非精确金额不可能进入已受理状态。</p>
+     *
+     * @param request          规范化后的分红方案请求
+     * @param proposerSeatId   提案席位（必须是章程席位）
+     * @param relatedSeatIds   关联席位事实，按标识排序且不可变
+     * @param proposedAtMillis 提案受理时点
+     */
+    public record DividendProposal(@JsonProperty(required = true) DividendModel.SchemeRequest request,
+                                   @JsonProperty(required = true) String proposerSeatId,
+                                   @JsonProperty(required = true) List<String> relatedSeatIds,
+                                   @JsonProperty(required = true) long proposedAtMillis) {
+
+        /** 规范金额、校验时点并冻结关联席位。 */
+        public DividendProposal {
+            request = normalizeDividendRequest(request);
+            requireText(proposerSeatId, "提案席位");
+            if (proposedAtMillis < 0) {
+                throw new IllegalArgumentException("提案时点不能为负：" + proposerSeatId);
+            }
+            List<String> related = new ArrayList<>(
+                    Objects.requireNonNull(relatedSeatIds, "关联席位"));
+            for (String seatId : related) {
+                requireText(seatId, "关联席位");
+            }
+            related.sort(Comparator.naturalOrder());
+            for (int index = 1; index < related.size(); index++) {
+                if (related.get(index - 1).equals(related.get(index))) {
+                    throw new IllegalArgumentException("关联席位重复：" + related.get(index));
+                }
+            }
+            relatedSeatIds = List.copyOf(related);
+        }
+    }
+
+    /**
+     * 已生成的分红授权：只表示董事会授权，不代表派息或现金腿。
+     *
+     * @param issuedAtMillis   授权生成时点
+     * @param authorizationRef 绑定真实来源的授权引用
+     */
+    public record DividendResolution(@JsonProperty(required = true) long issuedAtMillis,
+                                     @JsonProperty(required = true) String authorizationRef) {
+
+        /** 校验时点与引用。 */
+        public DividendResolution {
+            if (issuedAtMillis < 0) {
+                throw new IllegalArgumentException("授权生成时点不能为负");
+            }
+            requireText(authorizationRef, "授权引用");
+        }
+    }
+
+    /**
      * 会议：召集、材料、表决与结果原文；通过后实施状态单独推进。
      *
      * @param meetingId        会议标识
@@ -555,12 +627,46 @@ public final class BoardModel {
      * @param proposedLines    预算请求行，按期间与类别排序
      * @param ballots          选票，按座位索引
      * @param failureReason    实施失败原因；只有 IMPLEMENTATION_FAILED 时非空
+     * @param dividendProposal 分红提案元数据；仅分红议题使用，其余议题为 null 且不落 JSON
+     * @param dividendResolution 分红授权结果；仅分红议题 IMPLEMENTED 后非 null
      */
     public record Meeting(String meetingId, Topic topic, String convenerSeatId, long createdAt,
                           long materialDeadline, long opensAt, long closesAt, MeetingStatus status,
                           List<String> attendeeSeatIds, List<String> recusedSeatIds,
                           List<MaterialRef> materials, List<BudgetLine> proposedLines,
-                          Map<String, Ballot> ballots, String failureReason) {
+                          Map<String, Ballot> ballots, String failureReason,
+                          @JsonInclude(JsonInclude.Include.NON_NULL)
+                          DividendProposal dividendProposal,
+                          @JsonInclude(JsonInclude.Include.NON_NULL)
+                          DividendResolution dividendResolution) {
+
+        /**
+         * 旧 14 参构造：保持源码兼容，两个分红元数据置空。
+         *
+         * @param meetingId        会议标识
+         * @param topic            议题
+         * @param convenerSeatId   召集席位
+         * @param createdAt        召集时刻
+         * @param materialDeadline 材料截止
+         * @param opensAt          开会时刻
+         * @param closesAt         表决截止（不含）
+         * @param status           状态
+         * @param attendeeSeatIds  到会席位
+         * @param recusedSeatIds   回避席位
+         * @param materials        材料
+         * @param proposedLines    预算请求行
+         * @param ballots          选票
+         * @param failureReason    实施失败原因
+         */
+        public Meeting(String meetingId, Topic topic, String convenerSeatId, long createdAt,
+                       long materialDeadline, long opensAt, long closesAt, MeetingStatus status,
+                       List<String> attendeeSeatIds, List<String> recusedSeatIds,
+                       List<MaterialRef> materials, List<BudgetLine> proposedLines,
+                       Map<String, Ballot> ballots, String failureReason) {
+            this(meetingId, topic, convenerSeatId, createdAt, materialDeadline, opensAt, closesAt,
+                    status, attendeeSeatIds, recusedSeatIds, materials, proposedLines, ballots,
+                    failureReason, null, null);
+        }
 
         /** 规范化排序、校验集合深不可变与选票索引一致性。 */
         public Meeting {
@@ -594,6 +700,76 @@ public final class BoardModel {
                 throw new IllegalArgumentException("非失败状态不能携带失败原因：" + meetingId);
             } else {
                 failureReason = null;
+            }
+            if (topic == Topic.DIVIDEND_AUTHORIZATION) {
+                if (createdAt > materialDeadline || materialDeadline > opensAt || opensAt >= closesAt) {
+                    throw new IllegalArgumentException("分红会议时序不合法：" + meetingId);
+                }
+                if (status == MeetingStatus.REVIEWED || status == MeetingStatus.IMPLEMENTATION_FAILED) {
+                    throw new IllegalArgumentException("分红议题不支持该阶段：" + meetingId);
+                }
+                if (!attendeeSeatIds.containsAll(recusedSeatIds)) {
+                    throw new IllegalArgumentException("回避席位必须到会：" + meetingId);
+                }
+                Set<String> materialIds = new HashSet<>();
+                for (MaterialRef material : materialList) {
+                    if (!materialIds.add(material.materialId()) || material.asOf() > materialDeadline) {
+                        throw new IllegalArgumentException("分红材料重复或晚于截止：" + meetingId);
+                    }
+                }
+                if ((status == MeetingStatus.CONVENED || status == MeetingStatus.MATERIALS_FROZEN)
+                        && !ballotCopy.isEmpty()) {
+                    throw new IllegalArgumentException("表决开始前不能有选票：" + meetingId);
+                }
+                if (!lineList.isEmpty()) {
+                    throw new IllegalArgumentException("分红议题不能携带预算行：" + meetingId);
+                }
+                if (dividendProposal == null) {
+                    if (status != MeetingStatus.CONVENED && status != MeetingStatus.MATERIALS_FROZEN
+                            && status != MeetingStatus.REJECTED) {
+                        throw new IllegalArgumentException("该阶段必须有分红提案：" + meetingId);
+                    }
+                    if (!ballotCopy.isEmpty()) {
+                        throw new IllegalArgumentException("无提案不能有选票：" + meetingId);
+                    }
+                } else {
+                    if (dividendProposal.proposedAtMillis() < createdAt
+                            || dividendProposal.proposedAtMillis() > materialDeadline) {
+                        throw new IllegalArgumentException("分红提案不在会议材料窗口内：" + meetingId);
+                    }
+                    if (closesAt > dividendProposal.request().recordAtMillis()) {
+                        throw new IllegalArgumentException("表决截止晚于方案登记截止：" + meetingId);
+                    }
+                    for (String related : dividendProposal.relatedSeatIds()) {
+                        if (attendeeSeatIds.contains(related) && !recusedSeatIds.contains(related)) {
+                            throw new IllegalArgumentException("到会的关联席位未登记回避：" + related);
+                        }
+                    }
+                }
+                if (dividendResolution != null && status != MeetingStatus.IMPLEMENTED) {
+                    throw new IllegalArgumentException("只有已实施会议才能携带授权：" + meetingId);
+                }
+                if (status == MeetingStatus.IMPLEMENTED && dividendResolution == null) {
+                    throw new IllegalArgumentException("已实施会议必须有授权：" + meetingId);
+                }
+                if (dividendResolution != null && (dividendResolution.issuedAtMillis() < closesAt
+                        || dividendResolution.issuedAtMillis() > dividendProposal.request().recordAtMillis())) {
+                    throw new IllegalArgumentException("授权生成不在有效窗口内：" + meetingId);
+                }
+                for (Ballot ballot : ballotCopy.values()) {
+                    if (!attendeeSeatIds.contains(ballot.seatId())
+                            || recusedSeatIds.contains(ballot.seatId())
+                            || ballot.castAt() < opensAt || ballot.castAt() >= closesAt) {
+                        throw new IllegalArgumentException("分红会议出现无资格选票：" + ballot.seatId());
+                    }
+                }
+                if (dividendProposal != null && status == MeetingStatus.REJECTED
+                        && attendeeSeatIds.size() - recusedSeatIds.size() < QUORUM) {
+                    throw new IllegalArgumentException("有效到会不足时应延期：" + meetingId);
+                }
+                checkDividendOutcome(meetingId, status, attendeeSeatIds, recusedSeatIds, ballotCopy);
+            } else if (dividendProposal != null || dividendResolution != null) {
+                throw new IllegalArgumentException("非分红议题不能携带分红元数据：" + meetingId);
             }
             materials = List.copyOf(materialList);
             proposedLines = List.copyOf(lineList);
@@ -683,6 +859,7 @@ public final class BoardModel {
                             + reviewList.get(i).reviewId());
                 }
             }
+            checkDividendState(charter, meetingCopy);
             meetings = Map.copyOf(meetingCopy);
             budgets = List.copyOf(budgetList);
             commitments = List.copyOf(commitmentList);
@@ -971,13 +1148,16 @@ public final class BoardModel {
         if (meeting.status() != MeetingStatus.MATERIALS_FROZEN) {
             return rejected(state, REASON_INVALID_STATE);
         }
-        if (meeting.topic() != Topic.BUDGET) {
+        if (meeting.topic() == Topic.OPERATING_REVIEW) {
             return rejected(state, REASON_WRONG_TOPIC);
         }
         if (now < meeting.opensAt() || now >= meeting.closesAt()) {
             return rejected(state, REASON_VOTING_CLOSED);
         }
-        if (meeting.proposedLines().isEmpty()) {
+        boolean hasProposal = meeting.topic() == Topic.BUDGET
+                ? !meeting.proposedLines().isEmpty()
+                : meeting.dividendProposal() != null;
+        if (!hasProposal) {
             return rejected(state, REASON_EMPTY_PROPOSAL);
         }
         Draft draft = new Draft(state);
@@ -1049,6 +1229,13 @@ public final class BoardModel {
                 return rejected(state, REASON_NOT_DUE);
             }
             if (meeting.topic() == Topic.BUDGET && meeting.proposedLines().isEmpty()) {
+                Draft rejectedDraft = new Draft(state);
+                rejectedDraft.meetings.put(meetingId, copyWith(meeting, MeetingStatus.REJECTED,
+                        meeting.materials(), meeting.proposedLines(), meeting.ballots(), null));
+                return accepted(rejectedDraft.build(), REASON_EMPTY_PROPOSAL);
+            }
+            if (meeting.topic() == Topic.DIVIDEND_AUTHORIZATION
+                    && meeting.dividendProposal() == null) {
                 Draft rejectedDraft = new Draft(state);
                 rejectedDraft.meetings.put(meetingId, copyWith(meeting, MeetingStatus.REJECTED,
                         meeting.materials(), meeting.proposedLines(), meeting.ballots(), null));
@@ -1141,6 +1328,217 @@ public final class BoardModel {
         draft.meetings.put(meetingId, copyWith(meeting, MeetingStatus.IMPLEMENTED,
                 meeting.materials(), meeting.proposedLines(), meeting.ballots(), null));
         return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 受理分红提案：经济内容固定、关联事实可信，受理后不可覆盖。
+     *
+     * <p>请求是 D0 的原始载体；本方法先规范金额与校验时点，再核对提案人/关联席位、会议窗口、
+     * 表决截止不晚于登记截止，以及同一方案的经济不可改、并行重审与重复实施约束。
+     * 业务拒绝一律返回原状态。</p>
+     *
+     * @param state           当前状态
+     * @param now             当前模拟毫秒
+     * @param meetingId       会议标识
+     * @param proposerSeatId  提案席位
+     * @param relatedSeatIds  关联席位事实
+     * @param request         原始分红方案请求
+     * @return 候选结果
+     */
+    public static Outcome proposeDividendAuthorization(State state, long now, String meetingId,
+                                                       String proposerSeatId,
+                                                       List<String> relatedSeatIds,
+                                                       DividendModel.SchemeRequest request) {
+        requireState(state);
+        requireTime(now);
+        Meeting meeting = meetingOf(state, meetingId);
+        if (meeting == null) {
+            return rejected(state, REASON_UNKNOWN_MEETING);
+        }
+        if (meeting.topic() != Topic.DIVIDEND_AUTHORIZATION) {
+            return rejected(state, REASON_WRONG_TOPIC);
+        }
+        if (meeting.status() != MeetingStatus.CONVENED) {
+            return rejected(state, REASON_MATERIALS_FROZEN);
+        }
+        if (now < meeting.createdAt()) {
+            return rejected(state, REASON_INVALID_TIMELINE);
+        }
+        if (now > meeting.materialDeadline()) {
+            return rejected(state, REASON_MATERIALS_CLOSED);
+        }
+        if (meeting.dividendProposal() != null) {
+            return rejected(state, REASON_PROPOSAL_EXISTS);
+        }
+        if (request == null) {
+            return rejected(state, REASON_INVALID_ARGUMENT);
+        }
+        if (blank(request.schemeId()) || blank(request.symbol())
+                || blank(request.issuerOwnerId()) || blank(request.companyAccountId())) {
+            return rejected(state, REASON_INVALID_ARGUMENT);
+        }
+        if (blank(proposerSeatId) || !state.charter().hasSeat(proposerSeatId)) {
+            return rejected(state, REASON_INVALID_ATTENDANCE);
+        }
+        List<String> related = relatedSeatIds == null ? List.of() : relatedSeatIds;
+        Set<String> seenRelated = new HashSet<>();
+        for (String seatId : related) {
+            if (blank(seatId) || !state.charter().hasSeat(seatId) || !seenRelated.add(seatId)) {
+                return rejected(state, REASON_INVALID_ATTENDANCE);
+            }
+            if (meeting.attendeeSeatIds().contains(seatId)
+                    && !meeting.recusedSeatIds().contains(seatId)) {
+                return rejected(state, REASON_INVALID_ATTENDANCE);
+            }
+        }
+        BigDecimal perShare;
+        try {
+            perShare = money2(request.perShare(), "每股股息", true);
+        } catch (IllegalArgumentException invalid) {
+            return rejected(state, REASON_INVALID_AMOUNT);
+        }
+        if (perShare.signum() <= 0) {
+            return rejected(state, REASON_INVALID_AMOUNT);
+        }
+        if (request.recordAtMillis() < 0 || request.exAtMillis() < 0
+                || request.payAtMillis() < 0
+                || request.recordAtMillis() >= request.exAtMillis()
+                || request.exAtMillis() > request.payAtMillis()) {
+            return rejected(state, REASON_INVALID_TIMELINE);
+        }
+        if (meeting.closesAt() > request.recordAtMillis()) {
+            return rejected(state, REASON_INVALID_TIMELINE);
+        }
+        DividendModel.SchemeRequest normalized = new DividendModel.SchemeRequest(
+                request.schemeId(), request.symbol(), request.issuerOwnerId(),
+                request.companyAccountId(), perShare, request.recordAtMillis(),
+                request.exAtMillis(), request.payAtMillis());
+        for (Meeting other : state.meetings().values()) {
+            if (other.topic() != Topic.DIVIDEND_AUTHORIZATION
+                    || other.dividendProposal() == null) {
+                continue;
+            }
+            DividendModel.SchemeRequest existing = other.dividendProposal().request();
+            if (!existing.schemeId().equals(normalized.schemeId())) {
+                continue;
+            }
+            if (other.status() == MeetingStatus.IMPLEMENTED) {
+                return rejected(state, REASON_INVALID_STATE);
+            }
+            if (!sameEconomics(existing, normalized)) {
+                return rejected(state, REASON_INVALID_ARGUMENT);
+            }
+            if (isActiveDividend(other.status())) {
+                return rejected(state, REASON_INVALID_STATE);
+            }
+        }
+        DividendProposal proposal = new DividendProposal(normalized, proposerSeatId, related, now);
+        Draft draft = new Draft(state);
+        draft.meetings.put(meetingId, withProposal(meeting, proposal));
+        return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 实施已通过的分红决议：重新核对真实章程、到会、逐席选票与通过条件后生成授权。
+     *
+     * <p>只产生授权引用，不改预算、现金或分红账；issuedAt 仅表示授权生成时点。</p>
+     *
+     * @param state     当前状态
+     * @param now       当前模拟毫秒
+     * @param meetingId 会议标识
+     * @return 候选结果
+     */
+    public static Outcome executeAdoptedDividendResolution(State state, long now, String meetingId) {
+        requireState(state);
+        requireTime(now);
+        Meeting meeting = meetingOf(state, meetingId);
+        if (meeting == null) {
+            return rejected(state, REASON_UNKNOWN_MEETING);
+        }
+        if (meeting.topic() != Topic.DIVIDEND_AUTHORIZATION) {
+            return rejected(state, REASON_WRONG_TOPIC);
+        }
+        if (meeting.status() != MeetingStatus.ADOPTED) {
+            return rejected(state, REASON_NOT_ADOPTED);
+        }
+        if (now < meeting.closesAt()) {
+            return rejected(state, REASON_NOT_DUE);
+        }
+        DividendProposal proposal = meeting.dividendProposal();
+        if (proposal == null) {
+            return rejected(state, REASON_INVALID_STATE);
+        }
+        if (now > proposal.request().recordAtMillis()) {
+            return rejected(state, REASON_INVALID_TIMELINE);
+        }
+        List<String> eligible = meeting.eligibleVoters();
+        if (eligible.size() < QUORUM) {
+            return rejected(state, REASON_NO_QUORUM);
+        }
+        int yes = yesVotes(meeting, eligible);
+        if (yes < ORDINARY_YES_VOTES) {
+            return rejected(state, REASON_NOT_ADOPTED);
+        }
+        for (Meeting other : state.meetings().values()) {
+            if (!other.meetingId().equals(meetingId)
+                    && other.topic() == Topic.DIVIDEND_AUTHORIZATION
+                    && other.dividendResolution() != null
+                    && other.dividendProposal() != null
+                    && sameEconomics(other.dividendProposal().request(), proposal.request())) {
+                return rejected(state, REASON_INVALID_STATE);
+            }
+        }
+        String authorizationRef = computeAuthorizationRef(state.charter(), meeting, now);
+        DividendResolution resolution = new DividendResolution(now, authorizationRef);
+        Draft draft = new Draft(state);
+        draft.meetings.put(meetingId, withResolution(meeting, resolution));
+        return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 核验分红授权：只有真实已实施、方案逐字段相同且来源可重算时才为真。
+     *
+     * <p>核验不带当前时点，因此及时签发的合法授权在支付日之后仍然有效；不会因支付日
+     * 晚于登记截止而被误判过期。</p>
+     *
+     * @param state            当前状态
+     * @param authorizationRef 待核验引用
+     * @param request          待核验方案请求
+     * @return 是否与真实来源一致
+     */
+    public static boolean verifiesDividendAuthorization(State state, String authorizationRef,
+                                                        DividendModel.SchemeRequest request) {
+        requireState(state);
+        if (blank(authorizationRef) || request == null) {
+            return false;
+        }
+        DividendModel.SchemeRequest normalized;
+        try {
+            normalized = normalizeDividendRequest(request);
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
+        for (Meeting meeting : state.meetings().values()) {
+            if (meeting.topic() != Topic.DIVIDEND_AUTHORIZATION
+                    || meeting.status() != MeetingStatus.IMPLEMENTED) {
+                continue;
+            }
+            DividendResolution resolution = meeting.dividendResolution();
+            if (resolution == null
+                    || !resolution.authorizationRef().equals(authorizationRef)
+                    || meeting.dividendProposal() == null) {
+                continue;
+            }
+            if (!sameEconomics(meeting.dividendProposal().request(), normalized)) {
+                continue;
+            }
+            String recomputed = computeAuthorizationRef(state.charter(), meeting,
+                    resolution.issuedAtMillis());
+            if (recomputed.equals(authorizationRef)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1496,7 +1894,263 @@ public final class BoardModel {
         return new Meeting(meeting.meetingId(), meeting.topic(), meeting.convenerSeatId(),
                 meeting.createdAt(), meeting.materialDeadline(), meeting.opensAt(),
                 meeting.closesAt(), status, meeting.attendeeSeatIds(), meeting.recusedSeatIds(),
-                materials, lines, ballots, failureReason);
+                materials, lines, ballots, failureReason,
+                meeting.dividendProposal(), meeting.dividendResolution());
+    }
+
+    private static Meeting withProposal(Meeting meeting, DividendProposal proposal) {
+        return new Meeting(meeting.meetingId(), meeting.topic(), meeting.convenerSeatId(),
+                meeting.createdAt(), meeting.materialDeadline(), meeting.opensAt(),
+                meeting.closesAt(), meeting.status(), meeting.attendeeSeatIds(),
+                meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
+                meeting.ballots(), meeting.failureReason(), proposal,
+                meeting.dividendResolution());
+    }
+
+    private static Meeting withResolution(Meeting meeting, DividendResolution resolution) {
+        return new Meeting(meeting.meetingId(), meeting.topic(), meeting.convenerSeatId(),
+                meeting.createdAt(), meeting.materialDeadline(), meeting.opensAt(),
+                meeting.closesAt(), MeetingStatus.IMPLEMENTED, meeting.attendeeSeatIds(),
+                meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
+                meeting.ballots(), meeting.failureReason(), meeting.dividendProposal(),
+                resolution);
+    }
+
+    /**
+     * 规范化分红方案请求：金额精确 2 位且为正，时点非负且严格递增。
+     *
+     * @param raw 原始请求
+     * @return 已受理可用的规范请求
+     */
+    private static DividendModel.SchemeRequest normalizeDividendRequest(
+            DividendModel.SchemeRequest raw) {
+        Objects.requireNonNull(raw, "分红方案请求");
+        requireText(raw.schemeId(), "方案标识");
+        requireText(raw.symbol(), "证券代码");
+        requireText(raw.issuerOwnerId(), "发行财产主体");
+        requireText(raw.companyAccountId(), "公司账户");
+        BigDecimal perShare = money2(raw.perShare(), "每股股息", true);
+        if (perShare.signum() <= 0) {
+            throw new IllegalArgumentException("每股股息必须为正：" + perShare);
+        }
+        if (raw.recordAtMillis() < 0 || raw.exAtMillis() < 0 || raw.payAtMillis() < 0
+                || raw.recordAtMillis() >= raw.exAtMillis()
+                || raw.exAtMillis() > raw.payAtMillis()) {
+            throw new IllegalArgumentException("分红时点必须满足 recordAt < exAt <= payAt");
+        }
+        return new DividendModel.SchemeRequest(raw.schemeId(), raw.symbol(), raw.issuerOwnerId(),
+                raw.companyAccountId(), perShare, raw.recordAtMillis(), raw.exAtMillis(),
+                raw.payAtMillis());
+    }
+
+    private static boolean sameEconomics(DividendModel.SchemeRequest first,
+                                         DividendModel.SchemeRequest second) {
+        return first.schemeId().equals(second.schemeId())
+                && first.symbol().equals(second.symbol())
+                && first.issuerOwnerId().equals(second.issuerOwnerId())
+                && first.companyAccountId().equals(second.companyAccountId())
+                && first.perShare().compareTo(second.perShare()) == 0
+                && first.recordAtMillis() == second.recordAtMillis()
+                && first.exAtMillis() == second.exAtMillis()
+                && first.payAtMillis() == second.payAtMillis();
+    }
+
+    private static boolean isActiveDividend(MeetingStatus status) {
+        return status == MeetingStatus.CONVENED || status == MeetingStatus.MATERIALS_FROZEN
+                || status == MeetingStatus.VOTING || status == MeetingStatus.ADOPTED;
+    }
+
+    private static int yesVotes(Meeting meeting, List<String> eligible) {
+        int yes = 0;
+        for (Ballot ballot : meeting.ballots().values()) {
+            if (ballot.vote() == Vote.YES && eligible.contains(ballot.seatId())) {
+                yes++;
+            }
+        }
+        return yes;
+    }
+
+    private static void checkDividendOutcome(String meetingId, MeetingStatus status,
+                                             List<String> attendees, List<String> recused,
+                                             Map<String, Ballot> ballots) {
+        List<String> eligible = new ArrayList<>(attendees);
+        eligible.removeAll(recused);
+        int yes = 0;
+        for (Ballot ballot : ballots.values()) {
+            if (ballot.vote() == Vote.YES && eligible.contains(ballot.seatId())) {
+                yes++;
+            }
+        }
+        if (status == MeetingStatus.ADJOURNED_NO_QUORUM && eligible.size() >= QUORUM) {
+            throw new IllegalArgumentException("有效到会达标却标为延期：" + meetingId);
+        }
+        if ((status == MeetingStatus.ADOPTED || status == MeetingStatus.IMPLEMENTED)
+                && (eligible.size() < QUORUM || yes < ORDINARY_YES_VOTES)) {
+            throw new IllegalArgumentException("通过状态与真实选票不一致：" + meetingId);
+        }
+        if (status == MeetingStatus.REJECTED && eligible.size() >= QUORUM
+                && yes >= ORDINARY_YES_VOTES) {
+            throw new IllegalArgumentException("否决状态却满足通过条件：" + meetingId);
+        }
+    }
+
+    private static void checkDividendState(Charter charter, Map<String, Meeting> meetings) {
+        Map<String, DividendModel.SchemeRequest> economics = new TreeMap<>();
+        Set<String> active = new HashSet<>();
+        Set<String> implemented = new HashSet<>();
+        for (Meeting meeting : meetings.values()) {
+            if (meeting.topic() != Topic.DIVIDEND_AUTHORIZATION) {
+                continue;
+            }
+            if (!charter.chairSeatId().equals(meeting.convenerSeatId())) {
+                throw new IllegalArgumentException("分红会议必须由主席召集：" + meeting.meetingId());
+            }
+            for (String seatId : meeting.attendeeSeatIds()) {
+                if (!charter.hasSeat(seatId)) {
+                    throw new IllegalArgumentException("到会者不是章程席位：" + seatId);
+                }
+            }
+            DividendProposal proposal = meeting.dividendProposal();
+            if (proposal == null) {
+                continue;
+            }
+            if (!charter.hasSeat(proposal.proposerSeatId())) {
+                throw new IllegalArgumentException("提案人不是章程席位："
+                        + proposal.proposerSeatId());
+            }
+            for (String related : proposal.relatedSeatIds()) {
+                if (!charter.hasSeat(related)) {
+                    throw new IllegalArgumentException("关联席位不是章程席位：" + related);
+                }
+            }
+            String schemeId = proposal.request().schemeId();
+            DividendModel.SchemeRequest seen = economics.putIfAbsent(schemeId,
+                    proposal.request());
+            if (seen != null && !sameEconomics(seen, proposal.request())) {
+                throw new IllegalArgumentException("同一方案经济内容不一致：" + schemeId);
+            }
+            if (isActiveDividend(meeting.status()) && !active.add(schemeId)) {
+                throw new IllegalArgumentException("同一方案存在并行提案：" + schemeId);
+            }
+            if (meeting.status() == MeetingStatus.IMPLEMENTED) {
+                if (!implemented.add(schemeId)) {
+                    throw new IllegalArgumentException("同一方案重复实施：" + schemeId);
+                }
+                DividendResolution resolution = meeting.dividendResolution();
+                String expected = computeAuthorizationRef(charter, meeting,
+                        resolution.issuedAtMillis());
+                if (!expected.equals(resolution.authorizationRef())) {
+                    throw new IllegalArgumentException("授权引用与真实来源不一致："
+                            + meeting.meetingId());
+                }
+            }
+        }
+        for (String schemeId : implemented) {
+            if (active.contains(schemeId)) {
+                throw new IllegalArgumentException("已实施方案仍有活动提案：" + schemeId);
+            }
+        }
+    }
+
+    /**
+     * 计算绑定真实来源的授权引用：完整请求、章程、会议、席位、材料、选票、关联事实与时点。
+     *
+     * @param charter         冻结章程
+     * @param meeting         会议（可含或不含授权结果；结果本身不参与摘要）
+     * @param issuedAtMillis  授权生成时点
+     * @return 域前缀加 SHA-256
+     */
+    private static String computeAuthorizationRef(Charter charter, Meeting meeting,
+                                                  long issuedAtMillis) {
+        DividendProposal proposal = meeting.dividendProposal();
+        if (proposal == null) {
+            throw new IllegalArgumentException("缺少分红提案：" + meeting.meetingId());
+        }
+        DividendModel.SchemeRequest value = proposal.request();
+        Map<String, Object> source = new TreeMap<>();
+        Map<String, Object> request = new TreeMap<>();
+        request.put("schemeId", value.schemeId());
+        request.put("symbol", value.symbol());
+        request.put("issuerOwnerId", value.issuerOwnerId());
+        request.put("companyAccountId", value.companyAccountId());
+        request.put("perShare", value.perShare().toPlainString());
+        request.put("recordAtMillis", value.recordAtMillis());
+        request.put("exAtMillis", value.exAtMillis());
+        request.put("payAtMillis", value.payAtMillis());
+        source.put("request", request);
+
+        Map<String, Object> charterSource = new TreeMap<>();
+        charterSource.put("companyPartyId", charter.companyPartyId());
+        charterSource.put("chairSeatId", charter.chairSeatId());
+        charterSource.put("quorum", charter.quorum());
+        List<Seat> seatList = new ArrayList<>(charter.seats());
+        seatList.sort(Comparator.comparing(Seat::seatId));
+        List<Map<String, Object>> seats = new ArrayList<>();
+        for (Seat seat : seatList) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("seatId", seat.seatId());
+            row.put("partyId", seat.partyId());
+            seats.add(row);
+        }
+        charterSource.put("seats", seats);
+        source.put("charter", charterSource);
+
+        Map<String, Object> meetingSource = new TreeMap<>();
+        meetingSource.put("meetingId", meeting.meetingId());
+        meetingSource.put("topic", meeting.topic().name());
+        meetingSource.put("convenerSeatId", meeting.convenerSeatId());
+        meetingSource.put("createdAt", meeting.createdAt());
+        meetingSource.put("materialDeadline", meeting.materialDeadline());
+        meetingSource.put("opensAt", meeting.opensAt());
+        meetingSource.put("closesAt", meeting.closesAt());
+        meetingSource.put("attendees", List.copyOf(meeting.attendeeSeatIds()));
+        meetingSource.put("recused", List.copyOf(meeting.recusedSeatIds()));
+        meetingSource.put("related", List.copyOf(proposal.relatedSeatIds()));
+        meetingSource.put("proposerSeatId", proposal.proposerSeatId());
+        meetingSource.put("proposedAtMillis", proposal.proposedAtMillis());
+        List<Map<String, Object>> materials = new ArrayList<>();
+        for (MaterialRef material : meeting.materials()) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("materialId", material.materialId());
+            row.put("sourceRef", material.sourceRef());
+            row.put("version", material.version());
+            row.put("asOf", material.asOf());
+            materials.add(row);
+        }
+        meetingSource.put("materials", materials);
+        List<Ballot> ballotList = new ArrayList<>(meeting.ballots().values());
+        ballotList.sort(Comparator.comparing(Ballot::seatId));
+        List<Map<String, Object>> ballots = new ArrayList<>();
+        for (Ballot ballot : ballotList) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("seatId", ballot.seatId());
+            row.put("vote", ballot.vote().name());
+            row.put("castAt", ballot.castAt());
+            ballots.add(row);
+        }
+        meetingSource.put("ballots", ballots);
+        source.put("meeting", meetingSource);
+        source.put("issuedAtMillis", issuedAtMillis);
+        try {
+            return AUTHORIZATION_DOMAIN + ":" + sha256Hex(MAPPER.writeValueAsString(source));
+        } catch (JsonProcessingException failure) {
+            throw new IllegalStateException("授权来源无法规范化", failure);
+        }
+    }
+
+    private static String sha256Hex(String text) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte value : hash) {
+                hex.append(Character.forDigit((value >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(value & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException failure) {
+            throw new IllegalStateException("缺少 SHA-256 实现", failure);
+        }
     }
 
     private static boolean hasSource(Meeting meeting, String sourceRef) {
@@ -1615,5 +2269,9 @@ public final class BoardModel {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(field + "不能为空");
         }
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
     }
 }

@@ -5705,6 +5705,12 @@ public final class WorldRuntime implements AutoCloseable {
         if (charter == null || !charter.equals(run.board().charter())) {
             throw new IOException("董事会章程与开局绑定不一致");
         }
+        for (BoardModel.Meeting meeting : run.board().meetings().values()) {
+            if (expectedSchema() <= STATE_SCHEMA_DECISIONS
+                    && meeting.topic() == BoardModel.Topic.DIVIDEND_AUTHORIZATION) {
+                throw new IOException("旧规则档案不得包含分红治理议题：" + meeting.meetingId());
+            }
+        }
         for (BoardRun.Report report : run.reports().values()) {
             if (report.position() > candidate.position()) {
                 throw new IOException("治理结果出现在未来的提交位置：" + report.taskId());
