@@ -19,7 +19,13 @@ Decision/OpenRequest尾部可选plan及旧构造；openDecision/sameFrozenInput/
 
 ## 验收
 
-- [ ] 正式真实模型测试先RED：旧构造JSON原样、scripted拒plan、字节/路由边界、差异输出预留、同action改plan冲突、run/person/scene三层、等于cap/跨revision已用不清零、cap提高/降低、旧输出freeze与retry新cap、未知保守/超额停发、JSON伪造及恢复。
-- [ ] 实现最小变更，原953+新增专项全绿；实际旧编译调用程序和JSON逐字对照。
+- [x] 正式真实模型测试先RED：旧构造JSON原样、scripted拒plan、字节/路由边界、差异输出预留、同action改plan冲突、run/person/scene三层、等于cap/跨revision已用不清零、cap提高/降低、旧输出freeze与retry新cap、未知保守/超额停发、JSON伪造及恢复。
+- [x] 实现最小变更，原953+新增23专项全绿；实际旧编译调用程序和JSON逐字对照。
 - [ ] Root独立反例与真实Hermes独审，标准verify含GUI/CSV、JavaDoc、评分/接口/证据/总Plan同步；AI草稿PR与实际CI。
 - [ ] 后续B2b：schema10含分红全能力、manifest严格组合、DecisionRun持久dispatch事实、真实旧9新旧交替、三进程防重；此单不创建新世界档案或调用网络。
+
+### Root固定的拒绝形态与审查口径
+
+ProviderPlan的1..60000范围在构造期校验；OpenRequest与Decision构造期核inputBytes恰等于inputText.UTF8字节（不一致抛IllegalArgumentException）。是否允许live、是否超Config perCall、revision倒退/同revision冲突属于openDecision状态校验，返回REJECTED且state原样、decision=null；真实预算不足才返回BUDGET_EXHAUSTED及带plan零尝试决定。不要把所有拒绝伪造成预算不足。旧run/person仍分别检查input与output各维度：本夹具input1040/output128，所以input cap1039不足；不能因为总1168>input cap1100就错判双层预算。
+
+Root候选1实际反例补充：单帧虽不能证明每次过去cap，却能证明“当前累计已结算+未结算预留”不得超过该scene所有已观察Route中的最高calls及最高total上限。首稿能恢复两次预留但所有历史maxCalls都1、或两次1168占额但所有历史maxTotal都1168，Root23中2失败。State须校验这一必要上界（两个维度分别取历史最大），同时保留后续降低cap不追溯历史的合法对照。完整时间线仍由B2b逐帧重建，不把必要上界冒称充分审计。
