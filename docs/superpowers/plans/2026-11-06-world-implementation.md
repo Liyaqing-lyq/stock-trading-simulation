@@ -474,3 +474,13 @@ D2测试交26项真实缺API RED，Codex核对修正重审时界/辅助构造及
 财务及除息参考代码6220ed85275eda2826b17054ac570c32f01dadb9已建立[草稿PR #22](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/22)，base为codex/world-dividend-authorization（PR21）。实际verify run42223835571已completed/success，已附当前会话，待人工实质review。D3a验收及发布完成，下一D3b同批分红运行桥按正式施工单推进。
 
 资本流代码93d4b7ae18807a745317622526111dccbdef8a7b已推送并建立草稿[PR #24](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/24)，base为codex/world-dividend-runtime。真实verify run42264571970已completed/success，已附当前会话，等待人工实质review，Codex不合并。下一阶段Web正式集成沿五key配置Plan，私有候选的严格输入/身份切换修复进行中。
+
+## 2026-11-07 Web 工作台当前验收
+
+分支codex/world-web-workbench base8311e7a。资本PR24代码及文档CI均已实际成功，仍OPEN未合并。新增7生产/3资源/7测试类，原79生产与858旧测试保持。最终candidate3冻结86源，Root4项缺陷RED已修：失败启动退出码、满队列自关闭、倒退时间400、无决定模块的屏障查询。902标准/43成交119订单7排名/GUI与JavaDoc03:05:52通过，Root24独编HTTP（含超2^53真实数值）通过。candidate2真实Hermes56独审全绿，candidate3一行闸增量独审进行中。
+
+真实浏览器已实点：登录/推进、五场景保存、默认遮罩、dialog显式查看与自动清除、离开页清除、切alice后管理DOM清空、刷新保持PERSON、轮换引导返管理员、同一世界及key-5/调用3配置重启保留。Postman22请求56断言通过，仅dummy凭据、禁止远端报告。原离线审计HTML仍待用户手动检查，不混同。
+
+Root拥有全部主树/Maven；作者aeafaa仅拥有deepseek-adapter-preparation私有目录（exec26122）修Root7项中5个边界失败，不能用Temp/真实keys/主树/Maven。审查849817仅拥有web-independent-final私有目录（exec9516）复核candidate3，不能Maven/主树。真实五keys未发提供方请求。DeepSeek适配器只是私有准备，未集成世界，成本未知不能填0当账单。总体基线继续施工，下一发布Web草稿PR/实际CI后接正式适配器和Web业务链。
+
+最终candidate3真实Hermes增量独审已完成：86源hash一致，独立重编后64/64通过；同探针对candidate2取得6个cash-only失败，证明模块闸修复有效。Root24独编HTTP、902标准/43成交119订单7排名、GUI/JavaDoc及真实浏览器均已通过，现发布草稿PR，等待实际CI；总体基线继续施工。

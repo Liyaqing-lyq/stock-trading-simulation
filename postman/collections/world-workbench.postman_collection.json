@@ -1,0 +1,844 @@
+{
+  "info": {
+    "name": "World Workbench Local Contract",
+    "description": "Run only against a fresh local test world with dummy key values. Uses a one-time local admin bootstrap supplied at runtime. Advances the test world to 1000ms and saves the same non-secret route settings once. No provider calls. Disable remote event reporting.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:18080"
+    },
+    {
+      "key": "bootstrap",
+      "value": ""
+    },
+    {
+      "key": "session_cookie",
+      "value": ""
+    },
+    {
+      "key": "old_admin_cookie",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "01 Unauthenticated admin denied",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/api/admin/view"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "02 Cross origin login denied",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Origin",
+            "value": "https://invalid.example"
+          },
+          {
+            "key": "X-World-Request",
+            "value": "1"
+          }
+        ],
+        "url": "{{base_url}}/api/session",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"bootstrap\": \"{{bootstrap}}\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "03 Local admin login",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Origin",
+            "value": "{{base_url}}"
+          },
+          {
+            "key": "X-World-Request",
+            "value": "1"
+          }
+        ],
+        "url": "{{base_url}}/api/session",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"bootstrap\": \"{{bootstrap}}\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "const cookie = pm.response.headers.get(\"Set-Cookie\").split(\";\")[0];",
+              "pm.collectionVariables.set(\"session_cookie\", cookie);",
+              "pm.collectionVariables.set(\"old_admin_cookie\", cookie);",
+              "pm.test(\"HttpOnly session\", () => pm.expect(pm.response.headers.get(\"Set-Cookie\")).to.include(\"HttpOnly\"));",
+              "pm.test(\"Token absent from body\", () => pm.expect(pm.response.json()).to.deep.equal({role:\"ADMIN\"}));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "04 Current admin identity",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/session"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "pm.test(\"Bound identity\", () => pm.expect(pm.response.json().role).to.equal(\"ADMIN\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "05 Confirmed world snapshot",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/view"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "const view=pm.response.json();",
+              "pm.collectionVariables.set(\"position\",view.position);",
+              "pm.test(\"Exact world numbers\", () => { pm.expect(view.position).to.match(/^[0-9]+$/); pm.expect(view.timeMillis).to.be.a(\"string\"); view.accounts.forEach(a=>pm.expect(a.cash).to.be.a(\"string\")); });"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "06 Five masked slots",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/keys"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "const slots=pm.response.json().slots;",
+              "pm.test(\"Five masks only\", () => { pm.expect(slots.length).to.equal(5); slots.forEach(s=>{pm.expect(s.masked).to.match(/^\\*{8}.{4}$/); pm.expect(s).not.to.have.property(\"secret\");}); });"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "07 Reveal requires boolean confirmation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Origin",
+            "value": "{{base_url}}"
+          },
+          {
+            "key": "X-World-Request",
+            "value": "1"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/keys/key-1/reveal",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"confirm\": \"true\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "08 Five scene routes",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/routes"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "const config=pm.response.json();",
+              "const fields=[\"scene\",\"slotId\",\"model\",\"enabled\",\"maxCalls\",\"maxTotalTokens\",\"maxOutputTokens\",\"maxConcurrency\"];",
+              "const routes=config.routes.map(r=>Object.fromEntries(fields.map(f=>[f,r[f]])));",
+              "pm.collectionVariables.set(\"route_body\",JSON.stringify({expectedRevision:config.revision,routes}));",
+              "pm.test(\"Five scenes and precise revision\",()=>{pm.expect(config.revision).to.be.a(\"string\");pm.expect(routes.length).to.equal(5);pm.expect(config.baseUrl).to.equal(\"https://api.deepseek.com\");});"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "09 Persist scene configuration",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Origin",
+            "value": "{{base_url}}"
+          },
+          {
+            "key": "X-World-Request",
+            "value": "1"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/routes",
+        "body": {
+          "mode": "raw",
+          "raw": "{{route_body}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "pm.test(\"Revision remains exact\",()=>pm.expect(pm.response.json().revision).to.be.a(\"string\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "10 Reject stale configuration",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Origin",
+            "value": "{{base_url}}"
+          },
+          {
+            "key": "X-World-Request",
+            "value": "1"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/routes",
+        "body": {
+          "mode": "raw",
+          "raw": "{{route_body}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "11 Fractional time cannot advance",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Origin",
+            "value": "{{base_url}}"
+          },
+          {
+            "key": "X-World-Request",
+            "value": "1"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/advance",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"expectedPosition\":\"{{position}}\",\"targetMillis\":1000.5}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "12 Advance confirmed position",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Origin",
+            "value": "{{base_url}}"
+          },
+          {
+            "key": "X-World-Request",
+            "value": "1"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/advance",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"expectedPosition\": \"{{position}}\", \"targetMillis\": \"1000\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "pm.test(\"Exact advance response\",()=>pm.expect(pm.response.json().position).to.be.a(\"string\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "13 Read actual advanced world",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/view"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "pm.test(\"Actual simulated time\",()=>pm.expect(pm.response.json().timeMillis).to.equal(\"1000\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "14 Bind real person",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Origin",
+            "value": "{{base_url}}"
+          },
+          {
+            "key": "X-World-Request",
+            "value": "1"
+          }
+        ],
+        "url": "{{base_url}}/api/session/person",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"personId\": \"alice\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "const cookie = pm.response.headers.get(\"Set-Cookie\").split(\";\")[0];",
+              "pm.collectionVariables.set(\"session_cookie\", cookie);",
+              "pm.test(\"Real bound person\",()=>pm.expect(pm.response.json().personId).to.equal(\"alice\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "15 Personal view is server filtered",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/me/view?personId=investor"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "const view=pm.response.json();",
+              "pm.test(\"Cannot spoof person or download admin data\",()=>{pm.expect(view.personPartyId).to.equal(\"alice\");[\"pending\",\"trades\",\"keys\",\"providerKind\"].forEach(f=>pm.expect(view).not.to.have.property(f));pm.expect(view.timeMillis).to.be.a(\"string\");});"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "16 Revoked admin token denied",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{old_admin_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/view"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "17 Person cannot read admin",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/view"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "18 Person cannot read keys",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/keys"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "19 Person cannot read routes",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/admin/routes"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "20 Personal session restores on reload",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/session"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));",
+              "pm.test(\"Personal identity only\",()=>pm.expect(pm.response.json()).to.deep.equal({role:\"PERSON\",personId:\"alice\"}));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "21 Logout removes session",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Origin",
+            "value": "{{base_url}}"
+          },
+          {
+            "key": "X-World-Request",
+            "value": "1"
+          }
+        ],
+        "url": "{{base_url}}/api/session/logout",
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    },
+    {
+      "name": "22 Revoked personal session denied",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "{{session_cookie}}"
+          }
+        ],
+        "url": "{{base_url}}/api/me/view"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));",
+              "pm.test(\"No cached private data\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.include(\"no-store\"));"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      }
+    }
+  ]
+}
