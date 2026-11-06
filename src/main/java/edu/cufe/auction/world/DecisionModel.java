@@ -98,6 +98,9 @@ public final class DecisionModel {
     /** 观望回执携带参数。 */
     public static final String REASON_WAIT_WITH_ARGS = "WAIT_WITH_ARGS";
 
+    /** 静态工具参数（DTO）校验失败：属技术失败，不是观望。 */
+    public static final String REASON_TOOL_ARGS_INVALID = "TOOL_ARGS_INVALID";
+
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
@@ -945,6 +948,52 @@ public final class DecisionModel {
         String detail = reason == null ? "" : reason;
         return settleTechnical(state, decision, attempt, null,
                 REASON_UNKNOWN_USAGE + ":" + detail, false);
+    }
+
+    /**
+     * 可信宿主以原未消费状态记录一次**已知用量**的技术失败：保留原回执正文、来源与声明用量，
+     * 按原输入与屏障有界重试。用于工具参数等静态合同在解析期就失败、但提供方已真实回执的场合。
+     *
+     * @param state  当前状态
+     * @param reply  原提供方回执（正文、声明用量与来源）
+     * @param reason 技术失败原因
+     * @return 处理结果；同一回执再送回为 {@link Verdict#DUPLICATE}
+     */
+    public static Result rejectReply(State state, Reply reply, String reason) {
+        if (!state.sessionOpen()) {
+            return reject(Verdict.REJECTED, REASON_SESSION_NOT_OPEN, state);
+        }
+        if (!state.runId().equals(reply.runId())) {
+            return reject(Verdict.REJECTED, REASON_RUN_MISMATCH, state);
+        }
+        Decision decision = find(state, reply.actionId());
+        if (decision == null) {
+            return reject(Verdict.UNKNOWN, "UNKNOWN_DECISION", state);
+        }
+        Attempt attempt = findAttempt(decision, reply.attemptId());
+        if (attempt == null || attempt.attemptNo() != reply.attemptNo()) {
+            return reject(Verdict.UNKNOWN, "UNKNOWN_ATTEMPT", state);
+        }
+        if (reply.recoveryGeneration() != attempt.recoveryGeneration()) {
+            return reject(Verdict.REJECTED, REASON_GENERATION_MISMATCH, state);
+        }
+        if (attempt.settledDone()) {
+            boolean same = attempt.replyReceived() && attempt.replyBody().equals(reply.body())
+                    && Objects.equals(attempt.declaredUsage(), reply.usage())
+                    && attempt.usageSource().equals(reply.usageSource());
+            return same
+                    ? new Result(Verdict.DUPLICATE, "", state, decision)
+                    : reject(Verdict.REJECTED, REASON_IDENTITY_REUSE, state);
+        }
+        if (decision.status() != Status.OPEN) {
+            return reject(Verdict.REJECTED, decision.status() == Status.RECORDED
+                    ? REASON_ALREADY_RECORDED : REASON_ALREADY_EXPIRED, state);
+        }
+        if (attempt.recoveryGeneration() != state.recoveryGeneration()) {
+            return new Result(Verdict.STALE_GENERATION, "OLD_GENERATION", state, decision);
+        }
+        String detail = reason == null || reason.isBlank() ? REASON_TOOL_ARGS_INVALID : reason;
+        return settleTechnical(state, decision, attempt, reply, detail, true);
     }
 
     /**

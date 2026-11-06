@@ -1,6 +1,7 @@
 package edu.cufe.auction.world;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.cufe.auction.model.OrderType;
 import edu.cufe.auction.model.Side;
@@ -25,6 +26,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 /**
  * 可恢复的世界运行：单一日志、可序列化待办、现金子集。
@@ -61,7 +63,8 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_ROLE_READING = 6;
     /** 含四岗交易工作流子集状态的世界状态版本（M4c）。 */
     private static final int STATE_SCHEMA_ROLE_TRADING = 7;
-
+    /** 含决定屏障与尝试子集状态的世界状态版本（M4d）。 */
+    private static final int STATE_SCHEMA_DECISIONS = 8;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -102,6 +105,21 @@ public final class WorldRuntime implements AutoCloseable {
     private final RoleRun.Config roleConfig;
     /** 资料阅读开局配置；只有 informed-stock-company-experiment-v1 档案非空。 */
     private final InformationRun.Config informationConfig;
+    /** 冻结的决定配置；只有 decision-experiment-v1 档案非空。 */
+    private final DecisionModel.Config decisionConfig;
+    /** 有界回调队列：异步线程只 offer，不读写世界状态。 */
+    private final java.util.concurrent.ArrayBlockingQueue<DecisionCandidate> decisionQueue;
+    /** 进程本地派发/应用门闸；构造后一律关闭，必须显式 beginDecisionSession。 */
+    private boolean decisionGateOpen;
+    /** 已派发但未结算的尝试 → 派发墙钟纳秒（只作超时判定，不进世界时间）。 */
+    private final Map<String, Long> decisionInFlight = new TreeMap<>();
+    /** 严格 DTO 映射：未知字段、尾随内容与浮点截断一律失败。 */
+    private final ObjectMapper decisionMapper = new ObjectMapper()
+            .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+            .disable(com.fasterxml.jackson.databind.DeserializationFeature.ACCEPT_FLOAT_AS_INT)
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES);
     /** 规范化后的开局现金清单（按账户标识排序），供逐批权限来源校验复用。 */
     private final List<OpeningAccount> orderedOpenings;
     private final long seed;
@@ -145,6 +163,8 @@ public final class WorldRuntime implements AutoCloseable {
      * @param governance    董事会治理子集；仅 governed-stock-company-experiment-v1 存在
      * @param roles        任职授权子集；仅 informed-stock-company-experiment-v1 存在
      * @param information  资料阅读子集；仅 informed-stock-company-experiment-v1 存在
+     * @param trading      四岗交易子集；仅 role-trading-experiment-v1 存在
+     * @param decisions    决定子集；仅 decision-experiment-v1 存在
      * @param pending     未完成待办（不可变）
      * @param delivered   已投递回报（不可变）
      * @param usedTaskIds 已用任务标识（不可变）
@@ -158,6 +178,7 @@ public final class WorldRuntime implements AutoCloseable {
                            Optional<RoleRun> roles,
                            Optional<InformationRun> information,
                            Optional<RoleTradingRun> trading,
+                           Optional<DecisionRun> decisions,
                            List<PendingTask> pending, List<Notice> delivered,
                            Set<String> usedTaskIds) {
         /** 防御性冻结所有集合。 */
@@ -170,6 +191,7 @@ public final class WorldRuntime implements AutoCloseable {
             roles = Objects.requireNonNull(roles, "roles");
             information = Objects.requireNonNull(information, "information");
             trading = Objects.requireNonNull(trading, "trading");
+            decisions = Objects.requireNonNull(decisions, "decisions");
             pending = List.copyOf(pending);
             delivered = List.copyOf(delivered);
             usedTaskIds = Collections.unmodifiableSet(new LinkedHashSet<>(usedTaskIds));
@@ -315,7 +337,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               InformationRun information,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              RoleTradingRun trading) {
+                              RoleTradingRun trading,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              DecisionRun decisions) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -423,6 +447,31 @@ public final class WorldRuntime implements AutoCloseable {
                         OpeningRegistry registry, ManufacturingRun.Config manufacturing,
                         BoardModel.Charter charter, RoleRun.Config roles,
                         InformationRun.Config information) throws IOException {
+        this(file, manifest, openings, registry, manufacturing, charter, roles, information, null);
+    }
+
+    /**
+     * 打开或恢复一次含决定屏障与尝试的公司档案（{@code decision-experiment-v1}，schema8）。
+     *
+     * <p>决定配置与 {@code decisions:1} 模块严格成对：缺配置或多带配置都在创建任何文件之前拒绝。
+     * 配置随第一批开局内容冻结，换一套预算/耗时重开同一日志会在恢复期被拒绝。</p>
+     *
+     * @param file        运行日志（本类独占）
+     * @param manifest    运行清单
+     * @param openings    现金开局清单
+     * @param registry    开局登记
+     * @param manufacturing 制造开局配置
+     * @param charter     董事会章程
+     * @param roles       任职开局配置
+     * @param information 资料阅读开局配置
+     * @param decisions   冻结的决定配置；旧档案为 null
+     * @throws IOException 日志不可用、清单/开局/登记/配置与持久记录不一致
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                        OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                        BoardModel.Charter charter, RoleRun.Config roles,
+                        InformationRun.Config information, DecisionModel.Config decisions)
+            throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         if (manifest.hasRegistry() && registry == null) {
             throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
@@ -471,6 +520,19 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("任职与资料阅读模块必须同时启用："
                     + manifest.rulesVersion());
         }
+        if (manifest.hasDecisions() && (!manifest.hasTrading() || !manifest.hasRoles()
+                || !manifest.hasInformation())) {
+            throw new IllegalArgumentException("决定档案必须建立在四岗交易与阅读档案之上："
+                    + manifest.rulesVersion());
+        }
+        if (manifest.hasDecisions() && decisions == null) {
+            throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                    + " 必须提供冻结的决定配置");
+        }
+        if (!manifest.hasDecisions() && decisions != null) {
+            throw new IllegalArgumentException("未启用决定模块的运行不接受决定配置："
+                    + manifest.rulesVersion());
+        }
         if (manifest.hasRoles() && (!manifest.hasGovernance()
                 || !manifest.hasManufacturing() || !manifest.hasMatching())) {
             throw new IllegalArgumentException("任职与资料阅读档案必须建立在完整公司治理档案之上："
@@ -481,6 +543,10 @@ public final class WorldRuntime implements AutoCloseable {
         this.charter = charter;
         this.roleConfig = roles;
         this.informationConfig = information;
+        this.decisionConfig = decisions;
+        this.decisionQueue = decisions == null ? null
+                : new java.util.concurrent.ArrayBlockingQueue<>(
+                        decisions.limits().queueCapacity());
         this.seed = manifest.seed();
         List<OpeningAccount> ordered = new ArrayList<>(Objects.requireNonNull(openings, "openings"));
         ordered.sort(Comparator.comparing(OpeningAccount::accountId));
@@ -1778,8 +1844,10 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("世界时间不能倒退：" + state.timeMillis());
         }
         try {
+            long limit = decisionLimit(inclusiveMillis);
+            boolean stopsAtBarrier = stopsAtDecisionBarrier(inclusiveMillis);
             while (true) {
-                PendingTask next = peek(inclusiveMillis);
+                PendingTask next = peek(limit);
                 if (next == null) {
                     break;
                 }
@@ -1834,6 +1902,21 @@ public final class WorldRuntime implements AutoCloseable {
                     default -> throw new IllegalStateException("未启用的任务种类：" + next.kind());
                 }
             }
+            if (stopsAtBarrier) {
+                // 停在最早未决屏障之前：只把时钟推到屏障，不落观察批次；已在屏障时不加空批。
+                if (limit > state.timeMillis()) {
+                    String content = "{\"timeMillis\":" + limit + "}";
+                    WorldState candidate = next(limit,
+                            WorldScheduler.Phase.COMPLETION.name(), state.accounts(),
+                            state.pending(), state.delivered(), state.usedTaskIds(),
+                            state.commandContents(), state.commandOutcomes(), state.securities(),
+                            state.exchange());
+                    commitAndApply("barrier:" + limit, content, "BARRIER_REACHED",
+                            List.of(new WorldEvent("barrier:" + limit, "DECISION_BARRIER_V1",
+                                    content)), candidate);
+                }
+                return;
+            }
             if (inclusiveMillis > state.timeMillis()) {
                 String content = "{\"timeMillis\":" + inclusiveMillis + "}";
                 WorldState candidate = next(inclusiveMillis,
@@ -1858,6 +1941,7 @@ public final class WorldRuntime implements AutoCloseable {
                 Optional.ofNullable(state.exchange()), Optional.ofNullable(state.manufacturing()),
                 Optional.ofNullable(state.governance()), Optional.ofNullable(state.roles()),
                 Optional.ofNullable(state.information()), Optional.ofNullable(state.trading()),
+                Optional.ofNullable(state.decisions()),
                 state.pending(), state.delivered(), state.usedTaskIds());
     }
 
@@ -1901,12 +1985,16 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized RoleView roleView(String personPartyId) {
         requireOpen();
         requireRoleReadingEnabled();
-        return roleView(personPartyId, requireRoleRun().access());
+        return roleView(state, personPartyId, requireRoleRun().access());
     }
 
-    private RoleView roleView(String personPartyId, RoleAccess.State access) {
+    private RoleView roleView(WorldState snap, String personPartyId,
+                              RoleAccess.State access) {
         String person = personPartyId == null ? "" : personPartyId;
-        InformationModel.State information = requireInformationRun().information();
+        if (snap.information() == null) {
+            throw new IllegalStateException("快照缺少阅读子集");
+        }
+        InformationModel.State information = snap.information().information();
         boolean registered = information.persons().contains(person);
         boolean appointed = false;
         for (RoleAccess.Appointment appointment : access.appointments()) {
@@ -1918,7 +2006,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (!registered && !appointed) {
             throw new IllegalArgumentException("角色视图不可用");
         }
-        long now = state.timeMillis();
+        long now = snap.timeMillis();
 
         List<RoleView.Appointment> appointments = new ArrayList<>();
         for (RoleAccess.Appointment appointment : access.appointments()) {
@@ -1946,19 +2034,19 @@ public final class WorldRuntime implements AutoCloseable {
         }
         List<RoleView.Account> accounts = new ArrayList<>();
         for (Map.Entry<String, RoleView.AccountKind> entry : visible.entrySet()) {
-            CashLedger.CashAccount cash = state.accounts().get(entry.getKey());
+            CashLedger.CashAccount cash = snap.accounts().get(entry.getKey());
             if (cash == null) {
                 continue;
             }
             BigDecimal frozen = ZERO;
-            if (state.exchange() != null) {
-                frozen = WorldExchange.frozenCash(state.exchange(), entry.getKey());
+            if (snap.exchange() != null) {
+                frozen = WorldExchange.frozenCash(snap.exchange(), entry.getKey());
             }
             accounts.add(new RoleView.Account(entry.getKey(), entry.getValue(), cash.ownerId(),
                     cash.cash(), frozen, cash.cash().subtract(frozen)));
         }
-        List<RoleView.Holding> holdings = holdingsOf(visible.keySet());
-        List<RoleView.Market> market = marketOf();
+        List<RoleView.Holding> holdings = holdingsOf(snap, visible.keySet());
+        List<RoleView.Market> market = marketOf(snap);
         List<InformationModel.CatalogEntry> catalog = InformationModel.catalog(information,
                 access, person, now);
         Map<String, Integer> ordinals = readingOrdinals(information, person);
@@ -2054,13 +2142,13 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 证券按账户+代码汇总；冻结来自活动卖出预留，不暴露批次标识。 */
-    private List<RoleView.Holding> holdingsOf(Set<String> accountIds) {
+    private List<RoleView.Holding> holdingsOf(WorldState snap, Set<String> accountIds) {
         List<RoleView.Holding> holdings = new ArrayList<>();
-        if (state.securities() == null) {
+        if (snap.securities() == null) {
             return holdings;
         }
         Map<String, long[]> totals = new LinkedHashMap<>();
-        for (SecuritiesLedger.Lot lot : state.securities().lots()) {
+        for (SecuritiesLedger.Lot lot : snap.securities().lots()) {
             if (!accountIds.contains(lot.accountId())) {
                 continue;
             }
@@ -2068,7 +2156,7 @@ public final class WorldRuntime implements AutoCloseable {
                     key -> new long[]{0L, 0L});
             sums[0] = Math.addExact(sums[0], lot.remaining());
         }
-        for (SecuritiesLedger.SellReservation reservation : state.securities().reservations()) {
+        for (SecuritiesLedger.SellReservation reservation : snap.securities().reservations()) {
             if (!accountIds.contains(reservation.accountId())) {
                 continue;
             }
@@ -2090,15 +2178,15 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 公共市场聚合：只给标的、最近成交价量与盘口，不给对手账户或内部成交序号。 */
-    private List<RoleView.Market> marketOf() {
+    private List<RoleView.Market> marketOf(WorldState snap) {
         List<RoleView.Market> market = new ArrayList<>();
-        if (registry == null || state.exchange() == null) {
+        if (registry == null || snap.exchange() == null) {
             return market;
         }
         for (OpeningRegistry.Security security : registry.securities()) {
             String symbol = security.symbol();
             WorldExchange.Trade lastTrade = null;
-            for (WorldExchange.Trade trade : state.exchange().trades()) {
+            for (WorldExchange.Trade trade : snap.exchange().trades()) {
                 if (!trade.symbol().equals(symbol)) {
                     continue;
                 }
@@ -2110,7 +2198,7 @@ public final class WorldRuntime implements AutoCloseable {
             }
             BigDecimal bestBid = null;
             BigDecimal bestAsk = null;
-            for (WorldExchange.Order order : state.exchange().orders()) {
+            for (WorldExchange.Order order : snap.exchange().orders()) {
                 if (!order.live() || !order.symbol().equals(symbol)
                         || order.limitPrice() == null) {
                     continue;
@@ -2175,6 +2263,1102 @@ public final class WorldRuntime implements AutoCloseable {
                                           String scope, long now) {
         return new RoleView.Permission(action, scope,
                 RoleAccess.authorize(access, person, action, target, now));
+    }
+
+    // ==================================================================
+    // M4d 决定屏障与尝试：运行桥
+    // ==================================================================
+
+    /** 一次已排定的动作：任务种类、参数正文、内部标识与到期，全部可由决定原文重算。 */
+    private record PlacedAction(String actionId, String tool, String kind, String taskId,
+                                String commandId, long dueMillis, String payloadJson) {
+    }
+
+    private void requireDecisionsEnabled() {
+        if (!manifest.hasDecisions() || state.decisions() == null) {
+            throw new IllegalStateException("当前运行未启用决定模块：" + manifest.rulesVersion());
+        }
+    }
+
+    private DecisionRun requireDecisions() {
+        DecisionRun run = state.decisions();
+        if (run == null) {
+            throw new IllegalStateException("当前运行没有决定子集状态");
+        }
+        return run;
+    }
+
+    /** 进程本地门闸：新运行与每次重开都必须显式接续。 */
+    private void requireDecisionGate() {
+        if (!decisionGateOpen) {
+            throw new IllegalStateException("决定会话尚未接续：必须先调用 beginDecisionSession");
+        }
+    }
+
+    /**
+     * 显式接续决定会话：递增恢复代次，按稳定次序保守结算旧代次未消费尝试并按原输入有界重试，
+     * 同批落盘后才打开本进程的派发与结果应用门闸。
+     *
+     * @param commandId 可信宿主命令标识，重发返回原回报
+     * @return {@code SESSION_OPEN:<generation>}
+     * @throws IOException 持久提交失败；此时门闸保持关闭、状态不前进
+     */
+    public synchronized String beginDecisionSession(String commandId) throws IOException {
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireDecisionsEnabled();
+        requireText(commandId, "命令标识");
+        DecisionRun run = requireDecisions();
+        String internalCommand = "dec-session:" + commandId;
+        if (state.commandContents().containsKey(internalCommand)) {
+            return state.commandOutcomes().get(internalCommand);
+        }
+        DecisionModel.State raw = run.state();
+        DecisionModel.State ready = raw.sessionOpen() ? DecisionModel.recover(raw) : raw;
+        DecisionModel.Result begun = DecisionModel.beginSession(ready);
+        if (begun.verdict() != DecisionModel.Verdict.ACCEPTED) {
+            throw new IllegalStateException("无法接续决定会话：" + begun.reason());
+        }
+        DecisionModel.State nextModel = begun.state();
+        for (DecisionModel.Decision decision : resumeOrder(nextModel)) {
+            DecisionModel.Result resumed = DecisionModel.resumeDecision(nextModel,
+                    decision.actionId());
+            if (resumed.verdict() == DecisionModel.Verdict.ACCEPTED) {
+                nextModel = resumed.state();
+            }
+        }
+        DecisionRun candidate = run.withState(nextModel);
+        String content = "{\"generation\":" + nextModel.recoveryGeneration() + "}";
+        String outcome = "SESSION_OPEN:" + nextModel.recoveryGeneration();
+        WorldState world = decisionWorld(candidate, internalCommand, content, outcome);
+        commitAndApply(internalCommand, content, outcome,
+                List.of(new WorldEvent("dec-session:" + commandId, "DECISION_SESSION_OPEN_V1",
+                        content)), world);
+        decisionGateOpen = true;
+        decisionInFlight.clear();
+        return outcome;
+    }
+
+    /** 需要接续的旧代次未结算尝试，按种子公平顺序与动作标识稳定排序。 */
+    private List<DecisionModel.Decision> resumeOrder(DecisionModel.State model) {
+        List<DecisionModel.Decision> open = new ArrayList<>();
+        for (DecisionModel.Decision decision : model.decisions()) {
+            if (decision.status() == DecisionModel.Status.OPEN
+                    && !decision.lastAttempt().settledDone()
+                    && decision.lastAttempt().recoveryGeneration() < model.recoveryGeneration()) {
+                open.add(decision);
+            }
+        }
+        open.sort(Comparator
+                .comparing((DecisionModel.Decision decision) -> WorldScheduler.fairOrder(seed,
+                        decision.actionId()))
+                .thenComparing(DecisionModel.Decision::actionId));
+        return open;
+    }
+
+    /**
+     * 一次冻结一批人物的决定输入：同一已确认截止位置、同一决定点、各自冻结输入与屏障。
+     *
+     * <p>幂等先于投影：同一动作标识的已完成请求直接返回，不重新投影新世界。一人至多一个
+     * 未解决决定；批内重复人物或动作整批拒绝且不写盘。</p>
+     *
+     * @param commandId 可信宿主命令标识
+     * @param requests  人物、动作标识与唤醒原因
+     * @return {@code DECIDING:<新开数量>}
+     * @throws IOException 持久提交失败
+     */
+    public synchronized String openDecisions(String commandId, List<DecisionRun.Request> requests)
+            throws IOException {
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireDecisionsEnabled();
+        requireDecisionGate();
+        requireText(commandId, "命令标识");
+        Objects.requireNonNull(requests, "决定请求");
+        if (requests.isEmpty()) {
+            throw new IllegalArgumentException("至少需要一个决定请求");
+        }
+        DecisionRun run = requireDecisions();
+        String internalCommand = "dec-open:" + commandId;
+        requests = List.copyOf(requests);
+        String content = mapper.writeValueAsString(requests);
+        String replay = decisionCommandResult(internalCommand, content);
+        if (replay != null) {
+            return replay;
+        }
+        long cutoffPosition = state.position();
+        long cutoffTime = state.timeMillis();
+        Set<String> persons = new LinkedHashSet<>();
+        Set<String> newPersons = new LinkedHashSet<>();
+        Set<String> actionIds = new LinkedHashSet<>();
+        for (DecisionRun.Request request : requests) {
+            requireText(request.personPartyId(), "人物");
+            requireText(request.actionId(), "动作标识");
+            requireText(request.wakeReason(), "唤醒原因");
+            if (!persons.add(request.personPartyId())) {
+                throw new IllegalArgumentException("同一批不得给同一人物两个决定："
+                        + request.personPartyId());
+            }
+            if (!actionIds.add(request.actionId())) {
+                throw new IllegalArgumentException("同一批不得复用动作标识：" + request.actionId());
+            }
+            if (!decisionConfig.thinkMillisByWake().containsKey(request.wakeReason())) {
+                throw new IllegalArgumentException("未知唤醒原因：" + request.wakeReason());
+            }
+            DecisionModel.Decision existing = DecisionModel.decision(run.state(),
+                    request.actionId()).orElse(null);
+            if (existing != null && (!existing.personPartyId().equals(request.personPartyId())
+                    || !existing.wakeReason().equals(request.wakeReason()))) {
+                throw new IllegalArgumentException("同一动作标识不能对应不同请求："
+                        + request.actionId());
+            }
+            if (existing == null) {
+                newPersons.add(request.personPartyId());
+            }
+        }
+        for (String person : newPersons) {
+            for (DecisionModel.Decision decision : run.state().decisions()) {
+                if (decision.personPartyId().equals(person)
+                        && decision.status() == DecisionModel.Status.OPEN) {
+                    throw new IllegalArgumentException("同一人物至多一个未解决决定：" + person);
+                }
+            }
+        }
+        Optional<DecisionModel.Decision> barrier = DecisionModel.earliestBarrier(run.state());
+        if (!newPersons.isEmpty() && barrier.isPresent()
+                && cutoffTime >= barrier.get().barrierAtMillis()) {
+            throw new IllegalStateException("未解决屏障之前不能建立新的观察");
+        }
+
+        DecisionRun candidate = run;
+        DecisionModel.State model = run.state();
+        int opened = 0;
+        int created = 0;
+        for (DecisionRun.Request request : requests) {
+            if (DecisionModel.decision(model, request.actionId()).isPresent()) {
+                continue;
+            }
+            WorldRoleSession session = openRoleSessionAt(state, request.personPartyId(),
+                    cutoffTime);
+            RoleTradingView view = roleTradingViewAt(state, session);
+            List<String> tools = allowedToolsOf(view);
+            String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
+                    pendingActionsAt(state, run, request.personPartyId()), tools, decisionConfig);
+            DecisionModel.OpenRequest openRequest = new DecisionModel.OpenRequest(
+                    model.runId(), request.actionId(), request.personPartyId(),
+                    request.wakeReason(), cutoffTime, cutoffPosition, cutoffTime,
+                    DecisionRun.TOOL_CONTRACT_VERSION, tools, input);
+            DecisionModel.Result result = DecisionModel.openDecision(model, openRequest,
+                    cutoffPosition, cutoffTime);
+            switch (result.verdict()) {
+                case ACCEPTED, BUDGET_EXHAUSTED -> {
+                    model = result.state();
+                    candidate = candidate.withState(model).withBinding(new DecisionRun.Binding(
+                            request.actionId(), request.personPartyId(), request.wakeReason(),
+                            session.appointments()));
+                    created++;
+                    if (result.verdict() == DecisionModel.Verdict.ACCEPTED) {
+                        opened++;
+                    }
+                }
+                case DUPLICATE -> {
+                }
+                default -> throw new IllegalArgumentException("无法打开决定：" + result.reason());
+            }
+        }
+        if (created == 0) {
+            return "DECIDING:0";
+        }
+        String outcome = "DECIDING:" + opened;
+        WorldState world = decisionWorld(candidate, internalCommand, content, outcome);
+        commitAndApply(internalCommand, content, outcome,
+                List.of(new WorldEvent("dec-opened:" + commandId, "DECISION_OPENED_V1", content)),
+                world);
+        return outcome;
+    }
+
+    /**
+     * 接受一条提供方回执：纯核先判定身份与代次，再严格校验工具参数，最后把决定、动作任务、
+     * 原命令映射与已用标识写进同一批。
+     *
+     * <p>旧代次回执只做持久归档（一个审计批次），不改决定、预算与经济；同一归档重放不再写盘。
+     * 静态参数失败走已知用量技术失败入口，保留原正文与原声明，不写成观望。</p>
+     *
+     * @param commandId 可信宿主命令标识
+     * @param reply     提供方回执
+     * @return {@code RECORDED}、{@code DUPLICATE}、{@code STALE_GENERATION}、
+     *         {@code TECHNICAL_FAILED:<reason>} 或 {@code REJECTED:<reason>}
+     * @throws IOException 持久提交失败
+     */
+    public synchronized String acceptDecisionReply(String commandId, DecisionModel.Reply reply)
+            throws IOException {
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireDecisionsEnabled();
+        requireDecisionGate();
+        requireText(commandId, "命令标识");
+        Objects.requireNonNull(reply, "回执");
+        DecisionRun run = requireDecisions();
+        if (!run.state().runId().equals(reply.runId())) {
+            return "REJECTED:RUN_MISMATCH";
+        }
+        String internalCommand = "dec-reply:" + commandId;
+        String content = mapper.writeValueAsString(reply);
+        String replay = decisionCommandResult(internalCommand, content);
+        if (replay != null) {
+            return replay;
+        }
+        DecisionModel.Decision decision = DecisionModel.decision(run.state(), reply.actionId())
+                .orElse(null);
+        if (decision == null) {
+            return "REJECTED:UNKNOWN_DECISION";
+        }
+        DecisionModel.Attempt attempt = null;
+        for (DecisionModel.Attempt candidate : decision.attempts()) {
+            if (candidate.attemptId().equals(reply.attemptId())) {
+                attempt = candidate;
+            }
+        }
+        if (attempt == null || attempt.attemptNo() != reply.attemptNo()) {
+            return "REJECTED:UNKNOWN_ATTEMPT";
+        }
+        if (reply.recoveryGeneration() != attempt.recoveryGeneration()) {
+            return "REJECTED:GENERATION_MISMATCH";
+        }
+        if (reply.recoveryGeneration() != run.state().recoveryGeneration()) {
+            return archiveStale(commandId, content, run, reply);
+        }
+        if (attempt.settledDone()) {
+            boolean same = attempt.replyReceived() && attempt.replyBody().equals(reply.body())
+                    && Objects.equals(attempt.declaredUsage(), reply.usage())
+                    && attempt.usageSource().equals(reply.usageSource());
+            return same ? "DUPLICATE" : "REJECTED:IDENTITY_REUSE";
+        }
+        if (decision.status() != DecisionModel.Status.OPEN) {
+            return "REJECTED:" + (decision.status() == DecisionModel.Status.RECORDED
+                    ? DecisionModel.REASON_ALREADY_RECORDED : DecisionModel.REASON_ALREADY_EXPIRED);
+        }
+
+        DecisionModel.Result result = DecisionModel.submitReply(run.state(), reply);
+        if (result.verdict() == DecisionModel.Verdict.DUPLICATE) {
+            return "DUPLICATE";
+        }
+        if (result.verdict() == DecisionModel.Verdict.STALE_GENERATION) {
+            return "STALE_GENERATION";
+        }
+        if (result.verdict() != DecisionModel.Verdict.ACCEPTED) {
+            return "REJECTED:" + result.reason();
+        }
+        DecisionModel.State accepted = result.state();
+        DecisionModel.Decision recorded = result.decision();
+        DecisionRun withState = run.withState(accepted);
+        if (recorded.outcome() == DecisionModel.Outcome.TECHNICAL_FAILED) {
+            return commitDecisionOnly(commandId, content, withState, "TECHNICAL_FAILED:"
+                    + recorded.lastAttempt().reason(), reply.attemptId());
+        }
+        if (recorded.outcome() == DecisionModel.Outcome.WAIT) {
+            return commitDecisionOnly(commandId, content, withState, "RECORDED", reply.attemptId());
+        }
+
+        DecisionRun.Binding binding = run.binding(recorded.actionId());
+        if (binding == null) {
+            throw new IllegalStateException("已记录意图缺少观察绑定：" + recorded.actionId());
+        }
+        PlacedAction placed;
+        try {
+            placed = planAction(binding, recorded, accepted, null);
+        } catch (IOException | RuntimeException failure) {
+            // 静态参数失败必须落在**原未消费状态**上：不能先持久 RECORDED 再改回。
+            DecisionModel.Result rejected = DecisionModel.rejectReply(run.state(), reply,
+                    DecisionModel.REASON_TOOL_ARGS_INVALID + ":" + shortReason(failure));
+            if (rejected.verdict() != DecisionModel.Verdict.ACCEPTED
+                    && rejected.verdict() != DecisionModel.Verdict.DUPLICATE) {
+                throw new IllegalStateException("无法记录工具参数技术失败：" + rejected.reason(),
+                        failure);
+            }
+            return commitDecisionOnly(commandId, content, run.withState(rejected.state()),
+                    "TECHNICAL_FAILED:" + DecisionModel.REASON_TOOL_ARGS_INVALID,
+                    reply.attemptId());
+        }
+
+        DecisionRun withRef = withState.withActionRef(new DecisionRun.ActionRef(
+                placed.actionId(), placed.taskId(), placed.tool(), placed.dueMillis()));
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.add(new PendingTask(placed.taskId(), placed.dueMillis(),
+                WorldScheduler.Phase.COMPLETION, placed.kind(), placed.payloadJson()));
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(placed.taskId());
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(placed.commandId(), placed.payloadJson());
+        contents.put(internalCommand, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        outcomes.put(placed.commandId(), "SCHEDULED:" + placed.actionId());
+        outcomes.put(internalCommand, "RECORDED");
+        WorldState world = next(state.timeMillis(), state.lastPhase(), state.accounts(), pending,
+                state.delivered(), used, contents, outcomes, state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), state.information(),
+                state.trading(), withRef);
+        commitAndApply(internalCommand, content, "RECORDED",
+                List.of(new WorldEvent("dec-scheduled:" + placed.taskId(),
+                        "DECISION_ACTION_SCHEDULED_V1", placed.payloadJson())), world);
+        decisionInFlight.remove(reply.attemptId());
+        return "RECORDED";
+    }
+
+    /** 旧代次回执：只在归档里追加一条，模型状态与经济一律不变。 */
+    private String archiveStale(String commandId, String content, DecisionRun run, DecisionModel.Reply reply)
+            throws IOException {
+        DecisionRun.Archive archive = new DecisionRun.Archive(reply.actionId(),
+                reply.attemptId(), reply.attemptNo(), reply.recoveryGeneration(), reply.body(),
+                reply.usage(), reply.usageSource(), "STALE_GENERATION", "OLD_GENERATION");
+        if (run.archived(archive)) {
+            return "STALE_GENERATION";
+        }
+        DecisionRun candidate = run.withArchive(archive);
+        WorldState world = decisionWorld(candidate, "dec-reply:" + commandId, content, "STALE_GENERATION");
+        commitAndApply("dec-reply:" + commandId, content, "STALE_GENERATION",
+                List.of(new WorldEvent("dec-archived:" + archive.actionId() + ":"
+                        + archive.attemptId(), "DECISION_STALE_ARCHIVED_V1", content)), world);
+        decisionInFlight.remove(reply.attemptId());
+        return "STALE_GENERATION";
+    }
+
+    /** 只提交决定状态（观望、技术失败、重试），不排任何业务动作。 */
+    private String commitDecisionOnly(String commandId, String content, DecisionRun candidate, String outcome,
+                                      String attemptId) throws IOException {
+        WorldState world = decisionWorld(candidate, "dec-reply:" + commandId, content, outcome);
+        commitAndApply("dec-reply:" + commandId, content, outcome,
+                List.of(new WorldEvent("dec-reply:" + commandId, "DECISION_REPLIED_V1", outcome)),
+                world);
+        if (attemptId != null) {
+            decisionInFlight.remove(attemptId);
+        }
+        return outcome;
+    }
+
+    /** 原始宿主命令在派生观察或读取可变决定状态之前校验。 */
+    private String decisionCommandResult(String commandId, String content) {
+        String previous = state.commandContents().get(commandId);
+        if (previous == null) {
+            return null;
+        }
+        if (!previous.equals(content)) {
+            throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+        }
+        return state.commandOutcomes().get(commandId);
+    }
+
+    /** 决定与其原始宿主请求、实际回报在同一快照中提交。 */
+    private WorldState decisionWorld(DecisionRun candidate, String commandId, String content,
+                                      String outcome) {
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(commandId, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        outcomes.put(commandId, outcome);
+        return next(state.timeMillis(), state.lastPhase(), state.accounts(), state.pending(),
+                state.delivered(), state.usedTaskIds(), contents, outcomes, state.securities(),
+                state.exchange(), state.manufacturing(), state.governance(), state.roles(),
+                state.information(), state.trading(), candidate);
+    }
+
+    /**
+     * 派发一次调用：只返回程序绑定的身份与冻结输入，不写盘、不推进世界时间。
+     * 同一尝试重复派发返回同一描述；并发派发受 {@code maxInFlight} 限制。
+     *
+     * @param actionId 动作标识
+     * @return 调用描述
+     */
+    public synchronized DecisionRun.Call dispatchDecision(String actionId) {
+        requireOpen();
+        requireWriter();
+        requireDecisionsEnabled();
+        requireDecisionGate();
+        if (paused) {
+            throw new IllegalStateException("运行已暂停，不接受新的派发");
+        }
+        DecisionRun run = requireDecisions();
+        DecisionModel.Decision decision = DecisionModel.decision(run.state(), actionId)
+                .orElseThrow(() -> new IllegalArgumentException("未知决定：" + actionId));
+        if (decision.status() != DecisionModel.Status.OPEN) {
+            throw new IllegalStateException("决定不在可派发状态：" + decision.status());
+        }
+        DecisionModel.Attempt attempt = decision.lastAttempt();
+        if (attempt.settledDone()) {
+            throw new IllegalStateException("最后尝试已结算，不能再派发：" + actionId);
+        }
+        if (!decisionInFlight.containsKey(attempt.attemptId())
+                && decisionInFlight.size() >= decisionConfig.limits().maxInFlight()) {
+            throw new IllegalStateException("并发派发超过 maxInFlight="
+                    + decisionConfig.limits().maxInFlight());
+        }
+        decisionInFlight.putIfAbsent(attempt.attemptId(), System.nanoTime());
+        return new DecisionRun.Call(run.state().runId(), decision.actionId(), attempt.attemptId(),
+                attempt.attemptNo(), attempt.recoveryGeneration(), decision.wakeReason(),
+                decision.allowedTools(), decision.inputText());
+    }
+
+    /**
+     * 异步结果只入有界队列：任意线程可调用，绝不读写世界领域对象。
+     *
+     * @param reply 提供方回执
+     * @return {@code QUEUED} 或 {@code QUEUE_FULL}
+     */
+    public String offerDecisionCallback(DecisionModel.Reply reply) {
+        Objects.requireNonNull(reply, "回执");
+        java.util.concurrent.ArrayBlockingQueue<DecisionCandidate> queue = decisionQueue;
+        if (queue == null) {
+            throw new IllegalStateException("当前运行未启用决定模块");
+        }
+        return queue.offer(new DecisionCandidate(reply, null)) ? "QUEUED" : "QUEUE_FULL";
+    }
+
+    /** @return 队列当前长度（管理端审计用） */
+    public synchronized int queuedDecisionCallbacks() {
+        return decisionQueue == null ? 0 : decisionQueue.size();
+    }
+
+    /** 一条无回执失败候选：脚本缺失或抛错，由写入线程按预留保守结算。 */
+    public record DecisionFailure(String actionId, int attemptNo, String attemptId,
+                                  long recoveryGeneration, String reason) {
+
+        /** 校验身份字段。 */
+        public DecisionFailure {
+            if (actionId == null || actionId.isBlank() || attemptId == null
+                    || attemptId.isBlank()) {
+                throw new IllegalArgumentException("失败候选身份不能为空");
+            }
+            if (attemptNo < 1 || recoveryGeneration < 1) {
+                throw new IllegalArgumentException("失败候选序号必须从 1 开始");
+            }
+            reason = reason == null || reason.isBlank() ? "UNKNOWN_USAGE" : reason;
+        }
+    }
+
+    /** 两种不可变候选共享一个容量，只有世界写入线程能够移除。 */
+    private record DecisionCandidate(DecisionModel.Reply reply, DecisionFailure failure) {
+        String actionId() {
+            return reply != null ? reply.actionId() : failure.actionId();
+        }
+
+        String attemptId() {
+            return reply != null ? reply.attemptId() : failure.attemptId();
+        }
+    }
+
+    /**
+     * 投递一条无回执失败候选：任意线程可调用，只入有界队列。
+     *
+     * @param failure 失败候选
+     * @return {@code QUEUED} 或 {@code QUEUE_FULL}
+     */
+    public String offerDecisionFailure(DecisionFailure failure) {
+        Objects.requireNonNull(failure, "失败候选");
+        java.util.concurrent.ArrayBlockingQueue<DecisionCandidate> queue = decisionQueue;
+        if (queue == null) {
+            throw new IllegalStateException("当前运行未启用决定模块");
+        }
+        return queue.offer(new DecisionCandidate(null, failure)) ? "QUEUED" : "QUEUE_FULL";
+    }
+
+    /**
+     * 由写入线程结算一次无回执失败：按冻结预留保守结算一次，并按剩余预算有界重试。
+     * 绝不把技术失败改写成人物观望。
+     *
+     * @param actionId           动作标识
+     * @param attemptNo          尝试序号
+     * @param attemptId          尝试标识
+     * @param recoveryGeneration 尝试所属代次
+     * @param reason             失败原因
+     * @return {@code TECHNICAL_FAILED:<reason>} 或拒绝码
+     * @throws IOException 持久提交失败
+     */
+    public synchronized String failDecisionAttempt(String actionId, int attemptNo, String attemptId,
+                                                   long recoveryGeneration, String reason)
+            throws IOException {
+        requireOpen();
+        requireWriter();
+        requireDecisionsEnabled();
+        requireDecisionGate();
+        requireNotPaused();
+        DecisionRun run = requireDecisions();
+        DecisionModel.Result result = DecisionModel.failAttempt(run.state(), actionId, attemptNo,
+                attemptId, recoveryGeneration, reason);
+        if (result.verdict() != DecisionModel.Verdict.ACCEPTED) {
+            decisionInFlight.remove(attemptId);
+            return "REJECTED:" + result.reason();
+        }
+        DecisionRun candidate = run.withState(result.state());
+        String content = "{\"actionId\":\"" + actionId + "\",\"attemptId\":\"" + attemptId
+                + "\",\"reason\":\"" + reason + "\"}";
+        WorldState world = next(state.timeMillis(), state.lastPhase(), state.accounts(),
+                state.pending(), state.delivered(), state.usedTaskIds(), state.commandContents(),
+                state.commandOutcomes(), state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), state.information(),
+                state.trading(), candidate);
+        commitAndApply("dec-fail:" + attemptId, content, "TECHNICAL_FAILED:" + reason,
+                List.of(new WorldEvent("dec-fail:" + attemptId, "DECISION_FAILED_V1", content)),
+                world);
+        decisionInFlight.remove(attemptId);
+        return "TECHNICAL_FAILED:" + reason;
+    }
+
+    /**
+     * 由世界写入线程应用已入队回执：先取候选（peek）、持久成功后才移除。
+     * 暂停或提交失败时候选保留，不静默丢弃，也不重复调用提供方。
+     *
+     * @return 实际应用的条数
+     * @throws IOException 持久提交失败；原候选留在队列并保持运行暂停
+     */
+    public synchronized int drainDecisionCallbacks() throws IOException {
+        requireOpen();
+        requireWriter();
+        requireDecisionsEnabled();
+        requireDecisionGate();
+        if (paused || decisionQueue == null) {
+            return 0;
+        }
+        List<DecisionCandidate> batch = new ArrayList<>(decisionQueue);
+        batch.sort(Comparator
+                .comparing((DecisionCandidate candidate) -> WorldScheduler.fairOrder(seed,
+                        candidate.actionId()))
+                .thenComparing(DecisionCandidate::actionId)
+                .thenComparing(DecisionCandidate::attemptId));
+        int applied = 0;
+        for (DecisionCandidate candidate : batch) {
+            String code;
+            if (candidate.reply() != null) {
+                // 由已确认位置派生本次自动命令，重复回执仍由尝试身份判定。
+                code = acceptDecisionReply("callback:" + state.position(), candidate.reply());
+            } else {
+                DecisionFailure failure = candidate.failure();
+                code = failDecisionAttempt(failure.actionId(), failure.attemptNo(),
+                        failure.attemptId(), failure.recoveryGeneration(), failure.reason());
+            }
+            if (code.equals("RECORDED") || code.startsWith("TECHNICAL_FAILED")
+                    || code.equals("STALE_GENERATION")) {
+                applied++;
+            }
+            decisionQueue.remove(candidate);
+        }
+        return applied;
+    }
+
+    /**
+     * 按真实墙钟结算超时尝试：只保守结算一次，不推进模拟时间、不产生业务动作。
+     *
+     * @return 本次结算的尝试条数
+     * @throws IOException 持久提交失败
+     */
+    public synchronized int expireDecisionTimeouts() throws IOException {
+        requireOpen();
+        requireWriter();
+        requireDecisionsEnabled();
+        requireDecisionGate();
+        if (paused) {
+            return 0;
+        }
+        long timeoutMillis = decisionConfig.limits().wallTimeoutMillis();
+        long now = System.nanoTime();
+        List<String> expired = new ArrayList<>();
+        for (Map.Entry<String, Long> entry : decisionInFlight.entrySet()) {
+            if (java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(now - entry.getValue()) >= timeoutMillis) {
+                expired.add(entry.getKey());
+            }
+        }
+        if (expired.isEmpty()) {
+            return 0;
+        }
+        DecisionRun run = requireDecisions();
+        int settled = 0;
+        for (String attemptId : expired) {
+            DecisionModel.Decision decision = decisionOfAttempt(run.state(), attemptId);
+            if (decision == null) {
+                decisionInFlight.remove(attemptId);
+                continue;
+            }
+            DecisionModel.Attempt attempt = decision.lastAttempt();
+            DecisionModel.Result result = DecisionModel.failAttempt(run.state(),
+                    decision.actionId(), attempt.attemptNo(), attemptId,
+                    attempt.recoveryGeneration(), "TIMEOUT");
+            if (result.verdict() != DecisionModel.Verdict.ACCEPTED) {
+                decisionInFlight.remove(attemptId);
+                continue;
+            }
+            DecisionRun candidate = run.withState(result.state());
+            String content = "{\"actionId\":\"" + decision.actionId() + "\",\"attemptId\":\""
+                    + attemptId + "\",\"reason\":\"TIMEOUT\"}";
+            WorldState world = next(state.timeMillis(), state.lastPhase(), state.accounts(),
+                    state.pending(), state.delivered(), state.usedTaskIds(),
+                    state.commandContents(), state.commandOutcomes(), state.securities(),
+                    state.exchange(), state.manufacturing(), state.governance(), state.roles(),
+                    state.information(), state.trading(), candidate);
+            commitAndApply("dec-timeout:" + decision.actionId() + ":" + attemptId, content,
+                    "TIMEOUT", List.of(new WorldEvent("dec-timeout:" + attemptId,
+                            "DECISION_TIMEOUT_V1", content)), world);
+            run = candidate;
+            decisionInFlight.remove(attemptId);
+            settled++;
+        }
+        return settled;
+    }
+
+    /** 按尝试标识定位决定。 */
+    private static DecisionModel.Decision decisionOfAttempt(DecisionModel.State model,
+                                                             String attemptId) {
+        for (DecisionModel.Decision decision : model.decisions()) {
+            for (DecisionModel.Attempt attempt : decision.attempts()) {
+                if (attempt.attemptId().equals(attemptId)) {
+                    return decision;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 最早未解决屏障：返回屏障时间与同刻全部动作标识（按种子公平顺序与标识稳定排序）。
+     *
+     * @return 未决屏障；没有未解决决定时为空
+     */
+    public synchronized Optional<DecisionRun.Barrier> pendingBarrier() {
+        requireOpen();
+        requireDecisionsEnabled();
+        DecisionRun run = requireDecisions();
+        Optional<DecisionModel.Decision> earliest = DecisionModel.earliestBarrier(run.state());
+        if (earliest.isEmpty()) {
+            return Optional.empty();
+        }
+        long time = earliest.get().barrierAtMillis();
+        List<String> actionIds = new ArrayList<>();
+        for (DecisionModel.Decision decision : run.state().decisions()) {
+            if (decision.status() == DecisionModel.Status.OPEN
+                    && decision.barrierAtMillis() == time) {
+                actionIds.add(decision.actionId());
+            }
+        }
+        actionIds.sort(Comparator
+                .comparing((String actionId) -> WorldScheduler.fairOrder(seed, actionId))
+                .thenComparing(actionId -> actionId));
+        return Optional.of(new DecisionRun.Barrier(time, List.copyOf(actionIds)));
+    }
+
+    /** advanceTo 的钳制上限：最早未决屏障之前。 */
+    private long decisionLimit(long inclusiveMillis) {
+        if (!manifest.hasDecisions() || state.decisions() == null) {
+            return inclusiveMillis;
+        }
+        Optional<DecisionModel.Decision> earliest = DecisionModel.earliestBarrier(
+                state.decisions().state());
+        return earliest.map(decision -> Math.min(inclusiveMillis, decision.barrierAtMillis()))
+                .orElse(inclusiveMillis);
+    }
+
+    /** 本次推进是否撞上最早未决屏障（含 inclusive 恰好等于屏障）。 */
+    private boolean stopsAtDecisionBarrier(long inclusiveMillis) {
+        if (!manifest.hasDecisions() || state.decisions() == null) {
+            return false;
+        }
+        Optional<DecisionModel.Decision> earliest = DecisionModel.earliestBarrier(
+                state.decisions().state());
+        return earliest.isPresent() && earliest.get().barrierAtMillis() <= inclusiveMillis;
+    }
+
+    /** 本次观察允许返回的工具：视图工具去掉只读引用，再加唯一内建观望。 */
+    private static List<String> allowedToolsOf(RoleTradingView view) {
+        TreeSet<String> tools = new TreeSet<>(view.tools());
+        tools.remove(RoleTradingView.TOOL_CITE);
+        tools.add(DecisionModel.TOOL_WAIT);
+        return List.copyOf(tools);
+    }
+
+    /** 本人尚未完成的业务动作摘要：只取本人绑定且仍在待办里的动作引用。 */
+    private List<DecisionRun.PendingAction> pendingActionsAt(WorldState snap, DecisionRun run,
+                                                             String person) throws IOException {
+        Set<String> pendingIds = new HashSet<>();
+        for (PendingTask task : snap.pending()) {
+            pendingIds.add(task.taskId());
+        }
+        List<DecisionRun.PendingAction> actions = new ArrayList<>();
+        for (DecisionRun.ActionRef ref : run.actionRefs().values()) {
+            DecisionRun.Binding binding = run.binding(ref.actionId());
+            if (binding == null || !binding.personPartyId().equals(person)) {
+                continue;
+            }
+            if (!pendingIds.contains(ref.taskId())) {
+                continue;
+            }
+            actions.add(new DecisionRun.PendingAction(ref.actionId(), ref.tool(),
+                    ref.dueMillis(), replyArgs(DecisionModel.recordedReplyBody(
+                            DecisionModel.decision(run.state(), ref.actionId()).orElseThrow())).toString()));
+        }
+        actions.sort(Comparator.comparing(DecisionRun.PendingAction::actionId));
+        return actions;
+    }
+
+    /** 由显式快照开会话：与 {@link #openRoleSession(String)} 同一绑定口径，不读全局状态。 */
+    WorldRoleSession openRoleSessionAt(WorldState snap, String personPartyId, long observedAt) {
+        if (snap.information() == null || snap.roles() == null) {
+            throw new IllegalStateException("快照缺少阅读或任职子集");
+        }
+        if (personPartyId == null || personPartyId.isBlank()) {
+            throw new IllegalArgumentException("角色会话不可用");
+        }
+        InformationModel.State information = snap.information().information();
+        if (!information.persons().contains(personPartyId)) {
+            throw new IllegalArgumentException("角色会话不可用");
+        }
+        RoleAccess.State access = snap.roles().access();
+        Map<String, String> observed = new LinkedHashMap<>();
+        for (RoleAccess.Appointment appointment : access.appointments()) {
+            if (!appointment.personPartyId().equals(personPartyId)
+                    || !appointment.activeAt(observedAt)) {
+                continue;
+            }
+            String organization = appointment.organizationPartyId();
+            String existing = observed.get(organization);
+            if (existing == null || startsLater(access, appointment, existing)) {
+                observed.put(organization, appointment.id());
+            }
+        }
+        return new WorldRoleSession(this, personPartyId, observedAt, observed);
+    }
+
+    /**
+     * 把已记录意图翻译成原四岗动作任务：严格 DTO（未知字段、尾随内容、浮点整数一律失败），
+     * 人物与任职取决定打开时的绑定，任务标识由动作标识稳定派生。
+     */
+    private PlacedAction planAction(DecisionRun.Binding binding,
+                                    DecisionModel.Decision recorded,
+                                    DecisionModel.State model, String forcedTaskId)
+            throws IOException {
+        String tool = recorded.recordedTool();
+        if (DecisionModel.TOOL_WAIT.equals(tool)) {
+            throw new IOException("观望不能排业务动作");
+        }
+        JsonNode args = replyArgs(recorded.lastAttempt().replyBody());
+        String kind;
+        Object body;
+        switch (tool) {
+            case RoleTradingView.TOOL_READING_START -> {
+                kind = PendingTask.ROLE_TRADING_READ_V1;
+                RoleReadBody read = strict(RoleReadBody.class, args);
+                requireText(read.docId(), "资料标识");
+                if (read.version() < 1) {
+                    throw new IllegalArgumentException("资料版本必须从1开始");
+                }
+                body = read;
+            }
+            case RoleTradingView.TOOL_READING_CANCEL -> {
+                kind = PendingTask.ROLE_TRADING_UNREAD_V1;
+                RoleUnreadBody unread = strict(RoleUnreadBody.class, args);
+                RoleView.ReadingRef ref = new RoleView.ReadingRef(binding.personPartyId(),
+                        unread.docId(), unread.version(), unread.index());
+                body = new RoleUnreadBody(ref.docId(), ref.version(), ref.index());
+            }
+            case RoleTradingView.TOOL_RESEARCH_SUBMIT -> {
+                kind = PendingTask.ROLE_TRADING_RESEARCH_V1;
+                body = strict(WorldRoleSession.ResearchDraft.class, args);
+            }
+            case RoleTradingView.TOOL_TARGET_SET -> {
+                kind = PendingTask.ROLE_TRADING_TARGET_V1;
+                body = strict(WorldRoleSession.TargetDraft.class, args);
+            }
+            case RoleTradingView.TOOL_TARGET_REVIEW -> {
+                kind = PendingTask.ROLE_TRADING_REVIEW_V1;
+                body = strict(WorldRoleSession.ReviewDraft.class, args);
+            }
+            case RoleTradingView.TOOL_TARGET_HALT -> {
+                kind = PendingTask.ROLE_TRADING_HALT_V1;
+                body = strict(WorldRoleSession.HaltDraft.class, args);
+            }
+            case RoleTradingView.TOOL_TARGET_CONFIRM -> {
+                kind = PendingTask.ROLE_TRADING_CONFIRM_V1;
+                body = strict(WorldRoleSession.ConfirmDraft.class, args);
+            }
+            case RoleTradingView.TOOL_TARGET_CANCEL -> {
+                kind = PendingTask.ROLE_TRADING_CANCEL_V1;
+                body = strict(WorldRoleSession.CancelTargetDraft.class, args);
+            }
+            case RoleTradingView.TOOL_CHILD_SUBMIT -> {
+                kind = PendingTask.ROLE_TRADING_CHILD_V1;
+                body = strict(WorldRoleSession.ChildDraft.class, args);
+            }
+            case RoleTradingView.TOOL_CHILD_CANCEL -> {
+                kind = PendingTask.ROLE_TRADING_CHILD_CANCEL_V1;
+                JsonNode node = args.deepCopy();
+                if (!(node instanceof com.fasterxml.jackson.databind.node.ObjectNode object)) {
+                    throw new IOException("工具参数必须是对象");
+                }
+                if (object.has("personPartyId")) {
+                    throw new IOException("取消子单的人物只能由观察绑定提供");
+                }
+                object.put("personPartyId", binding.personPartyId());
+                body = strict(WorldRoleSession.ChildRef.class, object);
+            }
+            default -> throw new IOException("未知业务工具：" + tool);
+        }
+        long dueMillis = DecisionModel.actionDueMillis(model, recorded.actionId());
+        String taskId = forcedTaskId != null ? forcedTaskId : freeTaskId(
+                DecisionRun.actionTaskId(recorded.actionId()));
+        String commandId = DecisionRun.actionCommandId(recorded.actionId());
+        RoleActionPayload payload = new RoleActionPayload(commandId, recorded.actionId(),
+                recorded.actionId(), binding.personPartyId(), dueMillis,
+                new TreeMap<>(binding.appointments()), kind, mapper.writeValueAsString(body));
+        return new PlacedAction(recorded.actionId(), tool, kind, taskId, commandId, dueMillis,
+                mapper.writeValueAsString(payload));
+    }
+
+    /** 从回执外壳取 args 对象；外壳已由纯核验证。 */
+    private JsonNode replyArgs(String replyBody) throws IOException {
+        JsonNode root = decisionMapper.readerFor(JsonNode.class).readValue(replyBody);
+        JsonNode args = root == null ? null : root.get("args");
+        if (args == null || !args.isObject()) {
+            throw new IOException("工具参数必须是对象");
+        }
+        return args;
+    }
+
+    /** 严格反序列化：未知字段、尾随内容、空值与浮点整数一律失败。 */
+    private <T> T strict(Class<T> type, JsonNode node) throws IOException {
+        T value = decisionMapper.readerFor(type).readValue(node);
+        if (value == null) {
+            throw new IOException("工具参数为空");
+        }
+        return value;
+    }
+
+    /** 确定性找空闲任务标识：基名被占时追加后缀，仍保留原动作标识。 */
+    private String freeTaskId(String base) {
+        String candidate = base;
+        int suffix = 1;
+        while (takenTaskId(candidate)) {
+            candidate = base + "-" + (++suffix);
+        }
+        return candidate;
+    }
+
+    private boolean takenTaskId(String taskId) {
+        if (state.usedTaskIds().contains(taskId)) {
+            return true;
+        }
+        for (PendingTask task : state.pending()) {
+            if (task.taskId().equals(taskId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String shortReason(Throwable failure) {
+        String message = failure.getMessage();
+        if (message == null || message.isBlank()) {
+            message = failure.getClass().getSimpleName();
+        }
+        return message.length() <= 120 ? message : message.substring(0, 120);
+    }
+
+    /**
+     * 决定子集恢复期校验：配置冻结、历史前缀、代次单调、归档前缀、动作任务与决定原文双向对应，
+     * 以及新决定输入能由打开前的已确认快照逐字重生成。
+     */
+    private void validateDecisions(WorldState candidate, WorldState previous) throws IOException {
+        if (expectedSchema() < STATE_SCHEMA_DECISIONS) {
+            if (candidate.decisions() != null) {
+                throw new IOException("旧档案不得包含决定子集状态");
+            }
+            return;
+        }
+        DecisionRun run = candidate.decisions();
+        if (run == null) {
+            throw new IOException("决定档案缺少决定子集状态");
+        }
+        if (!manifest.runId().equals(run.state().runId())) {
+            throw new IOException("决定运行标识不匹配");
+        }
+        if (!run.state().config().equals(decisionConfig)) {
+            throw new IOException("决定配置与冻结开局不一致");
+        }
+        if (previous != null && previous.decisions() != null) {
+            DecisionRun before = previous.decisions();
+            if (run.state().recoveryGeneration() < before.state().recoveryGeneration()) {
+                throw new IOException("恢复代次倒退");
+            }
+            if (!isArchivePrefix(before.archives(), run.archives())) {
+                throw new IOException("旧回执归档被改写");
+            }
+            for (DecisionModel.Decision older : before.state().decisions()) {
+                DecisionModel.Decision now = DecisionModel.decision(run.state(),
+                        older.actionId()).orElse(null);
+                if (now == null) {
+                    throw new IOException("历史决定丢失：" + older.actionId());
+                }
+                if (!sameFrozenPrefix(older, now)) {
+                    throw new IOException("历史决定被改写：" + older.actionId());
+                }
+            }
+            for (Map.Entry<String, DecisionRun.Binding> entry : before.bindings().entrySet()) {
+                DecisionRun.Binding now = run.bindings().get(entry.getKey());
+                if (!entry.getValue().equals(now)) {
+                    throw new IOException("历史观察绑定被改写：" + entry.getKey());
+                }
+            }
+            for (Map.Entry<String, DecisionRun.ActionRef> entry : before.actionRefs().entrySet()) {
+                if (!entry.getValue().equals(run.actionRefs().get(entry.getKey()))) {
+                    throw new IOException("历史动作引用被改写：" + entry.getKey());
+                }
+            }
+        }
+        Set<String> previousIds = new HashSet<>();
+        if (previous != null && previous.decisions() != null) {
+            for (DecisionModel.Decision older : previous.decisions().state().decisions()) {
+                previousIds.add(older.actionId());
+            }
+        }
+        Set<String> attemptIds = new HashSet<>();
+        Set<String> decisionIds = new HashSet<>();
+        for (DecisionModel.Decision decision : run.state().decisions()) {
+            decisionIds.add(decision.actionId());
+            DecisionRun.Binding binding = run.binding(decision.actionId());
+            if (binding == null) {
+                throw new IOException("决定缺少观察绑定：" + decision.actionId());
+            }
+            if (!binding.personPartyId().equals(decision.personPartyId())
+                    || !binding.wakeReason().equals(decision.wakeReason())) {
+                throw new IOException("观察绑定与决定身份不一致：" + decision.actionId());
+            }
+            for (DecisionModel.Attempt attempt : decision.attempts()) {
+                if (!attemptIds.add(attempt.attemptId())) {
+                    throw new IOException("尝试标识重复：" + attempt.attemptId());
+                }
+            }
+            if (decision.status() == DecisionModel.Status.RECORDED
+                    && decision.outcome() == DecisionModel.Outcome.INTENT
+                    && !run.actionRefs().containsKey(decision.actionId())) {
+                throw new IOException("已记录意图缺少动作引用：" + decision.actionId());
+            }
+            if (decision.outcome() != DecisionModel.Outcome.INTENT
+                    && run.actionRefs().containsKey(decision.actionId())) {
+                throw new IOException("非业务意图不能引用动作任务：" + decision.actionId());
+            }
+            if (!previousIds.contains(decision.actionId())) {
+                validateReopenedInput(previous, run, decision, binding);
+            }
+        }
+        if (!run.bindings().keySet().equals(decisionIds)) {
+            throw new IOException("观察绑定必须与决定逐项对应");
+        }
+        for (DecisionRun.ActionRef ref : run.actionRefs().values()) {
+            if (!candidate.usedTaskIds().contains(ref.taskId())) {
+                throw new IOException("动作任务标识未登记到已用任务：" + ref.taskId());
+            }
+            PendingTask task = null;
+            for (PendingTask pendingTask : candidate.pending()) {
+                if (pendingTask.taskId().equals(ref.taskId())) {
+                    task = pendingTask;
+                }
+            }
+            DecisionModel.Decision decision = DecisionModel.decision(run.state(),
+                    ref.actionId()).orElseThrow(() -> new IOException(
+                            "动作引用指向不存在的决定：" + ref.actionId()));
+            PlacedAction replanned = planAction(run.binding(ref.actionId()), decision,
+                    run.state(), ref.taskId());
+            if (!ref.tool().equals(replanned.tool()) || ref.dueMillis() != replanned.dueMillis()
+                    || !replanned.payloadJson().equals(candidate.commandContents().get(replanned.commandId()))
+                    || !("SCHEDULED:" + ref.actionId()).equals(candidate.commandOutcomes().get(replanned.commandId()))) {
+                throw new IOException("动作引用或原命令与决定原文不一致：" + ref.actionId());
+            }
+            RoleTradingRun.Report report = candidate.trading().report(ref.taskId());
+            if (task != null) {
+                if (report != null || !replanned.kind().equals(task.kind())
+                        || replanned.dueMillis() != task.dueTimeMillis()
+                        || !replanned.payloadJson().equals(task.payload())) {
+                    throw new IOException("动作任务内容与决定原文不一致：" + task.taskId());
+                }
+            } else if (report == null || !report.personPartyId().equals(decision.personPartyId())
+                    || !report.clientCommandId().equals(ref.actionId())
+                    || !report.clientTaskId().equals(ref.actionId())
+                    || !report.kind().equals(replanned.kind())
+                    || report.timeMillis() != ref.dueMillis()) {
+                throw new IOException("已记录意图缺少待办或准确完成回报：" + ref.actionId());
+            }
+        }
+    }
+
+    /** 逐字重生成新决定的输入：只能来自打开前的已确认快照。 */
+    private void validateReopenedInput(WorldState previous, DecisionRun run,
+                                       DecisionModel.Decision decision,
+                                       DecisionRun.Binding binding) throws IOException {
+        if (previous == null) {
+            throw new IOException("新决定缺少可核对的历史快照：" + decision.actionId());
+        }
+        if (decision.cutoffPosition() != previous.position()
+                || decision.cutoffTimeMillis() != previous.timeMillis()) {
+            throw new IOException("决定观察截止与历史快照不一致：" + decision.actionId());
+        }
+        WorldRoleSession session = openRoleSessionAt(previous, decision.personPartyId(),
+                decision.cutoffTimeMillis());
+        if (!session.appointments().equals(binding.appointments())) {
+            throw new IOException("观察任职无法由历史快照重生成：" + decision.actionId());
+        }
+        RoleTradingView view = roleTradingViewAt(previous, session);
+        List<String> tools = allowedToolsOf(view);
+        if (!tools.equals(decision.allowedTools())) {
+            throw new IOException("允许工具与历史投影不一致：" + decision.actionId());
+        }
+        String regenerated = DecisionRun.inputText(view, decision.wakeReason(),
+                decision.cutoffTimeMillis(), pendingActionsAt(previous, run,
+                        decision.personPartyId()), tools, decisionConfig);
+        if (!regenerated.equals(decision.inputText())) {
+            throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());
+        }
+    }
+
+    /** 历史前缀：身份、输入、屏障与已结算尝试逐项不得改写。 */
+    private static boolean sameFrozenPrefix(DecisionModel.Decision older,
+                                            DecisionModel.Decision now) {
+        if (!older.personPartyId().equals(now.personPartyId())
+                || older.wakeReason().equals(now.wakeReason()) == false
+                || older.decisionAtMillis() != now.decisionAtMillis()
+                || older.barrierAtMillis() != now.barrierAtMillis()
+                || older.cutoffPosition() != now.cutoffPosition()
+                || older.cutoffTimeMillis() != now.cutoffTimeMillis()
+                || !older.inputText().equals(now.inputText())
+                || !older.inputDigest().equals(now.inputDigest())
+                || !older.allowedTools().equals(now.allowedTools())) {
+            return false;
+        }
+        if (now.attempts().size() < older.attempts().size()) {
+            return false;
+        }
+        for (int index = 0; index < older.attempts().size(); index++) {
+            DecisionModel.Attempt before = older.attempts().get(index);
+            DecisionModel.Attempt after = now.attempts().get(index);
+            if (!before.attemptId().equals(after.attemptId())
+                    || before.attemptNo() != after.attemptNo()
+                    || !before.inputDigest().equals(after.inputDigest())) {
+                return false;
+            }
+            if (before.settledDone() && !before.equals(after)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isArchivePrefix(List<DecisionRun.Archive> older,
+                                           List<DecisionRun.Archive> now) {
+        if (now.size() < older.size()) {
+            return false;
+        }
+        for (int index = 0; index < older.size(); index++) {
+            if (!older.get(index).equals(now.get(index))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** 关闭日志；已发布快照仍可读取。 */
@@ -3640,7 +4824,10 @@ public final class WorldRuntime implements AutoCloseable {
         List<WorldEvent> events = new ArrayList<>(domainEvents);
         events.add(snapshotEvent(candidate));
         try {
-            journal.commit(commandId, content, result, events);
+            WorldCommit committed = journal.commit(commandId, content, result, events);
+            if (committed.position() != candidate.position()) {
+                throw new IOException("候选快照缺少对应的新持久批次");
+            }
         } catch (IOException | RuntimeException failure) {
             // 提交期任何失败（含重复事件 ID、超大帧）都暂停并保留旧快照
             paused = true;
@@ -3761,6 +4948,7 @@ public final class WorldRuntime implements AutoCloseable {
         validateGovernance(candidate, previous);
         validateRoleReading(candidate, previous);
         validateTrading(candidate, previous);
+        validateDecisions(candidate, previous);
     }
 
     /**
@@ -4779,7 +5967,8 @@ public final class WorldRuntime implements AutoCloseable {
                 if (found != null) {
                     throw new IOException("批次 " + commit.position() + " 含多个状态快照");
                 }
-                found = mapper.readValue(event.payload(), WorldState.class);
+                ObjectMapper snapshotMapper = manifest.hasDecisions() ? decisionMapper : mapper;
+                found = snapshotMapper.readValue(event.payload(), WorldState.class);
             } else if ("SECURITIES_REPORT_V1".equals(event.type())) {
                 reported.add(mapper.readValue(event.payload(), ActionReport.class));
             } else if ("EXCHANGE_ORDER_REPORT_V1".equals(event.type())) {
@@ -5236,12 +6425,14 @@ public final class WorldRuntime implements AutoCloseable {
                     InformationModel.open(registry, informationConfig.readers()), Map.of());
         }
         RoleTradingRun trading = manifest.hasTrading() ? RoleTradingRun.opening() : null;
+        DecisionRun decisions = manifest.hasDecisions()
+                ? DecisionRun.opening(manifest.runId(), seed, decisionConfig) : null;
         return new WorldState(expectedSchema(), manifest.runId(), 1, 0L,
                 WorldScheduler.Phase.OBSERVATION.name(), accounts, pending, List.of(), used,
                 Map.of(), Map.of(),
                 manifest.hasSecurities() ? SecuritiesLedger.opening(registry) : null,
                 manifest.hasMatching() ? WorldExchange.opening() : null,
-                manufacturing, governance, roles, information, trading);
+                manufacturing, governance, roles, information, trading, decisions);
     }
 
     /**
@@ -5263,6 +6454,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasDecisions()) {
+            return STATE_SCHEMA_DECISIONS;
+        }
         if (manifest.hasTrading()) {
             return STATE_SCHEMA_ROLE_TRADING;
         }
@@ -5320,7 +6514,7 @@ public final class WorldRuntime implements AutoCloseable {
                             BoardRun governance) {
         return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                state.roles(), state.information(), state.trading());
+                state.roles(), state.information(), state.trading(), state.decisions());
     }
 
     private WorldState next(long timeMillis, String lastPhase,
@@ -5336,7 +6530,7 @@ public final class WorldRuntime implements AutoCloseable {
                             InformationRun information) {
         return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                roles, information, state.trading());
+                roles, information, state.trading(), state.decisions());
     }
 
     private WorldState next(long timeMillis, String lastPhase,
@@ -5351,10 +6545,28 @@ public final class WorldRuntime implements AutoCloseable {
                             RoleRun roles,
                             InformationRun information,
                             RoleTradingRun trading) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, trading, state.decisions());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading,
+                            DecisionRun decisions) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                roles, information, trading);
+                roles, information, trading, decisions);
     }
 
     // ==================================================================
@@ -5478,14 +6690,34 @@ public final class WorldRuntime implements AutoCloseable {
      */
     synchronized RoleTradingView roleTradingView(WorldRoleSession session) throws IOException {
         requireOpen();
-        requireRoleReadingEnabled();
-        requireTradingEnabled();
+        return roleTradingViewAt(state, session);
+    }
+
+    /**
+     * 由**显式给出的**已确认快照生成人物视图：恢复期可以据此重算历史输入，
+     * 不交换全局状态、不复制第二套资产/权限算法。
+     *
+     * @param snap    已确认世界快照（通常是本次决定打开前的状态）
+     * @param session 会话
+     * @return 视图
+     * @throws IOException 读取失败
+     */
+    synchronized RoleTradingView roleTradingViewAt(WorldState snap, WorldRoleSession session)
+            throws IOException {
+        requireOpen();
+        if (!manifest.hasTrading() || !manifest.hasRoles() || !manifest.hasInformation()) {
+            throw new IllegalStateException("当前运行未启用四岗交易或阅读模块："
+                    + manifest.rulesVersion());
+        }
+        if (snap.trading() == null || snap.information() == null || snap.roles() == null) {
+            throw new IllegalStateException("快照缺少四岗交易、阅读或任职子集");
+        }
         String person = session.personPartyId();
-        RoleTradingRun run = requireTradingRun();
+        RoleTradingRun run = snap.trading();
         RoleTradingModel.State trading = run.trading();
-        InformationModel.State information = requireInformationRun().information();
-        RoleAccess.State access = requireRoleRun().access();
-        long now = state.timeMillis();
+        InformationModel.State information = snap.information().information();
+        RoleAccess.State access = snap.roles().access();
+        long now = snap.timeMillis();
 
         // 观察绑定 ∩ 当前有效任职：离任后旧会话不得继承新任职或离任后新增内容
         Map<String, String> effective = new LinkedHashMap<>();
@@ -5511,7 +6743,7 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
 
-        RoleView profile = roleView(person, scopedRoleAccess(access, person, effective));
+        RoleView profile = roleView(snap, person, scopedRoleAccess(access, person, effective));
 
         Set<String> organizations = new HashSet<>(effective.keySet());
         List<RoleTradingView.ResearchView> research = new ArrayList<>();
@@ -5550,7 +6782,7 @@ public final class WorldRuntime implements AutoCloseable {
                         || link.targetVersion() != current.version()) {
                     continue;
                 }
-                WorldExchange.Order order = state.exchange().order(link.orderId());
+                WorldExchange.Order order = snap.exchange().order(link.orderId());
                 filled = Math.addExact(filled, order.filled());
                 if (order.live()) {
                     leaves = Math.addExact(leaves, order.remaining());
@@ -5578,7 +6810,7 @@ public final class WorldRuntime implements AutoCloseable {
             if (!link.personPartyId().equals(person)) {
                 continue;
             }
-            WorldExchange.Order order = state.exchange().order(link.orderId());
+            WorldExchange.Order order = snap.exchange().order(link.orderId());
             children.add(new RoleTradingView.ChildView(
                     new WorldRoleSession.ChildRef(link.targetId(), link.personPartyId(),
                             link.childId()), link.targetVersion(), order.quantity(), order.filled(),
@@ -7068,8 +8300,21 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         String command = roleCommandId(report.personPartyId(), report.clientCommandId());
         String content = candidate.commandContents().get(command);
-        if (content == null || !roleTaskId(report.personPartyId(), report.clientTaskId())
-                .equals(report.taskId())) {
+        boolean linked = content != null
+                && roleTaskId(report.personPartyId(), report.clientTaskId())
+                .equals(report.taskId());
+        if (!linked && candidate.decisions() != null) {
+            // 决定触发的动作使用长度编码的决定命名空间，同一份原请求仍可逐字核验。
+            DecisionRun.ActionRef ref = candidate.decisions().actionRef(report.clientTaskId());
+            DecisionRun.Binding binding = candidate.decisions().binding(report.clientTaskId());
+            if (ref != null && binding != null && ref.taskId().equals(report.taskId())
+                    && binding.personPartyId().equals(report.personPartyId())) {
+                command = DecisionRun.actionCommandId(report.clientTaskId());
+                content = candidate.commandContents().get(command);
+                linked = content != null;
+            }
+        }
+        if (!linked) {
             throw new IOException("人物回报与原命令归属不一致：" + report.taskId());
         }
         RoleActionPayload request = mapper.readValue(content, RoleActionPayload.class);

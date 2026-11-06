@@ -217,4 +217,30 @@ class DecisionModelAuditTest {
         assertEquals(usage(8, 970, 196), DecisionModel.headroom(recorded.state(), "alice"));
         assertEquals(recorded.state(), DecisionModel.fromJson(DecisionModel.toJson(recorded.state())));
     }
+
+    @Test
+    void knownUsageStaticDtoRejectionKeepsTheReceiptAndRetriesTheSameInput() {
+        var state = opened();
+        var receipt = reply(state, INTENT, usage(1, 10, 2));
+        var rejected = DecisionModel.rejectReply(state, receipt,
+                DecisionModel.REASON_TOOL_ARGS_INVALID);
+        assertEquals(DecisionModel.Verdict.ACCEPTED, rejected.verdict(),
+                "技术失败应按原观察有界重试");
+        var decision = rejected.decision();
+        assertEquals(DecisionModel.Outcome.TECHNICAL_FAILED, decision.outcome(),
+                "静态参数失败不是观望");
+        assertEquals(DecisionModel.Status.OPEN, decision.status());
+        var first = decision.attempts().get(0);
+        assertEquals(usage(1, 10, 2), first.settled(), "已知脚本用量按原声明结算");
+        assertEquals(INTENT, first.replyBody(), "原回执正文必须保留");
+        assertEquals("scripted:audit-v1", first.usageSource());
+        assertEquals(DecisionModel.REASON_TOOL_ARGS_INVALID, first.reason());
+        assertEquals(decision.inputDigest(), decision.attempts().get(1).inputDigest());
+        assertEquals(usage(1, 10, 2), rejected.state().runUsage(), "只结算一次");
+        assertEquals(DecisionModel.Verdict.DUPLICATE,
+                DecisionModel.submitReply(rejected.state(), receipt).verdict(),
+                "同一回执不得二次结算");
+        assertEquals(rejected.state(), DecisionModel.fromJson(
+                DecisionModel.toJson(rejected.state())), "恢复必须保留原声明");
+    }
 }
