@@ -55,13 +55,14 @@
 
 ### 当前接续
 
-- 当前分支 `codex/world-live-web`，base `3b468ff`。PR31 代码/文档 CI42302221792/42302662795均success；Root独占主树/Maven。
-- B2c2 最终冻结 `live-web-candidate-3`：89 Java 与 candidate2逐字相同；增加当前页截止/导航迟到响应保护的 app.js。Root10 HTTP、15 Host、18物理容量检查及1085标准全过；42成交121订单7排名CSV、GUI、JavaDoc06:47:24通过。真实浏览器完成四岗一轮/预算/输入输出、重启零自动调用、切个人清空管理员数据，证据 `live-web-root/browser-acceptance.md`。
-- 真实 Hermes d3c63e candidate2独审74动态已过；首轮恢复失败为同revision不同Route的非法夹具，改真实Host接续已过。最终candidate3 UI增量exec62389复核已过并退出；Root另9 IO与6 executor实际故障检查通过。秘密扫描、草稿PR/实际CI随后。
-- Host按同writer位置/配置版本校验；默认live新world-live.journal，旧scripted保持world.journal。启动/读页/保存配置不调用；单轮最多四岗各一次，仅research/trading接执行器。超时仍占实际请求与完成槽，不能靠逻辑预算释放挤入新请求。
-- 五Key仍仅此前key-1一次51token，费用未知，其余4槽未测；本阶段0新增供应商调用。认知/媒体、多公司银行、完整图表/长跑继续施工。原离线审计页用户稍后手验，不自动合并。
+- 当前分支 `codex/world-cognition-recall`，base `876e485`。Web PR32代码b2fb23d/文档876e485的实际CI42308822586/42309278593均success；1085标准、74独审、浏览器/预算/故障验收完成，仍待人工review。
+- Root拥有全部主树/Maven。新增CognitionRecall及14测试，原89Java未改；1099标准、CSV45成交119订单7排名、真实GUI、JavaDoc07:06:15通过。Root正常入口14检查先2个真实重读失败再全部通过；真实Hermes d39b13独立90源自编95检查通过。
+- 最终candidate2仅修纯核类注释（实际最近阅读时间），可执行文本与candidate1相同；源码SHA ffa6de348219ec396c3102e2845039ebb860214c510b2e0356121cce595fc1b2。原经历/ClosedReading保留、按真实重读完成恢复可得性；不引入第二份状态或启用默认遗忘。
+- 回忆尚未接Runtime/角色input/Web，不能当六层认知完成。运行桥新上下文exec81750仅cognition-runtime-preparation只读调查，60轮预算已到，等待报告后续接；原作者ed3b0f exec61639已退出。新schema/旧JSON/旧二进制和全文旁路合同待Root核准后实施。
+- Root已预编译旧InformationRun.Config/RoleView/RoleTradingView/inputText客户端，合并JSON指纹828217b8cf517410de92937772abe20a80067f4cc3ec52d3a318e4d3dbf553f4；运行桥验收只换类，不重编此客户端。
+- 真实Key仍仅既有key-1一次51token，其余4槽未测，本轮0新增供应商请求。信念/来源偏信/成熟习惯、媒体、多公司银行、完整图表长跑继续，不自动合并。
 
-下一认知入口：[M4f已有经历有界回忆](2026-11-07-cognition-recall.md)。真实Hermes ed3b0f只写cognition-recall-author，exec61639；Root发现首次Observation去重使重读后仍遗忘，已裁决从真实ClosedReading刷新获取时间，先RED再修。纯核尚未集成，世界仍未启用遗忘。
+施工单：[M4f已有经历有界回忆](2026-11-07-cognition-recall.md)。
 
 以下保留各阶段任务与原始执行记录。
 

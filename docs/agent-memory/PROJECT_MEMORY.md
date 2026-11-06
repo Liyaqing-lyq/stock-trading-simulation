@@ -258,3 +258,12 @@ Root独占主树/Maven；B2c2 candidate3 Java同candidate2。1085标准/10HTTP/1
 ed3b0f纯回忆初稿10私有通过，Root查出重读后仍按首次Observation衰减的语义缺口；exec61639仅cognition-recall-author修复并测试。新Plan明确lastReadId/lastReadAt来自实际已完成ClosedReading，未来/取消/拒绝不能刷新；不改原InformationModel或Runtime，不把纯核视为世界已启用认知。真实Keys仍原一次51token，未新增供应商请求。
 
 B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/32)，base codex/world-live-completion，已附会话。实际[CI42308822586](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42308822586) completed/success；1085标准/GUI/CSV/JavaDoc、74独审与最终JS复核及Root浏览器/容量/故障证据齐备。本单工程验收完成，等待人工review，不自动合并。下一M4f回忆纯核候选90源/14新增、Root14反例GREEN，仍待正式全套与独审，未接世界。
+
+### M4f 回忆纯核本地验收
+
+- 当前分支 `codex/world-cognition-recall`，base `876e485`。Web PR32代码b2fb23d/文档876e485的实际CI42308822586/42309278593均success；1085标准、74独审、浏览器/预算/故障验收完成，仍待人工review。
+- Root拥有全部主树/Maven。新增CognitionRecall及14测试，原89Java未改；1099标准、CSV45成交119订单7排名、真实GUI、JavaDoc07:06:15通过。Root正常入口14检查先2个真实重读失败再全部通过；真实Hermes d39b13独立90源自编95检查通过。
+- 最终candidate2仅修纯核类注释（实际最近阅读时间），可执行文本与candidate1相同；源码SHA ffa6de348219ec396c3102e2845039ebb860214c510b2e0356121cce595fc1b2。原经历/ClosedReading保留、按真实重读完成恢复可得性；不引入第二份状态或启用默认遗忘。
+- 回忆尚未接Runtime/角色input/Web，不能当六层认知完成。运行桥新上下文exec81750仅cognition-runtime-preparation只读调查，60轮预算已到，等待报告后续接；原作者ed3b0f exec61639已退出。新schema/旧JSON/旧二进制和全文旁路合同待Root核准后实施。
+- Root已预编译旧InformationRun.Config/RoleView/RoleTradingView/inputText客户端，合并JSON指纹828217b8cf517410de92937772abe20a80067f4cc3ec52d3a318e4d3dbf553f4；运行桥验收只换类，不重编此客户端。
+- 真实Key仍仅既有key-1一次51token，其余4槽未测，本轮0新增供应商请求。信念/来源偏信/成熟习惯、媒体、多公司银行、完整图表长跑继续，不自动合并。
