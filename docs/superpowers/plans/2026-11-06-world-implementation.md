@@ -20,7 +20,7 @@
 - 首轮精度 1 模拟毫秒，固定四阶段；新消息最早下一时间步。公平顺序来自运行种子并可记录。
 - 用户可见首版须含所启用公司的董事会、独立四岗、遗忘/偏信/习惯和真实图表来源；基础模块通过不代表首版完成。
 - 每阶段：专项测试 + `bash scripts/verify.sh --with-gui` + 评分映射 + 真实记录；代码通过 PR、`[AI-Generated]`、至少一名人工实质 review 后才能合入。
-- 保留启动时所有未提交改动。草稿依赖链 `codex/world-implementation` → `codex/world-securities-ledger` → `codex/world-matching` → `codex/world-exchange` → `codex/world-manufacturing` → `codex/world-governance` → `codex/world-role-information` → `codex/world-role-reading` → 当前 `codex/world-role-trading`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
+- 保留启动时所有未提交改动。草稿依赖链 `codex/world-implementation` → `codex/world-securities-ledger` → `codex/world-matching` → `codex/world-exchange` → `codex/world-manufacturing` → `codex/world-governance` → `codex/world-role-information` → `codex/world-role-reading` → `codex/world-role-trading` → `codex/world-role-trading-runtime` → 当前 `codex/world-decisions`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
 
 ## Review Focus
 
@@ -44,7 +44,7 @@
 | M1 世界运行基础 | 模拟时序/阶段、运行清单、唯一提交、幂等事件日志、恢复与分支边界 | M0 | V10/V11/V12 | 现金运行子集本地验收；完整世界/实验分支仍待实施 |
 | M2 身份/开局/交易账 | 人物/组织/账户/任职；开局股份与现金清单；托管映射；版本化规则；T+1 批次/自成交 | M1 | V01/V02/V05/V06/V14 | M2.1–2.4b可靠交易核本地验收；任职/人物投影及schema7角色交易网关本地验收，银行托管待实施 |
 | M3 公司经营竖切 | 制造公司、外部客户/供应商、合同履约、现金与报表、董事会、现金分红、表现核算 | M2 | V04/V15/V16/V17 | M3a制造桥217项与PR10 CI通过；治理297项标准/GUI/CSV及原审查反例复验通过，独审Important已修复；均待人工review，分红待实施 |
-| M4 角色与信息竖切 | 独立四岗机构、两类媒体、普通投资者；阅读/传播/权限、六层记忆与偏信/习惯、模型屏障与预算 | M1/M2/M3 | V07/V08/V09/V10/V13/V14 | schema6阅读桥及PR13 CI通过；M4c纯核23专项/组合385标准及PR14 CI通过；schema7运行桥38专项/组合423标准及GUI/CSV、61正常入口、三JVM、旧6兼容与最终hash独审通过，待草稿PR；M4d规格已冻结 |
+| M4 角色与信息竖切 | 独立四岗机构、两类媒体、普通投资者；阅读/传播/权限、六层记忆与偏信/习惯、模型屏障与预算 | M1/M2/M3 | V07/V08/V09/V10/V13/V14 | schema6阅读桥及PR13 CI通过；M4c纯核23专项/组合385标准及PR14 CI通过；schema7运行桥38专项/组合423标准及GUI/CSV、61正常入口、三JVM、旧6兼容与最终hash独审通过，PR15 CI通过；M4d纯核58专项/481标准与最终hash独审通过，运行桥待接续 |
 | M5 差异公司与银行 | 工程回款、银行完整实验规则、直接/组合敞口迁移、其余十类公司及八类媒体逐项配置 | M3/M4 | V01/V02/V03/V13/V16 | 待细化 |
 | M6 真实观察工作台 | 先接增量观察；白色市场/股票/公司/账户/人物机构/新闻/世界页面；同快照、权限裁剪、图表与历史回放 | M1 起增量，完整依赖 M2–M5 | V12/V14/V15 | 离线审计页私有原型与数据边界已查，浏览器实点待验；完整工作台与Web主界面选择仍保留 |
 | M7 行为/压力与交付 | 无 LLM 故障夹具、固定预算小试、多次独立实验、失败率/分布、课程报告/JavaDoc/PR 人工评审 | 所有启用能力 | V17/V18 及全矩阵回归 | 待细化 |
@@ -402,3 +402,7 @@ M2.4a 共享纯撮合 → 审查/标准验收 → M2.4b 世界订单接入；制
 - M4d已形成[决定屏障与尝试恢复施工单](2026-11-06-decision-runtime.md)，依据真实Hermes只读准备会话20261106_094824_aa419b。当前仅完成规格裁决，待M4c运行桥独立验收后施工。先用scripted提供方验证时间、代次、预算与故障，真实模型按明确费用预算另行启用。六层认知仍有独立缺口。
 
 - M4c运行桥最终本地验收，71源冻结root-candidate-3，38专项/组合423标准全绿，48成交/124订单/7排名，GUI启动/CSV复算和JavaDoc12:40:43通过。Codex主探针61检查、7种合法SHA语义伪造拒绝、三JVM42→42/成交2→2、旧6新续写旧回读均通过。真实Hermes最终独审59 PASS/0 FAIL及3种timer反例拒绝，盲区明确，详见docs/05 §18。
+
+- 运行桥ffb49d4建立[草稿PR #15](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/15)，base为#14分支，远端verify run42164122461实际completed/success，尚待人工review。当前C转codex/world-decisions接续M4d。真实Hermes20261106_094824_aa419b按Task1入场裁决独占DecisionModel及其测试/Maven，120工具/3600秒；原运行桥会话20261106_091523_c9946f仅做Task2私有只读准备。
+
+- M4d纯核DecisionModel新增56专项及组合479标准全绿，49成交/121订单/7排名、GUI/CSV、JavaDoc13:22:44、Codex72源独立编译及20正常入口检查通过。首稿26专项/449后Root新增30审计专项修复真实反例，最终hash独审正在进行。运行桥Task2–3仍待接续，详见docs/05 §19及M4d施工单。

@@ -92,7 +92,7 @@
 - [x] 使用legacy-v6中fe30171真正旧classes生成的活动阅读存档，副本用新源码续写full，再由旧classes回读；旧schema6不增加trading字段。旧schema1–5已有回归保留。
 - [x] Hermes交回源码/Maven后Codex独立重编、手算及正常入口复验，独立Hermes审查真实反例并修复。
 - [x] 标准bash scripts/verify.sh --with-gui、JavaDoc真生成、评分映射/运行记录/架构接口/总Plan更新，明确实际模型与本地场景参数的范围。
-- [ ] 显式文件提交、秘密检查、推送、[AI-Generated]运行桥草稿PR依赖#14，核实远端CI和人工review状态。
+- [x] 显式文件提交、秘密检查、推送、[AI-Generated]运行桥草稿PR依赖#14，核实远端CI和人工review状态。
 
 ## 执行记录
 
@@ -112,3 +112,5 @@
 
 - Codex于11:21接回单writer，纠正恢复夹具的额外调试open与BigDecimal scale，再以实际RED修复目标基点、输入归属、旧会话、完整原请求、Long期限、缺失/改期/孤儿待办和旧版本sweep。最终运行桥38项、组合423项及标准GUI/CSV全绿，JavaDoc12:40:43实际生成。
 - 最终71源root-candidate-3与当前树hash一致，Codex主探针61检查及7重签反例、三JVM42→42两笔成交、真实旧6新续写旧回读通过。独审20261106_101643_be6a4c在最终hash上59 PASS/0 FAIL及3种timer伪造拒绝，覆盖盲区按报告保留。实际根因及恢复记录codex-runtime/root-debug-recovery.md。Task2–4本地验收，发布和人工review状态另记。
+
+- 运行桥提交ffb49d4bbe05fbed746a7819b7742e590d5e4c99，通过[草稿PR #15](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/15)依赖#14。远端verify run42164122461实际completed/success，已附会话，等待人工review。当前codex/world-decisions从此提交接续M4d，PR链均未合入。
