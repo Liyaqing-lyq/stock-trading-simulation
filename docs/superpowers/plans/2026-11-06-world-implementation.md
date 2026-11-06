@@ -43,7 +43,7 @@
 | M0 现状核验/加固 | 课程全套实跑；静态风险；必要回归修复 | 无 | V06/V15 的课程部分 | 本地已验收，待 PR 人工 review |
 | M1 世界运行基础 | 模拟时序/阶段、运行清单、唯一提交、幂等事件日志、恢复与分支边界 | M0 | V10/V11/V12 | 现金运行子集本地验收；完整世界/实验分支仍待实施 |
 | M2 身份/开局/交易账 | 人物/组织/账户/任职；开局股份与现金清单；托管映射；版本化规则；T+1 批次/自成交 | M1 | V01/V02/V05/V06/V14 | M2.1–2.4b可靠交易核本地验收；任职/人物投影及schema7角色交易网关本地验收，银行托管待实施 |
-| M3 公司经营竖切 | 制造公司、外部客户/供应商、合同履约、现金与报表、董事会、现金分红、表现核算 | M2 | V04/V15/V16/V17 | 制造及治理桥、D0/D1/D2/D3a草稿PR19–22实际CI通过，744标准，均待人工review。D3b最终816标准、212独立检查及真实Hermes31+6独审通过，草稿PR23及实际CI42253286290通过。D3c契约已固定，取消/重新公告接续 |
+| M3 公司经营竖切 | 制造公司、外部客户/供应商、合同履约、现金与报表、董事会、现金分红、表现核算 | M2 | V04/V15/V16/V17 | 制造及治理桥、D0/D1/D2/D3a草稿PR19–22实际CI通过，744标准，均待人工review。D3b最终816标准、212独立检查及真实Hermes31+6独审通过，草稿PR23及实际CI42253286290通过。D3c最终858标准/123独立/最终独审通过，草稿PR24及实际CI42264571970成功；取消/重新公告接续 |
 | M4 角色与信息竖切 | 独立四岗机构、两类媒体、普通投资者；阅读/传播/权限、六层记忆与偏信/习惯、模型屏障与预算 | M1/M2/M3 | V07/V08/V09/V10/V13/V14 | schema6阅读桥及PR13 CI通过；M4c纯核23专项/组合385标准及PR14 CI通过；schema7运行桥38专项/组合423标准及GUI/CSV、61正常入口、三JVM、旧6兼容与最终hash独审通过，PR15 CI通过；M4d纯核58专项/481标准与最终hash独审及PR16 CI通过，schema8桥55+runner12专项与549标准本地通过，三JVM/旧7兼容通过，最终独审42断言及GUI/CSV/JavaDoc通过，PR17代码CI通过，M4e573项审计补项及PR18代码CI通过，待人工review |
 | M5 差异公司与银行 | 工程回款、银行完整实验规则、直接/组合敞口迁移、其余十类公司及八类媒体逐项配置 | M3/M4 | V01/V02/V03/V13/V16 | 待细化 |
 | M6 真实观察工作台 | 先接增量观察；白色市场/股票/公司/账户/人物机构/新闻/世界页面；同快照、权限裁剪、图表与历史回放 | M1 起增量，完整依赖 M2–M5 | V12/V14/V15 | 离线审计页私有原型与数据边界已查，浏览器实点待验；用户已确定最终Web主界面及上帝五key配置，完整工作台待实施 |
@@ -56,7 +56,7 @@
 ### 当前接续
 
 - 当前分支 `codex/world-capital-performance`，基线 `bd200157`。D3b 草稿 PR23 的代码及文档 CI 已通过，完整证据见 docs/05 §26。
-- [D3c 实际资本流及确认历史表现](2026-11-06-capital-flow-performance.md)最终candidate3本地验收：42专项/858标准、47成交121订单7排名、GUI及JavaDoc01:38:11，Root123资本检查与Decimal通过，原D3b212/旧8/三JVM保持。真实Hermes最终独立20+2及12no-op/12反例通过。完整证据docs/05§27，当前发布草稿PR及等待实际CI。
+- [D3c 实际资本流及确认历史表现](2026-11-06-capital-flow-performance.md)最终candidate3本地验收：42专项/858标准、47成交121订单7排名、GUI及JavaDoc01:38:11，Root123资本检查与Decimal通过，原D3b212/旧8/三JVM保持。真实Hermes最终独立20+2及12no-op/12反例通过。完整证据docs/05§27；草稿PR24代码93d4b7a已发布，verify42264571970实际成功，待人工review。
 - Root 独占所有主源码、测试和 Maven。真实 Hermes aeafaa 仅在 web-root-candidate-1 私有目录修复 Root19HTTP检查确认的11失败，849817资本最终独审已释放，均不修改主树。私有目录的准备结果不能计作已集成能力。
 - 用户确定最终交付为 Web，并授权指定文件五个 key 按场景配置。[Web 与五 key 配置接续单](2026-11-07-web-key-configuration.md)保持服务端加载、上帝显式查看与人物隔离。实际文件仅验证五个值可读取，尚未调用提供方；私有 HTTP 宿主 48 项已通过，前端、场景配置、模型与浏览器验收仍在施工。
 - M6 原离线审计页由用户稍后手动查看，尚待反馈。PR6–22 已由人工账号合并到累计基线 `codex/world-role-trading`，main 尚未汇总全部阶段。新 PR23 仍为草稿，Codex 不自动合并。取消/重新公告、认知媒体、差异公司/银行和长时实验仍未完成，总体基线继续执行。
@@ -472,3 +472,5 @@ D2测试交26项真实缺API RED，Codex核对修正重审时界/辅助构造及
 真实Hermes849817最终独审从candidate1核78源hash并独立重编，制造17及除息参考26项自写断言合计43/43通过，未发现可复现缺陷，报告dividend-financial-review-candidate-1/handoff.md。Root随后仅移除新测试Fixture的三个未使用分量，所有断言及生产源保持，重新运行clean标准744全绿，最终CSV为37成交、119订单、7排名，JavaDoc21:11:18重新生成。最终日志standard-root-final-1-raw.log及javadoc-root-final-1-raw.log，冻结standard-final-raw。先前49/128及21:02:42为首轮结果，保留原证据。D3a本地验收完成，当前发布草稿PR及等待实际CI。
 
 财务及除息参考代码6220ed85275eda2826b17054ac570c32f01dadb9已建立[草稿PR #22](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/22)，base为codex/world-dividend-authorization（PR21）。实际verify run42223835571已completed/success，已附当前会话，待人工实质review。D3a验收及发布完成，下一D3b同批分红运行桥按正式施工单推进。
+
+资本流代码93d4b7ae18807a745317622526111dccbdef8a7b已推送并建立草稿[PR #24](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/24)，base为codex/world-dividend-runtime。真实verify run42264571970已completed/success，已附当前会话，等待人工实质review，Codex不合并。下一阶段Web正式集成沿五key配置Plan，私有候选的严格输入/身份切换修复进行中。

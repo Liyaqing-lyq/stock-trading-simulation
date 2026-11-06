@@ -145,3 +145,5 @@ D3b代码a133bbd6657b3111f3af20e03e07eba2d08a087a已推送并建立草稿PR23，
 最终candidate3 Runtime5BEAA4D0…4D839DA，42专项/858标准，CSV47成交121订单7排名、GUI与JavaDoc01:38:11通过。Root20+44+59=123独立检查与12帧资本/39帧分红Decimal通过，原D3b212/旧8/三JVM在candidate2通过；candidate3仅一行溢出guard。真实Hermes849817独立20+2及作者修正后12no-op控制/12反例在最终独立classes通过。作者初始浮点重写导致假覆盖已纠正，后发现恢复溢出异常类型真实缺口，正式42th RED后修复。详情docs/05§27。
 
 当前准备D3c草稿PR/CI，未完成总体基线。Web私有候选由Root19HTTP检查取得11失败（精度/严格JSON/会话/异步结果），aeafaa仅拥有web-root-candidate-1私有src/static修复，禁止主树/Maven。849817资本独审已释放。实际五key仅加载验证，没有提供方请求。
+
+资本流代码93d4b7ae18807a745317622526111dccbdef8a7b已推送并建立草稿[PR #24](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/24)，base为codex/world-dividend-runtime。真实verify run42264571970已completed/success，已附当前会话，等待人工实质review，Codex不合并。下一阶段Web正式集成沿五key配置Plan，私有候选的严格输入/身份切换修复进行中。
