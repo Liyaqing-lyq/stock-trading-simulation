@@ -518,3 +518,6 @@ Root另用B1最终冻结类独立编译旧16/10构造客户端，class哈希31e0
 候选2固定87源，DecisionModel768a4ee6…fa8c5，Runtime保持B1。23新增专项、976标准、CSV44/123/7、GUI及JavaDoc04:35:08通过；Root23独编及旧编译客户端完整JSON90a7032d…bf76一致；真实Hermes afc0c5独编58/58并核87源一致。候选1两个恢复cap漏洞均实际RED后修，降低cap合法恢复对照保留。
 
 Root现拥有全部主树/测试/Maven。新作者ed3b0f实施进程75641已退出，只读B2b准备exec51627，仅live-runtime-preparation私有目录可写，禁止主树/Maven/Temp/keys；afc0c5最终独审40912已退出，无在写任务。旧aeafaa无任何写权。本单当前发布AI草稿PR及等待实际CI，下一B2b持久派发/schema10，B2c真实Web角色调用。此前唯一真实key请求51token，没有新增调用；总体基线继续施工。
+
+场景预算代码a883e99192fd7822e9d5861db5560a86d436075f已建立草稿[PR28](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/28)，base为codex/world-live-decision-core；实际[CI42289821622](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42289821622)已completed/success，已附会话。本地976及Root23/Hermes58通过，仍待人工review、不自动合并。下一按2026-11-07-live-decision-runtime.md实施B2b。作者ed3b0f只读准备exec51627已退出，当前Root独占主树/Maven。
+

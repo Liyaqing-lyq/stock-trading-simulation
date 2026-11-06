@@ -202,3 +202,6 @@ Root另用B1最终冻结类独立编译旧16/10构造客户端，class哈希31e0
 场景计划及累计预算纯核candidate2本地验收：23新增/976标准、44成交123订单7排名、GUI/JavaDoc04:35:08，Root23及真实Hermes58独立通过；DecisionModel768a4ee6…fa8c5，旧客户端JSON完整指纹90a7032d…bf76保持。正式证据docs/05 §31及scene-decision-*私有日志。当前发布草稿PR，B2b/schema10持久派发与B2c/Web真实调用继续，不能当总体完成。
 
 Root独占主树/Maven；真实作者20261107_041840_ed3b0f仅live-runtime-preparation只读准备（exec51627），无主树写权。独审20261107_034237_afc0c5最终58全绿已退出。旧aeafaa不再拥有写权。无新增真实key调用。
+
+场景预算代码a883e99192fd7822e9d5861db5560a86d436075f已建立草稿[PR28](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/28)，base为codex/world-live-decision-core；实际[CI42289821622](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42289821622)已completed/success，已附会话。本地976及Root23/Hermes58通过，仍待人工review、不自动合并。下一按2026-11-07-live-decision-runtime.md实施B2b。作者ed3b0f只读准备exec51627已退出，当前Root独占主树/Maven。
+

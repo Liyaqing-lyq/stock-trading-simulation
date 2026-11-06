@@ -21,7 +21,7 @@ Decision/OpenRequest尾部可选plan及旧构造；openDecision/sameFrozenInput/
 
 - [x] 正式真实模型测试先RED：旧构造JSON原样、scripted拒plan、字节/路由边界、差异输出预留、同action改plan冲突、run/person/scene三层、等于cap/跨revision已用不清零、cap提高/降低、旧输出freeze与retry新cap、未知保守/超额停发、JSON伪造及恢复。
 - [x] 实现最小变更，原953+新增23专项全绿；实际旧编译调用程序和JSON逐字对照。
-- [ ] Root独立反例与真实Hermes独审，标准verify含GUI/CSV、JavaDoc、评分/接口/证据/总Plan同步；AI草稿PR与实际CI。
+- [x] Root独立反例与真实Hermes独审，标准verify含GUI/CSV、JavaDoc、评分/接口/证据/总Plan同步；AI草稿PR28与实际CI42289821622成功，仍待人工review。
 - [ ] 后续B2b：schema10含分红全能力、manifest严格组合、DecisionRun持久dispatch事实、真实旧9新旧交替、三进程防重；此单不创建新世界档案或调用网络。
 
 ### Root固定的拒绝形态与审查口径
