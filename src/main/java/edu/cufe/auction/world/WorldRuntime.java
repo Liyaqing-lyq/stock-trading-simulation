@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.cufe.auction.model.OrderType;
 import edu.cufe.auction.model.Side;
 import edu.cufe.auction.world.CashLedger.OpeningAccount;
+import edu.cufe.auction.world.ManufacturingRun.ReportEntry;
 import edu.cufe.auction.world.SecuritiesLedger.ActionReport;
 import edu.cufe.auction.world.SecuritiesLedger.SellReservation;
 import edu.cufe.auction.world.WorldExchange.OrderReport;
@@ -51,6 +52,19 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_SECURITIES = 2;
     /** 含完整世界订单/成交子集状态的世界状态版本（M2.4b）。 */
     private static final int STATE_SCHEMA_EXCHANGE = 3;
+    /** 含完整制造经营子集状态的世界状态版本（M3a.2）。 */
+    private static final int STATE_SCHEMA_MANUFACTURING = 4;
+
+    /** 公司经营账户不能通过普通转账绕过经营分录。 */
+    public static final String REASON_COMPANY_LEDGER_FORBIDDEN = "COMPANY_LEDGER_FORBIDDEN";
+    /** 公司证券申报必须走经营分录，本档案不接受直接下单。 */
+    public static final String REASON_COMPANY_TRADING_FORBIDDEN = "COMPANY_TRADING_FORBIDDEN";
+
+    /** 系统自有动作（如强制关期）的报告命令前缀，与外部原 command 区分。 */
+    private static final String SYSTEM_COMMAND_PREFIX = "system:";
+
+    /** 金额零值，保持两位小数口径。 */
+    private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(2);
 
     /** 同一受益主体的两个账户不能通过清算夹具自成交。 */
     public static final String REASON_SELF_TRADE_PREVENTED = "SELF_TRADE_PREVENTED";
@@ -64,6 +78,8 @@ public final class WorldRuntime implements AutoCloseable {
     private final ObjectMapper mapper = new ObjectMapper();
     private final RunManifest manifest;
     private final OpeningRegistry registry;
+    /** 制造开局配置；只有 stock-company-experiment-v1 档案非空。 */
+    private final ManufacturingRun.Config manufacturingConfig;
     private final long seed;
     private final WorldJournal journal;
     private final Thread writerThread = Thread.currentThread();
@@ -101,6 +117,7 @@ public final class WorldRuntime implements AutoCloseable {
      * @param accounts    现金账户（不可变）
      * @param securities  证券子集；未启用时为空
      * @param exchange    世界订单/成交子集；仅撮合档案存在
+     * @param manufacturing 制造经营子集；仅 stock-company-experiment-v1 存在
      * @param pending     未完成待办（不可变）
      * @param delivered   已投递回报（不可变）
      * @param usedTaskIds 已用任务标识（不可变）
@@ -109,6 +126,7 @@ public final class WorldRuntime implements AutoCloseable {
                            Map<String, CashLedger.CashAccount> accounts,
                            Optional<SecuritiesLedger.State> securities,
                            Optional<WorldExchange.State> exchange,
+                           Optional<ManufacturingRun> manufacturing,
                            List<PendingTask> pending, List<Notice> delivered,
                            Set<String> usedTaskIds) {
         /** 防御性冻结所有集合。 */
@@ -116,6 +134,7 @@ public final class WorldRuntime implements AutoCloseable {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
             securities = Objects.requireNonNull(securities, "securities");
             exchange = Objects.requireNonNull(exchange, "exchange");
+            manufacturing = Objects.requireNonNull(manufacturing, "manufacturing");
             pending = List.copyOf(pending);
             delivered = List.copyOf(delivered);
             usedTaskIds = Collections.unmodifiableSet(new LinkedHashSet<>(usedTaskIds));
@@ -199,6 +218,23 @@ public final class WorldRuntime implements AutoCloseable {
     private record CloseMarketPayload(String commandId) {
     }
 
+    /** 外部制造命令的规范化内容（幂等比对用）；六类命令共用一种形状。 */
+    private record ManufacturingCommand(String commandId, String taskId, long dueTimeMillis,
+                                        String actorOwnerId, String businessId, String resultId,
+                                        long quantity, BigDecimal unitPrice,
+                                        long promisedDeliveryAt, long period) {
+    }
+
+    /** 制造任务参数；到期只按已确认内容执行，不再向调用方取值。 */
+    private record ManufacturingPayload(String commandId, String actorOwnerId, String businessId,
+                                        String resultId, long quantity, BigDecimal unitPrice,
+                                        long promisedDeliveryAt, long period) {
+    }
+
+    /** 自动子任务参数：只带父命令与关联业务标识（或期间）。 */
+    private record ManufacturingChildPayload(String commandId, String businessId, long period) {
+    }
+
     /** 完整不可变子集状态；每批提交保存一份，恢复逐批校验后取最后一份。 */
     private record WorldState(int schemaVersion, String runId, long position, long timeMillis,
                               String lastPhase, Map<String, CashLedger.CashAccount> accounts,
@@ -208,7 +244,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               SecuritiesLedger.State securities,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              WorldExchange.State exchange) {
+                              WorldExchange.State exchange,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              ManufacturingRun manufacturing) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -230,7 +268,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings)
             throws IOException {
-        this(file, manifest, openings, null);
+        this(file, manifest, openings, null, null);
     }
 
     /**
@@ -247,6 +285,27 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
                         OpeningRegistry registry) throws IOException {
+        this(file, manifest, openings, registry, null);
+    }
+
+    /**
+     * 打开或恢复一次公司经营档案（{@code stock-company-experiment-v1}）。
+     *
+     * <p>配置与模块必须成对：manufacturing 清单缺配置、或旧档案多带配置都在创建任何文件之前拒绝。
+     * 开局还要在写盘前确认：公司财产主体登记为 ORGANIZATION、其组织就是证券发行人、
+     * 公司只有一个经营现金账户（含零余额的第二账户）、公司没有持股/库存股等未建模资产。
+     * 配置会绑进第一批开局内容，换一套配置重开同一日志会在恢复期被拒绝。</p>
+     *
+     * @param file          运行日志（本类独占）
+     * @param manifest      运行清单
+     * @param openings      现金开局清单
+     * @param registry      开局登记，制造档案必需
+     * @param manufacturing 制造开局配置；旧档案为 null
+     * @throws IOException 日志不可用、清单/开局/登记/配置与持久记录不一致
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                        OpeningRegistry registry, ManufacturingRun.Config manufacturing)
+            throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         if (manifest.hasRegistry() && registry == null) {
             throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
@@ -255,7 +314,16 @@ public final class WorldRuntime implements AutoCloseable {
         if (!manifest.hasRegistry() && registry != null) {
             throw new IllegalArgumentException("现金模式运行不接受开局登记");
         }
+        if (manifest.hasManufacturing() && manufacturing == null) {
+            throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                    + " 必须提供制造开局配置");
+        }
+        if (!manifest.hasManufacturing() && manufacturing != null) {
+            throw new IllegalArgumentException("未启用制造模块的运行不接受制造配置："
+                    + manifest.rulesVersion());
+        }
         this.registry = registry;
+        this.manufacturingConfig = manufacturing;
         this.seed = manifest.seed();
         List<OpeningAccount> ordered = new ArrayList<>(Objects.requireNonNull(openings, "openings"));
         ordered.sort(Comparator.comparing(OpeningAccount::accountId));
@@ -273,6 +341,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (registry != null) {
             // 在创建日志文件之前完成对齐：属主可解析、持股账户存在、库存股归发行组织
             registry.validateAgainst(ordered);
+        }
+        if (manufacturingConfig != null) {
+            // 开局错误必须在写盘前拒绝：组织映射、发行人、公司第二账户、公司持股
+            validateManufacturingOpening(ordered);
         }
         WorldState initial = initialState(accounts);
         this.journal = new WorldJournal(file, manifest.runId());
@@ -324,6 +396,13 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(actorOwnerId, "财产主体");
         requireText(fromId, "付款账户");
         requireText(toId, "收款账户");
+        if (manufacturingConfig != null) {
+            String company = manufacturingConfig.accounting().companyAccountId();
+            if (company.equals(fromId) || company.equals(toId)) {
+                throw new IllegalArgumentException("公司经营账户只能通过制造经营分录变动，"
+                        + "不接受普通转账：" + company);
+            }
+        }
         if (receiptDelayMillis < 0) {
             throw new IllegalArgumentException("回报延迟不能为负");
         }
@@ -592,6 +671,14 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(actorOwnerId, "财产主体");
         requireText(accountId, "账户");
         requireText(symbol, "证券代码");
+        if (manufacturingConfig != null) {
+            CashLedger.CashAccount account = state.accounts().get(accountId);
+            if (account != null && account.ownerId().equals(
+                    manufacturingConfig.accounting().companyOwnerId())) {
+                throw new IllegalArgumentException("公司证券申报必须走经营分录，本档案拒绝直接下单："
+                        + accountId);
+            }
+        }
         if (side == null) {
             throw new IllegalArgumentException("买卖方向不能为空");
         }
@@ -712,6 +799,215 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 排程一次采购下单：只允许受信管理夹具为公司排程，到期才形成采购承诺。
+     *
+     * <p>采购到货固定为到期后 1 个实验日，因此这里先拒绝 {@code due + 1 日} 溢出的排程，
+     * 不让任务到期后永久卡住。命令重发返回原 {@code SCHEDULED} 回报。</p>
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param actorOwnerId  发起人，必须是公司财产主体
+     * @param purchaseId    采购单标识，运行内不复用
+     * @param quantity      数量，必须为正
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、能力、时点或溢出非法
+     */
+    public synchronized String schedulePurchaseOrder(String commandId, String taskId,
+                                                     long dueTimeMillis, String actorOwnerId,
+                                                     String purchaseId, long quantity)
+            throws IOException {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("采购数量必须为正：" + quantity);
+        }
+        requireHorizon(dueTimeMillis, ManufacturingModel.DAY_MILLIS, "采购到货");
+        return scheduleManufacturing(commandId, taskId, dueTimeMillis, actorOwnerId,
+                PendingTask.MANUFACTURING_PURCHASE_ORDER_V1, purchaseId, "", quantity, null, -1L, -1L);
+    }
+
+    /**
+     * 排程一次投产：到期耗料、付人工并形成在制批次，成功后自动排 1 日后完工。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param actorOwnerId  发起人，必须是公司财产主体
+     * @param batchId       生产批次标识，运行内不复用
+     * @param quantity      批量，纯核在到期时校验为 10 的倍数且不超过 20
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、能力、时点或溢出非法
+     */
+    public synchronized String scheduleProduction(String commandId, String taskId,
+                                                  long dueTimeMillis, String actorOwnerId,
+                                                  String batchId, long quantity)
+            throws IOException {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("生产批量必须为正：" + quantity);
+        }
+        requireHorizon(dueTimeMillis, ManufacturingModel.DAY_MILLIS, "生产完工");
+        return scheduleManufacturing(commandId, taskId, dueTimeMillis, actorOwnerId,
+                PendingTask.MANUFACTURING_PRODUCTION_V1, batchId, "", quantity, null, -1L, -1L);
+    }
+
+    /**
+     * 排程一次客户签约：到期才按当期需求/预算与同期间条件复核，不提前确认收入。
+     *
+     * @param commandId          外部命令标识
+     * @param taskId             任务标识，运行内不复用
+     * @param dueTimeMillis      到期模拟毫秒，必须晚于当前时点
+     * @param actorOwnerId       发起人，必须是公司财产主体
+     * @param contractId         合同标识，运行内不复用
+     * @param quantity           合同数量，必须为正
+     * @param unitPrice          合同单价，精确到分且为正
+     * @param promisedDeliveryAt 承诺交付时点，必须晚于到期且在同一期间内
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、能力或时点非法
+     */
+    public synchronized String scheduleSalesContract(String commandId, String taskId,
+                                                     long dueTimeMillis, String actorOwnerId,
+                                                     String contractId, long quantity,
+                                                     BigDecimal unitPrice, long promisedDeliveryAt)
+            throws IOException {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("合同数量必须为正：" + quantity);
+        }
+        if (unitPrice == null) {
+            throw new IllegalArgumentException("合同单价不能为空");
+        }
+        BigDecimal normalized = CashLedger.money(unitPrice);
+        if (normalized.signum() <= 0) {
+            throw new IllegalArgumentException("合同单价必须为正：" + unitPrice);
+        }
+        if (promisedDeliveryAt <= dueTimeMillis) {
+            throw new IllegalArgumentException("承诺交付必须晚于签约到期："
+                    + promisedDeliveryAt + " / " + dueTimeMillis);
+        }
+        try {
+            Math.multiplyExact(dueTimeMillis / ManufacturingModel.PERIOD_MILLIS + 1,
+                    ManufacturingModel.PERIOD_MILLIS);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException("签约到期所在期间的期末超出模拟时间范围", overflow);
+        }
+        return scheduleManufacturing(commandId, taskId, dueTimeMillis, actorOwnerId,
+                PendingTask.MANUFACTURING_SALES_CONTRACT_V1, contractId, "", quantity, normalized,
+                promisedDeliveryAt, -1L);
+    }
+
+    /**
+     * 排程一次交付：到期扣产成品并确认收入/成本/应收，成功后自动排 15 日收款。
+     *
+     * <p>应收到期固定为交付后 15 个实验日，因此 {@code due + 15 日} 溢出的排程在这里就被拒绝。</p>
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param actorOwnerId  发起人，必须是公司财产主体
+     * @param contractId    来源合同
+     * @param quantity      本次交付数量，必须为正
+     * @param deliveryId    交付/应收标识，运行内不复用
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、能力、时点或溢出非法
+     */
+    public synchronized String scheduleDelivery(String commandId, String taskId, long dueTimeMillis,
+                                                String actorOwnerId, String contractId,
+                                                long quantity, String deliveryId)
+            throws IOException {
+        requireText(deliveryId, "交付标识");
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("交付数量必须为正：" + quantity);
+        }
+        requireHorizon(dueTimeMillis, ManufacturingModel.RECEIVABLE_TERM_MILLIS, "应收到期");
+        return scheduleManufacturing(commandId, taskId, dueTimeMillis, actorOwnerId,
+                PendingTask.MANUFACTURING_DELIVERY_V1, contractId, deliveryId, quantity, null,
+                -1L, -1L);
+    }
+
+    /**
+     * 排程一次应收回款：逾期后可明确重试，已收清再收会被纯核拒绝且不动资产。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param actorOwnerId  发起人，必须是公司财产主体
+     * @param receivableId  应收标识
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、能力或时点非法
+     */
+    public synchronized String scheduleCollectReceivable(String commandId, String taskId,
+                                                         long dueTimeMillis, String actorOwnerId,
+                                                         String receivableId) throws IOException {
+        return scheduleManufacturing(commandId, taskId, dueTimeMillis, actorOwnerId,
+                PendingTask.MANUFACTURING_COLLECT_RECEIVABLE_V1, receivableId, "", 0L, null, -1L, -1L);
+    }
+
+    /**
+     * 排程一次费用账单付款：只结清该期已确认未付金额，不重复记费用。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param actorOwnerId  发起人，必须是公司财产主体
+     * @param period        费用账单所属期间
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、能力或时点非法
+     */
+    public synchronized String schedulePayExpenseBill(String commandId, String taskId,
+                                                      long dueTimeMillis, String actorOwnerId,
+                                                      long period) throws IOException {
+        if (period < 0) {
+            throw new IllegalArgumentException("期间不能为负：" + period);
+        }
+        return scheduleManufacturing(commandId, taskId, dueTimeMillis, actorOwnerId,
+                PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1, "", "", 0L, null, -1L, period);
+    }
+
+    /**
+     * 六个制造排程入口的共用实现：结构校验、幂等比对、条件排程与持久提交。
+     *
+     * <p>业务条件（预算、需求、库存、可用现金、ID 是否被占）一律留到到期复核；这里只拒绝参数、
+     * 权属、能力、时点与已知溢出。</p>
+     */
+    private String scheduleManufacturing(String commandId, String taskId, long dueTimeMillis,
+                                        String actorOwnerId, String kind, String businessId,
+                                        String resultId, long quantity, BigDecimal unitPrice,
+                                        long promisedDeliveryAt, long period) throws IOException {
+        requireManufacturingEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(actorOwnerId, "财产主体");
+        if (!PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1.equals(kind)) {
+            requireText(businessId, "业务标识");
+        }
+        if (!actorOwnerId.equals(manufacturingConfig.accounting().companyOwnerId())) {
+            throw new IllegalArgumentException("只有公司财产主体可以发起经营动作：" + actorOwnerId);
+        }
+        ManufacturingCommand command = new ManufacturingCommand(commandId, taskId, dueTimeMillis,
+                actorOwnerId, businessId, resultId, quantity, unitPrice, promisedDeliveryAt, period);
+        String content = mapper.writeValueAsString(command);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        ManufacturingPayload payload = new ManufacturingPayload(commandId, actorOwnerId,
+                businessId, resultId, quantity, unitPrice, promisedDeliveryAt, period);
+        PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
+                kind, mapper.writeValueAsString(payload));
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /**
      * 推进到目标模拟毫秒：按公平顺序执行到期待办，再为时钟边界落一个完整批次。
      *
      * @param inclusiveMillis 目标模拟毫秒，不得早于当前时间
@@ -741,6 +1037,16 @@ public final class WorldRuntime implements AutoCloseable {
                     case PendingTask.EXCHANGE_ORDER_V1 -> completeOrder(next);
                     case PendingTask.EXCHANGE_CANCEL_V1 -> completeCancelOrder(next);
                     case PendingTask.EXCHANGE_CLOSE_V1 -> completeCloseMarket(next);
+                    case PendingTask.MANUFACTURING_PURCHASE_ORDER_V1,
+                         PendingTask.MANUFACTURING_PRODUCTION_V1,
+                         PendingTask.MANUFACTURING_SALES_CONTRACT_V1,
+                         PendingTask.MANUFACTURING_DELIVERY_V1,
+                         PendingTask.MANUFACTURING_COLLECT_RECEIVABLE_V1,
+                         PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1 -> completeManufacturing(next);
+                    case PendingTask.MANUFACTURING_GOODS_RECEIPT_V1,
+                         PendingTask.MANUFACTURING_BATCH_COMPLETION_V1,
+                         PendingTask.MANUFACTURING_AUTO_COLLECTION_V1 -> completeManufacturingChild(next);
+                    case PendingTask.MANUFACTURING_PERIOD_CLOSE_V1 -> completePeriodClose(next);
                     default -> throw new IllegalStateException("未启用的任务种类：" + next.kind());
                 }
             }
@@ -765,8 +1071,8 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized Snapshot snapshot() {
         return new Snapshot(state.position(), state.timeMillis(), state.lastPhase(),
                 state.accounts(), Optional.ofNullable(state.securities()),
-                Optional.ofNullable(state.exchange()), state.pending(),
-                state.delivered(), state.usedTaskIds());
+                Optional.ofNullable(state.exchange()), Optional.ofNullable(state.manufacturing()),
+                state.pending(), state.delivered(), state.usedTaskIds());
     }
 
     /**
@@ -997,6 +1303,18 @@ public final class WorldRuntime implements AutoCloseable {
     private void completeOrder(PendingTask task) throws IOException {
         OrderPayload payload = mapper.readValue(task.payload(), OrderPayload.class);
         long now = task.dueTimeMillis();
+        if (manufacturingConfig != null) {
+            CashLedger.CashAccount account = state.accounts().get(payload.accountId());
+            if (account != null && account.ownerId().equals(
+                    manufacturingConfig.accounting().companyOwnerId())) {
+                OrderReport report = new OrderReport(task.taskId(), payload.commandId(),
+                        task.kind(), false, REASON_COMPANY_TRADING_FORBIDDEN, null, List.of(),
+                        List.of(), now, state.position() + 1);
+                finishExchangeTask(task, state.accounts(), state.securities(), state.exchange(),
+                        report);
+                return;
+            }
+        }
         if (registry.security(payload.symbol()) == null) {
             OrderReport report = new OrderReport(task.taskId(), payload.commandId(),
                     task.kind(), false, WorldExchange.REASON_UNKNOWN_SYMBOL, null, List.of(),
@@ -1093,6 +1411,322 @@ public final class WorldRuntime implements AutoCloseable {
                 state.delivered(), used, state.commandContents(), state.commandOutcomes(),
                 securities, state.exchange());
         commitAndApply("task:" + task.taskId(), task.payload(), report.reason(), events, candidate);
+    }
+
+    // ------------------------------------------------------------------
+    // 制造经营：到期执行、自动子任务与强制关期
+    // ------------------------------------------------------------------
+
+    /** 自动子任务的排程描述；标识在提交批次内按全世界已用任务表空闲选定。 */
+    private record ManufacturingChild(String kind, WorldScheduler.Phase phase, String stem,
+                                      long dueTimeMillis, String businessId, long period) {
+    }
+
+    /**
+     * 外部制造命令到期：按 {@code task.dueTimeMillis()} 调用纯核转换。
+     *
+     * <p>可用现金一律取同一快照的 {@link WorldExchange#freeCash}（含公司经营账户与客户回款），
+     * 不能花掉挂单冻结。成功时自动子任务与父效果同批保存；失败时也保留候选台账
+     * （{@code FAILED_NO_CASH}/{@code OVERDUE}），不丢元数据。</p>
+     */
+    private void completeManufacturing(PendingTask task) throws IOException {
+        ManufacturingPayload payload = mapper.readValue(task.payload(), ManufacturingPayload.class);
+        long now = task.dueTimeMillis();
+        ManufacturingRun run = requireManufacturingRun();
+        ManufacturingModel.State ledger = run.ledger();
+        String owner = ledger.opening().companyOwnerId();
+        Map<String, CashLedger.CashAccount> accounts = state.accounts();
+        BigDecimal companyFree = availableCash(ledger.opening().companyAccountId(), accounts);
+        ManufacturingModel.Outcome outcome;
+        ManufacturingChild child = null;
+        BigDecimal amount = ZERO;
+        String from = ledger.opening().companyAccountId();
+        String to = ledger.opening().supplierAccountId();
+        String reportBusiness = payload.businessId();
+        switch (task.kind()) {
+            case PendingTask.MANUFACTURING_PURCHASE_ORDER_V1 -> {
+                outcome = ManufacturingModel.placePurchaseOrder(ledger, now, owner,
+                        payload.businessId(), payload.quantity(), accounts);
+                if (outcome.accepted()) {
+                    ManufacturingModel.PurchaseOrder order =
+                            outcome.state().purchaseOrders().get(payload.businessId());
+                    child = new ManufacturingChild(PendingTask.MANUFACTURING_GOODS_RECEIPT_V1,
+                            WorldScheduler.Phase.COMPLETION, "mfg-receipt:", order.arrivalAt(),
+                            payload.businessId(), -1L);
+                }
+            }
+            case PendingTask.MANUFACTURING_PRODUCTION_V1 -> {
+                outcome = ManufacturingModel.startProduction(ledger, now, owner,
+                        payload.businessId(), payload.quantity(), companyFree, accounts);
+                if (outcome.accepted()) {
+                    ManufacturingModel.ProductionBatch batch =
+                            outcome.state().productionBatches().get(payload.businessId());
+                    amount = batch.laborCost();
+                    to = ledger.opening().opsAccountId();
+                    child = new ManufacturingChild(PendingTask.MANUFACTURING_BATCH_COMPLETION_V1,
+                            WorldScheduler.Phase.COMPLETION, "mfg-finish:", batch.completesAt(),
+                            payload.businessId(), -1L);
+                }
+            }
+            case PendingTask.MANUFACTURING_SALES_CONTRACT_V1 -> outcome =
+                    ManufacturingModel.signContract(ledger, now, owner, payload.businessId(),
+                            payload.quantity(), payload.unitPrice(), payload.promisedDeliveryAt(),
+                            accounts);
+            case PendingTask.MANUFACTURING_DELIVERY_V1 -> {
+                outcome = ManufacturingModel.deliver(ledger, now, owner, payload.businessId(),
+                        payload.quantity(), payload.resultId(), accounts);
+                reportBusiness = payload.resultId();
+                if (outcome.accepted()) {
+                    ManufacturingModel.Receivable receivable =
+                            outcome.state().receivables().get(payload.resultId());
+                    child = new ManufacturingChild(PendingTask.MANUFACTURING_AUTO_COLLECTION_V1,
+                            WorldScheduler.Phase.COMPLETION, "mfg-collect:", receivable.dueAt(),
+                            payload.resultId(), -1L);
+                }
+            }
+            case PendingTask.MANUFACTURING_COLLECT_RECEIVABLE_V1 -> {
+                amount = outstanding(ledger, payload.businessId());
+                from = ledger.opening().customerAccountId();
+                to = ledger.opening().companyAccountId();
+                outcome = ManufacturingModel.collectReceivable(ledger, now, owner,
+                        payload.businessId(), customerFree(ledger, accounts), accounts);
+            }
+            case PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1 -> {
+                ManufacturingModel.ExpenseBill bill = billOfPeriod(ledger, payload.period());
+                reportBusiness = bill == null ? "" : bill.billId();
+                amount = bill == null ? ZERO : bill.outstanding();
+                to = ledger.opening().opsAccountId();
+                outcome = ManufacturingModel.payExpenseBill(ledger, now, owner, payload.period(),
+                        companyFree, accounts);
+            }
+            default -> throw new IllegalStateException("未启用的制造任务种类：" + task.kind());
+        }
+        List<WorldEvent> effects = outcome.accepted() && amount.signum() > 0
+                ? cashTransferred(task, from, to, amount, reportBusiness) : List.of();
+        if (!outcome.accepted()) {
+            amount = ZERO;
+        }
+        finishManufacturingTask(task, payload.commandId(), outcome, child, reportBusiness, amount,
+                effects);
+    }
+
+    /**
+     * 自动子任务到期：到货、完工、到期回款。参数只来自父动作已确认的纯核记录。
+     */
+    private void completeManufacturingChild(PendingTask task) throws IOException {
+        ManufacturingChildPayload payload = mapper.readValue(task.payload(),
+                ManufacturingChildPayload.class);
+        long now = task.dueTimeMillis();
+        ManufacturingRun run = requireManufacturingRun();
+        ManufacturingModel.State ledger = run.ledger();
+        String owner = ledger.opening().companyOwnerId();
+        Map<String, CashLedger.CashAccount> accounts = state.accounts();
+        ManufacturingModel.Outcome outcome;
+        BigDecimal amount = ZERO;
+        String from;
+        String to;
+        switch (task.kind()) {
+            case PendingTask.MANUFACTURING_GOODS_RECEIPT_V1 -> {
+                ManufacturingModel.PurchaseOrder order =
+                        ledger.purchaseOrders().get(payload.businessId());
+                BigDecimal due = order == null ? BigDecimal.ZERO
+                        : CashLedger.money(order.unitPrice().multiply(
+                                BigDecimal.valueOf(order.quantity())));
+                outcome = ManufacturingModel.receivePurchaseOrder(ledger, now, owner,
+                        payload.businessId(),
+                        availableCash(ledger.opening().companyAccountId(), accounts), accounts);
+                amount = outcome.accepted() ? due : ZERO;
+                from = ledger.opening().companyAccountId();
+                to = ledger.opening().supplierAccountId();
+            }
+            case PendingTask.MANUFACTURING_BATCH_COMPLETION_V1 -> {
+                outcome = ManufacturingModel.completeProduction(ledger, now, owner,
+                        payload.businessId(), accounts);
+                from = ledger.opening().companyAccountId();
+                to = ledger.opening().opsAccountId();
+            }
+            case PendingTask.MANUFACTURING_AUTO_COLLECTION_V1 -> {
+                amount = outstanding(ledger, payload.businessId());
+                outcome = ManufacturingModel.collectReceivable(ledger, now, owner,
+                        payload.businessId(), customerFree(ledger, accounts), accounts);
+                from = ledger.opening().customerAccountId();
+                to = ledger.opening().companyAccountId();
+            }
+            default -> throw new IllegalStateException("未启用的制造子任务：" + task.kind());
+        }
+        List<WorldEvent> effects = outcome.accepted() && amount.signum() > 0
+                ? cashTransferred(task, from, to, amount, payload.businessId()) : List.of();
+        if (!outcome.accepted()) {
+            amount = ZERO;
+        }
+        finishManufacturingTask(task, payload.commandId(), outcome, null, payload.businessId(),
+                amount, effects);
+    }
+
+    /**
+     * 系统强制关期：期末确认费用/部分付款/应付/折旧，并在同一批排下一期间任务。
+     *
+     * <p>没有外部关期入口；账单标识按纯核已用标识找空闲，不会因用户提前占名而卡死。
+     * 当前档案的合法关期应成功；预期外拒绝会触发关期链校验失败，保留旧快照和待办并暂停，
+     * 不发布缺失下一期任务的候选。</p>
+     */
+    private void completePeriodClose(PendingTask task) throws IOException {
+        ManufacturingChildPayload payload = mapper.readValue(task.payload(),
+                ManufacturingChildPayload.class);
+        long now = task.dueTimeMillis();
+        ManufacturingRun run = requireManufacturingRun();
+        ManufacturingModel.State ledger = run.ledger();
+        String owner = ledger.opening().companyOwnerId();
+        Map<String, CashLedger.CashAccount> accounts = state.accounts();
+        String billId = freeBillId(ledger, payload.period());
+        ManufacturingModel.Outcome outcome = ManufacturingModel.closePeriod(ledger, now, owner,
+                payload.period(), billId, availableCash(ledger.opening().companyAccountId(), accounts),
+                accounts);
+        ManufacturingModel.ExpenseBill bill = outcome.accepted()
+                ? outcome.state().expenseBills().get(billId) : null;
+        BigDecimal amount = bill == null ? ZERO : bill.paid();
+        List<WorldEvent> effects = outcome.accepted() && amount.signum() > 0
+                ? cashTransferred(task, ledger.opening().companyAccountId(),
+                        ledger.opening().opsAccountId(), amount, billId) : List.of();
+        ManufacturingChild next = null;
+        if (outcome.accepted()) {
+            long period = outcome.state().closedPeriods();
+            long due;
+            try {
+                due = Math.multiplyExact(period + 1, ManufacturingModel.PERIOD_MILLIS);
+            } catch (ArithmeticException overflow) {
+                due = -1L;
+            }
+            if (due > now) {
+                next = new ManufacturingChild(PendingTask.MANUFACTURING_PERIOD_CLOSE_V1,
+                        WorldScheduler.Phase.RULES, "mfg-close:", due, String.valueOf(period),
+                        period);
+            }
+        }
+        finishManufacturingTask(task, SYSTEM_COMMAND_PREFIX + "close-period:" + payload.period(),
+                outcome, next, bill == null ? "" : billId, amount, effects);
+    }
+
+    /**
+     * 制造任务统一收尾：完成待办、追加自动子任务、写报告与资金事件、保存全量状态后在持久确认后发布。
+     */
+    private void finishManufacturingTask(PendingTask task, String commandId,
+                                         ManufacturingModel.Outcome outcome,
+                                         ManufacturingChild child, String businessId,
+                                         BigDecimal amount, List<WorldEvent> effects)
+            throws IOException {
+        ManufacturingRun run = requireManufacturingRun().withLedger(outcome.state());
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.addAll(effects);
+        if (child != null) {
+            String childId = freeInternalTaskId(child.stem(), child.businessId(), used);
+            ManufacturingChildPayload childPayload = new ManufacturingChildPayload(commandId,
+                    child.businessId(), child.period());
+            PendingTask scheduled = new PendingTask(childId, child.dueTimeMillis(),
+                    child.phase(), child.kind(), mapper.writeValueAsString(childPayload));
+            pending.add(scheduled);
+            used.add(childId);
+            events.add(new WorldEvent("task-scheduled:" + childId, "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(scheduled)));
+        }
+        ReportEntry entry = new ReportEntry(task.taskId(), commandId, task.kind(),
+                outcome.accepted(), outcome.reason(), businessId, amount, task.dueTimeMillis(),
+                state.position() + 1);
+        run = run.withReport(entry);
+        events.add(new WorldEvent("manufacturing-report:" + task.taskId(),
+                "MANUFACTURING_REPORT_V1", mapper.writeValueAsString(entry)));
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), outcome.accounts(),
+                pending, state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), run);
+        commitAndApply("task:" + task.taskId(), task.payload(), outcome.reason(), events, candidate);
+    }
+
+    /** 资金事件：只记录真实发生的制造付款/收款，载荷与普通转账、证券清算都不兼容。 */
+    private List<WorldEvent> cashTransferred(PendingTask task, String fromId, String toId,
+                                             BigDecimal amount, String businessId)
+            throws IOException {
+        Map<String, Object> effect = new LinkedHashMap<>();
+        effect.put("taskId", task.taskId());
+        effect.put("kind", task.kind());
+        effect.put("fromAccountId", fromId);
+        effect.put("toAccountId", toId);
+        effect.put("amount", amount);
+        effect.put("businessId", businessId);
+        return List.of(new WorldEvent("manufacturing-cash:" + task.taskId(),
+                "MANUFACTURING_CASH_TRANSFERRED_V1", mapper.writeValueAsString(effect)));
+    }
+
+    private ManufacturingRun requireManufacturingRun() {
+        ManufacturingRun run = state.manufacturing();
+        if (run == null) {
+            throw new IllegalStateException("当前运行没有制造子集状态");
+        }
+        return run;
+    }
+
+    /** 同一快照下的可用现金：撮合档案扣买单冻结，旧档案按余额。 */
+    private BigDecimal availableCash(String accountId, Map<String, CashLedger.CashAccount> accounts) {
+        CashLedger.CashAccount account = accounts.get(accountId);
+        if (account == null) {
+            throw new IllegalStateException("缺少现金账户：" + accountId);
+        }
+        if (manifest.hasMatching() && state.exchange() != null) {
+            return WorldExchange.freeCash(state.exchange(), accounts, accountId);
+        }
+        return account.cash();
+    }
+
+    private BigDecimal customerFree(ManufacturingModel.State ledger,
+                                    Map<String, CashLedger.CashAccount> accounts) {
+        return availableCash(ledger.opening().customerAccountId(), accounts);
+    }
+
+    private static BigDecimal outstanding(ManufacturingModel.State ledger, String receivableId) {
+        ManufacturingModel.Receivable receivable = ledger.receivables().get(receivableId);
+        return receivable == null ? BigDecimal.ZERO : receivable.outstanding();
+    }
+
+    private static ManufacturingModel.ExpenseBill billOfPeriod(ManufacturingModel.State ledger,
+                                                               long period) {
+        for (ManufacturingModel.ExpenseBill bill : ledger.expenseBills().values()) {
+            if (bill.period() == period) {
+                return bill;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 为内部任务找空闲标识：从固定前缀起，被占用就加确定性序号。
+     *
+     * <p>外部 taskId 不保留任何前缀，所以不能用"禁止某前缀"隔离；用户提前占名只会让内部任务换一个
+     * 可读的后缀，不会让强制任务永久失败。</p>
+     */
+    private static String freeInternalTaskId(String stem, String businessId, Set<String> used) {
+        String base = stem + businessId;
+        String candidate = base;
+        int suffix = 1;
+        while (used.contains(candidate)) {
+            candidate = base + "-" + (++suffix);
+        }
+        return candidate;
+    }
+
+    /** 费用账单标识在纯核已用标识里找空闲；同样不限制用户前缀。 */
+    private static String freeBillId(ManufacturingModel.State ledger, long period) {
+        String base = "bill:" + period;
+        String candidate = base;
+        int suffix = 1;
+        while (ledger.usedIds().contains(candidate)) {
+            candidate = base + "-" + (++suffix);
+        }
+        return candidate;
     }
 
     private void commitAndApply(String commandId, String content, String result,
@@ -1224,6 +1858,215 @@ public final class WorldRuntime implements AutoCloseable {
         }
         validateSecurities(candidate, previous);
         validateExchange(candidate, previous);
+        validateManufacturing(candidate, previous);
+    }
+
+    /**
+     * 校验制造子集：档案一致、公司平衡式与世界现金守恒、旧记录不可改写、报告只增不改，
+     * 并要求活动采购/在制/未到期应收必须由持久待办推动。
+     */
+    private void validateManufacturing(WorldState candidate, WorldState previous) throws IOException {
+        ManufacturingRun run = candidate.manufacturing();
+        if (expectedSchema() < STATE_SCHEMA_MANUFACTURING) {
+            if (run != null) {
+                throw new IOException("旧档案不得包含制造子集状态");
+            }
+            return;
+        }
+        if (run == null) {
+            throw new IOException("公司档案缺少制造子集状态");
+        }
+        if (!run.symbol().equals(manufacturingConfig.symbol())) {
+            throw new IOException("制造子集证券与开局配置不一致：" + run.symbol());
+        }
+        if (!run.ledger().opening().equals(manufacturingConfig.accounting())) {
+            throw new IOException("制造子集账户绑定与开局配置不一致");
+        }
+        try {
+            ManufacturingModel.validate(run.ledger(), candidate.accounts());
+        } catch (RuntimeException invalid) {
+            throw new IOException("制造账不平衡：" + invalid.getMessage(), invalid);
+        }
+        for (ReportEntry entry : run.reports().values()) {
+            if (entry.position() > candidate.position()) {
+                throw new IOException("制造报告出现在未来的提交位置：" + entry.taskId());
+            }
+            if (entry.timeMillis() > candidate.timeMillis()) {
+                throw new IOException("制造报告时点晚于快照时点：" + entry.taskId());
+            }
+            if (!candidate.usedTaskIds().contains(entry.taskId())) {
+                throw new IOException("制造报告缺少对应的已用任务：" + entry.taskId());
+            }
+        }
+        validateManufacturingPending(candidate, run.ledger());
+        if (previous == null || previous.manufacturing() == null) {
+            return;
+        }
+        ManufacturingModel.State before = previous.manufacturing().ledger();
+        ManufacturingModel.State now = run.ledger();
+        if (!now.opening().equals(before.opening())) {
+            throw new IOException("制造开局账户绑定被改写");
+        }
+        if (now.initialEquity().compareTo(before.initialEquity()) != 0
+                || now.initialWorldCash().compareTo(before.initialWorldCash()) != 0) {
+            throw new IOException("制造初始权益或初始世界现金被改写");
+        }
+        if (now.equipment().originalCost().compareTo(before.equipment().originalCost()) != 0) {
+            throw new IOException("设备原值被改写");
+        }
+        if (now.equipment().accumulatedDepreciation()
+                .compareTo(before.equipment().accumulatedDepreciation()) < 0) {
+            throw new IOException("设备累计折旧回退");
+        }
+        if (!now.usedIds().containsAll(before.usedIds())) {
+            throw new IOException("制造已用标识丢失");
+        }
+        for (ManufacturingModel.PurchaseOrder old : before.purchaseOrders().values()) {
+            ManufacturingModel.PurchaseOrder updated = now.purchaseOrders().get(
+                    old.purchaseOrderId());
+            if (updated == null) {
+                throw new IOException("制造旧采购单被删除：" + old.purchaseOrderId());
+            }
+            if (updated.quantity() != old.quantity()
+                    || updated.unitPrice().compareTo(old.unitPrice()) != 0
+                    || updated.orderedAt() != old.orderedAt()
+                    || updated.arrivalAt() != old.arrivalAt()) {
+                throw new IOException("制造旧采购单原始内容被改写：" + old.purchaseOrderId());
+            }
+            if (old.status() != ManufacturingModel.PurchaseOrderStatus.ORDERED
+                    && updated.status() != old.status()) {
+                throw new IOException("制造终态采购单被改写：" + old.purchaseOrderId());
+            }
+        }
+        for (ManufacturingModel.ProductionBatch old : before.productionBatches().values()) {
+            ManufacturingModel.ProductionBatch updated = now.productionBatches().get(old.batchId());
+            if (updated == null) {
+                throw new IOException("制造旧生产批次被删除：" + old.batchId());
+            }
+            if (updated.quantity() != old.quantity() || updated.startedAt() != old.startedAt()
+                    || updated.completesAt() != old.completesAt()
+                    || updated.materialCost().compareTo(old.materialCost()) != 0
+                    || updated.laborCost().compareTo(old.laborCost()) != 0) {
+                throw new IOException("制造旧生产批次成本或时点被改写：" + old.batchId());
+            }
+            if (old.status() != ManufacturingModel.ProductionStatus.IN_PROGRESS
+                    && updated.status() != old.status()) {
+                throw new IOException("制造已完工批次被改写：" + old.batchId());
+            }
+        }
+        for (ManufacturingModel.SalesContract old : before.contracts().values()) {
+            ManufacturingModel.SalesContract updated = now.contracts().get(old.contractId());
+            if (updated == null) {
+                throw new IOException("制造旧合同被删除：" + old.contractId());
+            }
+            if (updated.quantity() != old.quantity()
+                    || updated.unitPrice().compareTo(old.unitPrice()) != 0
+                    || updated.signedAt() != old.signedAt()
+                    || updated.promisedDeliveryAt() != old.promisedDeliveryAt()
+                    || updated.period() != old.period()) {
+                throw new IOException("制造旧合同原始内容被改写：" + old.contractId());
+            }
+            if (updated.deliveredQuantity() < old.deliveredQuantity()) {
+                throw new IOException("制造合同已交付数量回退：" + old.contractId());
+            }
+        }
+        for (ManufacturingModel.Receivable old : before.receivables().values()) {
+            ManufacturingModel.Receivable updated = now.receivables().get(old.receivableId());
+            if (updated == null) {
+                throw new IOException("制造旧应收被删除：" + old.receivableId());
+            }
+            if (updated.quantity() != old.quantity()
+                    || updated.amount().compareTo(old.amount()) != 0
+                    || updated.cost().compareTo(old.cost()) != 0
+                    || updated.recognizedAt() != old.recognizedAt()
+                    || updated.dueAt() != old.dueAt()
+                    || updated.period() != old.period()) {
+                throw new IOException("制造旧应收原始内容被改写：" + old.receivableId());
+            }
+            if (updated.outstanding().compareTo(old.outstanding()) > 0) {
+                throw new IOException("制造应收未收金额被增加：" + old.receivableId());
+            }
+        }
+        for (ManufacturingModel.ExpenseBill old : before.expenseBills().values()) {
+            ManufacturingModel.ExpenseBill updated = now.expenseBills().get(old.billId());
+            if (updated == null) {
+                throw new IOException("制造旧费用账单被删除：" + old.billId());
+            }
+            if (updated.period() != old.period()
+                    || updated.amount().compareTo(old.amount()) != 0
+                    || updated.closedAt() != old.closedAt()) {
+                throw new IOException("制造旧费用账单原始内容被改写：" + old.billId());
+            }
+            if (updated.paid().compareTo(old.paid()) < 0) {
+                throw new IOException("制造费用账单已付金额回退：" + old.billId());
+            }
+        }
+        for (ReportEntry old : previous.manufacturing().reports().values()) {
+            ReportEntry updated = run.reports().get(old.taskId());
+            if (!old.equals(updated)) {
+                throw new IOException("制造旧报告被删除或改写：" + old.taskId());
+            }
+        }
+    }
+
+    /**
+     * 活动业务必须有持久待办推动：ORDERED 采购要有到货任务，在制批次要有完工任务，
+     * 未到期应收要有自动回款任务，且始终只有一个下一期关期任务。
+     */
+    private void validateManufacturingPending(WorldState candidate, ManufacturingModel.State ledger)
+            throws IOException {
+        Set<String> receipts = new LinkedHashSet<>();
+        Set<String> finishes = new LinkedHashSet<>();
+        Set<String> collections = new LinkedHashSet<>();
+        List<Long> closes = new ArrayList<>();
+        for (PendingTask task : candidate.pending()) {
+            if (task.kind().equals(PendingTask.MANUFACTURING_PERIOD_CLOSE_V1)) {
+                try {
+                    closes.add(mapper.readValue(task.payload(), ManufacturingChildPayload.class)
+                            .period());
+                } catch (IOException invalid) {
+                    throw new IOException("关期任务参数不可解析：" + task.taskId(), invalid);
+                }
+            } else if (task.kind().equals(PendingTask.MANUFACTURING_GOODS_RECEIPT_V1)
+                    || task.kind().equals(PendingTask.MANUFACTURING_BATCH_COMPLETION_V1)
+                    || task.kind().equals(PendingTask.MANUFACTURING_AUTO_COLLECTION_V1)) {
+                ManufacturingChildPayload payload;
+                try {
+                    payload = mapper.readValue(task.payload(), ManufacturingChildPayload.class);
+                } catch (IOException invalid) {
+                    throw new IOException("制造子任务参数不可解析：" + task.taskId(), invalid);
+                }
+                if (task.kind().equals(PendingTask.MANUFACTURING_GOODS_RECEIPT_V1)) {
+                    receipts.add(payload.businessId());
+                } else if (task.kind().equals(PendingTask.MANUFACTURING_BATCH_COMPLETION_V1)) {
+                    finishes.add(payload.businessId());
+                } else {
+                    collections.add(payload.businessId());
+                }
+            }
+        }
+        for (ManufacturingModel.PurchaseOrder order : ledger.purchaseOrders().values()) {
+            if (order.status() == ManufacturingModel.PurchaseOrderStatus.ORDERED
+                    && !receipts.contains(order.purchaseOrderId())) {
+                throw new IOException("活动采购单没有到货待办：" + order.purchaseOrderId());
+            }
+        }
+        for (ManufacturingModel.ProductionBatch batch : ledger.productionBatches().values()) {
+            if (batch.status() == ManufacturingModel.ProductionStatus.IN_PROGRESS
+                    && !finishes.contains(batch.batchId())) {
+                throw new IOException("在制批次没有完工待办：" + batch.batchId());
+            }
+        }
+        for (ManufacturingModel.Receivable receivable : ledger.receivables().values()) {
+            if (receivable.status() == ManufacturingModel.ReceivableStatus.OPEN
+                    && !collections.contains(receivable.receivableId())) {
+                throw new IOException("未到期应收没有自动回款待办：" + receivable.receivableId());
+            }
+        }
+        if (closes.size() != 1 || closes.get(0) != ledger.closedPeriods()) {
+            throw new IOException("必须恰好有一个下一期关期待办，收到 " + closes
+                    + "，已关 " + ledger.closedPeriods());
+        }
     }
 
     /**
@@ -1232,7 +2075,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private void validateExchange(WorldState candidate, WorldState previous) throws IOException {
         WorldExchange.State exchange = candidate.exchange();
-        if (expectedSchema() != STATE_SCHEMA_EXCHANGE) {
+        if (expectedSchema() < STATE_SCHEMA_EXCHANGE) {
             if (exchange != null) {
                 throw new IOException("旧档案不得包含世界订单子集状态");
             }
@@ -1320,7 +2163,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private void validateSecurities(WorldState candidate, WorldState previous) throws IOException {
         SecuritiesLedger.State securities = candidate.securities();
-        if (expectedSchema() == STATE_SCHEMA) {
+        if (expectedSchema() < STATE_SCHEMA_SECURITIES) {
             if (securities != null) {
                 throw new IOException("现金/登记档案不得包含证券子集状态");
             }
@@ -1447,6 +2290,7 @@ public final class WorldRuntime implements AutoCloseable {
         WorldState found = null;
         List<ActionReport> reported = new ArrayList<>();
         List<OrderReport> exchangeReports = new ArrayList<>();
+        List<ReportEntry> manufacturingReports = new ArrayList<>();
         for (WorldEvent event : commit.events()) {
             if (SNAPSHOT_TYPE.equals(event.type())) {
                 if (found != null) {
@@ -1457,6 +2301,8 @@ public final class WorldRuntime implements AutoCloseable {
                 reported.add(mapper.readValue(event.payload(), ActionReport.class));
             } else if ("EXCHANGE_ORDER_REPORT_V1".equals(event.type())) {
                 exchangeReports.add(mapper.readValue(event.payload(), OrderReport.class));
+            } else if ("MANUFACTURING_REPORT_V1".equals(event.type())) {
+                manufacturingReports.add(mapper.readValue(event.payload(), ReportEntry.class));
             }
         }
         if (found == null) {
@@ -1479,6 +2325,14 @@ public final class WorldRuntime implements AutoCloseable {
                         + " 的订单结果与状态快照不一致：" + report.taskId());
             }
         }
+        for (ReportEntry report : manufacturingReports) {
+            ReportEntry stored = found.manufacturing() == null ? null
+                    : found.manufacturing().reports().get(report.taskId());
+            if (!report.equals(stored)) {
+                throw new IOException("批次 " + commit.position()
+                        + " 的制造结果与状态快照不一致：" + report.taskId());
+            }
+        }
         return found;
     }
 
@@ -1494,6 +2348,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (registry != null) {
             // 只有登记模式才加这个键：旧现金日志的开局内容保持逐字节不变
             content.put("registry", registry);
+        }
+        if (manufacturingConfig != null) {
+            // 只有公司档案才加这个键：旧档案的开局内容保持逐字节不变
+            content.put("manufacturing", manufacturingConfig);
         }
         return mapper.writeValueAsString(content);
     }
@@ -1545,6 +2403,14 @@ public final class WorldRuntime implements AutoCloseable {
      * 这一口径对所有后续经营付款同样适用。旧档案仍按原余额口径，保持原行为。</p>
      */
     private CashLedger.TransferOutcome transferOutcome(TransferPayload payload) {
+        if (manufacturingConfig != null) {
+            String company = manufacturingConfig.accounting().companyAccountId();
+            if (company.equals(payload.fromId()) || company.equals(payload.toId())) {
+                // 到期防御复核：不把公司现金绕出经营分录
+                return new CashLedger.TransferOutcome(false, REASON_COMPANY_LEDGER_FORBIDDEN,
+                        state.accounts());
+            }
+        }
         if (manifest.hasMatching() && state.exchange() != null) {
             CashLedger.CashAccount from = state.accounts().get(payload.fromId());
             if (from != null && from.ownerId().equals(payload.actorOwnerId())) {
@@ -1591,6 +2457,73 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
+    /** 制造经营接口只对 stock-company-experiment-v1 开放。 */
+    private void requireManufacturingEnabled() {
+        if (!manifest.hasManufacturing() || manufacturingConfig == null) {
+            throw new IllegalStateException("当前运行未启用制造经营模块：" + manifest.rulesVersion());
+        }
+        if (state.manufacturing() == null) {
+            throw new IllegalStateException("当前运行没有制造子集状态");
+        }
+    }
+
+    /** 已知后续耗时必须在排程前确认不溢出，避免任务到期后永久卡住。 */
+    private static void requireHorizon(long dueTimeMillis, long deltaMillis, String what) {
+        try {
+            Math.addExact(dueTimeMillis, deltaMillis);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException("到期时间加 " + what + " 会溢出，无法安排后续动作", overflow);
+        }
+    }
+
+    /**
+     * 公司档案的开局边界：组织映射、证券发行人、唯一经营账户、未建模的公司持股。
+     *
+     * <p>全部在创建日志之前完成，因此失败时磁盘上不会留下半成品档案。</p>
+     */
+    private void validateManufacturingOpening(List<OpeningAccount> ordered) {
+        ManufacturingModel.Opening accounting = manufacturingConfig.accounting();
+        OpeningRegistry.Security security = registry.security(manufacturingConfig.symbol());
+        if (security == null) {
+            throw new IllegalArgumentException("制造档案的证券未登记：" + manufacturingConfig.symbol());
+        }
+        OpeningRegistry.PropertyOwner owner = registry.owner(accounting.companyOwnerId());
+        if (owner == null) {
+            throw new IllegalArgumentException("公司财产主体未登记：" + accounting.companyOwnerId());
+        }
+        if (owner.kind() != OpeningRegistry.OwnerKind.ORGANIZATION) {
+            throw new IllegalArgumentException("公司财产主体必须登记为 ORGANIZATION："
+                    + accounting.companyOwnerId() + " 是 " + owner.kind());
+        }
+        if (!security.issuerOrganizationId().equals(owner.partyId())) {
+            throw new IllegalArgumentException("证券发行人组织必须就是公司财产主体所属组织：发行人 "
+                    + security.issuerOrganizationId() + "，公司组织 " + owner.partyId());
+        }
+        Map<String, String> ownerOfAccount = new LinkedHashMap<>();
+        for (OpeningAccount opening : ordered) {
+            ownerOfAccount.put(opening.accountId(), opening.ownerId());
+            if (opening.ownerId().equals(accounting.companyOwnerId())
+                    && !opening.accountId().equals(accounting.companyAccountId())) {
+                throw new IllegalArgumentException("公司财产主体只能有一个经营现金账户（含零余额）："
+                        + opening.accountId());
+            }
+        }
+        if (!ownerOfAccount.containsKey(accounting.companyAccountId())) {
+            throw new IllegalArgumentException("缺少公司经营账户：" + accounting.companyAccountId());
+        }
+        if (!accounting.companyOwnerId().equals(
+                ownerOfAccount.get(accounting.companyAccountId()))) {
+            throw new IllegalArgumentException("公司经营账户不属于公司财产主体："
+                    + accounting.companyAccountId());
+        }
+        for (OpeningRegistry.ShareAllocation allocation : registry.allocations()) {
+            if (accounting.companyOwnerId().equals(ownerOfAccount.get(allocation.accountId()))) {
+                throw new IllegalArgumentException("公司持股/库存股是未建模资产，制造档案拒绝开局："
+                        + allocation.accountId() + " 持有 " + allocation.symbol());
+            }
+        }
+    }
+
     /** 排程一个到期任务：待办、已用标识、命令内容与回报同一批持久提交。 */
     private String scheduleCompletionTask(PendingTask task, String commandId, String content)
             throws IOException {
@@ -1612,16 +2545,37 @@ public final class WorldRuntime implements AutoCloseable {
         return outcome;
     }
 
-    private WorldState initialState(Map<String, CashLedger.CashAccount> accounts) {
+    private WorldState initialState(Map<String, CashLedger.CashAccount> accounts) throws IOException {
+        ManufacturingRun manufacturing = null;
+        List<PendingTask> pending = new ArrayList<>();
+        Set<String> used = new LinkedHashSet<>();
+        if (manufacturingConfig != null) {
+            ManufacturingModel.State ledger = ManufacturingModel.open(
+                    manufacturingConfig.accounting(), accounts);
+            manufacturing = new ManufacturingRun(manufacturingConfig.symbol(), ledger, Map.of());
+            // 新档案开局必须自带期间 0 关期任务；否则经营费用/折旧只能靠人手漏记
+            String closeCommand = SYSTEM_COMMAND_PREFIX + "close-period:0";
+            ManufacturingChildPayload payload = new ManufacturingChildPayload(closeCommand, "0", 0L);
+            PendingTask close = new PendingTask("mfg-close:0",
+                    Math.multiplyExact(1L, ManufacturingModel.PERIOD_MILLIS),
+                    WorldScheduler.Phase.RULES, PendingTask.MANUFACTURING_PERIOD_CLOSE_V1,
+                    mapper.writeValueAsString(payload));
+            pending.add(close);
+            used.add(close.taskId());
+        }
         return new WorldState(expectedSchema(), manifest.runId(), 1, 0L,
-                WorldScheduler.Phase.OBSERVATION.name(), accounts, List.of(), List.of(), Set.of(),
+                WorldScheduler.Phase.OBSERVATION.name(), accounts, pending, List.of(), used,
                 Map.of(), Map.of(),
                 manifest.hasSecurities() ? SecuritiesLedger.opening(registry) : null,
-                manifest.hasMatching() ? WorldExchange.opening() : null);
+                manifest.hasMatching() ? WorldExchange.opening() : null,
+                manufacturing);
     }
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasManufacturing()) {
+            return STATE_SCHEMA_MANUFACTURING;
+        }
         if (manifest.hasMatching()) {
             return STATE_SCHEMA_EXCHANGE;
         }
@@ -1638,9 +2592,21 @@ public final class WorldRuntime implements AutoCloseable {
                             Map<String, String> commandOutcomes,
                             SecuritiesLedger.State securities,
                             WorldExchange.State exchange) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, state.manufacturing());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
-                commandContents, commandOutcomes, securities, exchange);
+                commandContents, commandOutcomes, securities, exchange, manufacturing);
     }
 
     /**
