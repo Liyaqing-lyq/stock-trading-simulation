@@ -115,3 +115,5 @@ Root以旧D1二进制实际生成治理日志，15帧前缀legal按新D2恢复BU
 标准exec67639已完成744全绿、49成交128订单7排名、GUI及JavaDoc21:02:42。真实Hermes849817 exec10994独审冻结candidate1正在私有javac运行，尚未交最终report，勿省略该结论。下一接审查、修复若有、docs与D3a草稿PR/CI，再D3b。D3b Root裁决稿在dividend-runtime-preparation/root-bridge-plan.md，尚未正式授测试，优先于先前只读建议，明确13字段、最紧t/t+1/t+2/t+3、holderowner减值、单一Price reference含age、报告不复制D0位置、实际公告及保留文档空间；取消需后续单独接线。
 
 真实Hermes849817最终独审从candidate1核78源hash并独立重编，制造17及除息参考26项自写断言合计43/43通过，未发现可复现缺陷，报告dividend-financial-review-candidate-1/handoff.md。Root随后仅移除新测试Fixture的三个未使用分量，所有断言及生产源保持，重新运行clean标准744全绿，最终CSV为37成交、119订单、7排名，JavaDoc21:11:18重新生成。最终日志standard-root-final-1-raw.log及javadoc-root-final-1-raw.log，冻结standard-final-raw。先前49/128及21:02:42为首轮结果，保留原证据。D3a本地验收完成，当前发布草稿PR及等待实际CI。
+
+财务及除息参考代码6220ed85275eda2826b17054ac570c32f01dadb9已建立[草稿PR #22](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/22)，base为codex/world-dividend-authorization（PR21）。实际verify run42223835571已completed/success，已附当前会话，待人工实质review。D3a验收及发布完成，下一D3b同批分红运行桥按正式施工单推进。

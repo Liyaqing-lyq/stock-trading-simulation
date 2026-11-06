@@ -469,3 +469,5 @@ D2测试交26项真实缺API RED，Codex核对修正重审时界/辅助构造及
 当前codex/world-dividend-financial-seams base d100a8a。D2草稿PR21代码eb9d96e实际verify42217088050成功并附会话，文档head d100a8a待核CI。正式D3aPlan已写2026-11-06-dividend-financial-seams.md，两个纯核接缝，原712保留。真实Hermes aeafaa测试轮仅拥有新ManufacturingDividendTest/DividendReferencePriceTest及C Maven，55工具1800秒，未授78生产源。Root不可编辑两测试或跑C Maven，仍可docs/private，测试交回核对后再授生产。生产仍D2最终78源，暂无main写入者。
 
 真实Hermes849817最终独审从candidate1核78源hash并独立重编，制造17及除息参考26项自写断言合计43/43通过，未发现可复现缺陷，报告dividend-financial-review-candidate-1/handoff.md。Root随后仅移除新测试Fixture的三个未使用分量，所有断言及生产源保持，重新运行clean标准744全绿，最终CSV为37成交、119订单、7排名，JavaDoc21:11:18重新生成。最终日志standard-root-final-1-raw.log及javadoc-root-final-1-raw.log，冻结standard-final-raw。先前49/128及21:02:42为首轮结果，保留原证据。D3a本地验收完成，当前发布草稿PR及等待实际CI。
+
+财务及除息参考代码6220ed85275eda2826b17054ac570c32f01dadb9已建立[草稿PR #22](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/22)，base为codex/world-dividend-authorization（PR21）。实际verify run42223835571已completed/success，已附当前会话，待人工实质review。D3a验收及发布完成，下一D3b同批分红运行桥按正式施工单推进。

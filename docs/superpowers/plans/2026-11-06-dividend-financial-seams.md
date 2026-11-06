@@ -55,7 +55,7 @@ static PriceBook prices(long position, long cutoffMillis, WorldExchange.State ex
 - [x] 未付分红增加合同负债并减少权益，付款减少现金与合同未付，利润及世界现金守恒保持。
 - [x] D0真实方案阶段、减值、多个方案、实际成交链与价格来源的边界检查通过。
 - [x] 除息应收和参考价同一输入形成投资者估值，付款只改变资产形态，源码不写现金。
-- [ ] 真实RED/变异、独立检查、标准验证、文档、草稿PR和实际CI证据齐备。
+- [x] 真实RED/变异、独立检查、标准验证、文档、草稿PR和实际CI证据齐备。
 
 D3b继续启用完整新档案，在唯一WorldJournal批次消费D2授权、发布可读公开公告、截止登记及除息确认、足额真实付款并恢复。D3c连接实际资本流和按确认历史派生的TWR。
 
@@ -68,3 +68,5 @@ D3b继续启用完整新档案，在唯一WorldJournal批次消费D2授权、发
 现在可正式只授ManufacturingModel、ValuationModel和两新测试及C Maven。原其余76生产源及旧712测试保持。目标744组合与32专项，Runtime/档案/角色不在本单施工。D2文档head d100a8a的verify42217584157亦已实际成功。
 
 真实Hermes849817最终独审从candidate1核78源hash并独立重编，制造17及除息参考26项自写断言合计43/43通过，未发现可复现缺陷，报告dividend-financial-review-candidate-1/handoff.md。Root随后仅移除新测试Fixture的三个未使用分量，所有断言及生产源保持，重新运行clean标准744全绿，最终CSV为37成交、119订单、7排名，JavaDoc21:11:18重新生成。最终日志standard-root-final-1-raw.log及javadoc-root-final-1-raw.log，冻结standard-final-raw。先前49/128及21:02:42为首轮结果，保留原证据。D3a本地验收完成，当前发布草稿PR及等待实际CI。
+
+财务及除息参考代码6220ed85275eda2826b17054ac570c32f01dadb9已建立[草稿PR #22](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/22)，base为codex/world-dividend-authorization（PR21）。实际verify run42223835571已completed/success，已附当前会话，待人工实质review。D3a验收及发布完成，下一D3b同批分红运行桥按正式施工单推进。
