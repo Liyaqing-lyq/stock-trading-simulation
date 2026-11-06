@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -58,6 +59,8 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_GOVERNANCE = 5;
     /** 含任职授权与资料阅读子集状态的世界状态版本（M4a.2/M4b.2）。 */
     private static final int STATE_SCHEMA_ROLE_READING = 6;
+    /** 含四岗交易工作流子集状态的世界状态版本（M4c）。 */
+    private static final int STATE_SCHEMA_ROLE_TRADING = 7;
 
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
@@ -154,6 +157,7 @@ public final class WorldRuntime implements AutoCloseable {
                            Optional<BoardRun> governance,
                            Optional<RoleRun> roles,
                            Optional<InformationRun> information,
+                           Optional<RoleTradingRun> trading,
                            List<PendingTask> pending, List<Notice> delivered,
                            Set<String> usedTaskIds) {
         /** 防御性冻结所有集合。 */
@@ -165,6 +169,7 @@ public final class WorldRuntime implements AutoCloseable {
             governance = Objects.requireNonNull(governance, "governance");
             roles = Objects.requireNonNull(roles, "roles");
             information = Objects.requireNonNull(information, "information");
+            trading = Objects.requireNonNull(trading, "trading");
             pending = List.copyOf(pending);
             delivered = List.copyOf(delivered);
             usedTaskIds = Collections.unmodifiableSet(new LinkedHashSet<>(usedTaskIds));
@@ -308,7 +313,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               RoleRun roles,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              InformationRun information) {
+                              InformationRun information,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              RoleTradingRun trading) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -504,6 +511,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (roleConfig != null) {
             // 任职与阅读开局：mandates/初始任职/登记读者在写盘前拒绝
             validateRoleReadingOpening();
+        }
+        if (manifest.hasTrading()) {
+            // 四岗交易开局：初始任职人必须具备已配置的信息读者能力，写盘前拒绝
+            validateTradingOpening();
         }
         WorldState initial = initialState(accounts);
         this.journal = new WorldJournal(file, manifest.runId());
@@ -1806,6 +1817,20 @@ public final class WorldRuntime implements AutoCloseable {
                          PendingTask.INFORMATION_START_READ_V1,
                          PendingTask.INFORMATION_CANCEL_READ_V1,
                          PendingTask.INFORMATION_COMPLETE_READ_V1 -> completeInformation(next);
+                    case PendingTask.ROLE_TRADING_READ_V1,
+                         PendingTask.ROLE_TRADING_UNREAD_V1 -> completeRoleReading(next);
+                    case PendingTask.ROLE_TRADING_RESEARCH_V1,
+                         PendingTask.ROLE_TRADING_TARGET_V1,
+                         PendingTask.ROLE_TRADING_REVIEW_V1,
+                         PendingTask.ROLE_TRADING_CONFIRM_V1,
+                         PendingTask.ROLE_TRADING_HALT_V1,
+                         PendingTask.ROLE_TRADING_CANCEL_V1,
+                         PendingTask.ROLE_TRADING_CHILD_V1,
+                         PendingTask.ROLE_TRADING_CHILD_CANCEL_V1 -> completeRoleAction(next);
+                    case PendingTask.ROLE_TRADING_SWEEP_V1 -> completeRoleSweep(next);
+                    case PendingTask.ROLE_TRADING_EXPIRE_V1 -> completeRoleExpire(next);
+                    case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> completeAppointmentEnd(next);
+                    case PendingTask.ROLE_TRADING_HALT_RELEASE_V1 -> completeHaltRelease(next);
                     default -> throw new IllegalStateException("未启用的任务种类：" + next.kind());
                 }
             }
@@ -1832,7 +1857,7 @@ public final class WorldRuntime implements AutoCloseable {
                 state.accounts(), Optional.ofNullable(state.securities()),
                 Optional.ofNullable(state.exchange()), Optional.ofNullable(state.manufacturing()),
                 Optional.ofNullable(state.governance()), Optional.ofNullable(state.roles()),
-                Optional.ofNullable(state.information()),
+                Optional.ofNullable(state.information()), Optional.ofNullable(state.trading()),
                 state.pending(), state.delivered(), state.usedTaskIds());
     }
 
@@ -1876,9 +1901,12 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized RoleView roleView(String personPartyId) {
         requireOpen();
         requireRoleReadingEnabled();
+        return roleView(personPartyId, requireRoleRun().access());
+    }
+
+    private RoleView roleView(String personPartyId, RoleAccess.State access) {
         String person = personPartyId == null ? "" : personPartyId;
         InformationModel.State information = requireInformationRun().information();
-        RoleAccess.State access = requireRoleRun().access();
         boolean registered = information.persons().contains(person);
         boolean appointed = false;
         for (RoleAccess.Appointment appointment : access.appointments()) {
@@ -3057,6 +3085,10 @@ public final class WorldRuntime implements AutoCloseable {
         RoleAccess.State access = run.access();
         boolean accepted;
         String reason;
+        Map<String, CashLedger.CashAccount> accounts = state.accounts();
+        SecuritiesLedger.State securities = state.securities();
+        WorldExchange.State exchange = state.exchange();
+        List<WorldEvent> events = new ArrayList<>();
         try {
             if (PendingTask.ROLE_APPOINT_V1.equals(task.kind())) {
                 access = RoleAccess.appoint(registry, access, payload.appointmentId(),
@@ -3065,6 +3097,15 @@ public final class WorldRuntime implements AutoCloseable {
                         payload.endsAt(), now);
             } else {
                 access = RoleAccess.revoke(access, payload.appointmentId(), now);
+                // 提前撤任：当批撤销该任职发出的活动子单，保留已成交
+                if (state.trading() != null) {
+                    CanceledOrders canceled = cancelByAppointment(state.trading().trading(),
+                            payload.appointmentId(), now, task.taskId(), task.kind());
+                    accounts = canceled.accounts();
+                    securities = canceled.securities();
+                    exchange = canceled.exchange();
+                    events.addAll(canceled.events());
+                }
             }
             accepted = true;
             reason = "OK";
@@ -3072,16 +3113,67 @@ public final class WorldRuntime implements AutoCloseable {
             accepted = false;
             reason = "REJECTED";
             access = run.access();
+            accounts = state.accounts();
+            securities = state.securities();
+            exchange = state.exchange();
+            events = new ArrayList<>();
         }
         RoleRun.Report entry = new RoleRun.Report(task.taskId(), payload.commandId(),
                 task.kind(), accepted, reason, payload.appointmentId(), now,
                 state.position() + 1);
-        finishRoleTask(task, run.withAccess(access).withReport(entry), entry);
+        finishRoleTask(task, run.withAccess(access).withReport(entry), entry, accounts, securities,
+                exchange, events);
+    }
+
+    /** 撤销某任职发出的全部活动子单；不动工作流、链接与其它任职的订单。 */
+    private CanceledOrders cancelByAppointment(RoleTradingModel.State trading, String appointmentId,
+                                               long now, String taskId, String kind)
+            throws IOException {
+        Map<String, CashLedger.CashAccount> accounts = state.accounts();
+        SecuritiesLedger.State securities = state.securities();
+        WorldExchange.State exchange = state.exchange();
+        List<Long> cancelled = new ArrayList<>();
+        for (RoleTradingModel.ChildLink link : trading.children()) {
+            if (!link.appointmentId().equals(appointmentId)) {
+                continue;
+            }
+            RoleTradingModel.Target target = RoleTradingModel.target(trading, link.targetId());
+            WorldExchange.Order order = exchange.order(link.orderId());
+            if (target == null || order == null || !order.live()) {
+                continue;
+            }
+            WorldExchange.Outcome outcome = WorldExchange.cancel(exchange, accounts, securities,
+                    target.productOwnerId(), link.orderId(), now);
+            if (outcome.accepted()) {
+                exchange = outcome.exchange();
+                accounts = outcome.accounts();
+                securities = outcome.securities();
+                cancelled.add(link.orderId());
+            }
+        }
+        List<WorldEvent> events = new ArrayList<>();
+        if (!cancelled.isEmpty()) {
+            WorldExchange.OrderReport report = new WorldExchange.OrderReport(taskId,
+                    "system:appointment-end", kind, true, WorldExchange.REASON_CANCELLED, null,
+                    List.of(), cancelled, now, state.position() + 1);
+            exchange = exchange.withReport(report);
+            events.add(new WorldEvent("exchange-report:" + taskId + ":" + appointmentId,
+                    "EXCHANGE_ORDER_REPORT_V1", mapper.writeValueAsString(report)));
+        }
+        return new CanceledOrders(accounts, securities, exchange, events);
     }
 
     /** 任职任务统一收尾：完成待办、写报告事件、保存全量状态后持久确认再发布。 */
     private void finishRoleTask(PendingTask task, RoleRun roles, RoleRun.Report entry)
             throws IOException {
+        finishRoleTask(task, roles, entry, state.accounts(), state.securities(), state.exchange(),
+                List.of());
+    }
+
+    private void finishRoleTask(PendingTask task, RoleRun roles, RoleRun.Report entry,
+                                Map<String, CashLedger.CashAccount> accounts,
+                                SecuritiesLedger.State securities, WorldExchange.State exchange,
+                                List<WorldEvent> effects) throws IOException {
         List<PendingTask> pending = new ArrayList<>(state.pending());
         pending.remove(task);
         Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
@@ -3089,11 +3181,12 @@ public final class WorldRuntime implements AutoCloseable {
         List<WorldEvent> events = new ArrayList<>();
         events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()));
+        events.addAll(effects);
         events.add(new WorldEvent("role-report:" + task.taskId(), "ROLE_REPORT_V1",
                 mapper.writeValueAsString(entry)));
-        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts,
                 pending, state.delivered(), used, state.commandContents(), state.commandOutcomes(),
-                state.securities(), state.exchange(), state.manufacturing(), state.governance(),
+                securities, exchange, state.manufacturing(), state.governance(),
                 roles, state.information());
         commitAndApply("task:" + task.taskId(), task.payload(), entry.reason(), events, candidate);
     }
@@ -3195,8 +3288,17 @@ public final class WorldRuntime implements AutoCloseable {
                 commandId = payload.commandId();
                 reader = payload.personPartyId();
                 subjectId = payload.readId();
+                RoleAccess.State readingAccess = requireRoleRun().access();
+                String original = state.commandContents().get(payload.commandId());
+                if (state.trading() != null && original != null
+                        && PendingTask.ROLE_TRADING_READ_V1.equals(
+                        mapper.readTree(original).path("kind").asText())) {
+                    RoleActionPayload start = mapper.readValue(original, RoleActionPayload.class);
+                    readingAccess = scopedRoleAccess(readingAccess, payload.personPartyId(),
+                            start.appointments());
+                }
                 InformationModel.Outcome outcome = InformationModel.completeRead(before,
-                        requireRoleRun().access(), payload.personPartyId(), payload.readId(), now);
+                        readingAccess, payload.personPartyId(), payload.readId(), now);
                 after = outcome.state();
                 observation = outcome.observation();
                 accepted = outcome.status() == InformationModel.Status.COMPLETED;
@@ -3658,6 +3760,7 @@ public final class WorldRuntime implements AutoCloseable {
         validateManufacturing(candidate, previous);
         validateGovernance(candidate, previous);
         validateRoleReading(candidate, previous);
+        validateTrading(candidate, previous);
     }
 
     /**
@@ -5132,12 +5235,13 @@ public final class WorldRuntime implements AutoCloseable {
             information = new InformationRun(
                     InformationModel.open(registry, informationConfig.readers()), Map.of());
         }
+        RoleTradingRun trading = manifest.hasTrading() ? RoleTradingRun.opening() : null;
         return new WorldState(expectedSchema(), manifest.runId(), 1, 0L,
                 WorldScheduler.Phase.OBSERVATION.name(), accounts, pending, List.of(), used,
                 Map.of(), Map.of(),
                 manifest.hasSecurities() ? SecuritiesLedger.opening(registry) : null,
                 manifest.hasMatching() ? WorldExchange.opening() : null,
-                manufacturing, governance, roles, information);
+                manufacturing, governance, roles, information, trading);
     }
 
     /**
@@ -5159,6 +5263,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasTrading()) {
+            return STATE_SCHEMA_ROLE_TRADING;
+        }
         if (manifest.hasRoles()) {
             return STATE_SCHEMA_ROLE_READING;
         }
@@ -5213,7 +5320,7 @@ public final class WorldRuntime implements AutoCloseable {
                             BoardRun governance) {
         return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                state.roles(), state.information());
+                state.roles(), state.information(), state.trading());
     }
 
     private WorldState next(long timeMillis, String lastPhase,
@@ -5227,10 +5334,1805 @@ public final class WorldRuntime implements AutoCloseable {
                             BoardRun governance,
                             RoleRun roles,
                             InformationRun information) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, state.trading());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                roles, information);
+                roles, information, trading);
+    }
+
+    // ==================================================================
+    // M4c 四岗交易：人物会话、动作排程与只读投影
+    // ==================================================================
+
+    /** 交易动作参数：人物与观察任职由可信会话绑定，body 是动作业务字段的 JSON。 */
+    private record RoleActionPayload(String commandId, String clientCommandId,
+                                    String clientTaskId, String personPartyId,
+                                    long dueMillis, Map<String, String> appointments,
+                                    String kind, String body) {
+    }
+
+    /** 阅读取消的本人范围引用。 */
+    private record RoleUnreadBody(String docId, long version, long index) {
+    }
+
+    /** 系统扫描：目标 + 版本。 */
+    private record RoleSweepBody(String targetId, int version) {
+    }
+
+    /** 系统到期：目标 + 版本 + 审核版本。 */
+    private record RoleExpireBody(String targetId, int version, int revision) {
+    }
+
+    /** 系统任职结束：任职标识。 */
+    private record RoleAppointmentBody(String appointmentId) {
+    }
+
+    /** 系统暂停到期：目标 + 版本。 */
+    private record RoleHaltBody(String targetId, int version) {
+    }
+
+    /** @return 人物命名空间下的内部命令标识；长度前缀保证 (person, clientId) 单射 */
+    static String roleCommandId(String personPartyId, String clientCommandId) {
+        return "roleT:" + personPartyId.length() + ":" + personPartyId + ":" + clientCommandId;
+    }
+
+    /**
+     * 人物命名空间下的内部任务标识。
+     *
+     * <p>长度前缀让 {@code (person, clientId)} 到内部键成为单射，人物标识本身含冒号也不会错位；
+     * 回报只向人物投影 client 标识。</p>
+     *
+     * @param personPartyId 人物
+     * @param clientTaskId  人物自己的任务标识
+     * @return 内部任务标识
+     */
+    public static String roleTaskId(String personPartyId, String clientTaskId) {
+        return "roleT:" + personPartyId.length() + ":" + personPartyId + ":" + clientTaskId;
+    }
+
+    private void requireTradingEnabled() {
+        if (!manifest.hasTrading() || state.trading() == null) {
+            throw new IllegalStateException("当前运行未启用四岗交易模块：" + manifest.rulesVersion());
+        }
+    }
+
+    private RoleTradingRun requireTradingRun() {
+        RoleTradingRun run = state.trading();
+        if (run == null) {
+            throw new IllegalStateException("当前运行没有四岗交易子集状态");
+        }
+        return run;
+    }
+
+    /**
+     * 打开一个绑定人物与本次观察任职的会话。
+     *
+     * <p>只要求人物是开局登记 PERSON 且具备已配置的信息读者能力；<b>不要求</b>当前有有效任职，
+     * 离任者仍可查看个人资产、已读经历与公开资料，岗位动作在完成期按观察任职复核。</p>
+     *
+     * @param personPartyId 可信人物标识
+     * @return 会话
+     * @throws IOException              读取持久状态失败
+     * @throws IllegalArgumentException 人物未登记、不是读者或模块未启用
+     */
+    public synchronized WorldRoleSession openRoleSession(String personPartyId) throws IOException {
+        requireOpen();
+        requireRoleReadingEnabled();
+        requireTradingEnabled();
+        if (personPartyId == null || personPartyId.isBlank()) {
+            throw new IllegalArgumentException("角色会话不可用");
+        }
+        InformationModel.State information = requireInformationRun().information();
+        if (!information.persons().contains(personPartyId)) {
+            throw new IllegalArgumentException("角色会话不可用");
+        }
+        long now = state.timeMillis();
+        RoleAccess.State access = requireRoleRun().access();
+        Map<String, String> observed = new LinkedHashMap<>();
+        for (RoleAccess.Appointment appointment : access.appointments()) {
+            if (!appointment.personPartyId().equals(personPartyId) || !appointment.activeAt(now)) {
+                continue;
+            }
+            String organization = appointment.organizationPartyId();
+            String existing = observed.get(organization);
+            if (existing == null || startsLater(access, appointment, existing)) {
+                observed.put(organization, appointment.id());
+            }
+        }
+        return new WorldRoleSession(this, personPartyId, now, observed);
+    }
+
+    private static boolean startsLater(RoleAccess.State access, RoleAccess.Appointment candidate,
+                                       String existingId) {
+        for (RoleAccess.Appointment appointment : access.appointments()) {
+            if (appointment.id().equals(existingId)) {
+                return candidate.startsAt() >= appointment.startsAt();
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 人物只读视图：任职映射取本次观察，资产、行情、工作流取同一已确认快照。
+     *
+     * @param session 会话
+     * @return 视图
+     * @throws IOException 读取失败
+     */
+    synchronized RoleTradingView roleTradingView(WorldRoleSession session) throws IOException {
+        requireOpen();
+        requireRoleReadingEnabled();
+        requireTradingEnabled();
+        String person = session.personPartyId();
+        RoleTradingRun run = requireTradingRun();
+        RoleTradingModel.State trading = run.trading();
+        InformationModel.State information = requireInformationRun().information();
+        RoleAccess.State access = requireRoleRun().access();
+        long now = state.timeMillis();
+
+        // 观察绑定 ∩ 当前有效任职：离任后旧会话不得继承新任职或离任后新增内容
+        Map<String, String> effective = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : session.appointments().entrySet()) {
+            for (RoleAccess.Appointment appointment : access.appointments()) {
+                if (appointment.id().equals(entry.getValue())
+                        && appointment.personPartyId().equals(person)
+                        && appointment.organizationPartyId().equals(entry.getKey())
+                        && appointment.activeAt(now)) {
+                    effective.put(entry.getKey(), appointment.id());
+                }
+            }
+        }
+
+        List<RoleTradingView.Appointment> appointments = new ArrayList<>();
+        for (Map.Entry<String, String> entry : effective.entrySet()) {
+            for (RoleAccess.Appointment appointment : access.appointments()) {
+                if (appointment.id().equals(entry.getValue())) {
+                    appointments.add(new RoleTradingView.Appointment(appointment.id(),
+                            appointment.organizationPartyId(), appointment.role(),
+                            appointment.effectiveEnd()));
+                }
+            }
+        }
+
+        RoleView profile = roleView(person, scopedRoleAccess(access, person, effective));
+
+        Set<String> organizations = new HashSet<>(effective.keySet());
+        List<RoleTradingView.ResearchView> research = new ArrayList<>();
+        for (RoleTradingModel.Research note : trading.research()) {
+            if (!organizations.contains(note.organizationPartyId())) {
+                continue;
+            }
+            InformationModel.Document document = documentOf(information, note.docId());
+            InformationModel.DocumentVersion fixed = document == null ? null
+                    : document.at(note.docVersion());
+            String title = fixed == null ? note.docId() : fixed.title();
+            boolean read = InformationModel.canCite(information, person, note.docId(),
+                    note.docVersion(), now);
+            research.add(new RoleTradingView.ResearchView(note.researchId(),
+                    note.organizationPartyId(), note.productOwnerId(), note.symbol(), note.docId(),
+                    note.docVersion(), title, read && fixed != null ? fixed.body() : null, read));
+        }
+
+        List<RoleTradingView.TargetView> targets = new ArrayList<>();
+        for (RoleTradingModel.Target target : trading.targets()) {
+            if (!organizations.contains(target.organizationPartyId())) {
+                continue;
+            }
+            List<RoleTradingView.Version> versions = new ArrayList<>();
+            for (RoleTradingModel.TargetVersion version : target.versions()) {
+                versions.add(new RoleTradingView.Version(version.version(),
+                        version.absoluteTargetQuantity(), version.baseQuantity(),
+                        version.changeQuantity(), version.side(), version.priceLimit(),
+                        version.deadlineMillis()));
+            }
+            RoleTradingModel.TargetVersion current = target.current();
+            long filled = 0L;
+            long leaves = 0L;
+            for (RoleTradingModel.ChildLink link : trading.children()) {
+                if (!link.targetId().equals(target.targetId())
+                        || link.targetVersion() != current.version()) {
+                    continue;
+                }
+                WorldExchange.Order order = state.exchange().order(link.orderId());
+                filled = Math.addExact(filled, order.filled());
+                if (order.live()) {
+                    leaves = Math.addExact(leaves, order.remaining());
+                }
+            }
+            RoleTradingModel.RiskReview review = RoleTradingModel.currentReview(trading,
+                    target.targetId(), current.version());
+            RoleTradingView.ReviewView reviewView = review == null ? null
+                    : new RoleTradingView.ReviewView(review.revision(), review.approved(),
+                    review.maxTotalQuantity(), review.maxChildQuantity(), review.priceLimit(),
+                    review.validUntilMillis(), review.reason());
+            targets.add(new RoleTradingView.TargetView(target.targetId(),
+                    target.organizationPartyId(), target.productOwnerId(), target.accountId(),
+                    target.symbol(), target.status(), target.haltedUntilMillis(),
+                    new RoleTradingView.Version(current.version(),
+                            current.absoluteTargetQuantity(), current.baseQuantity(),
+                            current.changeQuantity(), current.side(), current.priceLimit(),
+                            current.deadlineMillis()),
+                    versions, reviewView, filled, leaves,
+                    Math.max(0L, current.changeQuantity() - filled - leaves)));
+        }
+
+        List<RoleTradingView.ChildView> children = new ArrayList<>();
+        for (RoleTradingModel.ChildLink link : trading.children()) {
+            if (!link.personPartyId().equals(person)) {
+                continue;
+            }
+            WorldExchange.Order order = state.exchange().order(link.orderId());
+            children.add(new RoleTradingView.ChildView(
+                    new WorldRoleSession.ChildRef(link.targetId(), link.personPartyId(),
+                            link.childId()), link.targetVersion(), order.quantity(), order.filled(),
+                    order.live() ? order.remaining() : 0L, order.limitPrice(),
+                    order.status().name()));
+        }
+
+        List<RoleTradingView.Notice> notices = new ArrayList<>();
+        for (RoleTradingRun.Report entry : run.reportsOf(person)) {
+            notices.add(new RoleTradingView.Notice(entry.clientCommandId(), entry.clientTaskId(),
+                    entry.kind(), entry.accepted(), entry.reason(), entry.timeMillis()));
+        }
+
+        return new RoleTradingView(session.observedAt(), now, person, profile, appointments,
+                research, targets, children, notices, roleTools(appointments));
+    }
+
+    /** 使用原观察任职裁剪权限，身份、个人账户及组织账户登记保持同一来源。 */
+    private static RoleAccess.State scopedRoleAccess(RoleAccess.State access, String person,
+                                                      Map<String, String> observed) {
+        List<RoleAccess.Appointment> appointments = new ArrayList<>();
+        for (RoleAccess.Appointment appointment : access.appointments()) {
+            if (!appointment.personPartyId().equals(person)
+                    || observed.containsValue(appointment.id())) {
+                appointments.add(appointment);
+            }
+        }
+        return new RoleAccess.State(access.accounts(), access.personAccounts(), access.mandates(),
+                appointments);
+    }
+
+    private static List<String> roleTools(List<RoleTradingView.Appointment> appointments) {
+        boolean researcher = false;
+        boolean manager = false;
+        boolean risk = false;
+        boolean trader = false;
+        for (RoleTradingView.Appointment appointment : appointments) {
+            switch (appointment.role()) {
+                case RESEARCHER -> researcher = true;
+                case PORTFOLIO_MANAGER -> manager = true;
+                case RISK_OFFICER -> risk = true;
+                case EXECUTION_TRADER -> trader = true;
+                default -> {
+                }
+            }
+        }
+        List<String> tools = new ArrayList<>();
+        tools.add(RoleTradingView.TOOL_READING_START);
+        tools.add(RoleTradingView.TOOL_READING_CANCEL);
+        tools.add(RoleTradingView.TOOL_CITE);
+        if (researcher) {
+            tools.add(RoleTradingView.TOOL_RESEARCH_SUBMIT);
+        }
+        if (manager) {
+            tools.add(RoleTradingView.TOOL_TARGET_SET);
+            tools.add(RoleTradingView.TOOL_TARGET_CONFIRM);
+            tools.add(RoleTradingView.TOOL_TARGET_CANCEL);
+        }
+        if (risk) {
+            tools.add(RoleTradingView.TOOL_TARGET_REVIEW);
+            tools.add(RoleTradingView.TOOL_TARGET_HALT);
+        }
+        if (trader) {
+            tools.add(RoleTradingView.TOOL_CHILD_SUBMIT);
+            tools.add(RoleTradingView.TOOL_CHILD_CANCEL);
+        }
+        return List.copyOf(tools);
+    }
+
+    /** 会话开始阅读：组织资料要核对本次观察任职，公开与本人直投按个人能力。 */
+    String scheduleRoleRead(WorldRoleSession session, String clientCommandId, String clientTaskId,
+                            long dueMillis, String docId, long version) throws IOException {
+        return scheduleRoleAction(session, PendingTask.ROLE_TRADING_READ_V1, clientCommandId,
+                clientTaskId, dueMillis, new RoleReadBody(docId, version));
+    }
+
+    /** 会话取消阅读：只按本人范围引用解析。 */
+    String scheduleRoleUnread(WorldRoleSession session, String clientCommandId,
+                              String clientTaskId, long dueMillis, RoleView.ReadingRef ref)
+            throws IOException {
+        Objects.requireNonNull(ref, "阅读引用");
+        if (!ref.personPartyId().equals(session.personPartyId())) {
+            throw new IllegalArgumentException("阅读引用不属于该人物：" + ref.personPartyId());
+        }
+        return scheduleRoleAction(session, PendingTask.ROLE_TRADING_UNREAD_V1, clientCommandId,
+                clientTaskId, dueMillis, new RoleUnreadBody(ref.docId(), ref.version(), ref.index()));
+    }
+
+    /** 阅读开始参数。 */
+    private record RoleReadBody(String docId, long version) {
+    }
+
+    /**
+     * 排程一个人物动作：形状合法即可靠排程，未知对象与越权在完成期统一拒绝。
+     *
+     * @param session         会话（人物与观察任职来源）
+     * @param kind            任务种类
+     * @param clientCommandId 人物命令标识
+     * @param clientTaskId    人物任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param body            业务参数
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 静态字段、时间或命名空间非法
+     */
+    String scheduleRoleAction(WorldRoleSession session, String kind, String clientCommandId,
+                              String clientTaskId, long dueMillis, Object body) throws IOException {
+        requireTradingEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        Objects.requireNonNull(session, "会话");
+        requireText(clientCommandId, "命令标识");
+        requireText(clientTaskId, "任务标识");
+        Objects.requireNonNull(body, "动作参数");
+        String internalCommand = roleCommandId(session.personPartyId(), clientCommandId);
+        String internalTask = roleTaskId(session.personPartyId(), clientTaskId);
+        RoleActionPayload payload = new RoleActionPayload(internalCommand, clientCommandId,
+                clientTaskId, session.personPartyId(), dueMillis,
+                new TreeMap<>(session.appointments()), kind, mapper.writeValueAsString(body));
+        String content = mapper.writeValueAsString(payload);
+        if (state.commandContents().containsKey(internalCommand)) {
+            if (!content.equals(state.commandContents().get(internalCommand))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(internalCommand);
+        }
+        if (dueMillis <= state.timeMillis()) {
+            throw new IllegalArgumentException("到期时间必须晚于当前时点：" + state.timeMillis());
+        }
+        if (state.usedTaskIds().contains(internalTask)
+                || state.pending().stream().anyMatch(task -> task.taskId().equals(internalTask))) {
+            throw new IllegalArgumentException("任务标识运行内不复用：" + internalTask);
+        }
+        PendingTask task = new PendingTask(internalTask, dueMillis, WorldScheduler.Phase.COMPLETION,
+                kind, content);
+        return scheduleRoleTask(task, internalCommand, content, clientTaskId);
+    }
+
+    /** 排程一个角色动作待办并持久回报；同命令幂等由调用方先行处理。 */
+    private String scheduleRoleTask(PendingTask task, String internalCommand, String content,
+                                    String clientTaskId) throws IOException {
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.add(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(internalCommand, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        String outcome = "SCHEDULED:" + clientTaskId;
+        outcomes.put(internalCommand, outcome);
+        WorldState candidate = next(state.timeMillis(), state.lastPhase(), state.accounts(), pending,
+                state.delivered(), used, contents, outcomes, state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), state.information(),
+                state.trading());
+        commitAndApply("cmd:" + internalCommand, content, outcome,
+                List.of(new WorldEvent("task-scheduled:" + task.taskId(), "TASK_SCHEDULED_V1",
+                        mapper.writeValueAsString(task))), candidate);
+        return outcome;
+    }
+
+    // ------------------------------------------------------------------
+    // 完成期：阅读、八个岗位动作、系统扫描/到期/离任/暂停到期
+    // ------------------------------------------------------------------
+
+    /** 会议阅读：组织资料要求本次观察任职仍在任且属于该组织；公开与直投按个人能力。 */
+    private void completeRoleReading(PendingTask task) throws IOException {
+        RoleActionPayload payload = mapper.readValue(task.payload(), RoleActionPayload.class);
+        long now = task.dueTimeMillis();
+        RoleTradingRun run = requireTradingRun();
+        InformationRun informationRun = requireInformationRun();
+        InformationModel.State before = informationRun.information();
+        InformationModel.State after = before;
+        RoleAccess.State access = requireRoleRun().access();
+        List<PendingTask> extra = new ArrayList<>();
+        List<WorldEvent> events = new ArrayList<>();
+        boolean accepted = false;
+        String reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+        String subject = "";
+        String removeReadId = null;
+
+        if (PendingTask.ROLE_TRADING_READ_V1.equals(task.kind())) {
+            RoleReadBody body = mapper.readValue(payload.body(), RoleReadBody.class);
+            subject = body.docId();
+            InformationModel.Document document = documentOf(before, body.docId());
+            boolean allowed = document != null
+                    && InformationModel.catalog(before, access, payload.personPartyId(), now).stream()
+                    .anyMatch(entry -> entry.docId().equals(body.docId()))
+                    && (document.audience().kind() != InformationModel.AudienceKind.ORGANIZATION
+                    || observedFor(payload, document.audience().partyId(), access, now) != null);
+            if (!allowed) {
+                reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+            } else {
+                InformationModel.Outcome outcome = InformationModel.startRead(before, access,
+                        payload.personPartyId(), body.docId(), body.version(), now);
+                after = outcome.state();
+                accepted = outcome.status() == InformationModel.Status.STARTED;
+                reason = outcome.status().name();
+                if (accepted) {
+                    InformationModel.Reading started = readingView(after, payload.personPartyId());
+                    String childId = freeInternalTaskId("read:", started.readId(),
+                            new LinkedHashSet<>(state.usedTaskIds()));
+                    PendingTask child = new PendingTask(childId, started.dueAt(),
+                            WorldScheduler.Phase.COMPLETION, PendingTask.INFORMATION_COMPLETE_READ_V1,
+                            mapper.writeValueAsString(new ReadingPayload(payload.commandId(),
+                                    payload.personPartyId(), body.docId(), body.version(),
+                                    started.readId(), 0L)));
+                    extra.add(child);
+                }
+            }
+        } else {
+            RoleUnreadBody body = mapper.readValue(payload.body(), RoleUnreadBody.class);
+            subject = body.docId();
+            InformationModel.Reading target = activeReadingOf(before, payload.personPartyId(),
+                    body.docId(), body.version(), body.index());
+            if (target == null) {
+                reason = "NOT_FOUND";
+            } else {
+                InformationModel.Outcome outcome = InformationModel.cancelRead(before,
+                        payload.personPartyId(), target.readId(), now);
+                after = outcome.state();
+                accepted = outcome.status() == InformationModel.Status.CANCELLED;
+                reason = outcome.status().name();
+                if (accepted) {
+                    removeReadId = target.readId();
+                }
+            }
+        }
+
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        if (removeReadId != null) {
+            removeReadingChildTask(pending, removeReadId);
+        }
+        for (PendingTask child : extra) {
+            pending.add(child);
+            used.add(child.taskId());
+            events.add(new WorldEvent("task-scheduled:" + child.taskId(), "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(child)));
+        }
+
+        InformationRun informationCandidate = informationRun.withInformation(after);
+        RoleTradingRun.Report entry = new RoleTradingRun.Report(task.taskId(),
+                payload.personPartyId(), payload.clientCommandId(), payload.clientTaskId(),
+                task.kind(), accepted, reason, subject, task.dueTimeMillis(),
+                state.position() + 1);
+        RoleTradingRun runCandidate = run.withReport(entry);
+        events.add(new WorldEvent("role-trading-report:" + task.taskId(),
+                "ROLE_TRADING_REPORT_V1", mapper.writeValueAsString(entry)));
+        events.add(0, new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
+                pending, state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), state.manufacturing(), state.governance(),
+                state.roles(), informationCandidate, runCandidate);
+        commitAndApply("task:" + task.taskId(), task.payload(), reason, events, candidate);
+    }
+
+    /** 八个岗位动作的统一完成期：先按观察任职复核，再调纯核，最后同批写入报价、链接与报告。 */
+    private void completeRoleAction(PendingTask task) throws IOException {
+        RoleActionPayload payload = mapper.readValue(task.payload(), RoleActionPayload.class);
+        long now = task.dueTimeMillis();
+        RoleTradingRun run = requireTradingRun();
+        RoleAccess.State access = requireRoleRun().access();
+        InformationRun informationRun = requireInformationRun();
+        InformationModel.State information = informationRun.information();
+        RoleTradingModel.State before = run.trading();
+        RoleTradingModel.State after = before;
+        InformationModel.State informationAfter = information;
+        Map<String, CashLedger.CashAccount> accounts = state.accounts();
+        SecuritiesLedger.State securities = state.securities();
+        WorldExchange.State exchange = state.exchange();
+        List<PendingTask> extra = new ArrayList<>();
+        List<WorldEvent> events = new ArrayList<>();
+        boolean accepted = false;
+        String reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+        String subject = "";
+
+        switch (task.kind()) {
+            case PendingTask.ROLE_TRADING_RESEARCH_V1 -> {
+                WorldRoleSession.ResearchDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.ResearchDraft.class);
+                subject = draft.researchId();
+                String appointment = observedFor(payload, draft.organizationPartyId(), access, now);
+                if (appointment == null) {
+                    reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                List<RoleTradingModel.Citation> citations = new ArrayList<>();
+                for (WorldRoleSession.Citation citation : draft.citations()) {
+                    citations.add(new RoleTradingModel.Citation(citation.docId(), citation.version()));
+                }
+                RoleTradingModel.ResearchResult result = RoleTradingModel.submitResearch(before,
+                        access, information, registry, new RoleTradingModel.ResearchRequest(
+                                draft.researchId(), draft.organizationPartyId(),
+                                draft.productOwnerId(), draft.symbol(), payload.personPartyId(),
+                                appointment, draft.docId(), draft.title(), draft.body(), citations),
+                        now);
+                accepted = result.accepted();
+                reason = result.reason();
+                if (accepted) {
+                    after = result.state();
+                    informationAfter = result.information();
+                }
+            }
+            case PendingTask.ROLE_TRADING_TARGET_V1 -> {
+                WorldRoleSession.TargetDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.TargetDraft.class);
+                subject = draft.targetId();
+                String appointment = observedFor(payload, draft.organizationPartyId(), access, now);
+                if (appointment == null) {
+                    reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                RoleTradingModel.Result result = RoleTradingModel.setTarget(before, access,
+                        information, securities, new RoleTradingModel.TargetRequest(draft.targetId(),
+                                draft.expectedVersion(), draft.organizationPartyId(),
+                                draft.productOwnerId(), draft.accountId(), draft.symbol(),
+                                draft.absoluteTargetQuantity(), draft.priceLimit(),
+                                draft.deadlineMillis(), draft.sourceResearchId(),
+                                payload.personPartyId(), appointment), now);
+                accepted = result.accepted();
+                reason = result.reason();
+                if (accepted) {
+                    after = result.state();
+                    scheduleFollowing(after, draft.targetId(), extra, now);
+                }
+            }
+            case PendingTask.ROLE_TRADING_REVIEW_V1 -> {
+                WorldRoleSession.ReviewDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.ReviewDraft.class);
+                subject = draft.targetId();
+                RoleTradingModel.Target parent = RoleTradingModel.target(before, draft.targetId());
+                String appointment = parent == null ? null
+                        : observedFor(payload, parent.organizationPartyId(), access, now);
+                if (appointment == null) {
+                    reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                int previousRevision = latestRevision(before, draft.targetId());
+                RoleTradingModel.Result result = RoleTradingModel.reviewTarget(before, access,
+                        securities, new RoleTradingModel.ReviewRequest(draft.targetId(),
+                                draft.expectedVersion(), draft.approved(), draft.maxTotalQuantity(),
+                                draft.maxChildQuantity(), draft.priceLimit(),
+                                draft.validUntilMillis(), draft.reason(), payload.personPartyId(),
+                                appointment), now);
+                accepted = result.accepted();
+                reason = result.reason();
+                if (accepted) {
+                    after = result.state();
+                    RoleTradingModel.RiskReview review = RoleTradingModel.currentReview(after,
+                            draft.targetId(), draft.expectedVersion());
+                    if (review != null && review.revision() != previousRevision
+                            && hasLiveChild(before, exchange, draft.targetId())) {
+                        scheduleSweep(draft.targetId(), draft.expectedVersion(), extra, now);
+                    }
+                    scheduleFollowing(after, draft.targetId(), extra, now);
+                }
+            }
+            case PendingTask.ROLE_TRADING_CONFIRM_V1 -> {
+                WorldRoleSession.ConfirmDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.ConfirmDraft.class);
+                subject = draft.targetId();
+                RoleTradingModel.Target parent = RoleTradingModel.target(before, draft.targetId());
+                String appointment = parent == null ? null
+                        : observedFor(payload, parent.organizationPartyId(), access, now);
+                if (appointment == null) {
+                    reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                if (hasPendingSweep(draft.targetId())) {
+                    reason = "CANCEL_PENDING";
+                    break;
+                }
+                RoleTradingModel.Result result = RoleTradingModel.confirmTarget(before, access,
+                        draft.targetId(), draft.expectedVersion(), draft.riskRevision(),
+                        payload.personPartyId(), appointment, now);
+                accepted = result.accepted();
+                reason = result.reason();
+                if (accepted) {
+                    after = result.state();
+                    scheduleFollowing(after, draft.targetId(), extra, now);
+                }
+            }
+            case PendingTask.ROLE_TRADING_HALT_V1 -> {
+                WorldRoleSession.HaltDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.HaltDraft.class);
+                subject = draft.targetId();
+                RoleTradingModel.Target parent = RoleTradingModel.target(before, draft.targetId());
+                String appointment = parent == null ? null
+                        : observedFor(payload, parent.organizationPartyId(), access, now);
+                if (appointment == null) {
+                    reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                RoleTradingModel.Result result = RoleTradingModel.haltTarget(before, access,
+                        draft.haltId(), draft.targetId(), draft.expectedVersion(),
+                        draft.untilMillis(), draft.reason(), payload.personPartyId(), appointment,
+                        now);
+                accepted = result.accepted();
+                reason = result.reason();
+                if (accepted) {
+                    after = result.state();
+                    scheduleSweep(draft.targetId(), draft.expectedVersion(), extra, now);
+                    scheduleHaltRelease(draft.targetId(), draft.expectedVersion(),
+                            draft.untilMillis(), extra);
+                }
+            }
+            case PendingTask.ROLE_TRADING_CANCEL_V1 -> {
+                WorldRoleSession.CancelTargetDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.CancelTargetDraft.class);
+                subject = draft.targetId();
+                RoleTradingModel.Target parent = RoleTradingModel.target(before, draft.targetId());
+                String appointment = parent == null ? null
+                        : observedFor(payload, parent.organizationPartyId(), access, now);
+                if (appointment == null) {
+                    reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                RoleTradingModel.Result result = RoleTradingModel.cancelTarget(before, access,
+                        draft.targetId(), draft.expectedVersion(), payload.personPartyId(),
+                        appointment, now);
+                accepted = result.accepted();
+                reason = result.reason();
+                if (accepted) {
+                    after = result.state();
+                    scheduleSweep(draft.targetId(), draft.expectedVersion(), extra, now);
+                }
+            }
+            case PendingTask.ROLE_TRADING_CHILD_V1 -> {
+                WorldRoleSession.ChildDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.ChildDraft.class);
+                subject = draft.childId();
+                RoleTradingModel.Target parent = RoleTradingModel.target(before, draft.parentId());
+                String appointment = parent == null ? null
+                        : observedFor(payload, parent.organizationPartyId(), access, now);
+                if (appointment == null) {
+                    reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                RoleTradingModel.ChildRequest request = new RoleTradingModel.ChildRequest(
+                        draft.parentId(), draft.parentVersion(), draft.riskRevision(),
+                        draft.childId(), payload.personPartyId(), appointment, draft.quantity(),
+                        draft.limitPrice(), task.taskId());
+                RoleTradingModel.Result admitted = RoleTradingModel.admitChild(before, access,
+                        exchange, securities, request, now);
+                if (!admitted.accepted()) {
+                    reason = admitted.reason();
+                    break;
+                }
+                RoleTradingModel.TargetVersion version = parent.current();
+                WorldExchange.Outcome outcome = WorldExchange.submit(exchange, accounts, securities,
+                        task.taskId(), payload.commandId(), parent.productOwnerId(),
+                        parent.accountId(), parent.symbol(), version.side(), OrderType.LIMIT,
+                        draft.limitPrice(), draft.quantity(), now);
+                if (!outcome.accepted()) {
+                    reason = outcome.reason();
+                    break;
+                }
+                RoleTradingModel.Result linked = RoleTradingModel.linkOrder(admitted.state(), access,
+                        outcome.exchange(), request, outcome.orderId());
+                if (!linked.accepted()) {
+                    // 撮合候选不得单独落地：链接失败即丢弃整笔订单
+                    reason = linked.reason();
+                    break;
+                }
+                after = linked.state();
+                exchange = outcome.exchange();
+                accounts = outcome.accounts();
+                securities = outcome.securities();
+                accepted = true;
+                reason = "OK";
+                for (Long tradeId : outcome.tradeIds()) {
+                    WorldExchange.Trade trade = exchange.trades().stream()
+                            .filter(item -> item.tradeId() == tradeId).findFirst()
+                            .orElseThrow(() -> new IllegalStateException("成交号未登记：" + tradeId));
+                    events.add(new WorldEvent("exchange-trade:" + tradeId, "EXCHANGE_TRADE_V1",
+                            mapper.writeValueAsString(trade)));
+                }
+                WorldExchange.OrderReport report = new WorldExchange.OrderReport(task.taskId(),
+                        payload.commandId(), task.kind(), true, outcome.reason(),
+                        outcome.orderId(), outcome.tradeIds(), List.of(), now,
+                        state.position() + 1);
+                exchange = exchange.withReport(report);
+                events.add(new WorldEvent("exchange-report:" + task.taskId(),
+                        "EXCHANGE_ORDER_REPORT_V1", mapper.writeValueAsString(report)));
+                scheduleAppointmentEnd(appointment, extra);
+                scheduleFollowing(after, draft.parentId(), extra, now);
+            }
+            case PendingTask.ROLE_TRADING_CHILD_CANCEL_V1 -> {
+                WorldRoleSession.ChildRef ref = mapper.readValue(payload.body(),
+                        WorldRoleSession.ChildRef.class);
+                subject = ref.childId();
+                RoleTradingModel.ChildLink link = linkOf(before, ref);
+                RoleTradingModel.Target parent = link == null ? null
+                        : RoleTradingModel.target(before, link.targetId());
+                String appointment = parent == null ? null
+                        : observedFor(payload, parent.organizationPartyId(), access, now);
+                if (link == null || appointment == null || !appointment.equals(link.appointmentId())) {
+                    reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                WorldExchange.Order order = exchange.order(link.orderId());
+                if (order == null || !order.live()) {
+                    reason = "TERMINAL_ORDER";
+                    break;
+                }
+                WorldExchange.Outcome outcome = WorldExchange.cancel(exchange, accounts, securities,
+                        parent.productOwnerId(), link.orderId(), now);
+                accepted = outcome.accepted();
+                reason = outcome.reason();
+                if (accepted) {
+                    exchange = outcome.exchange();
+                    accounts = outcome.accounts();
+                    securities = outcome.securities();
+                    WorldExchange.OrderReport report = new WorldExchange.OrderReport(task.taskId(),
+                            payload.commandId(), task.kind(), true, outcome.reason(),
+                            outcome.orderId(), outcome.tradeIds(), outcome.cancelledOrderIds(), now,
+                            state.position() + 1);
+                    exchange = exchange.withReport(report);
+                    events.add(new WorldEvent("exchange-report:" + task.taskId(),
+                            "EXCHANGE_ORDER_REPORT_V1", mapper.writeValueAsString(report)));
+                }
+            }
+            default -> throw new IllegalStateException("未启用的交易动作：" + task.kind());
+        }
+
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        for (PendingTask extraTask : extra) {
+            if (used.contains(extraTask.taskId())) {
+                continue;
+            }
+            pending.add(extraTask);
+            used.add(extraTask.taskId());
+            events.add(new WorldEvent("task-scheduled:" + extraTask.taskId(), "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(extraTask)));
+        }
+        RoleTradingRun.Report entry = new RoleTradingRun.Report(task.taskId(),
+                payload.personPartyId(), payload.clientCommandId(), payload.clientTaskId(),
+                task.kind(), accepted, reason, subject, task.dueTimeMillis(),
+                state.position() + 1);
+        RoleTradingRun runCandidate = run.withTrading(after).withReport(entry);
+        events.add(new WorldEvent("role-trading-report:" + task.taskId(),
+                "ROLE_TRADING_REPORT_V1", mapper.writeValueAsString(entry)));
+        events.add(0, new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
+                state.delivered(), used, state.commandContents(), state.commandOutcomes(), securities,
+                exchange, state.manufacturing(), state.governance(), state.roles(),
+                informationAfter.equals(information) ? state.information()
+                        : informationRun.withInformation(informationAfter),
+                runCandidate);
+        if (task.taskId().startsWith("roleT:") && !extra.isEmpty()) {
+        }
+        commitAndApply("task:" + task.taskId(), task.payload(), reason, events, candidate);
+    }
+
+    /** 系统扫描：撤不相容旧单；撤净后 UPDATING 重建基点，其余阶段只停新单。 */
+    private void completeRoleSweep(PendingTask task) throws IOException {
+        RoleSweepBody body = mapper.readValue(task.payload(), RoleSweepBody.class);
+        long now = task.dueTimeMillis();
+        RoleTradingRun run = requireTradingRun();
+        RoleTradingModel.State trading = run.trading();
+        RoleTradingModel.Target target = RoleTradingModel.target(trading, body.targetId());
+        if (target == null) {
+            finishSystemRoleTask(task, trading, state.accounts(), state.securities(),
+                    state.exchange(), "NO_TARGET");
+            return;
+        }
+        if (target.current().version() != body.version()) {
+            finishSystemRoleTask(task, trading, state.accounts(), state.securities(),
+                    state.exchange(), "STALE_VERSION");
+            return;
+        }
+        Map<String, CashLedger.CashAccount> accounts = state.accounts();
+        SecuritiesLedger.State securities = state.securities();
+        WorldExchange.State exchange = state.exchange();
+        List<WorldEvent> events = new ArrayList<>();
+        List<Long> cancelled = new ArrayList<>();
+        for (RoleTradingModel.ChildLink link : trading.children()) {
+            if (!link.targetId().equals(body.targetId())) {
+                continue;
+            }
+            WorldExchange.Order order = exchange.order(link.orderId());
+            if (order == null || !order.live()) {
+                continue;
+            }
+            WorldExchange.Outcome outcome = WorldExchange.cancel(exchange, accounts, securities,
+                    target.productOwnerId(), link.orderId(), now);
+            if (outcome.accepted()) {
+                exchange = outcome.exchange();
+                accounts = outcome.accounts();
+                securities = outcome.securities();
+                cancelled.add(link.orderId());
+            } else if (outcome.exchange().order(link.orderId()) != null
+                    && outcome.exchange().order(link.orderId()).live()) {
+                throw new IOException("系统撤单后订单仍活动：" + link.orderId());
+            }
+        }
+        if (!cancelled.isEmpty()) {
+            WorldExchange.OrderReport report = new WorldExchange.OrderReport(task.taskId(),
+                    "system:sweep", task.kind(), true, WorldExchange.REASON_CANCELLED, null,
+                    List.of(), cancelled, now, state.position() + 1);
+            exchange = exchange.withReport(report);
+            events.add(new WorldEvent("exchange-report:" + task.taskId(),
+                    "EXCHANGE_ORDER_REPORT_V1", mapper.writeValueAsString(report)));
+        }
+        RoleTradingModel.State after = trading;
+        List<PendingTask> extra = new ArrayList<>();
+        if (target.status() == RoleTradingModel.Status.UPDATING) {
+            RoleTradingModel.Result settled = RoleTradingModel.settleUpdate(trading, exchange,
+                    securities, body.targetId(), now);
+            if (settled.accepted()) {
+                after = settled.state();
+                scheduleFollowing(after, body.targetId(), extra, now);
+            }
+        }
+        finishWithExtra(task, after, accounts, securities, exchange, "OK", extra, events);
+    }
+
+    /** 系统到期：目标截止到期即 EXPIRED 并撤剩余；审核期限到期只撤该 revision 的旧单。 */
+    private void completeRoleExpire(PendingTask task) throws IOException {
+        RoleExpireBody body = mapper.readValue(task.payload(), RoleExpireBody.class);
+        long now = task.dueTimeMillis();
+        RoleTradingRun run = requireTradingRun();
+        RoleTradingModel.State trading = run.trading();
+        RoleTradingModel.Target target = RoleTradingModel.target(trading, body.targetId());
+        if (target == null) {
+            finishSystemRoleTask(task, trading, state.accounts(), state.securities(),
+                    state.exchange(), "NO_TARGET");
+            return;
+        }
+        if (target.current().version() != body.version()) {
+            finishSystemRoleTask(task, trading, state.accounts(), state.securities(),
+                    state.exchange(), "STALE_VERSION");
+            return;
+        }
+        if (body.revision() > 0) {
+            if (latestRevision(trading, body.targetId()) != body.revision()) {
+                finishSystemRoleTask(task, trading, state.accounts(), state.securities(),
+                        state.exchange(), "STALE_VERSION");
+                return;
+            }
+            CanceledOrders canceled = cancelOrders(trading, body.targetId(), body.version(),
+                    body.revision(), now, task.taskId(), task.kind());
+            finishWithExtra(task, trading, canceled.accounts(), canceled.securities(),
+                    canceled.exchange(), "REVIEW_EXPIRED", List.of(), canceled.events());
+            return;
+        }
+        if (now < target.current().deadlineMillis()) {
+            finishSystemRoleTask(task, trading, state.accounts(), state.securities(),
+                    state.exchange(), "NOT_DUE");
+            return;
+        }
+        RoleTradingModel.State after = trading;
+        if (target.status() != RoleTradingModel.Status.CANCELLED
+                && target.status() != RoleTradingModel.Status.EXPIRED
+                && target.status() != RoleTradingModel.Status.COMPLETED) {
+            RoleTradingModel.Result expired = RoleTradingModel.expireTarget(trading,
+                    body.targetId(), now);
+            if (expired.accepted()) {
+                after = expired.state();
+            }
+        }
+        List<PendingTask> extra = new ArrayList<>();
+        scheduleSweep(body.targetId(), body.version(), extra, now);
+        finishWithExtra(task, after, state.accounts(), state.securities(), state.exchange(), "OK",
+                extra);
+    }
+
+    /** 撤销指定版本（可选 revision）授权的活动子单，返回同批的账户/证券/订单与领域事件。 */
+    private CanceledOrders cancelOrders(RoleTradingModel.State trading, String targetId,
+                                        int version, int revision, long now, String taskId,
+                                        String kind) throws IOException {
+        Map<String, CashLedger.CashAccount> accounts = state.accounts();
+        SecuritiesLedger.State securities = state.securities();
+        WorldExchange.State exchange = state.exchange();
+        RoleTradingModel.Target target = RoleTradingModel.target(trading, targetId);
+        List<Long> cancelled = new ArrayList<>();
+        if (target != null) {
+            for (RoleTradingModel.ChildLink link : trading.children()) {
+                if (!link.targetId().equals(targetId) || link.targetVersion() != version
+                        || (revision > 0 && link.riskRevision() != revision)) {
+                    continue;
+                }
+                WorldExchange.Order order = exchange.order(link.orderId());
+                if (order == null || !order.live()) {
+                    continue;
+                }
+                WorldExchange.Outcome outcome = WorldExchange.cancel(exchange, accounts,
+                        securities, target.productOwnerId(), link.orderId(), now);
+                if (outcome.accepted()) {
+                    exchange = outcome.exchange();
+                    accounts = outcome.accounts();
+                    securities = outcome.securities();
+                    cancelled.add(link.orderId());
+                }
+            }
+        }
+        List<WorldEvent> events = new ArrayList<>();
+        if (!cancelled.isEmpty()) {
+            WorldExchange.OrderReport report = new WorldExchange.OrderReport(taskId,
+                    "system:expire", kind, true, WorldExchange.REASON_CANCELLED, null, List.of(),
+                    cancelled, now, state.position() + 1);
+            exchange = exchange.withReport(report);
+            events.add(new WorldEvent("exchange-report:" + taskId + ":" + now,
+                    "EXCHANGE_ORDER_REPORT_V1", mapper.writeValueAsString(report)));
+        }
+        return new CanceledOrders(accounts, securities, exchange, events);
+    }
+
+    /** 一批撤单后的账户、证券、订单与事件。 */
+    private record CanceledOrders(Map<String, CashLedger.CashAccount> accounts,
+                                  SecuritiesLedger.State securities,
+                                  WorldExchange.State exchange, List<WorldEvent> events) {
+    }
+
+    /** 系统任职结束：只撤该任职发出的活动子单。 */
+    private void completeAppointmentEnd(PendingTask task) throws IOException {
+        RoleAppointmentBody body = mapper.readValue(task.payload(), RoleAppointmentBody.class);
+        long now = task.dueTimeMillis();
+        RoleTradingRun run = requireTradingRun();
+        RoleTradingModel.State trading = run.trading();
+        Map<String, CashLedger.CashAccount> accounts = state.accounts();
+        SecuritiesLedger.State securities = state.securities();
+        WorldExchange.State exchange = state.exchange();
+        List<WorldEvent> events = new ArrayList<>();
+        for (RoleTradingModel.ChildLink link : trading.children()) {
+            if (!link.appointmentId().equals(body.appointmentId())) {
+                continue;
+            }
+            RoleTradingModel.Target target = RoleTradingModel.target(trading, link.targetId());
+            if (target == null) {
+                continue;
+            }
+            WorldExchange.Order order = exchange.order(link.orderId());
+            if (order == null || !order.live()) {
+                continue;
+            }
+            WorldExchange.Outcome outcome = WorldExchange.cancel(exchange, accounts, securities,
+                    target.productOwnerId(), link.orderId(), now);
+            if (outcome.accepted()) {
+                exchange = outcome.exchange();
+                accounts = outcome.accounts();
+                securities = outcome.securities();
+            }
+        }
+        finishSystemRoleTask(task, trading, accounts, securities, exchange, "OK", events);
+    }
+
+    /** 系统暂停到期：回到待审核，不自动恢复执行。 */
+    private void completeHaltRelease(PendingTask task) throws IOException {
+        RoleHaltBody body = mapper.readValue(task.payload(), RoleHaltBody.class);
+        long now = task.dueTimeMillis();
+        RoleTradingRun run = requireTradingRun();
+        RoleTradingModel.Target target = RoleTradingModel.target(run.trading(), body.targetId());
+        if (target == null || target.current().version() != body.version()) {
+            finishSystemRoleTask(task, run.trading(), state.accounts(), state.securities(),
+                    state.exchange(), "STALE_VERSION");
+            return;
+        }
+        RoleTradingModel.Result released = RoleTradingModel.releaseHalt(run.trading(),
+                body.targetId(), now);
+        RoleTradingModel.State after = released.accepted() ? released.state() : run.trading();
+        finishSystemRoleTask(task, after, state.accounts(), state.securities(), state.exchange(),
+                released.accepted() ? "OK" : released.reason());
+    }
+
+    /** 系统任务统一收尾：完成待办、写领域事件与全量状态；系统任务不产生人物 client 回报。 */
+    private void finishSystemRoleTask(PendingTask task, RoleTradingModel.State trading,
+                                      Map<String, CashLedger.CashAccount> accounts,
+                                      SecuritiesLedger.State securities,
+                                      WorldExchange.State exchange, String reason)
+            throws IOException {
+        finishSystemRoleTask(task, trading, accounts, securities, exchange, reason, List.of());
+    }
+
+    private void finishSystemRoleTask(PendingTask task, RoleTradingModel.State trading,
+                                      Map<String, CashLedger.CashAccount> accounts,
+                                      SecuritiesLedger.State securities,
+                                      WorldExchange.State exchange, String reason,
+                                      List<WorldEvent> effects) throws IOException {
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.addAll(effects);
+        RoleTradingRun candidateRun = requireTradingRun().withTrading(trading);
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
+                state.delivered(), used, state.commandContents(), state.commandOutcomes(), securities,
+                exchange, state.manufacturing(), state.governance(), state.roles(),
+                state.information(), candidateRun);
+        commitAndApply("task:" + task.taskId(), task.payload(), reason, events, candidate);
+    }
+
+    /** 系统任务统一收尾，并把新排的定时任务一并写入；可携带领域事件。 */
+    private void finishWithExtra(PendingTask task, RoleTradingModel.State trading,
+                                 Map<String, CashLedger.CashAccount> accounts,
+                                 SecuritiesLedger.State securities, WorldExchange.State exchange,
+                                 String reason, List<PendingTask> extra) throws IOException {
+        finishWithExtra(task, trading, accounts, securities, exchange, reason, extra, List.of());
+    }
+
+    private void finishWithExtra(PendingTask task, RoleTradingModel.State trading,
+                                 Map<String, CashLedger.CashAccount> accounts,
+                                 SecuritiesLedger.State securities, WorldExchange.State exchange,
+                                 String reason, List<PendingTask> extra, List<WorldEvent> effects)
+            throws IOException {
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.addAll(effects);
+        for (PendingTask candidate : extra) {
+            if (used.contains(candidate.taskId())) {
+                continue;
+            }
+            pending.add(candidate);
+            used.add(candidate.taskId());
+            events.add(new WorldEvent("task-scheduled:" + candidate.taskId(), "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(candidate)));
+        }
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
+                state.delivered(), used, state.commandContents(), state.commandOutcomes(), securities,
+                exchange, state.manufacturing(), state.governance(), state.roles(),
+                state.information(), requireTradingRun().withTrading(trading));
+        commitAndApply("task:" + task.taskId(), task.payload(), reason, events, candidate);
+    }
+
+    /** 观察任职：本次会话固定的组织→任职必须仍在任且属于该人物。 */
+    private String observedFor(RoleActionPayload payload, String organizationPartyId,
+                               RoleAccess.State access, long now) {
+        if (organizationPartyId == null || payload.appointments() == null) {
+            return null;
+        }
+        String appointmentId = payload.appointments().get(organizationPartyId);
+        if (appointmentId == null) {
+            return null;
+        }
+        for (RoleAccess.Appointment appointment : access.appointments()) {
+            if (appointment.id().equals(appointmentId)
+                    && appointment.personPartyId().equals(payload.personPartyId())
+                    && appointment.organizationPartyId().equals(organizationPartyId)
+                    && appointment.activeAt(now)) {
+                return appointmentId;
+            }
+        }
+        return null;
+    }
+
+    private static int latestRevision(RoleTradingModel.State trading, String targetId) {
+        RoleTradingModel.Target target = RoleTradingModel.target(trading, targetId);
+        if (target == null) {
+            return 0;
+        }
+        RoleTradingModel.RiskReview review = RoleTradingModel.currentReview(trading, targetId,
+                target.current().version());
+        return review == null ? 0 : review.revision();
+    }
+
+    private static RoleTradingModel.ChildLink linkOf(RoleTradingModel.State trading,
+                                                     WorldRoleSession.ChildRef ref) {
+        for (RoleTradingModel.ChildLink link : trading.children()) {
+            if (link.targetId().equals(ref.parentId())
+                    && link.personPartyId().equals(ref.personPartyId())
+                    && link.childId().equals(ref.childId())) {
+                return link;
+            }
+        }
+        return null;
+    }
+
+    private boolean hasPendingSweep(String targetId) throws IOException {
+        for (PendingTask pending : state.pending()) {
+            if (PendingTask.ROLE_TRADING_SWEEP_V1.equals(pending.kind())) {
+                RoleSweepBody body = mapper.readValue(pending.payload(), RoleSweepBody.class);
+                if (body.targetId().equals(targetId)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** @return 该目标是否还有活动子单 */
+    private static boolean hasLiveChild(RoleTradingModel.State trading, WorldExchange.State exchange,
+                                         String targetId) {
+        for (RoleTradingModel.ChildLink link : trading.children()) {
+            if (!link.targetId().equals(targetId)) {
+                continue;
+            }
+            WorldExchange.Order order = exchange.order(link.orderId());
+            if (order != null && order.live()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 目标阶段变化后的跟排：UPDATING 撤单；待审/执行同时排目标截止与当前审核期限。 */
+    private void scheduleFollowing(RoleTradingModel.State trading, String targetId,
+                                   List<PendingTask> extra, long now) {
+        RoleTradingModel.Target target = RoleTradingModel.target(trading, targetId);
+        if (target == null) {
+            return;
+        }
+        if (target.status() == RoleTradingModel.Status.UPDATING) {
+            scheduleSweep(targetId, target.current().version(), extra, now);
+            return;
+        }
+        if (target.status() == RoleTradingModel.Status.PENDING_REVIEW
+                || target.status() == RoleTradingModel.Status.ACTIVE) {
+            RoleTradingModel.RiskReview review = RoleTradingModel.currentReview(trading, targetId,
+                    target.current().version());
+            scheduleExpire(targetId, target.current().version(), 0,
+                    target.current().deadlineMillis(), extra, now);
+            if (review != null) {
+                scheduleExpire(targetId, target.current().version(), review.revision(),
+                        review.validUntilMillis(), extra, now);
+            }
+        }
+    }
+
+    /** 内部标识探测：与已用、在队任务都不冲突，保留原有公平顺序语义。 */
+    private String freeRoleTaskId(String stem) {
+        Set<String> taken = new LinkedHashSet<>(state.usedTaskIds());
+        for (PendingTask pending : state.pending()) {
+            taken.add(pending.taskId());
+        }
+        String candidate = stem;
+        int suffix = 2;
+        while (taken.contains(candidate)) {
+            candidate = stem + ":v" + suffix;
+            suffix++;
+        }
+        return candidate;
+    }
+
+    private void scheduleSweep(String targetId, int version, List<PendingTask> extra, long now) {
+        for (PendingTask pending : state.pending()) {
+            if (!PendingTask.ROLE_TRADING_SWEEP_V1.equals(pending.kind())) {
+                continue;
+            }
+            try {
+                RoleSweepBody body = mapper.readValue(pending.payload(), RoleSweepBody.class);
+                if (body.targetId().equals(targetId) && body.version() == version) {
+                    return;
+                }
+            } catch (IOException ignored) {
+                // 解析不了的旧待办不由这里处理，交给恢复校验
+            }
+        }
+        try {
+            String taskId = freeRoleTaskId("roleT:sweep:" + targetId + ":" + version + ":" + now);
+            extra.add(new PendingTask(taskId, now + 1, WorldScheduler.Phase.RULES,
+                    PendingTask.ROLE_TRADING_SWEEP_V1,
+                    mapper.writeValueAsString(new RoleSweepBody(targetId, version))));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalStateException("无法序列化撤单扫描参数", failure);
+        }
+    }
+
+    private void scheduleExpire(String targetId, int version, int revision, long due,
+                                List<PendingTask> extra, long now) {
+        if (due <= now) {
+            return;
+        }
+        for (PendingTask pending : state.pending()) {
+            if (!PendingTask.ROLE_TRADING_EXPIRE_V1.equals(pending.kind())) {
+                continue;
+            }
+            try {
+                RoleExpireBody body = mapper.readValue(pending.payload(), RoleExpireBody.class);
+                if (body.targetId().equals(targetId) && body.version() == version
+                        && body.revision() == revision) {
+                    return;
+                }
+            } catch (IOException ignored) {
+                // 同上：解析失败留给恢复校验
+            }
+        }
+        try {
+            String stem = "roleT:expire:" + targetId + ":" + version + ":" + revision;
+            String taskId = freeRoleTaskId(stem);
+            extra.add(new PendingTask(taskId, due, WorldScheduler.Phase.RULES,
+                    PendingTask.ROLE_TRADING_EXPIRE_V1,
+                    mapper.writeValueAsString(new RoleExpireBody(targetId, version, revision))));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalStateException("无法序列化到期参数", failure);
+        }
+    }
+
+    private void scheduleHaltRelease(String targetId, int version, long due,
+                                     List<PendingTask> extra) {
+        for (PendingTask pending : state.pending()) {
+            if (!PendingTask.ROLE_TRADING_HALT_RELEASE_V1.equals(pending.kind())) {
+                continue;
+            }
+            try {
+                RoleHaltBody body = mapper.readValue(pending.payload(), RoleHaltBody.class);
+                if (body.targetId().equals(targetId) && body.version() == version
+                        && pending.dueTimeMillis() == due) {
+                    return;
+                }
+            } catch (IOException ignored) {
+                // 同上
+            }
+        }
+        try {
+            String stem = "roleT:halt:" + targetId + ":" + version + ":" + due;
+            String taskId = freeRoleTaskId(stem);
+            extra.add(new PendingTask(taskId, due, WorldScheduler.Phase.RULES,
+                    PendingTask.ROLE_TRADING_HALT_RELEASE_V1,
+                    mapper.writeValueAsString(new RoleHaltBody(targetId, version))));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalStateException("无法序列化暂停到期参数", failure);
+        }
+    }
+
+    private void scheduleAppointmentEnd(String appointmentId, List<PendingTask> extra) {
+        RoleAccess.Appointment appointment = appointmentOf(state, appointmentId);
+        if (appointment == null) {
+            return;
+        }
+        long endsAt = appointment.effectiveEnd();
+        for (PendingTask pending : state.pending()) {
+            if (!PendingTask.ROLE_TRADING_APPOINTMENT_END_V1.equals(pending.kind())) {
+                continue;
+            }
+            try {
+                RoleAppointmentBody body = mapper.readValue(pending.payload(),
+                        RoleAppointmentBody.class);
+                if (body.appointmentId().equals(appointmentId)) {
+                    return;
+                }
+            } catch (IOException ignored) {
+                // 同上
+            }
+        }
+        try {
+            String taskId = freeRoleTaskId("roleT:apptEnd:" + appointmentId);
+            extra.add(new PendingTask(taskId, endsAt, WorldScheduler.Phase.RULES,
+                    PendingTask.ROLE_TRADING_APPOINTMENT_END_V1,
+                    mapper.writeValueAsString(new RoleAppointmentBody(appointmentId))));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalStateException("无法序列化任职结束参数", failure);
+        }
+    }
+
+    /**
+     * 四岗交易子集的恢复校验：位置/时间不越界、历史前缀不可改、无孤儿链接。
+     *
+     * @param candidate 候选状态
+     * @param previous  上一确认状态；开局为空
+     * @throws IOException 违反不变量
+     */
+    private void validateTrading(WorldState candidate, WorldState previous) throws IOException {
+        if (expectedSchema() < STATE_SCHEMA_ROLE_TRADING) {
+            if (candidate.trading() != null) {
+                throw new IOException("旧档案不得包含四岗交易子集状态");
+            }
+            return;
+        }
+        if (candidate.trading() == null) {
+            throw new IOException("四岗交易档案缺少子集状态");
+        }
+        RoleTradingRun run = candidate.trading();
+        validateRoleTimers(candidate, run.trading());
+        for (RoleTradingRun.Report report : run.reports().values()) {
+            if (report.position() > candidate.position()) {
+                throw new IOException("交易回报出现在未来的提交位置：" + report.taskId());
+            }
+            if (report.timeMillis() > candidate.timeMillis()) {
+                throw new IOException("交易回报时点晚于快照时点：" + report.taskId());
+            }
+            if (!candidate.usedTaskIds().contains(report.taskId())) {
+                throw new IOException("交易回报缺少对应的已用任务：" + report.taskId());
+            }
+            roleRequest(candidate, report);
+        }
+        for (RoleTradingModel.ChildLink link : run.trading().children()) {
+            WorldExchange.Order order = candidate.exchange().order(link.orderId());
+            if (order == null) {
+                throw new IOException("子单链接指向未登记订单：" + link.childId());
+            }
+            RoleTradingModel.Target target = RoleTradingModel.target(run.trading(), link.targetId());
+            if (target == null || !order.accountId().equals(target.accountId())
+                    || !order.symbol().equals(target.symbol())) {
+                throw new IOException("子单链接与目标账户/标的不一致：" + link.childId());
+            }
+        }
+        Map<String, RoleTradingRun.Report> reports = run.reports();
+        InformationModel.State information = candidate.information() == null ? null
+                : candidate.information().information();
+        for (RoleTradingModel.Research note : run.trading().research()) {
+            RoleTradingRun.Report creating = reports.get(researchTaskId(note, reports));
+            if (creating == null) {
+                throw new IOException("研究报告缺少创建回报：" + note.researchId());
+            }
+            if (!creating.accepted() || !creating.personPartyId().equals(note.authorPersonPartyId())
+                    || !creating.subjectId().equals(note.researchId())
+                    || creating.timeMillis() != note.createdAtMillis()) {
+                throw new IOException("研究报告与创建命令不一致：" + note.researchId());
+            }
+            InformationModel.Document document = information == null ? null
+                    : documentOf(information, note.docId());
+            if (document == null || document.audience().kind()
+                    != InformationModel.AudienceKind.ORGANIZATION
+                    || !note.organizationPartyId().equals(document.audience().partyId())
+                    || document.at(note.docVersion()) == null) {
+                throw new IOException("研究报告缺少对应的组织文档版本：" + note.researchId());
+            }
+            for (RoleTradingModel.Citation citation : note.citations()) {
+                if (information == null || !InformationModel.canCite(information,
+                        note.authorPersonPartyId(), citation.docId(), citation.version(),
+                        note.createdAtMillis())) {
+                    throw new IOException("研究报告引用了作者当时未读完的版本："
+                            + note.researchId());
+                }
+            }
+        }
+        for (RoleTradingModel.Target target : run.trading().targets()) {
+            checkTargetHistory(target, candidate, previous);
+            if (!terminalStatus(target.status())
+                    && !hasPendingExpiry(candidate, target.targetId(),
+                    target.current().version(), 0)) {
+                throw new IOException("非终态目标缺少截止任务：" + target.targetId());
+            }
+            RoleTradingModel.RiskReview review = RoleTradingModel.currentReview(run.trading(),
+                    target.targetId(), target.current().version());
+            if (!terminalStatus(target.status()) && review != null
+                    && review.validUntilMillis() > candidate.timeMillis()
+                    && !hasPendingExpiry(candidate, target.targetId(), target.current().version(),
+                    review.revision())) {
+                throw new IOException("当前审核缺少到期任务：" + target.targetId());
+            }
+            if (target.status() == RoleTradingModel.Status.HALTED
+                    && !hasPendingTargetTask(candidate, PendingTask.ROLE_TRADING_HALT_RELEASE_V1,
+                    target.targetId(), target.current().version(), target.haltedUntilMillis())) {
+                throw new IOException("暂停状态缺少对应恢复待办：" + target.targetId());
+            }
+            long sweepDue = target.status() == RoleTradingModel.Status.UPDATING
+                    ? target.pending().requestedAtMillis() + 1 : 0;
+            if (hasLiveChild(run.trading(), candidate.exchange(), target.targetId())) {
+                switch (target.status()) {
+                    case HALTED -> sweepDue = run.trading().halts().stream().filter(halt ->
+                            halt.targetId().equals(target.targetId())
+                                    && halt.targetVersion() == target.current().version()
+                                    && halt.untilMillis() == target.haltedUntilMillis())
+                            .reduce((first, last) -> last)
+                            .orElseThrow(() -> new IOException("暂停状态缺少来源：" + target.targetId()))
+                            .issuedAtMillis() + 1;
+                    case CANCELLED -> sweepDue = reports.values().stream().filter(report ->
+                            report.accepted() && report.subjectId().equals(target.targetId())
+                                    && report.kind().equals(PendingTask.ROLE_TRADING_CANCEL_V1))
+                            .max(Comparator.comparingLong(RoleTradingRun.Report::position))
+                            .orElseThrow(() -> new IOException("取消状态缺少来源：" + target.targetId()))
+                            .timeMillis() + 1;
+                    case PENDING_REVIEW -> {
+                        if (review == null) {
+                            throw new IOException("待审核目标存在未终结旧子单：" + target.targetId());
+                        }
+                        sweepDue = review.reviewedAtMillis() + 1;
+                    }
+                    case EXPIRED, COMPLETED -> throw new IOException("终结目标仍有活动子单：" + target.targetId());
+                    default -> { }
+                }
+            }
+            if (sweepDue > 0 && !hasPendingTargetTask(candidate, PendingTask.ROLE_TRADING_SWEEP_V1,
+                    target.targetId(), target.current().version(), sweepDue)) {
+                throw new IOException("停止或更新状态缺少撤单待办：" + target.targetId());
+            }
+        }
+        for (RoleTradingModel.ChildLink link : run.trading().children()) {
+            WorldExchange.Order order = candidate.exchange().order(link.orderId());
+            RoleAccess.Appointment linkAppointment = appointmentOf(candidate, link.appointmentId());
+            if (linkAppointment != null && linkAppointment.activeAt(candidate.timeMillis())
+                    && !hasPendingAppointmentEnd(candidate, link.appointmentId())) {
+                throw new IOException("活动子单缺少任职结束任务：" + link.childId());
+            }
+            RoleTradingRun.Report creating = reports.get(link.taskId());
+            if (creating == null || !creating.accepted()
+                    || !creating.personPartyId().equals(link.personPartyId())
+                    || !creating.subjectId().equals(link.childId())
+                    || creating.timeMillis() != order.acceptedAtMillis()) {
+                throw new IOException("子单链接与创建命令不一致：" + link.childId());
+            }
+            RoleActionPayload request = roleRequest(candidate, creating);
+            if (!PendingTask.ROLE_TRADING_CHILD_V1.equals(request.kind())) {
+                throw new IOException("子单链接没有对应的子单请求：" + link.childId());
+            }
+            WorldRoleSession.ChildDraft draft = mapper.readValue(request.body(),
+                    WorldRoleSession.ChildDraft.class);
+            RoleTradingModel.Target parent = RoleTradingModel.target(run.trading(), link.targetId());
+            RoleTradingModel.TargetVersion version = parent.versions().get(link.targetVersion() - 1);
+            if (!draft.parentId().equals(link.targetId())
+                    || draft.parentVersion() != link.targetVersion()
+                    || draft.riskRevision() != link.riskRevision()
+                    || !draft.childId().equals(link.childId())
+                    || draft.quantity() != order.quantity()
+                    || order.type() != OrderType.LIMIT || version.side() != order.side()
+                    || draft.limitPrice().compareTo(order.limitPrice()) != 0
+                    || !order.taskId().equals(link.taskId())
+                    || !order.commandId().equals(request.commandId())
+                    || !link.appointmentId().equals(request.appointments().get(parent.organizationPartyId()))) {
+                throw new IOException("真实子单与原请求不一致：" + link.childId());
+            }
+            RoleAccess.Appointment appointment = appointmentOf(candidate, link.appointmentId());
+            if (appointment == null || !appointment.personPartyId().equals(link.personPartyId())
+                    || !appointment.organizationPartyId().equals(
+                    orderOrganization(run.trading(), link))
+                    || !appointment.activeAt(order.acceptedAtMillis())) {
+                throw new IOException("子单链接的任职在受理时无效：" + link.childId());
+            }
+        }
+        if (previous == null || previous.trading() == null) {
+            return;
+        }
+        RoleTradingModel.State before = previous.trading().trading();
+        RoleTradingModel.State after = run.trading();
+        requirePrefix(before.research(), after.research(), "研究报告");
+        requirePrefix(before.children(), after.children(), "子单链接");
+        requirePrefix(before.reviews(), after.reviews(), "风险审核");
+        requirePrefix(before.halts(), after.halts(), "风险暂停");
+        for (RoleTradingModel.RiskReview review : after.reviews().subList(before.reviews().size(),
+                after.reviews().size())) {
+            RoleActionPayload request = acceptedRoleRequest(candidate, PendingTask.ROLE_TRADING_REVIEW_V1,
+                    review.targetId());
+            WorldRoleSession.ReviewDraft draft = mapper.readValue(request.body(), WorldRoleSession.ReviewDraft.class);
+            RoleTradingModel.Target parent = RoleTradingModel.target(after, review.targetId());
+            String appointment = observedFor(request, parent.organizationPartyId(),
+                    candidate.roles().access(), request.dueMillis());
+            if (appointment == null || appointmentOf(candidate, appointment).role() != RoleAccess.Role.RISK_OFFICER) {
+                throw new IOException("风险审核的原任职无效：" + review.targetId());
+            }
+            RoleTradingModel.RiskReview expected = new RoleTradingModel.RiskReview(draft.targetId(),
+                    draft.expectedVersion(), review.revision(), draft.approved(), draft.maxTotalQuantity(),
+                    draft.maxChildQuantity(), draft.priceLimit(), draft.validUntilMillis(), draft.reason(),
+                    request.personPartyId(), appointment, request.dueMillis());
+            if (!review.equals(expected)) {
+                throw new IOException("风险审核与原请求不一致：" + review.targetId());
+            }
+        }
+        for (RoleTradingModel.Halt halt : after.halts().subList(before.halts().size(), after.halts().size())) {
+            RoleActionPayload request = acceptedRoleRequest(candidate, PendingTask.ROLE_TRADING_HALT_V1,
+                    halt.targetId());
+            WorldRoleSession.HaltDraft draft = mapper.readValue(request.body(), WorldRoleSession.HaltDraft.class);
+            RoleTradingModel.Target parent = RoleTradingModel.target(after, halt.targetId());
+            String appointment = observedFor(request, parent.organizationPartyId(),
+                    candidate.roles().access(), request.dueMillis());
+            if (appointment == null || appointmentOf(candidate, appointment).role() != RoleAccess.Role.RISK_OFFICER) {
+                throw new IOException("风险暂停的原任职无效：" + halt.targetId());
+            }
+            RoleTradingModel.Halt expected = new RoleTradingModel.Halt(draft.haltId(), draft.targetId(),
+                    draft.expectedVersion(), draft.untilMillis(), draft.reason(), request.personPartyId(),
+                    appointment, request.dueMillis());
+            if (!halt.equals(expected)) {
+                throw new IOException("风险暂停与原请求不一致：" + halt.haltId());
+            }
+        }
+        if (after.targets().size() < before.targets().size()) {
+            throw new IOException("目标历史被删减");
+        }
+        for (int index = 0; index < before.targets().size(); index++) {
+            RoleTradingModel.Target old = before.targets().get(index);
+            RoleTradingModel.Target now = after.targets().get(index);
+            if (!old.targetId().equals(now.targetId())
+                    || old.organizationPartyId().equals("") || !old.organizationPartyId()
+                    .equals(now.organizationPartyId())
+                    || !old.productOwnerId().equals(now.productOwnerId())
+                    || !old.accountId().equals(now.accountId())
+                    || !old.symbol().equals(now.symbol())) {
+                throw new IOException("目标范围被改写：" + old.targetId());
+            }
+            requirePrefix(old.versions(), now.versions(), "目标版本");
+        }
+        Map<String, RoleTradingRun.Report> history = previous.trading().reports();
+        for (Map.Entry<String, RoleTradingRun.Report> entry : history.entrySet()) {
+            RoleTradingRun.Report now = reports.get(entry.getKey());
+            if (now == null || !now.equals(entry.getValue())) {
+                throw new IOException("交易回报历史被改写：" + entry.getKey());
+            }
+        }
+    }
+
+    private static boolean terminalStatus(RoleTradingModel.Status status) {
+        return status == RoleTradingModel.Status.CANCELLED
+                || status == RoleTradingModel.Status.EXPIRED
+                || status == RoleTradingModel.Status.COMPLETED;
+    }
+
+    private boolean hasPendingTargetTask(WorldState candidate, String kind, String target, int version,
+                                          long due) throws IOException {
+        for (PendingTask task : candidate.pending()) {
+            if (task.kind().equals(kind) && task.dueTimeMillis() == due) {
+                RoleSweepBody body = mapper.readValue(task.payload(), RoleSweepBody.class);
+                if (body.targetId().equals(target) && body.version() == version) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 系统待办须引用真实历史对象，期限与对应业务记录完全相同。 */
+    private void validateRoleTimers(WorldState candidate, RoleTradingModel.State trading) throws IOException {
+        for (PendingTask task : candidate.pending()) {
+            switch (task.kind()) {
+                case PendingTask.ROLE_TRADING_EXPIRE_V1 -> {
+                    RoleExpireBody body = mapper.readValue(task.payload(), RoleExpireBody.class);
+                    RoleTradingModel.Target target = timerTarget(trading, body.targetId(), body.version());
+                    long expected = target.versions().get(body.version() - 1).deadlineMillis();
+                    if (body.revision() != 0) {
+                        RoleTradingModel.RiskReview review = trading.reviews().stream().filter(item ->
+                                item.targetId().equals(body.targetId()) && item.targetVersion() == body.version()
+                                        && item.revision() == body.revision()).findFirst()
+                                .orElseThrow(() -> new IOException("到期待办引用未知审核：" + task.taskId()));
+                        expected = review.validUntilMillis();
+                    }
+                    if (task.dueTimeMillis() != expected) {
+                        throw new IOException("到期待办与业务期限不一致：" + task.taskId());
+                    }
+                }
+                case PendingTask.ROLE_TRADING_HALT_RELEASE_V1 -> {
+                    RoleHaltBody body = mapper.readValue(task.payload(), RoleHaltBody.class);
+                    timerTarget(trading, body.targetId(), body.version());
+                    boolean known = trading.halts().stream().anyMatch(halt ->
+                            halt.targetId().equals(body.targetId()) && halt.targetVersion() == body.version()
+                                    && halt.untilMillis() == task.dueTimeMillis());
+                    if (!known) {
+                        throw new IOException("暂停待办引用未知期限：" + task.taskId());
+                    }
+                }
+                case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> {
+                    RoleAppointmentBody body = mapper.readValue(task.payload(), RoleAppointmentBody.class);
+                    RoleAccess.Appointment appointment = appointmentOf(candidate, body.appointmentId());
+                    if (appointment == null || task.dueTimeMillis() != appointment.endsAt()) {
+                        throw new IOException("任职待办与原任期不一致：" + task.taskId());
+                    }
+                }
+                case PendingTask.ROLE_TRADING_SWEEP_V1 -> {
+                    RoleSweepBody body = mapper.readValue(task.payload(), RoleSweepBody.class);
+                    timerTarget(trading, body.targetId(), body.version());
+                }
+                default -> { }
+            }
+        }
+    }
+
+    private static RoleTradingModel.Target timerTarget(RoleTradingModel.State trading, String id,
+                                                        int version) throws IOException {
+        RoleTradingModel.Target target = RoleTradingModel.target(trading, id);
+        if (target == null || version < 1 || version > target.versions().size()) {
+            throw new IOException("系统待办引用未知目标版本：" + id);
+        }
+        return target;
+    }
+
+    /** 候选状态里是否仍排着指定 (target, version, revision) 的到期任务。 */
+    private boolean hasPendingExpiry(WorldState candidate, String targetId, int version,
+                                     int revision) {
+        for (PendingTask pending : candidate.pending()) {
+            if (!PendingTask.ROLE_TRADING_EXPIRE_V1.equals(pending.kind())) {
+                continue;
+            }
+            try {
+                RoleExpireBody body = mapper.readValue(pending.payload(), RoleExpireBody.class);
+                if (body.targetId().equals(targetId) && body.version() == version
+                        && body.revision() == revision) {
+                    return true;
+                }
+            } catch (IOException ignored) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasPendingAppointmentEnd(WorldState candidate, String appointmentId) {
+        for (PendingTask pending : candidate.pending()) {
+            if (!PendingTask.ROLE_TRADING_APPOINTMENT_END_V1.equals(pending.kind())) {
+                continue;
+            }
+            try {
+                RoleAppointmentBody body = mapper.readValue(pending.payload(),
+                        RoleAppointmentBody.class);
+                if (body.appointmentId().equals(appointmentId)) {
+                    return true;
+                }
+            } catch (IOException ignored) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** 前缀必须原样保留：历史只追加。 */
+    private static <T> void requirePrefix(List<T> before, List<T> after, String field)
+            throws IOException {
+        if (after.size() < before.size() || !after.subList(0, before.size()).equals(before)) {
+            throw new IOException(field + "历史被改写");
+        }
+    }
+
+    /** 新版本按创建批次的真实持仓核验，已有版本由历史前缀保护。 */
+    private void checkTargetHistory(RoleTradingModel.Target target, WorldState candidate,
+                                    WorldState previous) throws IOException {
+        RoleTradingModel.Target old = previous == null || previous.trading() == null ? null
+                : RoleTradingModel.target(previous.trading().trading(), target.targetId());
+        int known = old == null ? 0 : old.versions().size();
+        long held = RoleTradingModel.held(candidate.securities(), target.accountId(), target.symbol());
+        if (target.versions().size() > known) {
+            RoleTradingModel.TargetVersion expected;
+            if (known == 0) {
+                WorldRoleSession.TargetDraft draft = targetRequest(candidate, target, 0);
+                expected = new RoleTradingModel.TargetVersion(1, draft.absoluteTargetQuantity(),
+                        draft.priceLimit(), draft.deadlineMillis(), draft.sourceResearchId(), held,
+                        candidate.timeMillis());
+            } else {
+                RoleTradingModel.PendingUpdate pending = old.pending();
+                if (pending == null) {
+                    throw new IOException("新目标版本缺少原更新请求：" + target.targetId());
+                }
+                expected = new RoleTradingModel.TargetVersion(pending.version(),
+                        pending.absoluteTargetQuantity(), pending.priceLimit(), pending.deadlineMillis(),
+                        pending.sourceResearchId(), held, candidate.timeMillis());
+            }
+            if (!target.versions().subList(known, target.versions().size()).equals(List.of(expected))) {
+                throw new IOException("目标版本与原请求或实际持仓不一致：" + target.targetId());
+            }
+        }
+        if (target.pending() != null && (old == null || !target.pending().equals(old.pending()))) {
+            WorldRoleSession.TargetDraft draft = targetRequest(candidate, target, target.current().version());
+            RoleTradingModel.PendingUpdate expected = new RoleTradingModel.PendingUpdate(
+                    target.current().version() + 1, draft.absoluteTargetQuantity(), draft.priceLimit(),
+                    draft.deadlineMillis(), draft.sourceResearchId(), candidate.timeMillis());
+            if (!target.pending().equals(expected)) {
+                throw new IOException("目标更新与经理原请求不一致：" + target.targetId());
+            }
+        }
+    }
+
+    private WorldRoleSession.TargetDraft targetRequest(WorldState candidate,
+                                                       RoleTradingModel.Target target,
+                                                       int expectedVersion) throws IOException {
+        RoleActionPayload request = acceptedRoleRequest(candidate, PendingTask.ROLE_TRADING_TARGET_V1,
+                target.targetId());
+        WorldRoleSession.TargetDraft draft = mapper.readValue(request.body(), WorldRoleSession.TargetDraft.class);
+        String appointment = observedFor(request, target.organizationPartyId(),
+                candidate.roles().access(), request.dueMillis());
+        if (draft.expectedVersion() != expectedVersion
+                || !draft.organizationPartyId().equals(target.organizationPartyId())
+                || !draft.productOwnerId().equals(target.productOwnerId())
+                || !draft.accountId().equals(target.accountId()) || !draft.symbol().equals(target.symbol())
+                || appointment == null
+                || appointmentOf(candidate, appointment).role() != RoleAccess.Role.PORTFOLIO_MANAGER) {
+            throw new IOException("目标范围或经理任职与原请求不一致：" + target.targetId());
+        }
+        return draft;
+    }
+
+    /** 新增工作流记录必须来自本批已接受的同类人物动作。 */
+    private RoleActionPayload acceptedRoleRequest(WorldState candidate, String kind, String subject)
+            throws IOException {
+        for (RoleTradingRun.Report report : candidate.trading().reports().values()) {
+            if (report.position() == candidate.position() && report.accepted()
+                    && report.kind().equals(kind) && report.subjectId().equals(subject)) {
+                return roleRequest(candidate, report);
+            }
+        }
+        throw new IOException("工作流记录缺少本批原请求：" + subject);
+    }
+
+    /** 从唯一原命令核验人物回报的命名空间、动作、业务对象与到期时点。 */
+    private RoleActionPayload roleRequest(WorldState candidate, RoleTradingRun.Report report)
+            throws IOException {
+        String command = roleCommandId(report.personPartyId(), report.clientCommandId());
+        String content = candidate.commandContents().get(command);
+        if (content == null || !roleTaskId(report.personPartyId(), report.clientTaskId())
+                .equals(report.taskId())) {
+            throw new IOException("人物回报与原命令归属不一致：" + report.taskId());
+        }
+        RoleActionPayload request = mapper.readValue(content, RoleActionPayload.class);
+        if (!command.equals(request.commandId())
+                || !report.personPartyId().equals(request.personPartyId())
+                || !report.clientCommandId().equals(request.clientCommandId())
+                || !report.clientTaskId().equals(request.clientTaskId())
+                || !report.kind().equals(request.kind()) || report.timeMillis() != request.dueMillis()
+                || request.appointments() == null || request.body() == null) {
+            throw new IOException("人物回报与原请求不一致：" + report.taskId());
+        }
+        String field = switch (request.kind()) {
+            case PendingTask.ROLE_TRADING_READ_V1, PendingTask.ROLE_TRADING_UNREAD_V1 -> "docId";
+            case PendingTask.ROLE_TRADING_RESEARCH_V1 -> "researchId";
+            case PendingTask.ROLE_TRADING_CHILD_V1, PendingTask.ROLE_TRADING_CHILD_CANCEL_V1 -> "childId";
+            case PendingTask.ROLE_TRADING_TARGET_V1, PendingTask.ROLE_TRADING_REVIEW_V1,
+                 PendingTask.ROLE_TRADING_CONFIRM_V1, PendingTask.ROLE_TRADING_HALT_V1,
+                 PendingTask.ROLE_TRADING_CANCEL_V1 -> "targetId";
+            default -> throw new IOException("人物回报种类未登记：" + report.kind());
+        };
+        if (!report.subjectId().equals(mapper.readTree(request.body()).path(field).asText())) {
+            throw new IOException("人物回报与原业务对象不一致：" + report.taskId());
+        }
+        return request;
+    }
+
+    private static String researchTaskId(RoleTradingModel.Research note,
+                                         Map<String, RoleTradingRun.Report> reports) {
+        for (Map.Entry<String, RoleTradingRun.Report> entry : reports.entrySet()) {
+            if (entry.getValue().accepted() && entry.getValue().subjectId().equals(note.researchId())
+                    && PendingTask.ROLE_TRADING_RESEARCH_V1.equals(entry.getValue().kind())) {
+                return entry.getKey();
+            }
+        }
+        return "";
+    }
+
+    private static String orderOrganization(RoleTradingModel.State trading,
+                                            RoleTradingModel.ChildLink link) {
+        RoleTradingModel.Target target = RoleTradingModel.target(trading, link.targetId());
+        return target == null ? "" : target.organizationPartyId();
+    }
+
+    private static RoleAccess.Appointment appointmentOf(WorldState candidate, String appointmentId) {
+        if (candidate.roles() == null) {
+            return null;
+        }
+        for (RoleAccess.Appointment appointment : candidate.roles().access().appointments()) {
+            if (appointment.id().equals(appointmentId)) {
+                return appointment;
+            }
+        }
+        return null;
+    }
+
+    /** 开局：交易档案要求初始任职人具备已配置的信息读者能力。 */
+    private void validateTradingOpening() {
+        for (RoleAccess.Appointment appointment : roleConfig.appointments()) {
+            if (!informationConfig.readers().contains(appointment.personPartyId())) {
+                throw new IllegalArgumentException("四岗交易档案的初始任职人必须是登记读者："
+                        + appointment.personPartyId());
+            }
+        }
     }
 
     /**
