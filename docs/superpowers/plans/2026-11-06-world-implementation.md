@@ -428,3 +428,5 @@ M2.4a 共享纯撮合 → 审查/标准验收 → M2.4b 世界订单接入；制
 施工单见[分红纯核Plan](2026-11-06-dividend-core.md)。基线PR18文档071b4e9及代码/文档CI均成功。真实Hermes先交缺API RED，Codex裁决登记零应付、减值不减公司债务、完整Event及原请求幂等，再授新增DividendModel单文件。首稿604通过后独立核验取得8组恢复RED与金额Map规范化RED，最终43专项和616标准、GUI/CSV/JavaDoc、82独立检查及真实13帧Decimal复算通过。真实Hermes独审首稿4条缺口已纳入回归，最终hash复验进行中。D0只权利及清偿元数据，D1估值/TWR、D2授权、D3真实同批除息与付款为后续施工，M3整体仍未完成。
 
 D0最终candidate3的真实Hermes独审90/90通过，原4条发现全部修复，76源hash一致。本地验收完成，现发布草稿PR，随后接D1估值/TWR纯核。D0首稿与中间614项结果保留，最终标准为616项。
+
+分红纯核代码d2fb92607b24e5da893f6626bcd3525c52418cc3已建立[草稿PR #19](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/19)，base为codex/world-decision-audit（PR18）。远端verify run42204395506实际completed/success，已附当前会话，待人工实质review。下一阶段D1账户估值与时间加权收益纯核继续施工。

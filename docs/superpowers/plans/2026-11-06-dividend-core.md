@@ -34,7 +34,7 @@
 - [x] 全额清偿、缺/错证据、部分/超付/跨方案拒绝、减值不减债及付款转回有原事件链与反例。
 - [x] 完整原事件重放先于当前时间/终态，配置时序与JSON恢复/不可变性核验。
 - [x] Codex独立手算及真实Hermes独审，再标准GUI/CSV/JavaDoc、评分状态与运行记录更新。
-- [ ] 依赖PR18的AI-Generated草稿PR及实际CI，保留人工review门槛。
+- [x] 依赖PR18的AI-Generated草稿PR及实际CI，保留人工review门槛。
 
 D0纯核已通过本地验收，发布状态见末尾实施与接续。完整现金分红继续需要D1估值收益、D2授权及D3运行桥的同批除息参考/真实付款/故障与旧档案验证。
 ## D0测试核对及接口裁决
@@ -54,3 +54,5 @@ D0纯核已通过本地验收，发布状态见末尾实施与接续。完整现
 测试先行、生产单文件、完整Event/原请求及阶段历史修复和金额规范化已完成。最终candidate3共76生产源，原75逐字节不改。43专项、组合616标准、课程CSV46成交/130订单/7排名及JavaFX启动、JavaDoc18:35:18、Codex独立82检查和13帧Decimal复算已通过。真实Hermes首稿62检查有4条恢复发现，已加入回归，最终hash独审进行中。发布及最终审查结果在本节追加，实际公司出款和完整M3仍待D1–D3。
 
 最终真实Hermescandidate3独立重编译并核对76源hash，原62与新增28共90/90检查通过，原4条发现已消失且合法对照保留。只新增DividendModel，原75源逐字节相同。D0本地验收完成，当前建立依赖PR18的草稿PR，待实际CI及人工实质review。
+
+分红纯核代码d2fb92607b24e5da893f6626bcd3525c52418cc3已建立[草稿PR #19](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/19)，base为codex/world-decision-audit（PR18）。远端verify run42204395506实际completed/success，已附当前会话，待人工实质review。下一阶段D1账户估值与时间加权收益纯核继续施工。
