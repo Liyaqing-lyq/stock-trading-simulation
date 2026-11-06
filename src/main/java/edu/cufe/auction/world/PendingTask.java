@@ -7,8 +7,9 @@ package edu.cufe.auction.world;
  * 动作种类与动作参数。执行器由运行层按 {@link #kind()} 解析，因此进程重启后可以直接
  * 从日志重建待办，不需要重新构造闭包，也不会重跑已确认的动作。</p>
  *
- * <p>当前支持五类任务：现金转账与三类证券清算夹具动作（预留卖出、撤销预留、同批清算成交）
- * 都落在 COMPLETION 阶段；转账回报投递落在 DELIVERY 阶段。未登记的 kind 在构造期即被拒绝。</p>
+ * <p>当前支持八类任务：现金转账、回报投递、三类证券清算夹具动作（预留卖出、撤销预留、同批清算成交），
+ * 以及三类世界订单动作（下单、撤单、收盘）。业务动作都落在 COMPLETION 阶段，
+ * 转账回报投递落在 DELIVERY 阶段。未登记的 kind 在构造期即被拒绝。</p>
  *
  * @param taskId        运行内唯一任务标识，不复用
  * @param dueTimeMillis 到期的模拟毫秒，必须为正
@@ -34,6 +35,15 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 同批清算成交：受信的系统夹具，在 COMPLETION 阶段一次提交现金、股份与预留。 */
     public static final String FILL_SETTLE_V1 = "FILL_SETTLE_V1";
 
+    /** 世界下单：到期按最新簿与资格受理，形成订单/成交/现金/批次/预留。 */
+    public static final String EXCHANGE_ORDER_V1 = "EXCHANGE_ORDER_V1";
+
+    /** 世界撤单：到期撤销活动订单的剩余量并释放预留。 */
+    public static final String EXCHANGE_CANCEL_V1 = "EXCHANGE_CANCEL_V1";
+
+    /** 世界收盘：受信系统动作，撤销全簿并释放冻结。 */
+    public static final String EXCHANGE_CLOSE_V1 = "EXCHANGE_CLOSE_V1";
+
     /** 校验必需字段与 kind/phase 对应关系。 */
     public PendingTask {
         if (taskId == null || taskId.isBlank()) {
@@ -46,7 +56,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
             throw new IllegalArgumentException("任务阶段、种类与参数不能为空");
         }
         switch (kind) {
-            case CASH_TRANSFER_V1, SELL_RESERVE_V1, SELL_CANCEL_V1, FILL_SETTLE_V1 -> {
+            case CASH_TRANSFER_V1, SELL_RESERVE_V1, SELL_CANCEL_V1, FILL_SETTLE_V1,
+                 EXCHANGE_ORDER_V1, EXCHANGE_CANCEL_V1, EXCHANGE_CLOSE_V1 -> {
                 if (phase != WorldScheduler.Phase.COMPLETION) {
                     throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }

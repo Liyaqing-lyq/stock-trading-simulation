@@ -7,9 +7,10 @@ import java.util.TreeMap;
 /**
  * 扩展世界的运行清单：把运行、规则、模块、资料与模型版本在开局第一个提交里固定下来。
  *
- * <p>当前启用三种明确组合：纯现金、现金 + 开局登记、现金 + 开局登记 + 证券清算夹具。
- * 模块表与规则档案一一对应（现金 {@code {cash:1, scheduler:1}}、登记再加 {@code registry:1}、
- * 证券再加 {@code securities:1}），模型版本必须是 {@link #MODEL_NONE}。
+ * <p>当前启用四种明确组合：纯现金、现金 + 开局登记、现金 + 开局登记 + 证券清算夹具、
+ * 现金 + 开局登记 + 证券台账 + 世界订单撮合。模块表与规则档案一一对应（现金
+ * {@code {cash:1, scheduler:1}}、登记再加 {@code registry:1}、证券再加 {@code securities:1}、
+ * 撮合再加 {@code matching:1}），模型版本必须是 {@link #MODEL_NONE}。
  * 任何未启用的能力在构造期就被拒绝，避免运行到一半才发现缺少实现。</p>
  *
  * @param runId              运行标识；同一日志文件只能对应同一运行
@@ -34,6 +35,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String RULES_SECURITIES_CLEARING_EXPERIMENT_V1 =
             "securities-clearing-experiment-v1";
 
+    /** 现金 + 开局登记 + 证券台账 + 世界订单撮合（M2.4b 新增的明确组合）。 */
+    public static final String RULES_SECURITIES_MATCHING_EXPERIMENT_V1 =
+            "securities-matching-experiment-v1";
+
     /** 未接入模型时使用的模型配置版本。 */
     public static final String MODEL_NONE = "none";
 
@@ -55,6 +60,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("securities");
     }
 
+    /**
+     * 是否启用世界订单撮合模块。
+     *
+     * @return 模块表包含 matching 时返回 true
+     */
+    public boolean hasMatching() {
+        return moduleVersions.containsKey("matching");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -62,10 +76,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         }
         if (!RULES_CASH_WORLD_V1.equals(rulesVersion)
                 && !RULES_CASH_REGISTRY_WORLD_V1.equals(rulesVersion)
-                && !RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
-                    + "、" + RULES_CASH_REGISTRY_WORLD_V1 + " 或 "
-                    + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "，收到 " + rulesVersion);
+                    + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
+                    + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + " 或 "
+                    + RULES_SECURITIES_MATCHING_EXPERIMENT_V1 + "，收到 " + rulesVersion);
         }
         Map<String, Integer> modules = new TreeMap<>();
         if (moduleVersions != null) {
@@ -80,11 +96,16 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         expected.put("cash", 1);
         expected.put("scheduler", 1);
         if (RULES_CASH_REGISTRY_WORLD_V1.equals(rulesVersion)
-                || RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)) {
+                || RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("registry", 1);
         }
-        if (RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)) {
+        if (RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("securities", 1);
+        }
+        if (RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)) {
+            expected.put("matching", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "
