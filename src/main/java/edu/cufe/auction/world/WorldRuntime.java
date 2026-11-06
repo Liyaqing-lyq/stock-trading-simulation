@@ -37,10 +37,10 @@ import java.util.TreeMap;
  * 恢复出来的是“待办数据”，执行器由 {@link #advanceTo(long)} 按 kind 解析。</p>
  *
  * <p><b>能力边界</b>：当前只启用现金转账、回报投递，以及可选的开局登记、证券清算夹具
- * （批次、卖出冻结、撤销、同批清算成交）与世界订单撮合（限价/市价、T+1 实验日、撤单、收盘）。
- * 撮合档案下现金冻结由活动买限价单派生、卖单预留由批次台账唯一维护；仍没有角色交易授权、
- * 费用、涨跌停、手数或真实交易日历。规则、模块、模型版本在构造期校验，未启用能力在提交前
- * 即被拒绝。快照是管理端只读视图，不面向不可信角色。</p>
+ * （批次、卖出冻结、撤销、同批清算成交）、世界订单撮合（限价/市价、T+1 实验日、撤单、收盘）、
+ * 制造经营与董事会治理（仅受信管理夹具）。撮合档案下现金冻结由活动买限价单派生、卖单预留由
+ * 批次台账唯一维护；仍没有角色交易授权、费用、涨跌停、手数或真实交易日历。规则、模块、模型
+ * 版本在构造期校验，未启用能力在提交前即被拒绝。快照是管理端只读视图，不面向不可信角色。</p>
  */
 public final class WorldRuntime implements AutoCloseable {
 
@@ -54,6 +54,17 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_EXCHANGE = 3;
     /** 含完整制造经营子集状态的世界状态版本（M3a.2）。 */
     private static final int STATE_SCHEMA_MANUFACTURING = 4;
+    /** 含完整董事会治理子集状态的世界状态版本（M3b.2）。 */
+    private static final int STATE_SCHEMA_GOVERNANCE = 5;
+
+    /** 未实施有效预算时拒绝采购/投产。 */
+    public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
+    /** 预算可用额不足，候选业务整体丢弃。 */
+    public static final String REASON_BUDGET_EXCEEDED = BoardModel.REASON_BUDGET_EXCEEDED;
+    /** 预算行指向已关期间：不得事后授权或实施。 */
+    public static final String REASON_BUDGET_PERIOD_CLOSED = "BUDGET_PERIOD_CLOSED";
+    /** 显式座位不是该会议到会且未回避的成员。 */
+    public static final String REASON_NOT_ELIGIBLE_SEAT = "NOT_ELIGIBLE_SEAT";
 
     /** 公司经营账户不能通过普通转账绕过经营分录。 */
     public static final String REASON_COMPANY_LEDGER_FORBIDDEN = "COMPANY_LEDGER_FORBIDDEN";
@@ -80,6 +91,8 @@ public final class WorldRuntime implements AutoCloseable {
     private final OpeningRegistry registry;
     /** 制造开局配置；只有 stock-company-experiment-v1 档案非空。 */
     private final ManufacturingRun.Config manufacturingConfig;
+    /** 董事会章程；只有 governed-stock-company-experiment-v1 档案非空。 */
+    private final BoardModel.Charter charter;
     private final long seed;
     private final WorldJournal journal;
     private final Thread writerThread = Thread.currentThread();
@@ -118,6 +131,7 @@ public final class WorldRuntime implements AutoCloseable {
      * @param securities  证券子集；未启用时为空
      * @param exchange    世界订单/成交子集；仅撮合档案存在
      * @param manufacturing 制造经营子集；仅 stock-company-experiment-v1 存在
+     * @param governance    董事会治理子集；仅 governed-stock-company-experiment-v1 存在
      * @param pending     未完成待办（不可变）
      * @param delivered   已投递回报（不可变）
      * @param usedTaskIds 已用任务标识（不可变）
@@ -127,6 +141,7 @@ public final class WorldRuntime implements AutoCloseable {
                            Optional<SecuritiesLedger.State> securities,
                            Optional<WorldExchange.State> exchange,
                            Optional<ManufacturingRun> manufacturing,
+                           Optional<BoardRun> governance,
                            List<PendingTask> pending, List<Notice> delivered,
                            Set<String> usedTaskIds) {
         /** 防御性冻结所有集合。 */
@@ -135,6 +150,7 @@ public final class WorldRuntime implements AutoCloseable {
             securities = Objects.requireNonNull(securities, "securities");
             exchange = Objects.requireNonNull(exchange, "exchange");
             manufacturing = Objects.requireNonNull(manufacturing, "manufacturing");
+            governance = Objects.requireNonNull(governance, "governance");
             pending = List.copyOf(pending);
             delivered = List.copyOf(delivered);
             usedTaskIds = Collections.unmodifiableSet(new LinkedHashSet<>(usedTaskIds));
@@ -235,6 +251,14 @@ public final class WorldRuntime implements AutoCloseable {
     private record ManufacturingChildPayload(String commandId, String businessId, long period) {
     }
 
+    /** 外部治理命令的规范内容与任务参数；无效字段保持空串/0，便于稳定序列化。 */
+    private record GovernancePayload(String commandId, String seatId, String meetingId,
+                                     long materialDeadline, long opensAt, long closesAt,
+                                     List<String> attendeeSeatIds, List<String> recusedSeatIds,
+                                     String materialId, String sourceRef, long version,
+                                     List<BoardModel.BudgetLine> lines, String vote) {
+    }
+
     /** 完整不可变子集状态；每批提交保存一份，恢复逐批校验后取最后一份。 */
     private record WorldState(int schemaVersion, String runId, long position, long timeMillis,
                               String lastPhase, Map<String, CashLedger.CashAccount> accounts,
@@ -246,7 +270,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               WorldExchange.State exchange,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              ManufacturingRun manufacturing) {
+                              ManufacturingRun manufacturing,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              BoardRun governance) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -285,7 +311,28 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
                         OpeningRegistry registry) throws IOException {
-        this(file, manifest, openings, registry, null);
+        this(file, manifest, openings, registry, null, null);
+    }
+
+    /**
+     * 打开或恢复一次公司经营档案（{@code stock-company-experiment-v1}）。
+     *
+     * <p>配置与模块必须成对：manufacturing 清单缺配置、或旧档案多带配置都在创建任何文件之前拒绝。
+     * 开局还要在写盘前确认：公司财产主体登记为 ORGANIZATION、其组织就是证券发行人、
+     * 公司只有一个经营现金账户（含零余额）、公司没有持股/库存股等未建模资产。
+     * 配置会绑进第一批开局内容，换一套配置重开同一日志会在恢复期被拒绝。</p>
+     *
+     * @param file          运行日志（本类独占）
+     * @param manifest      运行清单
+     * @param openings      现金开局清单
+     * @param registry      开局登记，制造档案必需
+     * @param manufacturing 制造开局配置；旧档案为 null
+     * @throws IOException 日志不可用、清单/开局/登记/配置与持久记录不一致
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                        OpeningRegistry registry, ManufacturingRun.Config manufacturing)
+            throws IOException {
+        this(file, manifest, openings, registry, manufacturing, null);
     }
 
     /**
@@ -301,11 +348,12 @@ public final class WorldRuntime implements AutoCloseable {
      * @param openings      现金开局清单
      * @param registry      开局登记，制造档案必需
      * @param manufacturing 制造开局配置；旧档案为 null
+     * @param charter       董事会章程；只有治理档案非空
      * @throws IOException 日志不可用、清单/开局/登记/配置与持久记录不一致
      */
     public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
-                        OpeningRegistry registry, ManufacturingRun.Config manufacturing)
-            throws IOException {
+                        OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                        BoardModel.Charter charter) throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         if (manifest.hasRegistry() && registry == null) {
             throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
@@ -322,8 +370,21 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未启用制造模块的运行不接受制造配置："
                     + manifest.rulesVersion());
         }
+        if (manifest.hasGovernance() && charter == null) {
+            throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                    + " 必须提供董事会章程");
+        }
+        if (!manifest.hasGovernance() && charter != null) {
+            throw new IllegalArgumentException("未启用治理模块的运行不接受董事会章程："
+                    + manifest.rulesVersion());
+        }
+        if (manifest.hasGovernance() && !manifest.hasManufacturing()) {
+            throw new IllegalArgumentException("治理档案必须同时启用制造经营模块："
+                    + manifest.rulesVersion());
+        }
         this.registry = registry;
         this.manufacturingConfig = manufacturing;
+        this.charter = charter;
         this.seed = manifest.seed();
         List<OpeningAccount> ordered = new ArrayList<>(Objects.requireNonNull(openings, "openings"));
         ordered.sort(Comparator.comparing(OpeningAccount::accountId));
@@ -345,6 +406,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (manufacturingConfig != null) {
             // 开局错误必须在写盘前拒绝：组织映射、发行人、公司第二账户、公司持股
             validateManufacturingOpening(ordered);
+        }
+        if (charter != null) {
+            // 章程组织/五席/登记人物在写盘前拒绝
+            validateGovernanceOpening();
         }
         WorldState initial = initialState(accounts);
         this.journal = new WorldJournal(file, manifest.runId());
@@ -799,6 +864,245 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 外部治理夹具：排程召集一次预算会议。到期才真正召集，并与自动开会待办同批提交。
+     *
+     * <p>这是受信管理夹具：显式 chairSeatId 只是身份声明，不是 LLM/真实用户身份认证。
+     * 只接受 BUDGET；经营复盘会议只由制造强制关期的固定证据产生。时序要求
+     * {@code due ≤ materialDeadline < opensAt < closesAt}，相邻至少 1 模拟毫秒。</p>
+     *
+     * @param commandId        外部命令标识，重发返回原回报
+     * @param taskId           任务标识，运行内不复用
+     * @param dueTimeMillis    召集到期，必须晚于当前时点
+     * @param chairSeatId      声明的主席席位，必须等于章程主席
+     * @param meetingId        会议标识；与已有会议同名时到期形成业务拒绝
+     * @param materialDeadline 材料截止
+     * @param opensAt          开会时刻
+     * @param closesAt         表决截止（不含）
+     * @param attendeeSeatIds  到会席位（合成夹具事实）
+     * @param recusedSeatIds   回避席位，必须是到会子集
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、权属、能力或时间非法
+     */
+    public synchronized String scheduleBoardMeeting(String commandId, String taskId,
+                                                    long dueTimeMillis, String chairSeatId,
+                                                    String meetingId, long materialDeadline,
+                                                    long opensAt, long closesAt,
+                                                    List<String> attendeeSeatIds,
+                                                    List<String> recusedSeatIds)
+            throws IOException {
+        requireGovernanceEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(chairSeatId, "召集席位");
+        requireText(meetingId, "会议标识");
+        if (!charter.chairSeatId().equals(chairSeatId)) {
+            throw new IllegalArgumentException("只有章程主席可以召集会议：" + chairSeatId);
+        }
+        List<String> attendees = List.copyOf(Objects.requireNonNull(attendeeSeatIds, "到会席位"));
+        List<String> recused = List.copyOf(Objects.requireNonNull(recusedSeatIds, "回避席位"));
+        for (String seat : attendees) {
+            if (!charter.hasSeat(seat)) {
+                throw new IllegalArgumentException("到会席位不在章程中：" + seat);
+            }
+        }
+        for (String seat : recused) {
+            if (!attendees.contains(seat)) {
+                throw new IllegalArgumentException("回避席位必须是到会席位子集：" + seat);
+            }
+        }
+        if (materialDeadline < dueTimeMillis) {
+            throw new IllegalArgumentException("材料截止不得早于召集到期：" + materialDeadline);
+        }
+        requireMinGap(materialDeadline, opensAt, "材料截止", "开会");
+        requireMinGap(opensAt, closesAt, "开会", "表决截止");
+        GovernancePayload payload = new GovernancePayload(commandId, chairSeatId, meetingId,
+                materialDeadline, opensAt, closesAt, attendees, recused, "", "", 0L, List.of(), "");
+        return scheduleGovernanceTask(commandId, taskId, dueTimeMillis,
+                PendingTask.GOVERNANCE_MEETING_V1, payload);
+    }
+
+    /**
+     * 外部治理夹具：向会议提交材料。到期复核声明席位是否到会且未回避；被拒绝不覆盖旧材料。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识
+     * @param dueTimeMillis 到期，必须晚于当前时点
+     * @param seatId        声明席位
+     * @param meetingId     会议标识
+     * @param materialId    会议内材料标识
+     * @param sourceRef     来源引用
+     * @param version       材料版本，必须为正
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、权属或能力非法
+     */
+    public synchronized String scheduleBoardMaterial(String commandId, String taskId,
+                                                     long dueTimeMillis, String seatId,
+                                                     String meetingId, String materialId,
+                                                     String sourceRef, long version)
+            throws IOException {
+        requireGovernanceEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireSeat(seatId);
+        requireText(meetingId, "会议标识");
+        requireText(materialId, "材料标识");
+        requireText(sourceRef, "材料来源引用");
+        if (version <= 0) {
+            throw new IllegalArgumentException("材料版本必须为正：" + version);
+        }
+        GovernancePayload payload = new GovernancePayload(commandId, seatId, meetingId,
+                0L, 0L, 0L, List.of(), List.of(), materialId, sourceRef, version,
+                List.of(), "");
+        return scheduleGovernanceTask(commandId, taskId, dueTimeMillis,
+                PendingTask.GOVERNANCE_MATERIAL_V1, payload);
+    }
+
+    /**
+     * 外部治理夹具：提出预算请求行。空提案在开会时不能进入表决，到截止必须形成明确拒绝。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识
+     * @param dueTimeMillis 到期，必须晚于当前时点
+     * @param seatId        声明席位
+     * @param meetingId     会议标识
+     * @param lines         预算请求行（绝对新上限）
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、权属或能力非法
+     */
+    public synchronized String scheduleBudgetProposal(String commandId, String taskId,
+                                                      long dueTimeMillis, String seatId,
+                                                      String meetingId,
+                                                      List<BoardModel.BudgetLine> lines)
+            throws IOException {
+        requireGovernanceEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireSeat(seatId);
+        requireText(meetingId, "会议标识");
+        List<BoardModel.BudgetLine> budgetLines = List.copyOf(
+                Objects.requireNonNull(lines, "预算请求行"));
+        GovernancePayload payload = new GovernancePayload(commandId, seatId, meetingId,
+                0L, 0L, 0L, List.of(), List.of(), "", "", 0L, budgetLines, "");
+        return scheduleGovernanceTask(commandId, taskId, dueTimeMillis,
+                PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1, payload);
+    }
+
+    /**
+     * 外部治理夹具：对应席位投票。到期按会议真实到会/回避与表决窗口复核；
+     * 反对、弃权与回避都作为证据保留。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识
+     * @param dueTimeMillis 到期，必须晚于当前时点
+     * @param seatId        声明席位
+     * @param meetingId     会议标识
+     * @param vote          选择
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、权属或能力非法
+     */
+    public synchronized String scheduleBoardVote(String commandId, String taskId,
+                                                 long dueTimeMillis, String seatId,
+                                                 String meetingId, BoardModel.Vote vote)
+            throws IOException {
+        requireGovernanceEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireSeat(seatId);
+        requireText(meetingId, "会议标识");
+        Objects.requireNonNull(vote, "投票选择");
+        GovernancePayload payload = new GovernancePayload(commandId, seatId, meetingId,
+                0L, 0L, 0L, List.of(), List.of(), "", "", 0L, List.of(), vote.name());
+        return scheduleGovernanceTask(commandId, taskId, dueTimeMillis,
+                PendingTask.GOVERNANCE_VOTE_V1, payload);
+    }
+
+    /**
+     * 外部治理夹具：实施已通过的预算决议。ADOPTED 本身不授予预算；这里成功后才改上限，
+     * 且只能成功一次。同一命令重发返回原回报，换命令也不会重复实施。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识
+     * @param dueTimeMillis 到期，必须晚于当前时点且不早于关会
+     * @param seatId        声明席位（必须是章程成员）
+     * @param meetingId     会议标识
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、权属或能力非法
+     */
+    public synchronized String scheduleBudgetImplementation(String commandId, String taskId,
+                                                            long dueTimeMillis, String seatId,
+                                                            String meetingId) throws IOException {
+        requireGovernanceEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireSeat(seatId);
+        requireText(meetingId, "会议标识");
+        GovernancePayload payload = new GovernancePayload(commandId, seatId, meetingId,
+                0L, 0L, 0L, List.of(), List.of(), "", "", 0L, List.of(), "");
+        return scheduleGovernanceTask(commandId, taskId, dueTimeMillis,
+                PendingTask.GOVERNANCE_IMPLEMENT_V1, payload);
+    }
+
+    /** 治理排程共用：内容幂等、时点/标识校验与同批持久提交。 */
+    private String scheduleGovernanceTask(String commandId, String taskId, long dueTimeMillis,
+                                          String kind, GovernancePayload payload)
+            throws IOException {
+        String content = mapper.writeValueAsString(payload);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        PendingTask task = new PendingTask(taskId, dueTimeMillis,
+                WorldScheduler.Phase.COMPLETION, kind, content);
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /** 声明席位必须是章程成员；到会/回避在到期时按会议复核。 */
+    private void requireSeat(String seatId) {
+        requireText(seatId, "席位");
+        if (!charter.hasSeat(seatId)) {
+            throw new IllegalArgumentException("席位不在章程中：" + seatId);
+        }
+    }
+
+    /** 已知后续时点必须至少晚 1ms，且加法不得溢出。 */
+    private static void requireMinGap(long earlier, long later, String earlierName,
+                                      String laterName) {
+        long minimum;
+        try {
+            minimum = Math.addExact(earlier, 1L);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(earlierName + " 时点已无法再取下一毫秒", overflow);
+        }
+        if (later < minimum) {
+            throw new IllegalArgumentException(laterName + " 必须至少比" + earlierName
+                    + "晚 1 毫秒：" + later + " / " + earlier);
+        }
+    }
+
+    /**
      * 排程一次采购下单：只允许受信管理夹具为公司排程，到期才形成采购承诺。
      *
      * <p>采购到货固定为到期后 1 个实验日，因此这里先拒绝 {@code due + 1 日} 溢出的排程，
@@ -1047,6 +1351,14 @@ public final class WorldRuntime implements AutoCloseable {
                          PendingTask.MANUFACTURING_BATCH_COMPLETION_V1,
                          PendingTask.MANUFACTURING_AUTO_COLLECTION_V1 -> completeManufacturingChild(next);
                     case PendingTask.MANUFACTURING_PERIOD_CLOSE_V1 -> completePeriodClose(next);
+                    case PendingTask.GOVERNANCE_MEETING_V1,
+                         PendingTask.GOVERNANCE_MATERIAL_V1,
+                         PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1,
+                         PendingTask.GOVERNANCE_VOTE_V1,
+                         PendingTask.GOVERNANCE_IMPLEMENT_V1 -> completeGovernance(next);
+                    case PendingTask.BOARD_OPEN_V1 -> completeBoardOpen(next);
+                    case PendingTask.BOARD_CLOSE_V1 -> completeBoardClose(next);
+                    case PendingTask.BOARD_REVIEW_V1 -> completeBoardReview(next);
                     default -> throw new IllegalStateException("未启用的任务种类：" + next.kind());
                 }
             }
@@ -1072,6 +1384,7 @@ public final class WorldRuntime implements AutoCloseable {
         return new Snapshot(state.position(), state.timeMillis(), state.lastPhase(),
                 state.accounts(), Optional.ofNullable(state.securities()),
                 Optional.ofNullable(state.exchange()), Optional.ofNullable(state.manufacturing()),
+                Optional.ofNullable(state.governance()),
                 state.pending(), state.delivered(), state.usedTaskIds());
     }
 
@@ -1437,8 +1750,25 @@ public final class WorldRuntime implements AutoCloseable {
         String owner = ledger.opening().companyOwnerId();
         Map<String, CashLedger.CashAccount> accounts = state.accounts();
         BigDecimal companyFree = availableCash(ledger.opening().companyAccountId(), accounts);
+        if (charter != null
+                && (PendingTask.MANUFACTURING_PURCHASE_ORDER_V1.equals(task.kind())
+                || PendingTask.MANUFACTURING_PRODUCTION_V1.equals(task.kind()))) {
+            BoardModel.BudgetCategory category = PendingTask.MANUFACTURING_PURCHASE_ORDER_V1
+                    .equals(task.kind()) ? BoardModel.BudgetCategory.PROCUREMENT
+                    : BoardModel.BudgetCategory.PRODUCTION_LABOR;
+            long period = now / ManufacturingModel.PERIOD_MILLIS;
+            if (requireGovernanceRun().board().budget(period, category) == null) {
+                // 没有已实施的有效上限：在跑纯候选之前就明确拒绝，保证无库存/现金也能报预算原因
+                ManufacturingModel.Outcome rejected = new ManufacturingModel.Outcome(false,
+                        REASON_BUDGET_NOT_SET, ledger, accounts);
+                finishManufacturingTask(task, payload.commandId(), rejected, List.of(),
+                        payload.businessId(), ZERO, List.of(), null);
+                return;
+            }
+        }
         ManufacturingModel.Outcome outcome;
         ManufacturingChild child = null;
+        BoardModel.State boardCandidate = null;
         BigDecimal amount = ZERO;
         String from = ledger.opening().companyAccountId();
         String to = ledger.opening().supplierAccountId();
@@ -1447,6 +1777,17 @@ public final class WorldRuntime implements AutoCloseable {
             case PendingTask.MANUFACTURING_PURCHASE_ORDER_V1 -> {
                 outcome = ManufacturingModel.placePurchaseOrder(ledger, now, owner,
                         payload.businessId(), payload.quantity(), accounts);
+                if (outcome.accepted() && charter != null) {
+                    BoardModel.Outcome reserved = reservePurchaseBudget(now, payload.businessId(),
+                            payload.quantity());
+                    if (!reserved.accepted()) {
+                        // 预算不成立：整体丢弃纯核候选，不增 PO/usedId/child/现金
+                        outcome = new ManufacturingModel.Outcome(false, reserved.reason(), ledger,
+                                accounts);
+                    } else {
+                        boardCandidate = reserved.state();
+                    }
+                }
                 if (outcome.accepted()) {
                     ManufacturingModel.PurchaseOrder order =
                             outcome.state().purchaseOrders().get(payload.businessId());
@@ -1458,6 +1799,16 @@ public final class WorldRuntime implements AutoCloseable {
             case PendingTask.MANUFACTURING_PRODUCTION_V1 -> {
                 outcome = ManufacturingModel.startProduction(ledger, now, owner,
                         payload.businessId(), payload.quantity(), companyFree, accounts);
+                if (outcome.accepted() && charter != null) {
+                    BoardModel.Outcome reserved = reserveLaborBudget(now, payload.businessId(),
+                            payload.quantity());
+                    if (!reserved.accepted()) {
+                        outcome = new ManufacturingModel.Outcome(false, reserved.reason(), ledger,
+                                accounts);
+                    } else {
+                        boardCandidate = reserved.state();
+                    }
+                }
                 if (outcome.accepted()) {
                     ManufacturingModel.ProductionBatch batch =
                             outcome.state().productionBatches().get(payload.businessId());
@@ -1506,8 +1857,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (!outcome.accepted()) {
             amount = ZERO;
         }
-        finishManufacturingTask(task, payload.commandId(), outcome, child, reportBusiness, amount,
-                effects);
+        finishManufacturingTask(task, payload.commandId(), outcome,
+                child == null ? List.of() : List.of(child), reportBusiness, amount, effects,
+                boardCandidate == null ? null
+                        : requireGovernanceRun().withBoard(boardCandidate));
     }
 
     /**
@@ -1523,6 +1876,7 @@ public final class WorldRuntime implements AutoCloseable {
         Map<String, CashLedger.CashAccount> accounts = state.accounts();
         ManufacturingModel.Outcome outcome;
         BigDecimal amount = ZERO;
+        BoardModel.State boardCandidate = null;
         String from;
         String to;
         switch (task.kind()) {
@@ -1535,6 +1889,20 @@ public final class WorldRuntime implements AutoCloseable {
                 outcome = ManufacturingModel.receivePurchaseOrder(ledger, now, owner,
                         payload.businessId(),
                         availableCash(ledger.opening().companyAccountId(), accounts), accounts);
+                if (outcome.accepted() && charter != null) {
+                    BoardModel.Outcome spent = BoardModel.spendBudget(requireGovernanceRun().board(),
+                            now, "po:" + payload.businessId(), due);
+                    if (!spent.accepted()) {
+                        throw new IllegalStateException("到货付款成功但预算承诺无法转已花："
+                                + payload.businessId() + " / " + spent.reason());
+                    }
+                    boardCandidate = spent.state();
+                } else if (!outcome.accepted() && charter != null
+                        && outcome.state().purchaseOrders().get(payload.businessId()) != null
+                        && outcome.state().purchaseOrders().get(payload.businessId()).status()
+                        == ManufacturingModel.PurchaseOrderStatus.FAILED_NO_CASH) {
+                    boardCandidate = releasePurchaseBudget(now, payload.businessId());
+                }
                 amount = outcome.accepted() ? due : ZERO;
                 from = ledger.opening().companyAccountId();
                 to = ledger.opening().supplierAccountId();
@@ -1559,8 +1927,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (!outcome.accepted()) {
             amount = ZERO;
         }
-        finishManufacturingTask(task, payload.commandId(), outcome, null, payload.businessId(),
-                amount, effects);
+        finishManufacturingTask(task, payload.commandId(), outcome, List.of(),
+                payload.businessId(), amount, effects,
+                boardCandidate == null ? null
+                        : requireGovernanceRun().withBoard(boardCandidate));
     }
 
     /**
@@ -1588,7 +1958,8 @@ public final class WorldRuntime implements AutoCloseable {
         List<WorldEvent> effects = outcome.accepted() && amount.signum() > 0
                 ? cashTransferred(task, ledger.opening().companyAccountId(),
                         ledger.opening().opsAccountId(), amount, billId) : List.of();
-        ManufacturingChild next = null;
+        List<ManufacturingChild> children = new ArrayList<>();
+        BoardRun boardCandidate = null;
         if (outcome.accepted()) {
             long period = outcome.state().closedPeriods();
             long due;
@@ -1598,13 +1969,326 @@ public final class WorldRuntime implements AutoCloseable {
                 due = -1L;
             }
             if (due > now) {
-                next = new ManufacturingChild(PendingTask.MANUFACTURING_PERIOD_CLOSE_V1,
+                children.add(new ManufacturingChild(PendingTask.MANUFACTURING_PERIOD_CLOSE_V1,
                         WorldScheduler.Phase.RULES, "mfg-close:", due, String.valueOf(period),
-                        period);
+                        period));
+            }
+            if (charter != null) {
+                boardCandidate = capturePeriodReview(payload.period(), now,
+                        state.position() + 1, outcome.state(), outcome.accounts(), children);
             }
         }
         finishManufacturingTask(task, SYSTEM_COMMAND_PREFIX + "close-period:" + payload.period(),
-                outcome, next, bill == null ? "" : billId, amount, effects);
+                outcome, children, bill == null ? "" : billId, amount, effects, boardCandidate);
+    }
+
+    /**
+     * 强制关期同批捕捉本截止的真实证据：建立期间唯一 OPERATING_REVIEW 会议、登记三份材料、
+     * 计算客观三项分，并排下一毫秒的开会与评分任务。
+     *
+     * <p>证据只从本批关期台账与账户现算，之后不再读取更晚快照重算；披露与长期投入当前无实现，
+     * 因此不会生成这两项，总分恒为空。自动登记材料不等于任何人物已经阅读。</p>
+     */
+    private BoardRun capturePeriodReview(long period, long capturedAt, long position,
+                                         ManufacturingModel.State ledger,
+                                         Map<String, CashLedger.CashAccount> accounts,
+                                         List<ManufacturingChild> children) throws IOException {
+        BoardRun run = requireGovernanceRun();
+        long opensAt = Math.addExact(capturedAt, 1L);
+        long closesAt = Math.addExact(opensAt, 1L);
+        String meetingId = freeMeetingId(run.board(), "review:" + period);
+        BoardModel.MeetingRequest request = new BoardModel.MeetingRequest(meetingId,
+                BoardModel.Topic.OPERATING_REVIEW, charter.chairSeatId(), capturedAt,
+                opensAt, closesAt, seatIds(), List.of());
+        BoardModel.Outcome convened = BoardModel.convene(run.board(), capturedAt, request);
+        if (!convened.accepted()) {
+            throw new IllegalStateException("期间复盘会议无法建立：" + period + " / "
+                    + convened.reason());
+        }
+        String reportSource = "period:" + period + ":report:" + position;
+        String contractSource = "period:" + period + ":contracts:" + position;
+        String receivableSource = "period:" + period + ":receivables:" + position;
+        BoardModel.Outcome reviewed = convened;
+        reviewed = addPeriodMaterial(reviewed, capturedAt, meetingId, "period-report",
+                reportSource);
+        reviewed = addPeriodMaterial(reviewed, capturedAt, meetingId, "period-contracts",
+                contractSource);
+        reviewed = addPeriodMaterial(reviewed, capturedAt, meetingId, "period-receivables",
+                receivableSource);
+        BoardRun.PeriodEvidence evidence = periodEvidence(period, capturedAt, position,
+                meetingId, reportSource, contractSource, receivableSource, ledger, accounts);
+        children.add(new ManufacturingChild(PendingTask.BOARD_OPEN_V1,
+                WorldScheduler.Phase.RULES, "board-open:", opensAt, meetingId, -1L));
+        children.add(new ManufacturingChild(PendingTask.BOARD_REVIEW_V1,
+                WorldScheduler.Phase.COMPLETION, "board-review:", opensAt, meetingId, period));
+        return run.withBoard(reviewed.state()).withPeriodEvidence(evidence);
+    }
+
+    private BoardModel.Outcome addPeriodMaterial(BoardModel.Outcome state, long now,
+                                                String meetingId, String materialId,
+                                                String sourceRef) {
+        BoardModel.Outcome added = BoardModel.addMaterial(state.state(), now, meetingId,
+                new BoardModel.MaterialRef(materialId, sourceRef, 1L, now));
+        if (!added.accepted()) {
+            throw new IllegalStateException("期间材料无法登记：" + materialId + " / "
+                    + added.reason());
+        }
+        return added;
+    }
+
+    /** 按冻结规则计算本期三项客观分；缺项保留 null，不用 0 补齐。 */
+    private BoardRun.PeriodEvidence periodEvidence(long period, long capturedAt, long position,
+                                                   String meetingId, String reportSource,
+                                                   String contractSource,
+                                                   String receivableSource,
+                                                   ManufacturingModel.State ledger,
+                                                   Map<String, CashLedger.CashAccount> accounts) {
+        long committed = 0L;
+        long delivered = 0L;
+        List<String> contractIds = new ArrayList<>();
+        for (ManufacturingModel.SalesContract contract : ledger.contracts().values()) {
+            if (contract.period() == period && contract.promisedDeliveryAt() <= capturedAt) {
+                committed = Math.addExact(committed, contract.quantity());
+                delivered = Math.addExact(delivered, contract.deliveredQuantity());
+                contractIds.add(contract.contractId());
+            }
+        }
+        BigDecimal operating = committed == 0 ? null : BigDecimal.valueOf(delivered)
+                .multiply(new BigDecimal("100"))
+                .divide(BigDecimal.valueOf(committed), 2, java.math.RoundingMode.HALF_UP);
+        contractIds.sort(String::compareTo);
+
+        BigDecimal payable = BigDecimal.ZERO.setScale(2);
+        for (ManufacturingModel.ExpenseBill bill : ledger.expenseBills().values()) {
+            payable = payable.add(bill.outstanding());
+        }
+        BigDecimal companyCash = accounts.get(ledger.opening().companyAccountId()).cash();
+        BigDecimal solvency = payable.signum() == 0 ? new BigDecimal("100.00")
+                : companyCash.divide(payable, 8, java.math.RoundingMode.HALF_UP)
+                        .min(BigDecimal.ONE).multiply(new BigDecimal("100"))
+                        .setScale(2, java.math.RoundingMode.HALF_UP);
+
+        BigDecimal arTotal = BigDecimal.ZERO.setScale(2);
+        BigDecimal arOverdue = BigDecimal.ZERO.setScale(2);
+        List<String> receivableIds = new ArrayList<>();
+        for (ManufacturingModel.Receivable receivable : ledger.receivables().values()) {
+            if (receivable.outstanding().signum() > 0) {
+                arTotal = arTotal.add(receivable.outstanding());
+                receivableIds.add(receivable.receivableId());
+                if (receivable.status() == ManufacturingModel.ReceivableStatus.OVERDUE
+                        || receivable.dueAt() <= capturedAt) {
+                    arOverdue = arOverdue.add(receivable.outstanding());
+                }
+            }
+        }
+        BigDecimal risk = arTotal.signum() == 0 ? new BigDecimal("100.00")
+                : arTotal.subtract(arOverdue).multiply(new BigDecimal("100"))
+                        .divide(arTotal, 2, java.math.RoundingMode.HALF_UP);
+        receivableIds.sort(String::compareTo);
+        return new BoardRun.PeriodEvidence(period, capturedAt, position, meetingId,
+                "period:" + period + ":evidence:" + position, reportSource, contractSource,
+                receivableSource, operating, solvency, risk, contractIds, receivableIds);
+    }
+
+    private List<String> seatIds() {
+        List<String> seats = new ArrayList<>();
+        charter.seats().forEach(seat -> seats.add(seat.seatId()));
+        return seats;
+    }
+
+    /** 自动会议标识在董事会已有会议里找空闲，不限制外部前缀。 */
+    private static String freeMeetingId(BoardModel.State board, String stem) {
+        String candidate = stem;
+        int suffix = 1;
+        while (board.meeting(candidate) != null) {
+            candidate = stem + "-" + (++suffix);
+        }
+        return candidate;
+    }
+
+    /**
+     * 外部治理动作到期：召集、材料、提案、投票、实施。全部在到期时按真实状态复核，
+     * 业务拒绝也形成不可改写的治理回报，不改变预算或现金。
+     */
+    private void completeGovernance(PendingTask task) throws IOException {
+        GovernancePayload payload = mapper.readValue(task.payload(), GovernancePayload.class);
+        long now = task.dueTimeMillis();
+        BoardRun run = requireGovernanceRun();
+        BoardModel.State board = run.board();
+        String meetingId = payload.meetingId();
+        BoardModel.Outcome outcome;
+        List<ManufacturingChild> children = new ArrayList<>();
+        switch (task.kind()) {
+            case PendingTask.GOVERNANCE_MEETING_V1 -> {
+                outcome = BoardModel.convene(board, now, new BoardModel.MeetingRequest(meetingId,
+                        BoardModel.Topic.BUDGET, payload.seatId(), payload.materialDeadline(),
+                        payload.opensAt(), payload.closesAt(), payload.attendeeSeatIds(),
+                        payload.recusedSeatIds()));
+                if (outcome.accepted()) {
+                    children.add(new ManufacturingChild(PendingTask.BOARD_OPEN_V1,
+                            WorldScheduler.Phase.RULES, "board-open:", payload.opensAt(),
+                            meetingId, -1L));
+                }
+            }
+            case PendingTask.GOVERNANCE_MATERIAL_V1 -> {
+                BoardModel.Meeting meeting = board.meeting(meetingId);
+                if (meeting == null) {
+                    outcome = new BoardModel.Outcome(false, BoardModel.REASON_UNKNOWN_MEETING,
+                            board);
+                } else if (!meeting.attendeeSeatIds().contains(payload.seatId())
+                        || meeting.recusedSeatIds().contains(payload.seatId())) {
+                    outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT, board);
+                } else {
+                    outcome = BoardModel.addMaterial(board, now, meetingId,
+                            new BoardModel.MaterialRef(payload.materialId(),
+                                    payload.sourceRef(), payload.version(), now));
+                }
+            }
+            case PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1 -> {
+                BoardModel.Meeting meeting = board.meeting(meetingId);
+                if (meeting == null) {
+                    outcome = new BoardModel.Outcome(false, BoardModel.REASON_UNKNOWN_MEETING,
+                            board);
+                } else if (!meeting.attendeeSeatIds().contains(payload.seatId())
+                        || meeting.recusedSeatIds().contains(payload.seatId())) {
+                    outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT, board);
+                } else {
+                    long closed = requireManufacturingRun().ledger().closedPeriods();
+                    if (hasClosedPeriod(payload.lines(), closed)) {
+                        outcome = new BoardModel.Outcome(false,
+                                REASON_BUDGET_PERIOD_CLOSED, board);
+                    } else {
+                        outcome = BoardModel.proposeBudget(board, now, meetingId,
+                                payload.lines());
+                    }
+                }
+            }
+            case PendingTask.GOVERNANCE_VOTE_V1 -> outcome = BoardModel.castVote(board, now,
+                    meetingId, payload.seatId(), BoardModel.Vote.valueOf(payload.vote()));
+            case PendingTask.GOVERNANCE_IMPLEMENT_V1 -> {
+                BoardModel.Meeting target = board.meeting(meetingId);
+                long closed = requireManufacturingRun().ledger().closedPeriods();
+                if (target != null && target.status() == BoardModel.MeetingStatus.ADOPTED
+                        && hasClosedPeriod(target.proposedLines(), closed)) {
+                    outcome = new BoardModel.Outcome(false, REASON_BUDGET_PERIOD_CLOSED,
+                            board);
+                } else {
+                    outcome = BoardModel.executeAdoptedResolution(board, now, meetingId);
+                }
+            }
+            default -> throw new IllegalStateException("未启用的治理任务种类：" + task.kind());
+        }
+        finishGovernanceTask(task, payload.commandId(), outcome, meetingId,
+                run.withBoard(outcome.state()), children);
+    }
+
+    /** 自动开会：冻结材料；预算请求存在时进入表决，并在同批排自动关会。 */
+    private void completeBoardOpen(PendingTask task) throws IOException {
+        ManufacturingChildPayload payload = mapper.readValue(task.payload(),
+                ManufacturingChildPayload.class);
+        BoardRun run = requireGovernanceRun();
+        String meetingId = payload.businessId();
+        BoardModel.Meeting meeting = run.board().meeting(meetingId);
+        BoardModel.Outcome outcome;
+        if (meeting == null) {
+            outcome = new BoardModel.Outcome(false, BoardModel.REASON_UNKNOWN_MEETING,
+                    run.board());
+        } else {
+            outcome = BoardModel.freezeMaterials(run.board(), task.dueTimeMillis(), meetingId);
+            if (outcome.accepted()) {
+                BoardModel.Meeting opened = outcome.state().meeting(meetingId);
+                if (opened.topic() == BoardModel.Topic.BUDGET
+                        && !opened.proposedLines().isEmpty()) {
+                    outcome = BoardModel.startVoting(outcome.state(), task.dueTimeMillis(),
+                            meetingId);
+                }
+            }
+        }
+        List<ManufacturingChild> children = new ArrayList<>();
+        BoardModel.Meeting current = outcome.state().meeting(meetingId);
+        if (current != null && current.topic() == BoardModel.Topic.BUDGET
+                && (current.status() == BoardModel.MeetingStatus.MATERIALS_FROZEN
+                || current.status() == BoardModel.MeetingStatus.VOTING)) {
+            children.add(new ManufacturingChild(PendingTask.BOARD_CLOSE_V1,
+                    WorldScheduler.Phase.COMPLETION, "board-close:", current.closesAt(),
+                    meetingId, -1L));
+        }
+        finishGovernanceTask(task, SYSTEM_COMMAND_PREFIX + "board-open:" + meetingId, outcome,
+                meetingId, run.withBoard(outcome.state()), children);
+    }
+
+    /** 自动关会：到期据真实选票形成 ADOPTED/REJECTED/ADJOURNED；空提案形成明确拒绝终态。 */
+    private void completeBoardClose(PendingTask task) throws IOException {
+        ManufacturingChildPayload payload = mapper.readValue(task.payload(),
+                ManufacturingChildPayload.class);
+        BoardRun run = requireGovernanceRun();
+        BoardModel.Outcome outcome = BoardModel.closeVoting(run.board(), task.dueTimeMillis(),
+                payload.businessId());
+        finishGovernanceTask(task, SYSTEM_COMMAND_PREFIX + "board-close:" + payload.businessId(),
+                outcome, payload.businessId(), run.withBoard(outcome.state()), List.of());
+    }
+
+    /** 自动复盘评分：只使用关期同批冻结的三项证据；披露/长期投入缺失，总分必为 null。 */
+    private void completeBoardReview(PendingTask task) throws IOException {
+        ManufacturingChildPayload payload = mapper.readValue(task.payload(),
+                ManufacturingChildPayload.class);
+        BoardRun run = requireGovernanceRun();
+        BoardRun.PeriodEvidence evidence = run.evidence(payload.period())
+                .orElseThrow(() -> new IllegalStateException(
+                        "复盘任务缺少期间证据：" + payload.period()));
+        List<BoardModel.EvidenceMetric> metrics = new ArrayList<>();
+        if (evidence.operatingCommitment() != null) {
+            metrics.add(new BoardModel.EvidenceMetric(
+                    BoardModel.Dimension.OPERATING_COMMITMENT,
+                    evidence.operatingCommitment(), evidence.contractSource(),
+                    evidence.capturedAt()));
+        }
+        metrics.add(new BoardModel.EvidenceMetric(BoardModel.Dimension.CASH_SOLVENCY,
+                evidence.cashSolvency(), evidence.reportSource(), evidence.capturedAt()));
+        metrics.add(new BoardModel.EvidenceMetric(BoardModel.Dimension.RISK,
+                evidence.risk(), evidence.receivableSource(), evidence.capturedAt()));
+        BoardModel.Outcome outcome = BoardModel.calculateReview(run.board(),
+                task.dueTimeMillis(), payload.businessId(), metrics);
+        finishGovernanceTask(task, SYSTEM_COMMAND_PREFIX + "board-review:"
+                + payload.businessId(), outcome, payload.businessId(),
+                run.withBoard(outcome.state()), List.of());
+    }
+
+    /**
+     * 治理任务统一收尾：完成待办、同批追加自动子任务与治理回报，保存全量状态后持久确认再发布。
+     */
+    private void finishGovernanceTask(PendingTask task, String commandId,
+                                      BoardModel.Outcome outcome, String meetingId,
+                                      BoardRun governance, List<ManufacturingChild> children)
+            throws IOException {
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        for (ManufacturingChild child : children) {
+            String childId = freeInternalTaskId(child.stem(), child.businessId(), used);
+            ManufacturingChildPayload childPayload = new ManufacturingChildPayload(commandId,
+                    child.businessId(), child.period());
+            PendingTask scheduled = new PendingTask(childId, child.dueTimeMillis(), child.phase(),
+                    child.kind(), mapper.writeValueAsString(childPayload));
+            pending.add(scheduled);
+            used.add(childId);
+            events.add(new WorldEvent("task-scheduled:" + childId, "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(scheduled)));
+        }
+        BoardRun.Report entry = new BoardRun.Report(task.taskId(), commandId, task.kind(),
+                meetingId, outcome.accepted(), outcome.reason(), task.dueTimeMillis(),
+                state.position() + 1);
+        BoardRun candidateRun = governance.withReport(entry);
+        events.add(new WorldEvent("governance-report:" + task.taskId(),
+                "GOVERNANCE_REPORT_V1", mapper.writeValueAsString(entry)));
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
+                pending, state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), state.manufacturing(), candidateRun);
+        commitAndApply("task:" + task.taskId(), task.payload(), outcome.reason(), events, candidate);
     }
 
     /**
@@ -1612,8 +2296,9 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private void finishManufacturingTask(PendingTask task, String commandId,
                                          ManufacturingModel.Outcome outcome,
-                                         ManufacturingChild child, String businessId,
-                                         BigDecimal amount, List<WorldEvent> effects)
+                                         List<ManufacturingChild> children, String businessId,
+                                         BigDecimal amount, List<WorldEvent> effects,
+                                         BoardRun governanceCandidate)
             throws IOException {
         ManufacturingRun run = requireManufacturingRun().withLedger(outcome.state());
         List<PendingTask> pending = new ArrayList<>(state.pending());
@@ -1624,7 +2309,7 @@ public final class WorldRuntime implements AutoCloseable {
         events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()));
         events.addAll(effects);
-        if (child != null) {
+        for (ManufacturingChild child : children) {
             String childId = freeInternalTaskId(child.stem(), child.businessId(), used);
             ManufacturingChildPayload childPayload = new ManufacturingChildPayload(commandId,
                     child.businessId(), child.period());
@@ -1641,9 +2326,20 @@ public final class WorldRuntime implements AutoCloseable {
         run = run.withReport(entry);
         events.add(new WorldEvent("manufacturing-report:" + task.taskId(),
                 "MANUFACTURING_REPORT_V1", mapper.writeValueAsString(entry)));
+        BoardRun governance = governanceCandidate != null ? governanceCandidate
+                : state.governance();
+        if (governanceCandidate != null && governanceCandidate.periodEvidence().size()
+                > state.governance().periodEvidence().size()) {
+            for (BoardRun.PeriodEvidence evidence : governanceCandidate.periodEvidence().values()) {
+                if (!state.governance().periodEvidence().containsKey(evidence.period())) {
+                    events.add(new WorldEvent("period-evidence:" + evidence.period(),
+                            "PERIOD_EVIDENCE_V1", mapper.writeValueAsString(evidence)));
+                }
+            }
+        }
         WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), outcome.accounts(),
                 pending, state.delivered(), used, state.commandContents(), state.commandOutcomes(),
-                state.securities(), state.exchange(), run);
+                state.securities(), state.exchange(), run, governance);
         commitAndApply("task:" + task.taskId(), task.payload(), outcome.reason(), events, candidate);
     }
 
@@ -1668,6 +2364,66 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalStateException("当前运行没有制造子集状态");
         }
         return run;
+    }
+
+    private BoardRun requireGovernanceRun() {
+        BoardRun run = state.governance();
+        if (run == null) {
+            throw new IllegalStateException("当前运行没有治理子集状态");
+        }
+        return run;
+    }
+
+    /** 采购下单预算：按下单期间 PROCUREMENT 占用 quantity×50，承诺标识与采购单一一对应。 */
+    private BoardModel.Outcome reservePurchaseBudget(long now, String purchaseOrderId,
+                                                     long quantity) {
+        BigDecimal amount = CashLedger.money(ManufacturingModel.RAW_UNIT_PRICE
+                .multiply(BigDecimal.valueOf(quantity)));
+        return BoardModel.reserveBudget(requireGovernanceRun().board(), now,
+                "po:" + purchaseOrderId, now / ManufacturingModel.PERIOD_MILLIS,
+                BoardModel.BudgetCategory.PROCUREMENT, amount);
+    }
+
+    /** 投产预算：当期 LABOR 占用 quantity×30，并在同一批把真实人工付款转已花。 */
+    private BoardModel.Outcome reserveLaborBudget(long now, String batchId, long quantity) {
+        BigDecimal amount = CashLedger.money(ManufacturingModel.LABOR_UNIT_PRICE
+                .multiply(BigDecimal.valueOf(quantity)));
+        String commitmentId = "labor:" + batchId;
+        BoardModel.Outcome reserved = BoardModel.reserveBudget(requireGovernanceRun().board(), now,
+                commitmentId, now / ManufacturingModel.PERIOD_MILLIS,
+                BoardModel.BudgetCategory.PRODUCTION_LABOR, amount);
+        if (!reserved.accepted()) {
+            return reserved;
+        }
+        BoardModel.Outcome spent = BoardModel.spendBudget(reserved.state(), now, commitmentId,
+                amount);
+        if (!spent.accepted()) {
+            throw new IllegalStateException("人工付款成功但预算承诺无法转已花："
+                    + batchId + " / " + spent.reason());
+        }
+        return spent;
+    }
+
+    /** 现金不足到货：把原采购承诺未用额全额释放，不留下 active 残留。 */
+    private BoardModel.State releasePurchaseBudget(long now, String purchaseOrderId) {
+        BoardModel.State board = requireGovernanceRun().board();
+        BoardModel.Commitment commitment = null;
+        for (BoardModel.Commitment candidate : board.commitments()) {
+            if (candidate.commitmentId().equals("po:" + purchaseOrderId)) {
+                commitment = candidate;
+                break;
+            }
+        }
+        if (commitment == null || commitment.status() != BoardModel.CommitmentStatus.ACTIVE) {
+            throw new IllegalStateException("失败到货缺少活动预算承诺：" + purchaseOrderId);
+        }
+        BoardModel.Outcome released = BoardModel.releaseBudget(board, now,
+                commitment.commitmentId(), commitment.outstanding());
+        if (!released.accepted()) {
+            throw new IllegalStateException("失败到货无法释放预算承诺："
+                    + purchaseOrderId + " / " + released.reason());
+        }
+        return released.state();
     }
 
     /** 同一快照下的可用现金：撮合档案扣买单冻结，旧档案按余额。 */
@@ -1859,6 +2615,7 @@ public final class WorldRuntime implements AutoCloseable {
         validateSecurities(candidate, previous);
         validateExchange(candidate, previous);
         validateManufacturing(candidate, previous);
+        validateGovernance(candidate, previous);
     }
 
     /**
@@ -2066,6 +2823,389 @@ public final class WorldRuntime implements AutoCloseable {
         if (closes.size() != 1 || closes.get(0) != ledger.closedPeriods()) {
             throw new IOException("必须恰好有一个下一期关期待办，收到 " + closes
                     + "，已关 " + ledger.closedPeriods());
+        }
+    }
+
+    /**
+     * 校验治理子集：章程一致、回报只增不改、期间证据不被未来快照覆盖、会议原文不被改写，
+     * 并把每一条预算承诺与制造原始业务记录/实际付款交叉核对。
+     */
+    private void validateGovernance(WorldState candidate, WorldState previous) throws IOException {
+        BoardRun run = candidate.governance();
+        if (expectedSchema() < STATE_SCHEMA_GOVERNANCE) {
+            if (run != null) {
+                throw new IOException("旧档案不得包含治理子集状态");
+            }
+            return;
+        }
+        if (run == null) {
+            throw new IOException("治理档案缺少董事会子集状态");
+        }
+        if (charter == null || !charter.equals(run.board().charter())) {
+            throw new IOException("董事会章程与开局绑定不一致");
+        }
+        for (BoardRun.Report report : run.reports().values()) {
+            if (report.position() > candidate.position()) {
+                throw new IOException("治理结果出现在未来的提交位置：" + report.taskId());
+            }
+            if (report.timeMillis() > candidate.timeMillis()) {
+                throw new IOException("治理结果时点晚于快照时点：" + report.taskId());
+            }
+            if (!candidate.usedTaskIds().contains(report.taskId())) {
+                throw new IOException("治理结果缺少对应的已用任务：" + report.taskId());
+            }
+        }
+        for (BoardRun.PeriodEvidence evidence : run.periodEvidence().values()) {
+            if (evidence.capturedAt() > candidate.timeMillis()) {
+                throw new IOException("期间证据时点晚于快照时点：" + evidence.period());
+            }
+            if (evidence.position() > candidate.position()) {
+                throw new IOException("期间证据出现在未来的提交位置：" + evidence.period());
+            }
+            BoardModel.Meeting meeting = run.board().meeting(evidence.reviewMeetingId());
+            if (meeting == null || meeting.topic() != BoardModel.Topic.OPERATING_REVIEW) {
+                throw new IOException("期间证据缺少对应复盘会议：" + evidence.period());
+            }
+        }
+        validateBudgetAgainstLedger(run.board(), candidate.manufacturing());
+        if (previous == null || previous.governance() == null) {
+            return;
+        }
+        BoardRun before = previous.governance();
+        for (BoardRun.Report older : before.reports().values()) {
+            BoardRun.Report now = run.reports().get(older.taskId());
+            if (!older.equals(now)) {
+                throw new IOException("治理旧回报被删除或改写：" + older.taskId());
+            }
+        }
+        for (BoardRun.PeriodEvidence older : before.periodEvidence().values()) {
+            BoardRun.PeriodEvidence now = run.periodEvidence().get(older.period());
+            if (!older.equals(now)) {
+                throw new IOException("期间证据被后续快照改写：" + older.period());
+            }
+        }
+        for (BoardModel.ReviewResult older : before.board().reviews()) {
+            if (!run.board().reviews().contains(older)) {
+                throw new IOException("旧考核结果被删除或改写：" + older.reviewId());
+            }
+        }
+        for (BoardModel.Meeting older : before.board().meetings().values()) {
+            BoardModel.Meeting now = run.board().meeting(older.meetingId());
+            if (now == null) {
+                throw new IOException("旧会议被删除：" + older.meetingId());
+            }
+            if (now.topic() != older.topic()
+                    || !now.convenerSeatId().equals(older.convenerSeatId())
+                    || now.createdAt() != older.createdAt()
+                    || now.materialDeadline() != older.materialDeadline()
+                    || now.opensAt() != older.opensAt()
+                    || now.closesAt() != older.closesAt()
+                    || !now.attendeeSeatIds().equals(older.attendeeSeatIds())
+                    || !now.recusedSeatIds().equals(older.recusedSeatIds())) {
+                throw new IOException("旧会议身份或时点被改写：" + older.meetingId());
+            }
+            validateMeetingRecords(candidate, older, now);
+            if (!allowedMeetingTransition(older.status(), now.status())) {
+                throw new IOException("会议状态倒退或非法跳转：" + older.meetingId()
+                        + " " + older.status() + " -> " + now.status());
+            }
+            validateFailureReason(run, now);
+        }
+        for (BoardModel.Meeting meeting : run.board().meetings().values()) {
+            validateBudgetDecision(candidate, meeting);
+        }
+        validateClosedPeriodBudgets(run, before, candidate);
+    }
+
+    /** 预算终态必须符合冻结提案及真实选票，不能仅凭跨帧内容相同就信任结论。 */
+    private static void validateBudgetDecision(WorldState candidate, BoardModel.Meeting meeting)
+            throws IOException {
+        if (meeting.topic() != BoardModel.Topic.BUDGET) {
+            return;
+        }
+        List<String> eligible = meeting.eligibleVoters();
+        if (meeting.status() == BoardModel.MeetingStatus.ADJOURNED_NO_QUORUM) {
+            if (eligible.size() >= BoardModel.QUORUM || meeting.proposedLines().isEmpty()
+                    || candidate.timeMillis() < meeting.closesAt()) {
+                throw new IOException("延期终态与法定人数不一致：" + meeting.meetingId());
+            }
+            return;
+        }
+        if (meeting.status() == BoardModel.MeetingStatus.IMPLEMENTED) {
+            boolean implemented = candidate.governance().reports().values().stream()
+                    .anyMatch(report -> report.meetingId().equals(meeting.meetingId())
+                            && PendingTask.GOVERNANCE_IMPLEMENT_V1.equals(report.kind())
+                            && report.accepted());
+            if (!implemented) {
+                throw new IOException("已实施会议缺少成功实施回报：" + meeting.meetingId());
+            }
+        }
+        boolean adopted;
+        switch (meeting.status()) {
+            case ADOPTED, IMPLEMENTED, IMPLEMENTATION_FAILED -> adopted = true;
+            case REJECTED -> adopted = false;
+            default -> { return; }
+        }
+        int required = meeting.requestedTotal().compareTo(BoardModel.SPECIAL_BUDGET_THRESHOLD) > 0
+                ? BoardModel.SPECIAL_YES_VOTES : BoardModel.ORDINARY_YES_VOTES;
+        long yes = meeting.ballots().values().stream()
+                .filter(ballot -> ballot.vote() == BoardModel.Vote.YES
+                        && eligible.contains(ballot.seatId())).count();
+        boolean passed = !meeting.proposedLines().isEmpty()
+                && eligible.size() >= BoardModel.QUORUM && yes >= required;
+        if (candidate.timeMillis() < meeting.closesAt() || adopted != passed
+                || (!meeting.proposedLines().isEmpty() && eligible.size() < BoardModel.QUORUM)) {
+            throw new IOException("表决终态与选票不一致：" + meeting.meetingId());
+        }
+    }
+
+    /**
+     * 跨帧保护会议原文：旧材料不可改删（CONVENED 可追加，冻结后不得追加）、已提案不可改删、
+     * 旧选票不可改删（只在原 VOTING 期间合法新增），failureReason 终态不可改。
+     */
+    private void validateMeetingRecords(WorldState candidate, BoardModel.Meeting older,
+                                        BoardModel.Meeting now) throws IOException {
+        Map<String, BoardModel.MaterialRef> beforeMaterials = materialMap(older);
+        Map<String, BoardModel.MaterialRef> nowMaterials = materialMap(now);
+        for (Map.Entry<String, BoardModel.MaterialRef> entry : beforeMaterials.entrySet()) {
+            if (!entry.getValue().equals(nowMaterials.get(entry.getKey()))) {
+                throw new IOException("冻结后材料被改写或删除：" + older.meetingId()
+                        + " / " + entry.getKey());
+            }
+        }
+        if (nowMaterials.size() > beforeMaterials.size()) {
+            if (older.status() != BoardModel.MeetingStatus.CONVENED
+                    || now.status() != BoardModel.MeetingStatus.CONVENED) {
+                throw new IOException("冻结后材料不得追加：" + older.meetingId());
+            }
+            if (candidate.timeMillis() > older.materialDeadline()) {
+                throw new IOException("材料截止后不得追加：" + older.meetingId());
+            }
+        }
+        if (!older.proposedLines().isEmpty()) {
+            if (!older.proposedLines().equals(now.proposedLines())) {
+                throw new IOException("已提案被改写或删除：" + older.meetingId());
+            }
+        } else if (!now.proposedLines().isEmpty()) {
+            if (older.status() != BoardModel.MeetingStatus.CONVENED
+                    || now.status() != BoardModel.MeetingStatus.CONVENED) {
+                throw new IOException("已提案只能在 CONVENED 首次登记：" + older.meetingId());
+            }
+            if (candidate.timeMillis() > older.materialDeadline()) {
+                throw new IOException("已提案超过材料截止：" + older.meetingId());
+            }
+        }
+        for (Map.Entry<String, BoardModel.Ballot> entry : older.ballots().entrySet()) {
+            if (!entry.getValue().equals(now.ballots().get(entry.getKey()))) {
+                throw new IOException("旧选票被改写或删除：" + older.meetingId()
+                        + " / " + entry.getKey());
+            }
+        }
+        for (BoardModel.Ballot ballot : now.ballots().values()) {
+            if (older.ballots().containsKey(ballot.seatId())) {
+                continue;
+            }
+            if (older.status() != BoardModel.MeetingStatus.VOTING
+                    || now.status() != BoardModel.MeetingStatus.VOTING) {
+                throw new IOException("非表决期间不得新增选票：" + older.meetingId()
+                        + " / " + ballot.seatId());
+            }
+            if (ballot.castAt() < older.opensAt() || ballot.castAt() >= older.closesAt()) {
+                throw new IOException("表决窗口外不得新增选票：" + older.meetingId()
+                        + " / " + ballot.seatId());
+            }
+            if (!older.eligibleVoters().contains(ballot.seatId())) {
+                throw new IOException("无效席位不得新增选票：" + older.meetingId()
+                        + " / " + ballot.seatId());
+            }
+        }
+        if (older.failureReason() != null
+                && !older.failureReason().equals(now.failureReason())) {
+            throw new IOException("失败原因被改写：" + older.meetingId());
+        }
+    }
+
+    /** FAILED 终态必须有同一会议的实施拒绝回报，且原因一致。 */
+    private void validateFailureReason(BoardRun run, BoardModel.Meeting meeting)
+            throws IOException {
+        if (meeting.status() != BoardModel.MeetingStatus.IMPLEMENTATION_FAILED) {
+            return;
+        }
+        boolean matched = false;
+        for (BoardRun.Report report : run.reports().values()) {
+            if (report.meetingId().equals(meeting.meetingId())
+                    && PendingTask.GOVERNANCE_IMPLEMENT_V1.equals(report.kind())
+                    && !report.accepted()
+                    && report.reason().equals(meeting.failureReason())) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            throw new IOException("失败原因与治理回报不一致：" + meeting.meetingId());
+        }
+    }
+
+    /** 已关期间的预算上限在跨帧恢复中不得被改写或事后新增。 */
+    private void validateClosedPeriodBudgets(BoardRun run, BoardRun before, WorldState candidate)
+            throws IOException {
+        long closed = candidate.manufacturing().ledger().closedPeriods();
+        for (BoardModel.Budget oldBudget : before.board().budgets()) {
+            if (oldBudget.period() >= closed) {
+                continue;
+            }
+            BoardModel.Budget nowBudget = run.board().budget(oldBudget.period(),
+                    oldBudget.category());
+            if (nowBudget == null || nowBudget.cap().compareTo(oldBudget.cap()) != 0) {
+                throw new IOException("已关期间预算上限被事后改写：" + oldBudget.period()
+                        + "/" + oldBudget.category());
+            }
+        }
+        for (BoardModel.Budget nowBudget : run.board().budgets()) {
+            if (nowBudget.period() >= closed) {
+                continue;
+            }
+            boolean existed = false;
+            for (BoardModel.Budget oldBudget : before.board().budgets()) {
+                if (oldBudget.period() == nowBudget.period()
+                        && oldBudget.category() == nowBudget.category()) {
+                    existed = true;
+                    break;
+                }
+            }
+            if (!existed) {
+                throw new IOException("已关期间预算上限被事后新增：" + nowBudget.period()
+                        + "/" + nowBudget.category());
+            }
+        }
+    }
+
+    private static Map<String, BoardModel.MaterialRef> materialMap(BoardModel.Meeting meeting) {
+        Map<String, BoardModel.MaterialRef> materials = new LinkedHashMap<>();
+        for (BoardModel.MaterialRef material : meeting.materials()) {
+            materials.put(material.materialId(), material);
+        }
+        return materials;
+    }
+
+    /** 任一预算行指向已关期间即拒绝；未来期间不受影响。 */
+    private static boolean hasClosedPeriod(List<BoardModel.BudgetLine> lines, long closedPeriods) {
+        for (BoardModel.BudgetLine line : lines) {
+            if (line.period() < closedPeriods) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 会议状态只能按档案定义的单向路径推进，终态不可回退。 */
+    private static boolean allowedMeetingTransition(BoardModel.MeetingStatus before,
+                                                    BoardModel.MeetingStatus now) {
+        if (before == now) {
+            return true;
+        }
+        return switch (before) {
+            case CONVENED -> true;
+            case MATERIALS_FROZEN -> now == BoardModel.MeetingStatus.VOTING
+                    || now == BoardModel.MeetingStatus.REVIEWED
+                    || now == BoardModel.MeetingStatus.REJECTED
+                    || now == BoardModel.MeetingStatus.ADJOURNED_NO_QUORUM;
+            case VOTING -> now == BoardModel.MeetingStatus.ADOPTED
+                    || now == BoardModel.MeetingStatus.REJECTED
+                    || now == BoardModel.MeetingStatus.ADJOURNED_NO_QUORUM;
+            case ADOPTED -> now == BoardModel.MeetingStatus.IMPLEMENTED
+                    || now == BoardModel.MeetingStatus.IMPLEMENTATION_FAILED;
+            default -> false;
+        };
+    }
+
+    /**
+     * 每条采购/生产承诺必须与制造原始业务记录、数量和实际付款一致：
+     * 采购按订单单价×数量，投产按数量×人工单价；未付款不能标已花，失败必须全额释放，
+     * COGS、固定费用与回款不得再占一次预算。
+     */
+    private void validateBudgetAgainstLedger(BoardModel.State board, ManufacturingRun run)
+            throws IOException {
+        if (run == null) {
+            throw new IOException("治理档案缺少制造台账");
+        }
+        ManufacturingModel.State ledger = run.ledger();
+        Map<String, BoardModel.Commitment> commitments = new LinkedHashMap<>();
+        for (BoardModel.Commitment commitment : board.commitments()) {
+            commitments.put(commitment.commitmentId(), commitment);
+        }
+        Set<String> expected = new LinkedHashSet<>();
+        for (ManufacturingModel.PurchaseOrder order : ledger.purchaseOrders().values()) {
+            String id = "po:" + order.purchaseOrderId();
+            expected.add(id);
+            BoardModel.Commitment commitment = commitments.get(id);
+            if (commitment == null) {
+                throw new IOException("采购单没有预算承诺：" + order.purchaseOrderId());
+            }
+            BigDecimal amount = CashLedger.money(order.unitPrice()
+                    .multiply(BigDecimal.valueOf(order.quantity())));
+            if (commitment.category() != BoardModel.BudgetCategory.PROCUREMENT
+                    || commitment.period() != order.orderedAt() / ManufacturingModel.PERIOD_MILLIS
+                    || commitment.reserved().compareTo(amount) != 0) {
+                throw new IOException("采购预算承诺与原始订单不一致：" + order.purchaseOrderId());
+            }
+            switch (order.status()) {
+                case ORDERED -> {
+                    if (commitment.status() != BoardModel.CommitmentStatus.ACTIVE
+                            || commitment.spent().signum() != 0
+                            || commitment.released().signum() != 0) {
+                        throw new IOException("未到货采购不得标已花或释放：" + order.purchaseOrderId());
+                    }
+                }
+                case RECEIVED -> {
+                    if (commitment.spent().compareTo(amount) != 0
+                            || commitment.released().signum() != 0) {
+                        throw new IOException("已到货采购必须把原承诺全部转已花："
+                                + order.purchaseOrderId());
+                    }
+                }
+                case FAILED_NO_CASH -> {
+                    if (commitment.released().compareTo(amount) != 0
+                            || commitment.spent().signum() != 0) {
+                        throw new IOException("失败到货必须全额释放原承诺："
+                                + order.purchaseOrderId());
+                    }
+                }
+            }
+        }
+        for (ManufacturingModel.ProductionBatch batch : ledger.productionBatches().values()) {
+            String id = "labor:" + batch.batchId();
+            expected.add(id);
+            BoardModel.Commitment commitment = commitments.get(id);
+            if (commitment == null) {
+                throw new IOException("生产批次没有人工预算承诺：" + batch.batchId());
+            }
+            BigDecimal amount = CashLedger.money(ManufacturingModel.LABOR_UNIT_PRICE
+                    .multiply(BigDecimal.valueOf(batch.quantity())));
+            if (commitment.category() != BoardModel.BudgetCategory.PRODUCTION_LABOR
+                    || commitment.period() != batch.startedAt() / ManufacturingModel.PERIOD_MILLIS
+                    || commitment.reserved().compareTo(amount) != 0
+                    || commitment.spent().compareTo(amount) != 0
+                    || commitment.released().signum() != 0) {
+                throw new IOException("人工预算承诺与原始批次/付款不一致：" + batch.batchId());
+            }
+        }
+        if (!commitments.keySet().equals(expected)) {
+            throw new IOException("存在没有原始业务记录的预算承诺：" + commitments.keySet()
+                    + "，期望 " + expected);
+        }
+        for (BoardModel.Budget budget : board.budgets()) {
+            BigDecimal used = BoardModel.spentBudget(board, budget.period(), budget.category())
+                    .add(BoardModel.outstandingBudget(board, budget.period(), budget.category()));
+            if (budget.cap().compareTo(used) < 0) {
+                throw new IOException("预算上限低于已花加活动承诺：" + budget.period()
+                        + "/" + budget.category() + " cap=" + budget.cap() + " used=" + used);
+            }
+        }
+        for (BoardModel.Commitment commitment : commitments.values()) {
+            if (board.budget(commitment.period(), commitment.category()) == null) {
+                throw new IOException("预算承诺没有对应上限：" + commitment.commitmentId());
+            }
         }
     }
 
@@ -2291,6 +3431,8 @@ public final class WorldRuntime implements AutoCloseable {
         List<ActionReport> reported = new ArrayList<>();
         List<OrderReport> exchangeReports = new ArrayList<>();
         List<ReportEntry> manufacturingReports = new ArrayList<>();
+        List<BoardRun.Report> governanceReports = new ArrayList<>();
+        List<BoardRun.PeriodEvidence> periodEvidence = new ArrayList<>();
         for (WorldEvent event : commit.events()) {
             if (SNAPSHOT_TYPE.equals(event.type())) {
                 if (found != null) {
@@ -2303,6 +3445,11 @@ public final class WorldRuntime implements AutoCloseable {
                 exchangeReports.add(mapper.readValue(event.payload(), OrderReport.class));
             } else if ("MANUFACTURING_REPORT_V1".equals(event.type())) {
                 manufacturingReports.add(mapper.readValue(event.payload(), ReportEntry.class));
+            } else if ("GOVERNANCE_REPORT_V1".equals(event.type())) {
+                governanceReports.add(mapper.readValue(event.payload(), BoardRun.Report.class));
+            } else if ("PERIOD_EVIDENCE_V1".equals(event.type())) {
+                periodEvidence.add(mapper.readValue(event.payload(),
+                        BoardRun.PeriodEvidence.class));
             }
         }
         if (found == null) {
@@ -2333,6 +3480,22 @@ public final class WorldRuntime implements AutoCloseable {
                         + " 的制造结果与状态快照不一致：" + report.taskId());
             }
         }
+        for (BoardRun.Report report : governanceReports) {
+            BoardRun.Report stored = found.governance() == null ? null
+                    : found.governance().reports().get(report.taskId());
+            if (!report.equals(stored)) {
+                throw new IOException("批次 " + commit.position()
+                        + " 的治理结果与状态快照不一致：" + report.taskId());
+            }
+        }
+        for (BoardRun.PeriodEvidence evidence : periodEvidence) {
+            BoardRun.PeriodEvidence stored = found.governance() == null ? null
+                    : found.governance().periodEvidence().get(evidence.period());
+            if (!evidence.equals(stored)) {
+                throw new IOException("批次 " + commit.position()
+                        + " 的期间证据与状态快照不一致：" + evidence.period());
+            }
+        }
         return found;
     }
 
@@ -2352,6 +3515,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (manufacturingConfig != null) {
             // 只有公司档案才加这个键：旧档案的开局内容保持逐字节不变
             content.put("manufacturing", manufacturingConfig);
+        }
+        if (charter != null) {
+            // 只有治理档案才加这个键：旧档案的开局内容保持逐字节不变
+            content.put("governance", charter);
         }
         return mapper.writeValueAsString(content);
     }
@@ -2467,12 +3634,48 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
+    /** 治理接口只对 governed-stock-company-experiment-v1 开放。 */
+    private void requireGovernanceEnabled() {
+        if (!manifest.hasGovernance() || charter == null) {
+            throw new IllegalStateException("当前运行未启用董事会治理模块："
+                    + manifest.rulesVersion());
+        }
+        if (state.governance() == null) {
+            throw new IllegalStateException("当前运行没有治理子集状态");
+        }
+    }
+
     /** 已知后续耗时必须在排程前确认不溢出，避免任务到期后永久卡住。 */
     private static void requireHorizon(long dueTimeMillis, long deltaMillis, String what) {
         try {
             Math.addExact(dueTimeMillis, deltaMillis);
         } catch (ArithmeticException overflow) {
             throw new IllegalArgumentException("到期时间加 " + what + " 会溢出，无法安排后续动作", overflow);
+        }
+    }
+
+    /**
+     * 治理开局：章程公司必须就是制造公司所属组织、也是证券发行人；五席是登记人物。
+     *
+     * <p>全部在创建日志之前完成，因此失败不会留下半成品档案。</p>
+     */
+    private void validateGovernanceOpening() {
+        if (manufacturingConfig == null) {
+            throw new IllegalArgumentException("治理档案必须同时提供制造开局配置");
+        }
+        // BoardModel.open 校验公司是 ORGANIZATION、五席各绑定不同 PERSON、主席在席、quorum=3
+        BoardModel.open(registry, charter);
+        String companyParty = charter.companyPartyId();
+        OpeningRegistry.PropertyOwner owner = registry.owner(
+                manufacturingConfig.accounting().companyOwnerId());
+        if (owner == null || !companyParty.equals(owner.partyId())) {
+            throw new IllegalArgumentException("章程公司必须就是制造公司所属组织：章程 "
+                    + companyParty + "，公司组织 " + (owner == null ? "null" : owner.partyId()));
+        }
+        OpeningRegistry.Security security = registry.security(manufacturingConfig.symbol());
+        if (security == null || !companyParty.equals(security.issuerOrganizationId())) {
+            throw new IllegalArgumentException("章程公司必须就是证券发行人：章程 " + companyParty
+                    + "，发行人 " + (security == null ? "null" : security.issuerOrganizationId()));
         }
     }
 
@@ -2547,6 +3750,7 @@ public final class WorldRuntime implements AutoCloseable {
 
     private WorldState initialState(Map<String, CashLedger.CashAccount> accounts) throws IOException {
         ManufacturingRun manufacturing = null;
+        BoardRun governance = null;
         List<PendingTask> pending = new ArrayList<>();
         Set<String> used = new LinkedHashSet<>();
         if (manufacturingConfig != null) {
@@ -2563,16 +3767,22 @@ public final class WorldRuntime implements AutoCloseable {
             pending.add(close);
             used.add(close.taskId());
         }
+        if (charter != null) {
+            governance = new BoardRun(BoardModel.open(registry, charter), Map.of(), Map.of());
+        }
         return new WorldState(expectedSchema(), manifest.runId(), 1, 0L,
                 WorldScheduler.Phase.OBSERVATION.name(), accounts, pending, List.of(), used,
                 Map.of(), Map.of(),
                 manifest.hasSecurities() ? SecuritiesLedger.opening(registry) : null,
                 manifest.hasMatching() ? WorldExchange.opening() : null,
-                manufacturing);
+                manufacturing, governance);
     }
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasGovernance()) {
+            return STATE_SCHEMA_GOVERNANCE;
+        }
         if (manifest.hasManufacturing()) {
             return STATE_SCHEMA_MANUFACTURING;
         }
@@ -2593,7 +3803,8 @@ public final class WorldRuntime implements AutoCloseable {
                             SecuritiesLedger.State securities,
                             WorldExchange.State exchange) {
         return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
-                commandContents, commandOutcomes, securities, exchange, state.manufacturing());
+                commandContents, commandOutcomes, securities, exchange, state.manufacturing(),
+                state.governance());
     }
 
     private WorldState next(long timeMillis, String lastPhase,
@@ -2604,9 +3815,23 @@ public final class WorldRuntime implements AutoCloseable {
                             SecuritiesLedger.State securities,
                             WorldExchange.State exchange,
                             ManufacturingRun manufacturing) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing,
+                state.governance());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
-                commandContents, commandOutcomes, securities, exchange, manufacturing);
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance);
     }
 
     /**

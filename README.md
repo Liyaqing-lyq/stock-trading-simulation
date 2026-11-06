@@ -9,16 +9,19 @@ Java 程序设计课程项目（中央财经大学）：用多智能体模拟真
 
 持续施工与接续见[实施 Plan](docs/superpowers/plans/2026-11-06-world-implementation.md)。世界基础调试夹具可运行 `mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldFoundationDemo`；同一路径重跑复用原付款回报，不重复发钱。它尚未接入股票、公司、银行或模型。
 
-世界交易与制造实验另有`WorldExchangeDemo`、`WorldManufacturingDemo`入口，均为不调用模型的管理夹具：
+世界交易、制造与治理实验另有`WorldExchangeDemo`、`WorldManufacturingDemo`、`WorldGovernanceDemo`入口，均为不调用模型的管理夹具：
 
 ```bash
 # 制造：先保存已交付但尚未收款的状态，再用另一个进程恢复到期末与回款后
 mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldManufacturingDemo -Dexec.args="logs/my-company prepare"
 mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldManufacturingDemo -Dexec.args="logs/my-company full"
+# 治理：另开一份日志，预算须表决并实施；强制关期保留当时证据并自动复盘
+mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldGovernanceDemo -Dexec.args="logs/my-governed-company prepare"
+mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldGovernanceDemo -Dexec.args="logs/my-governed-company full"
 # 原命令再跑一次不重复收付款。世界存档放logs，课程验收会清理data目录。
 ```
 
-制造夹具已连接同一世界交易/现金日志，仍无董事会、角色授权、银行或新世界界面；具体能力与证据见实施Plan和[运行记录](docs/05-运行与验证记录.md)。
+制造夹具已连接同一世界交易/现金日志；治理夹具另加五席预算表决、经营承诺和固定期间复盘。治理full先检查35日，再推进61日验证第二期连续性。两者尚无角色工具、银行或新世界界面；具体能力与证据见实施Plan和[运行记录](docs/05-运行与验证记录.md)。
 
 需要 JDK 17+（本机为 JDK 21）。仓库自带 Maven Wrapper，**无需安装 Maven**。
 
