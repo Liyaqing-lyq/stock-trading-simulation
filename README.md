@@ -110,7 +110,7 @@ docs/       需求拆解、架构设计（类图/时序图）、接口定义、�
      会要求 JavaFX 位于 *module-path*，而 Maven 依赖在 classpath，实测报「缺少 JavaFX 运行时组件」。
      入口与实现分离正是为了让"随手点入口"这件事不会失败。
 
-扩展世界另提供`DecisionModel`决定纯核，固定准确可见输入、工具合同、提交屏障、尝试身份和双层预算。当前仅接受scripted用量，费用0.00。新世界的屏障推进、异步提供方及schema8运行桥按M4d接续，现有运行档案仍为schema1–7。
+扩展世界提供`DecisionModel`及schema8决定运行桥，支持冻结人物输入、真实推进屏障、双层预算、有界异步回执和恢复。`WorldDecisionDemo prepare|full <journal>`可按prepare/full/full在三个独立JVM复跑。当前提供方为scripted，费用0.00。新进程须用新的宿主命令接续，队列满时runner保留结果供retryPending重投。标准549项与实际旧schema7新续写旧回读的证据见`docs/05`第20节。持久墙钟审计、真实模型、六层认知和完整世界仍按实施Plan接续。
 
 ## 配置
 
