@@ -1,5 +1,7 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -40,11 +42,18 @@ public record InformationRun(InformationModel.State information, Map<String, Rep
     }
 
     /**
-     * 开局配置：首批登记读者。
+     * 开局配置：首批登记读者与可选的回忆参数。
      *
-     * @param readers 读者人物标识清单；允许为空表，但每个标识必须是已登记 PERSON
+     * <p>{@code recallPolicy} 只在 {@code cognition-recall-experiment-v1} 档案出现；为空时该键不落
+     * JSON，因此旧档案的序列化字节与旧构造完全不变。参数随第一批开局内容冻结，换任何参数重开同一
+     * 日志都会被拒绝。</p>
+     *
+     * @param readers      读者人物标识清单；允许为空表，但每个标识必须是已登记 PERSON
+     * @param recallPolicy 冻结的回忆实验参数；旧档案为 null
      */
-    public record Config(List<String> readers) {
+    public record Config(List<String> readers,
+                         @JsonInclude(JsonInclude.Include.NON_NULL)
+                         CognitionRecall.Policy recallPolicy) {
 
         /** 深拷贝、去空白并排序。 */
         public Config {
@@ -61,6 +70,15 @@ public record InformationRun(InformationModel.State information, Map<String, Rep
             List<String> ordered = new ArrayList<>(distinct);
             ordered.sort(Comparator.naturalOrder());
             readers = List.copyOf(ordered);
+        }
+
+        /**
+         * 旧一参构造：没有回忆参数，保持 schema1..10 的开局内容字节与源码兼容。
+         *
+         * @param readers 读者人物标识清单
+         */
+        public Config(List<String> readers) {
+            this(readers, null);
         }
     }
 

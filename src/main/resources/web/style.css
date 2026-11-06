@@ -13,3 +13,5 @@ td.preview{white-space:normal;min-width:240px;max-width:380px;color:#5c6a80}
 .live-roles label{display:flex;align-items:center;gap:.4rem}.live-roles input{width:auto}
 .live-decisions details{padding:1rem 0;border-bottom:1px solid var(--line,#e2e6ed)}
 .live-decisions summary{cursor:pointer;font-weight:600}.live-decisions pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto;padding:1rem;background:#f6f8fb;border-radius:8px;font-size:12px}
+#recall-items details{padding:1rem 0;border-bottom:1px solid var(--line,#e2e6ed)}
+#recall-items summary{cursor:pointer;font-weight:600}.recall-body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto;padding:1rem;background:#f6f8fb;border-radius:8px;font-size:12px}

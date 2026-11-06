@@ -294,6 +294,11 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         root.put("wakeReason", wakeReason);
         root.put("observedAt", cutoffTimeMillis);
         root.put("time", view.timeMillis());
+        RoleView.RecallMetadata recall = view.profile().recall();
+        if (recall != null) {
+            // 只告诉模型"本次回忆是否被预算截断"，不给实验校准参数
+            root.put("recallTruncated", recall.budgetTruncated());
+        }
 
         ArrayNode appointments = root.putArray("appointments");
         for (RoleTradingView.Appointment appointment
@@ -354,6 +359,13 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("source", experience.publicSourceDescription());
             node.put("publishedAt", experience.publishedAt());
             node.put("completedAt", experience.completedAt());
+            if (experience.recall() != null) {
+                ObjectNode origin = node.putObject("lastReadRef");
+                origin.put("docId", experience.recall().lastReadRef().docId());
+                origin.put("version", experience.recall().lastReadRef().version());
+                origin.put("index", experience.recall().lastReadRef().index());
+                node.put("lastReadAt", experience.recall().lastReadAt());
+            }
         }
         ArrayNode readings = profile.putArray("activeReadings");
         for (RoleView.Reading reading
@@ -379,6 +391,10 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("read", note.read());
             if (note.read() && note.body() != null) {
                 node.put("body", note.body());
+            }
+            if (recall != null) {
+                // 新档显式区分"引用资格"与"当前正文可得性"，不给已忘内容留旁路
+                node.put("bodyAvailable", note.body() != null);
             }
         }
 
@@ -459,6 +475,18 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 ObjectNode parameter = parameters.addObject();
                 parameter.put("name", field[0]);
                 parameter.put("type", field[1]);
+            }
+        }
+
+        if (recall != null) {
+            // 新档：当前准确权限，只含本人可见范围的状态，不含策略或内部标识
+            ArrayNode permissionNodes = root.putArray("permissions");
+            for (RoleView.Permission permission : sorted(view.profile().permissions(),
+                    item -> item.action().name() + "|" + item.scope())) {
+                ObjectNode node = permissionNodes.addObject();
+                node.put("action", permission.action().name());
+                node.put("scope", permission.scope());
+                node.put("decision", permission.decision().name());
             }
         }
         try {

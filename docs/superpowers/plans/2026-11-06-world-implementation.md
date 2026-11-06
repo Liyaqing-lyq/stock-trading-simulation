@@ -55,6 +55,13 @@
 
 ### 当前接续
 
+- 当前实施分支 `codex/world-cognition-runtime`，base `e885cf9cb3651c652908017bb0e94ce33f2e2eec`。施工单：[M4f回忆运行桥与Web观察](2026-11-07-cognition-runtime.md)。真实Hermes作者f270fe私有七源已交；Root接回冻结candidate1并修复旧cash档Optional审计接口，主树及candidate2已通过1117标准、CSV51/132/7、真实GUI、JavaDoc07:35:26。
+- Root新增5项包括新HTTP真实404失败与旧cash审计真实异常失败的修复；另20三JVM、旧DTO未重编指纹不变、旧schema10旧写→新续→旧读通过。真实浏览器初读/遗忘/重读中/完成恢复、跨人物选择、身份清空及同档重启均通过，最终截图与细节在cognition-runtime-root/browser-acceptance.md。新真实供应商调用仍为0。
+- 独审 `20261107_045400_d39b13` 已完成：候选1自编后135项动态和13项Web静态通过；最终candidate3自编、99文件哈希无差异，新增10项动态和12项静态通过。未动态覆盖research正文旁路（该项由作者正常工具测试及变异反例覆盖），未做浏览器（由Root完成）。本阶段PR待发布；PR33代码/文档CI42310013886/42310471565已成功。
+- 后续认知准备：同作者f270fe的belief-preparation首稿已被Root要求修订；必须匹配公司/指标/目标时点与实际读到的权威事实，不把预测错误当诚信错误，不用隐藏来源改变人物学习。修订稿仅准备，无生产写权。Root独占主树/Maven；总体基线、人工review与后续媒体/多公司银行/完整图表长跑继续。
+
+### 上一阶段验收（回忆纯核）
+
 - 当前分支 `codex/world-cognition-recall`，base `876e485`。Web PR32代码b2fb23d/文档876e485的实际CI42308822586/42309278593均success；1085标准、74独审、浏览器/预算/故障验收完成，仍待人工review。
 - Root拥有全部主树/Maven。新增CognitionRecall及14测试，原89Java未改；1099标准、CSV45成交119订单7排名、真实GUI、JavaDoc07:06:15通过。Root正常入口14检查先2个真实重读失败再全部通过；真实Hermes d39b13独立90源自编95检查通过。
 - 最终candidate2仅修纯核类注释（实际最近阅读时间），可执行文本与candidate1相同；源码SHA ffa6de348219ec396c3102e2845039ebb860214c510b2e0356121cce595fc1b2。原经历/ClosedReading保留、按真实重读完成恢复可得性；不引入第二份状态或启用默认遗忘。

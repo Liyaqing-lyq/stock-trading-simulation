@@ -29,6 +29,7 @@ import java.util.Objects;
  * @param readings      本人当前活动的阅读单（不含正文）
  * @param permissions   岗位动作的权限状态，仅限本人可见范围
  * @param tools         已接入的阅读工具
+ * @param recall        回忆摘要；旧档案为 null 且不落 JSON
  */
 public record RoleView(long timeMillis, String personPartyId,
                        List<Appointment> appointments, List<Account> accounts,
@@ -36,7 +37,67 @@ public record RoleView(long timeMillis, String personPartyId,
                        List<InformationModel.CatalogEntry> catalog,
                        List<Experience> observations,
                        List<Reading> readings, List<Permission> permissions,
-                       List<String> tools) {
+                       List<String> tools,
+                       @com.fasterxml.jackson.annotation.JsonInclude(
+                               com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                       RecallMetadata recall) {
+
+    /**
+     * 旧 11 参构造：没有回忆摘要，保持 schema6 语义与源码兼容。
+     *
+     * @param timeMillis    派生时刻
+     * @param personPartyId 视图所属人物
+     * @param appointments  本人当前有效任职
+     * @param accounts      可见账户
+     * @param holdings      证券汇总
+     * @param market        公共市场聚合
+     * @param catalog       可见资料目录
+     * @param observations  本人已读经历
+     * @param readings      活动阅读
+     * @param permissions   岗位权限
+     * @param tools         已接入工具
+     */
+    public RoleView(long timeMillis, String personPartyId,
+                    List<Appointment> appointments, List<Account> accounts,
+                    List<Holding> holdings, List<Market> market,
+                    List<InformationModel.CatalogEntry> catalog,
+                    List<Experience> observations,
+                    List<Reading> readings, List<Permission> permissions,
+                    List<String> tools) {
+        this(timeMillis, personPartyId, appointments, accounts, holdings, market, catalog,
+                observations, readings, permissions, tools, null);
+    }
+
+    /**
+     * 回忆摘要：只说明本次回忆是否被条数/正文预算截断。
+     *
+     * <p>不含 Policy、分数、候选/遗忘计数等实验校准参数：那些只属于管理员审计。</p>
+     *
+     * @param budgetTruncated 是否有通过阈值但因预算未装入的经历
+     */
+    public record RecallMetadata(boolean budgetTruncated) {
+    }
+
+    /**
+     * 一条经历的最近实际获取：本人范围内的引用与完成时刻。
+     *
+     * <p>只含本人 scope 的 {@link ReadingRef}；不含全局 {@code READ-n} 序号。</p>
+     *
+     * @param lastReadRef 最近一次完成阅读的本人范围引用
+     * @param lastReadAt  该次完成的模拟时刻
+     */
+    public record RecallOrigin(ReadingRef lastReadRef, long lastReadAt) {
+
+        /** 校验字段。 */
+        public RecallOrigin {
+            if (lastReadRef == null) {
+                throw new IllegalArgumentException("回忆来源缺少本人阅读引用");
+            }
+            if (lastReadAt < 0) {
+                throw new IllegalArgumentException("最近获取时刻不能为负：" + lastReadAt);
+            }
+        }
+    }
 
     /** 阅读工具：查目录。 */
     public static final String TOOL_CATALOG = "information.catalog";
@@ -213,10 +274,20 @@ public record RoleView(long timeMillis, String personPartyId,
      * @param publicSourceDescription 当时公开来源描述
      * @param publishedAt            该版本发布时刻
      * @param completedAt            完成时刻，等于阅读的固定到期
+     * @param recall                 最近实际获取；旧档案为 null 且不落 JSON
      */
     public record Experience(ReadingRef ref, String title, String body,
                              String publicSourceDescription, long publishedAt,
-                             long completedAt) {
+                             long completedAt,
+                             @com.fasterxml.jackson.annotation.JsonInclude(
+                                     com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                             RecallOrigin recall) {
+
+        /** 旧 6 参构造：没有回忆来源，保持源码兼容。 */
+        public Experience(ReadingRef ref, String title, String body,
+                          String publicSourceDescription, long publishedAt, long completedAt) {
+            this(ref, title, body, publicSourceDescription, publishedAt, completedAt, null);
+        }
 
         /** 校验字段。 */
         public Experience {

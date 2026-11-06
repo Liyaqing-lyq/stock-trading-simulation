@@ -982,6 +982,55 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     /**
+     * 管理员回忆审计；策略、计数及全文只在此可信入口公开，所有长整数编码为字符串。
+     *
+     * @param personPartyId 已登记人物
+     * @return 同一writer截止的回忆选择与实验策略；旧档available为false
+     * @throws BusyException 队列满
+     * @throws Exception 读取失败或人物无效
+     */
+    public Map<String, Object> recallView(String personPartyId) throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            var snapshot = current.snapshot();
+            var audit = current.recallAudit(personPartyId);
+            Map<String, Object> view = new LinkedHashMap<>();
+            view.put("runId", runId);
+            view.put("position", Long.toString(snapshot.position()));
+            view.put("timeMillis", Long.toString(snapshot.timeMillis()));
+            view.put("personPartyId", personPartyId);
+            view.put("available", audit.isPresent());
+            if (audit.isEmpty()) return view;
+            var policy = audit.orElseThrow().policy();
+            var result = audit.orElseThrow().result();
+            view.put("policy", Map.of("halfLifeMillis", Long.toString(policy.halfLifeMillis()),
+                    "thresholdPermille", policy.thresholdPermille(), "maxItems", policy.maxItems(),
+                    "maxContentChars", Long.toString(policy.maxContentChars())));
+            view.put("eligibleCount", result.eligibleCount());
+            view.put("forgottenCount", result.forgottenCount());
+            view.put("budgetTruncated", result.budgetTruncated());
+            view.put("contentChars", Long.toString(result.contentChars()));
+            List<Map<String, Object>> selected = new ArrayList<>();
+            for (var item : result.selected()) {
+                var observation = item.observation();
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("docId", observation.docId());
+                row.put("version", Long.toString(observation.version()));
+                row.put("title", observation.title());
+                row.put("body", observation.body());
+                row.put("publicSourceDescription", observation.publicSourceDescription());
+                row.put("completedAt", Long.toString(observation.completedAt()));
+                row.put("lastReadId", item.lastReadId());
+                row.put("lastReadAt", Long.toString(item.lastReadAt()));
+                row.put("score", item.score());
+                selected.add(row);
+            }
+            view.put("selected", List.copyOf(selected));
+            return view;
+        });
+    }
+
+    /**
      * 信息与阅读（单 writer 任务、单快照）。
      *
      * @return 视图
@@ -1627,8 +1676,19 @@ public final class WorldWebHost implements AutoCloseable {
                              String capTotalTokens) {
     }
 
-    /** 本轮被跳过的人物与固定原因。 */
-    public record SkipReason(String personPartyId, String reason) {
+    /** 输入超限的安全数值诊断，不含输入正文或提供方凭据。 */
+    public record InputSize(String actualChars, String actualBytes, String maxChars, String maxBytes) {
+    }
+
+    /** 本轮被跳过的人物与固定原因；仅超限时附数值诊断。 */
+    public record SkipReason(String personPartyId, String reason,
+                             @com.fasterxml.jackson.annotation.JsonInclude(
+                                     com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                             InputSize inputSize) {
+        /** 保留原两参构造与非超限JSON形状。 */
+        public SkipReason(String personPartyId, String reason) {
+            this(personPartyId, reason, null);
+        }
     }
 
     /** 预算视图：已结算 + 未结算预留，与冻结上限分开；全部精确字符串。 */
@@ -1681,6 +1741,7 @@ public final class WorldWebHost implements AutoCloseable {
         private final String roundId;
         private final LinkedHashSet<String> pending;
         private final Map<String, String> skipped = new LinkedHashMap<>();
+        private final Map<String, InputSize> inputSizes = new LinkedHashMap<>();
         private boolean stopping;
 
         private LiveRound(String roundId, List<String> persons) {
@@ -1949,6 +2010,13 @@ public final class WorldWebHost implements AutoCloseable {
                 openResult = current.openDecisions(commandId,
                         List.of(new DecisionRun.Request(person, actionId, "wake",
                                 decisionRoute(route, snapshot.revision()))));
+            } catch (WorldRuntime.DecisionInputTooLargeException tooLarge) {
+                round.skipped.put(person, "INPUT_TOO_LARGE");
+                round.inputSizes.put(person, new InputSize(Long.toString(tooLarge.actualChars()),
+                        Long.toString(tooLarge.actualBytes()), Long.toString(tooLarge.maxChars()),
+                        Long.toString(tooLarge.maxBytes())));
+                iterator.remove();
+                continue;
             } catch (IllegalArgumentException | IllegalStateException rejected) {
                 // 状态/资格前置拒绝：不留下任何已开未派决定，也不重试。
                 round.skipped.put(person, "OPEN_REJECTED");
@@ -2211,7 +2279,8 @@ public final class WorldWebHost implements AutoCloseable {
 
     private static List<SkipReason> collectSkips(LiveRound round) {
         List<SkipReason> skips = new ArrayList<>();
-        round.skipped.forEach((person, reason) -> skips.add(new SkipReason(person, reason)));
+        round.skipped.forEach((person, reason) -> skips.add(new SkipReason(person, reason,
+                round.inputSizes.get(person))));
         return List.copyOf(skips);
     }
 

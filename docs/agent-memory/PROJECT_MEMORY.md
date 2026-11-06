@@ -2,13 +2,15 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 最新接续（2026-11-07 B2c2 Web施工）
+## 最新接续（2026-11-07 M4f回忆运行桥本地验收）
 
-当前codex/world-live-web，base3b468ffb48a1faf1d65409af63c9cae403fc5abf。B2c1草稿PR31代码08298f9与文档3b468ff，两轮CI42302221792/42302662795 success；1059标准与73专项、GUI/CSV、JavaDoc、三JVM/旧binary/独审证据见docs/05§34。总体基线未完成。
+当前 `codex/world-cognition-runtime`，base `e885cf9cb3651c652908017bb0e94ce33f2e2eec`。回忆桥已接主树并冻结candidate3（90源/5资源/4测试，99哈希）。1117标准零失败/错误/跳过，CSV51成交/132订单/7排名、真实GUI、JavaDoc均通过；Root20三JVM、旧DTO未重编指纹828217b8…553f4、旧schema10旧写新续旧读、真实Web遗忘/重读/身份清空/同档恢复通过。五Key仍仅此前key-1一次51token，其余4未测，本轮0新增供应商请求。
 
-Root独占主树/Maven，主树生产仍B2c1。Host作者真实Hermes d39b13 exec53092只live-host-preparation私有Host/Scenario/测试，11私有初绿但尚未接回。Root在live-web-root私有准备Server/App/UI及7HTTP测试：旧Server缺新API实际7/7 RED；第一轮login地址错误已修，第二轮才是正确接口RED。Root已写host-review-before-integration.md，重点拒绝削弱原restart显式start测试，补物理在途/完成槽/逻辑数量分开、暂停原子位置校验、typed冲突、准确失败码/预算视图。候选仍有已知静态风险，不能计完成。
+真实Hermes作者 `20261107_070330_f270fe` 已交七源与13新增测试；Root另5测试及Host/Server/Web。独审 `20261107_045400_d39b13` 候选1有135动态/13静态，最终候选3增量10动态/12静态通过且99哈希无差异。旧现金档审计检查顺序缺陷由Root实际RED修复。独审未做research旁路动态（作者正常工具测试及变异反例覆盖）或浏览器（Root完成）；未做真实模型、长跑或吞吐试验。证据统一在 `logs/implementation-20261106-continued/cognition-runtime-{root,independent,candidate-3}`，正式记录docs/05 §37。
 
-独审d3c63e exec89635仅live-web-independent准备，禁止把未冻结候选当最终结论；等Root明确冻结再动态审查。原Runtime作者ed3b0f/独审afc0c5已结束。后续合同docs/superpowers/plans/2026-11-07-live-web-host.md（含Root Web接线）。五Key真实调用仍只有此前51token一次，这轮0新增供应商请求。旧离线审计页用户稍后手验，无绕过。
+本阶段草稿PR/CI尚待发布，前PR33代码/文档CI42310013886/42310471565均成功。所有草稿仍待人工review，不自动合并，总体基线未完成。当前HTTP浏览器夹具在61293，30分钟有界进程，不是持久服务；原file审计页仍由用户稍后手验。
+
+下一步：提交本阶段草稿PR并核查CI，然后按六层认知与媒体专题继续。f270fe正仅在belief-preparation修订准备稿，无生产写权；Root要求公司/指标/目标时点精确验证、实际阅读才学习、预测错误不等于诚信错误、隐藏来源不能影响人物偏信。未经Root合同核准不接入实现。Root独占主树/Maven与文档；保留旧客户端class与真实调用once标记，不重复供应商调用。
 
 ## 启动规则
 
