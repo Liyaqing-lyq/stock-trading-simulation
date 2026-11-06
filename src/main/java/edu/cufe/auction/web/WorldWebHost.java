@@ -1,7 +1,18 @@
 package edu.cufe.auction.web;
 
+import edu.cufe.auction.world.BoardModel;
+import edu.cufe.auction.world.BoardRun;
 import edu.cufe.auction.world.DecisionRun;
+import edu.cufe.auction.world.DividendModel;
+import edu.cufe.auction.world.InformationModel;
+import edu.cufe.auction.world.InformationRun;
+import edu.cufe.auction.world.ManufacturingModel;
+import edu.cufe.auction.world.ManufacturingRun;
+import edu.cufe.auction.world.OpeningRegistry;
 import edu.cufe.auction.world.PendingTask;
+import edu.cufe.auction.world.PerformanceModel;
+import edu.cufe.auction.world.RoleAccess;
+import edu.cufe.auction.world.RoleRun;
 import edu.cufe.auction.world.RoleView;
 import edu.cufe.auction.world.ValuationModel;
 import edu.cufe.auction.world.WorldExchange;
@@ -9,7 +20,10 @@ import edu.cufe.auction.world.WorldRuntime;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
@@ -374,6 +388,995 @@ public final class WorldWebHost implements AutoCloseable {
                     snapshot.decisions().isPresent() && current.pendingBarrier().isPresent(), pending.size(),
                     snapshot.delivered().size());
         });
+    }
+
+    // ================================================================ 管理详情页（只读）
+
+    /** 有界列表：真实总量 + 本次返回的前若干行。 */
+    public record Section(int total, List<Map<String, Object>> rows) {
+        /** 冻结行集合。 */
+        public Section {
+            rows = List.copyOf(rows);
+        }
+    }
+
+    /**
+     * 公司经营与治理视图（管理端只读，单 writer 任务内取同一确认时点）。
+     *
+     * @param runId                 运行标识
+     * @param position              已确认位置（字符串）
+     * @param timeMillis            世界时点（字符串）
+     * @param manufacturingAvailable 是否启用制造子集
+     * @param symbol                 制造档案绑定的证券代码；未启用为 null
+     * @param companyPartyId         公司组织 partyId；无法判定为 null
+     * @param companyName            公司展示名；登记表缺失为 null
+     * @param operatingReport        经营报表（金额均为精确字符串）
+     * @param reportError            报表派生失败原因；成功为 null
+     * @param inventories            原材料/在制/产成品
+     * @param purchaseOrders         采购单（新到旧）
+     * @param productionBatches      生产批次（新到旧）
+     * @param contracts              客户合同（新到旧）
+     * @param receivables            应收（新到旧）
+     * @param expenseBills           期间费用账单（新到旧）
+     * @param governanceAvailable    是否启用董事会子集
+     * @param charter                章程与席位
+     * @param meetings               会议（新到旧）
+     * @param budgets                已生效预算上限
+     * @param commitments            预算承诺
+     * @param reviews                考核结果
+     * @param periodEvidence         期间截止证据
+     * @param managementReports      制造与治理的管理审计报告（新到旧）
+     * @param rules                  本档案实际使用的实验规则常量
+     * @param notes                  明确标注的未实现项
+     */
+    public record CompanyView(String runId, String position, String timeMillis,
+                              boolean manufacturingAvailable, String symbol, String companyPartyId,
+                              String companyName, Map<String, Object> operatingReport,
+                              String reportError, Section inventories, Section purchaseOrders,
+                              Section productionBatches, Section contracts, Section receivables,
+                              Section expenseBills, boolean governanceAvailable,
+                              Map<String, Object> charter, Section meetings, Section budgets,
+                              Section commitments, Section reviews, Section periodEvidence,
+                              Section managementReports, List<Map<String, Object>> rules,
+                              List<String> notes) {
+    }
+
+    /**
+     * 人物与任职视图（管理端只读）。
+     *
+     * @param runId            运行标识
+     * @param position         已确认位置（字符串）
+     * @param timeMillis       世界时点（字符串）
+     * @param parties          登记人物/组织
+     * @param owners           财产主体
+     * @param appointments     任职（含撤销与有效期判定）
+     * @param mandates         产品管理授权
+     * @param managementReports 任职管理审计报告
+     * @param notes            口径说明
+     */
+    public record PeopleView(String runId, String position, String timeMillis, Section parties,
+                             Section owners, Section appointments, Section mandates,
+                             Section managementReports, List<String> notes) {
+    }
+
+    /**
+     * 信息与阅读视图（管理端只读）。
+     *
+     * @param runId            运行标识
+     * @param position         已确认位置（字符串）
+     * @param timeMillis       世界时点（字符串）
+     * @param documents        资料与版本（新到旧）
+     * @param activeReadings   进行中的阅读
+     * @param closedReadings   已终结的阅读
+     * @param observations     实际完成阅读产生的经历
+     * @param readers          已登记读者
+     * @param managementReports 阅读管理审计报告
+     * @param notes            口径说明
+     */
+    public record InformationView(String runId, String position, String timeMillis,
+                                  Section documents, Section activeReadings,
+                                  Section closedReadings, Section observations, Section readers,
+                                  Section managementReports, List<String> notes) {
+    }
+
+    /**
+     * 账户表现与历史视图（管理端只读，表现只取 {@link PerformanceModel} 口径）。
+     *
+     * @param runId                运行标识
+     * @param position             已确认位置（字符串）
+     * @param timeMillis           世界时点（字符串）
+     * @param performanceAvailable 本页是否计算期间表现（确认帧过长时不计算）
+     * @param accounts             现金账户
+     * @param owners               主体估值、期间表现与资本流条数
+     * @param holdings             估值明细行
+     * @param flows                真实资本流（新到旧）
+     * @param notes                口径说明
+     */
+    public record PerformanceView(String runId, String position, String timeMillis,
+                                  boolean performanceAvailable, Section accounts, Section owners,
+                                  Section holdings, Section flows, List<String> notes) {
+    }
+
+    /** 单页最多返回的行数；总量另行给出，不截断计数。 */
+    public static final int MAX_ROWS = 50;
+
+    /** 本页允许计算期间表现的最大确认帧数；超过时不计算，避免长日志拖死只读请求。 */
+    public static final long MAX_PERFORMANCE_FRAMES = 400;
+
+    /**
+     * 公司经营与治理（单 writer 任务、单快照）。
+     *
+     * @return 视图
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public CompanyView companyView() throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            OpeningRegistry registry = current.openingRegistry().orElse(null);
+            ManufacturingRun manufacturing = snapshot.manufacturing().orElse(null);
+            BoardRun governance = snapshot.governance().orElse(null);
+
+            String symbol = manufacturing == null ? null : manufacturing.symbol();
+            String companyPartyId = governance != null
+                    ? governance.board().charter().companyPartyId()
+                    : organizationPartyOf(registry, manufacturing == null ? null
+                            : manufacturing.ledger().opening().companyOwnerId());
+            String companyName = partyName(registry, companyPartyId);
+
+            Map<String, Object> reportRow = new LinkedHashMap<>();
+            String reportError = null;
+            if (manufacturing != null) {
+                try {
+                    ManufacturingModel.Report report = ManufacturingModel.report(
+                            manufacturing.ledger(), snapshot.accounts(),
+                            dividendPosition(snapshot.dividends().orElse(null)));
+                    reportRow.put("companyCash", dec(report.companyCash()));
+                    reportRow.put("rawQuantity", num(report.rawQuantity()));
+                    reportRow.put("rawAmount", dec(report.rawAmount()));
+                    reportRow.put("rawUnitCost", dec(report.rawUnitCost()));
+                    reportRow.put("wipQuantity", num(report.wipQuantity()));
+                    reportRow.put("wipAmount", dec(report.wipAmount()));
+                    reportRow.put("finishedQuantity", num(report.finishedQuantity()));
+                    reportRow.put("finishedAmount", dec(report.finishedAmount()));
+                    reportRow.put("finishedUnitCost", dec(report.finishedUnitCost()));
+                    reportRow.put("receivableOutstanding", dec(report.receivableOutstanding()));
+                    reportRow.put("equipmentNet", dec(report.equipmentNet()));
+                    reportRow.put("payableOutstanding", dec(report.payableOutstanding()));
+                    reportRow.put("totalAssets", dec(report.totalAssets()));
+                    reportRow.put("totalLiabilities", dec(report.totalLiabilities()));
+                    reportRow.put("initialEquity", dec(report.initialEquity()));
+                    reportRow.put("revenue", dec(report.revenue()));
+                    reportRow.put("costOfGoodsSold", dec(report.costOfGoodsSold()));
+                    reportRow.put("periodExpense", dec(report.periodExpense()));
+                    reportRow.put("depreciation", dec(report.depreciation()));
+                    reportRow.put("cumulativeProfit", dec(report.cumulativeProfit()));
+                    reportRow.put("equity", dec(report.equity()));
+                    reportRow.put("worldCash", dec(report.worldCash()));
+                    reportRow.put("balanced", report.balanced());
+                } catch (RuntimeException invalid) {
+                    reportError = invalid.getMessage() == null
+                            ? invalid.getClass().getSimpleName() : invalid.getMessage();
+                }
+            }
+
+            List<Map<String, Object>> inventories = new ArrayList<>();
+            if (manufacturing != null) {
+                ManufacturingModel.State ledger = manufacturing.ledger();
+                inventories.add(inventoryRow("原材料", ledger.rawMaterials()));
+                inventories.add(inventoryRow("在制", ledger.workInProgress()));
+                inventories.add(inventoryRow("产成品", ledger.finishedGoods()));
+            }
+
+            List<ManufacturingModel.PurchaseOrder> orders = new ArrayList<>();
+            List<ManufacturingModel.ProductionBatch> batches = new ArrayList<>();
+            List<ManufacturingModel.SalesContract> contracts = new ArrayList<>();
+            List<ManufacturingModel.Receivable> receivables = new ArrayList<>();
+            List<ManufacturingModel.ExpenseBill> bills = new ArrayList<>();
+            if (manufacturing != null) {
+                ManufacturingModel.State ledger = manufacturing.ledger();
+                orders.addAll(ledger.purchaseOrders().values());
+                batches.addAll(ledger.productionBatches().values());
+                contracts.addAll(ledger.contracts().values());
+                receivables.addAll(ledger.receivables().values());
+                bills.addAll(ledger.expenseBills().values());
+            }
+            orders.sort(Comparator.comparingLong(ManufacturingModel.PurchaseOrder::orderedAt)
+                    .thenComparing(ManufacturingModel.PurchaseOrder::purchaseOrderId).reversed());
+            batches.sort(Comparator.comparingLong(ManufacturingModel.ProductionBatch::startedAt)
+                    .thenComparing(ManufacturingModel.ProductionBatch::batchId).reversed());
+            contracts.sort(Comparator.comparingLong(ManufacturingModel.SalesContract::signedAt)
+                    .thenComparing(ManufacturingModel.SalesContract::contractId).reversed());
+            receivables.sort(Comparator.comparingLong(ManufacturingModel.Receivable::recognizedAt)
+                    .thenComparing(ManufacturingModel.Receivable::receivableId).reversed());
+            bills.sort(Comparator.comparingLong(ManufacturingModel.ExpenseBill::period)
+                    .thenComparing(ManufacturingModel.ExpenseBill::billId).reversed());
+
+            List<Map<String, Object>> orderRows = new ArrayList<>();
+            for (ManufacturingModel.PurchaseOrder order : orders) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("purchaseOrderId", order.purchaseOrderId());
+                row.put("quantity", num(order.quantity()));
+                row.put("unitPrice", dec(order.unitPrice()));
+                row.put("orderedAt", num(order.orderedAt()));
+                row.put("arrivalAt", num(order.arrivalAt()));
+                row.put("status", order.status().name());
+                orderRows.add(row);
+            }
+            List<Map<String, Object>> batchRows = new ArrayList<>();
+            for (ManufacturingModel.ProductionBatch batch : batches) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("batchId", batch.batchId());
+                row.put("quantity", num(batch.quantity()));
+                row.put("startedAt", num(batch.startedAt()));
+                row.put("completesAt", num(batch.completesAt()));
+                row.put("materialCost", dec(batch.materialCost()));
+                row.put("laborCost", dec(batch.laborCost()));
+                row.put("totalCost", dec(batch.totalCost()));
+                row.put("status", batch.status().name());
+                batchRows.add(row);
+            }
+            List<Map<String, Object>> contractRows = new ArrayList<>();
+            for (ManufacturingModel.SalesContract contract : contracts) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("contractId", contract.contractId());
+                row.put("quantity", num(contract.quantity()));
+                row.put("unitPrice", dec(contract.unitPrice()));
+                row.put("signedAt", num(contract.signedAt()));
+                row.put("promisedDeliveryAt", num(contract.promisedDeliveryAt()));
+                row.put("period", num(contract.period()));
+                row.put("deliveredQuantity", num(contract.deliveredQuantity()));
+                row.put("remainingQuantity", num(contract.remainingQuantity()));
+                contractRows.add(row);
+            }
+            List<Map<String, Object>> receivableRows = new ArrayList<>();
+            for (ManufacturingModel.Receivable receivable : receivables) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("receivableId", receivable.receivableId());
+                row.put("contractId", receivable.contractId());
+                row.put("quantity", num(receivable.quantity()));
+                row.put("amount", dec(receivable.amount()));
+                row.put("cost", dec(receivable.cost()));
+                row.put("outstanding", dec(receivable.outstanding()));
+                row.put("recognizedAt", num(receivable.recognizedAt()));
+                row.put("dueAt", num(receivable.dueAt()));
+                row.put("status", receivable.status().name());
+                receivableRows.add(row);
+            }
+            List<Map<String, Object>> billRows = new ArrayList<>();
+            for (ManufacturingModel.ExpenseBill bill : bills) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("billId", bill.billId());
+                row.put("period", num(bill.period()));
+                row.put("amount", dec(bill.amount()));
+                row.put("paid", dec(bill.paid()));
+                row.put("closedAt", num(bill.closedAt()));
+                billRows.add(row);
+            }
+
+            Map<String, Object> charter = new LinkedHashMap<>();
+            List<Map<String, Object>> seatRows = new ArrayList<>();
+            List<Map<String, Object>> meetingRows = new ArrayList<>();
+            List<Map<String, Object>> budgetRows = new ArrayList<>();
+            List<Map<String, Object>> commitmentRows = new ArrayList<>();
+            List<Map<String, Object>> reviewRows = new ArrayList<>();
+            List<Map<String, Object>> evidenceRows = new ArrayList<>();
+            if (governance != null) {
+                BoardModel.State board = governance.board();
+                BoardModel.Charter value = board.charter();
+                charter.put("companyPartyId", value.companyPartyId());
+                charter.put("companyName", partyName(registry, value.companyPartyId()));
+                charter.put("chairSeatId", value.chairSeatId());
+                charter.put("quorum", Integer.toString(value.quorum()));
+                for (BoardModel.Seat seat : value.seats()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("seatId", seat.seatId());
+                    row.put("partyId", seat.partyId());
+                    row.put("partyName", partyName(registry, seat.partyId()));
+                    row.put("chair", seat.seatId().equals(value.chairSeatId()));
+                    seatRows.add(row);
+                }
+                charter.put("seats", seatRows);
+
+                List<BoardModel.Meeting> meetings = new ArrayList<>(board.meetings().values());
+                meetings.sort(Comparator.comparingLong(BoardModel.Meeting::createdAt)
+                        .thenComparing(BoardModel.Meeting::meetingId).reversed());
+                for (BoardModel.Meeting meeting : meetings) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("meetingId", meeting.meetingId());
+                    row.put("topic", meeting.topic().name());
+                    row.put("convenerSeatId", meeting.convenerSeatId());
+                    row.put("createdAt", num(meeting.createdAt()));
+                    row.put("materialDeadline", num(meeting.materialDeadline()));
+                    row.put("opensAt", num(meeting.opensAt()));
+                    row.put("closesAt", num(meeting.closesAt()));
+                    row.put("status", meeting.status().name());
+                    row.put("attendees", String.join(",", meeting.attendeeSeatIds()));
+                    row.put("recused", String.join(",", meeting.recusedSeatIds()));
+                    row.put("materialCount", Integer.toString(meeting.materials().size()));
+                    row.put("proposedLines", proposedLines(meeting.proposedLines()));
+                    row.put("ballots", ballots(meeting.ballots()));
+                    row.put("failureReason", meeting.failureReason());
+                    row.put("dividendSchemeId", meeting.dividendProposal() == null
+                            ? null : meeting.dividendProposal().request().schemeId());
+                    meetingRows.add(row);
+                }
+                for (BoardModel.Budget budget : board.budgets()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("period", num(budget.period()));
+                    row.put("category", budget.category().name());
+                    row.put("cap", dec(budget.cap()));
+                    budgetRows.add(row);
+                }
+                for (BoardModel.Commitment commitment : board.commitments()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("commitmentId", commitment.commitmentId());
+                    row.put("period", num(commitment.period()));
+                    row.put("category", commitment.category().name());
+                    row.put("reserved", dec(commitment.reserved()));
+                    row.put("spent", dec(commitment.spent()));
+                    row.put("released", dec(commitment.released()));
+                    row.put("outstanding", dec(commitment.outstanding()));
+                    row.put("status", commitment.status().name());
+                    commitmentRows.add(row);
+                }
+                for (BoardModel.ReviewResult review : board.reviews()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("reviewId", review.reviewId());
+                    row.put("status", review.status().name());
+                    row.put("total", dec(review.total()));
+                    List<String> missing = new ArrayList<>();
+                    for (BoardModel.Dimension dimension : review.missingDimensions()) {
+                        missing.add(dimension.name());
+                    }
+                    row.put("missingDimensions", String.join(",", missing));
+                    row.put("metrics", metrics(review.metrics()));
+                    reviewRows.add(row);
+                }
+                List<BoardRun.PeriodEvidence> evidence =
+                        new ArrayList<>(governance.periodEvidence().values());
+                evidence.sort(Comparator.comparingLong(BoardRun.PeriodEvidence::period).reversed());
+                for (BoardRun.PeriodEvidence period : evidence) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("period", num(period.period()));
+                    row.put("capturedAt", num(period.capturedAt()));
+                    row.put("position", num(period.position()));
+                    row.put("reviewMeetingId", period.reviewMeetingId());
+                    row.put("sourceRef", period.sourceRef());
+                    row.put("operatingCommitment", dec(period.operatingCommitment()));
+                    row.put("cashSolvency", dec(period.cashSolvency()));
+                    row.put("risk", dec(period.risk()));
+                    row.put("contractIds", String.join(",", period.contractIds()));
+                    row.put("receivableIds", String.join(",", period.receivableIds()));
+                    evidenceRows.add(row);
+                }
+            }
+
+            List<Map<String, Object>> reports = new ArrayList<>();
+            if (manufacturing != null) {
+                for (ManufacturingRun.ReportEntry entry : manufacturing.reports().values()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("source", "MANUFACTURING");
+                    row.put("taskId", entry.taskId());
+                    row.put("commandId", entry.commandId());
+                    row.put("kind", entry.kind());
+                    row.put("accepted", entry.accepted());
+                    row.put("reason", entry.reason());
+                    row.put("subjectId", entry.businessId());
+                    row.put("amount", dec(entry.amount()));
+                    row.put("timeMillis", num(entry.timeMillis()));
+                    row.put("position", num(entry.position()));
+                    reports.add(row);
+                }
+            }
+            if (governance != null) {
+                for (BoardRun.Report entry : governance.reports().values()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("source", "GOVERNANCE");
+                    row.put("taskId", entry.taskId());
+                    row.put("commandId", entry.commandId());
+                    row.put("kind", entry.kind());
+                    row.put("accepted", entry.accepted());
+                    row.put("reason", entry.reason());
+                    row.put("subjectId", entry.meetingId());
+                    row.put("amount", null);
+                    row.put("timeMillis", num(entry.timeMillis()));
+                    row.put("position", num(entry.position()));
+                    reports.add(row);
+                }
+            }
+            sortReportsNewestFirst(reports);
+
+            List<String> notes = new ArrayList<>();
+            notes.add("经营报表由制造台账与同一截止的现金账户派生，已宣告分红计入应付；balanced 为账平衡式校验结果。");
+            notes.add("采购下单只形成承诺，到货才付款入库；签约不等于收入，交付才确认应收与收入；期间费用与折旧在关期时入账。");
+            notes.add("董事会考核权重事前冻结；本档案尚未实现披露质量与长期投入证据，因此考核总分在证据不全时保持空值，不补零。");
+            notes.add("公司经营净资产不支持账户估值口径（组织完整经营净资产未接入），公司现金与经营回报请看本页，不要与股价混用。");
+
+            return new CompanyView(runId, Long.toString(snapshot.position()),
+                    Long.toString(snapshot.timeMillis()), manufacturing != null, symbol,
+                    companyPartyId, companyName, reportRow, reportError,
+                    bounded(inventories), bounded(orderRows), bounded(batchRows),
+                    bounded(contractRows), bounded(receivableRows), bounded(billRows),
+                    governance != null, charter, bounded(meetingRows), bounded(budgetRows),
+                    bounded(commitmentRows), bounded(reviewRows), bounded(evidenceRows),
+                    bounded(reports), companyRules(), notes);
+        });
+    }
+
+    /**
+     * 人物与任职（单 writer 任务、单快照）。
+     *
+     * @return 视图
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public PeopleView peopleView() throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            OpeningRegistry registry = current.openingRegistry().orElse(null);
+            RoleRun roles = snapshot.roles().orElse(null);
+            long now = snapshot.timeMillis();
+
+            List<Map<String, Object>> partyRows = new ArrayList<>();
+            if (registry != null) {
+                for (OpeningRegistry.Party party : registry.parties()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("partyId", party.partyId());
+                    row.put("kind", party.kind().name());
+                    row.put("name", party.name());
+                    List<String> ownerIds = new ArrayList<>();
+                    for (OpeningRegistry.PropertyOwner owner : registry.owners()) {
+                        if (party.partyId().equals(owner.partyId())) {
+                            ownerIds.add(owner.ownerId());
+                        }
+                    }
+                    row.put("ownerIds", String.join(",", ownerIds));
+                    partyRows.add(row);
+                }
+                partyRows.sort(Comparator.comparing(
+                        (Map<String, Object> row) -> String.valueOf(row.get("partyId"))));
+            }
+
+            List<Map<String, Object>> ownerRows = new ArrayList<>();
+            if (registry != null) {
+                for (OpeningRegistry.PropertyOwner owner : registry.owners()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("ownerId", owner.ownerId());
+                    row.put("kind", owner.kind().name());
+                    row.put("partyId", owner.partyId());
+                    row.put("partyName", partyName(registry, owner.partyId()));
+                    List<String> accountIds = new ArrayList<>();
+                    BigDecimal cash = new BigDecimal("0.00");
+                    for (Map.Entry<String, edu.cufe.auction.world.CashLedger.CashAccount> entry
+                            : snapshot.accounts().entrySet()) {
+                        if (entry.getValue().ownerId().equals(owner.ownerId())) {
+                            accountIds.add(entry.getKey());
+                            cash = cash.add(entry.getValue().cash());
+                        }
+                    }
+                    row.put("accountIds", String.join(",", accountIds));
+                    row.put("cash", cash.toPlainString());
+                    ownerRows.add(row);
+                }
+                ownerRows.sort(Comparator.comparing(
+                        (Map<String, Object> row) -> String.valueOf(row.get("ownerId"))));
+            }
+
+            List<Map<String, Object>> appointmentRows = new ArrayList<>();
+            List<Map<String, Object>> mandateRows = new ArrayList<>();
+            List<Map<String, Object>> reportRows = new ArrayList<>();
+            if (roles != null) {
+                RoleAccess.State access = roles.access();
+                for (RoleAccess.Appointment appointment : access.appointments()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("appointmentId", appointment.id());
+                    row.put("personPartyId", appointment.personPartyId());
+                    row.put("personName", partyName(registry, appointment.personPartyId()));
+                    row.put("organizationPartyId", appointment.organizationPartyId());
+                    row.put("organizationName", partyName(registry,
+                            appointment.organizationPartyId()));
+                    row.put("role", appointment.role().name());
+                    row.put("startsAt", num(appointment.startsAt()));
+                    row.put("endsAt", num(appointment.endsAt()));
+                    row.put("effectiveEnd", num(appointment.effectiveEnd()));
+                    row.put("revokedAt", appointment.revokedAt() == null
+                            ? null : num(appointment.revokedAt()));
+                    row.put("active", appointment.activeAt(now));
+                    row.put("status", appointmentStatus(appointment, now));
+                    appointmentRows.add(row);
+                }
+                appointmentRows.sort(Comparator.comparing(
+                        row -> String.valueOf(row.get("appointmentId"))));
+                for (RoleAccess.ProductMandate mandate : access.mandates()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("productOwnerId", mandate.productOwnerId());
+                    row.put("productName", partyName(registry, organizationPartyOf(registry,
+                            mandate.productOwnerId())));
+                    row.put("organizationPartyId", mandate.organizationPartyId());
+                    row.put("organizationName", partyName(registry,
+                            mandate.organizationPartyId()));
+                    row.put("accountIds", String.join(",", mandate.accountIds()));
+                    mandateRows.add(row);
+                }
+                for (RoleRun.Report report : roles.reports().values()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("taskId", report.taskId());
+                    row.put("commandId", report.commandId());
+                    row.put("kind", report.kind());
+                    row.put("accepted", report.accepted());
+                    row.put("reason", report.reason());
+                    row.put("subjectId", report.subjectId());
+                    row.put("timeMillis", num(report.timeMillis()));
+                    row.put("position", num(report.position()));
+                    reportRows.add(row);
+                }
+                sortReportsNewestFirst(reportRows);
+            }
+
+            List<String> notes = new ArrayList<>();
+            notes.add("人物、组织与财产主体来自开局登记表；任职来自任职子集的实际记录，撤销只结束授权，不抹除本人经历。");
+            notes.add("岗位权限由任职与产品管理授权共同决定，本页只展示记录，不提供任免、授权或代操作入口。");
+            notes.add("个人财产主体的现金合计来自账户表；产品主体与聚合主体不是人物，也不等于其管理机构的自有资产。");
+            notes.add("产品财产主体在登记表里没有独立名称（名称只挂在人物/组织上），因此产品名称显示为空，不编造名称。");
+
+            return new PeopleView(runId, Long.toString(snapshot.position()),
+                    Long.toString(snapshot.timeMillis()), bounded(partyRows), bounded(ownerRows),
+                    bounded(appointmentRows), bounded(mandateRows), bounded(reportRows), notes);
+        });
+    }
+
+    /**
+     * 信息与阅读（单 writer 任务、单快照）。
+     *
+     * @return 视图
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public InformationView informationView() throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            OpeningRegistry registry = current.openingRegistry().orElse(null);
+            InformationRun information = snapshot.information().orElse(null);
+
+            List<Map<String, Object>> documentRows = new ArrayList<>();
+            List<Map<String, Object>> activeRows = new ArrayList<>();
+            List<Map<String, Object>> closedRows = new ArrayList<>();
+            List<Map<String, Object>> observationRows = new ArrayList<>();
+            List<Map<String, Object>> readerRows = new ArrayList<>();
+            List<Map<String, Object>> reportRows = new ArrayList<>();
+
+            if (information != null) {
+                InformationModel.State state = information.information();
+                for (InformationModel.Document document : state.documents()) {
+                    InformationModel.DocumentVersion latest =
+                            document.versions().get(document.versions().size() - 1);
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("docId", document.docId());
+                    row.put("title", latest.title());
+                    row.put("publisherPartyId", document.publisherPartyId());
+                    row.put("publisherName", partyName(registry, document.publisherPartyId()));
+                    row.put("audienceKind", document.audience().kind().name());
+                    row.put("audiencePartyId", document.audience().partyId());
+                    row.put("audiencePartyName", partyName(registry, document.audience().partyId()));
+                    row.put("latestVersion", num(latest.version()));
+                    row.put("versionCount", Integer.toString(document.versions().size()));
+                    row.put("publishedAt", num(latest.publishedAt()));
+                    row.put("readDurationMillis", num(latest.readDurationMillis()));
+                    row.put("bodyLength", Integer.toString(latest.body().length()));
+                    row.put("bodyPreview", preview(latest.body(), 240));
+                    List<String> versions = new ArrayList<>();
+                    for (InformationModel.DocumentVersion version : document.versions()) {
+                        versions.add(version.version() + "@" + version.publishedAt());
+                    }
+                    row.put("versions", String.join(",", versions));
+                    documentRows.add(row);
+                }
+                documentRows.sort(Comparator.comparingLong(
+                                (Map<String, Object> row) -> parseLong(row.get("publishedAt")))
+                        .thenComparing(row -> String.valueOf(row.get("docId"))).reversed());
+
+                for (InformationModel.Reading reading : state.active()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("readId", reading.readId());
+                    row.put("personPartyId", reading.personPartyId());
+                    row.put("personName", partyName(registry, reading.personPartyId()));
+                    row.put("docId", reading.docId());
+                    row.put("version", num(reading.version()));
+                    row.put("startedAt", num(reading.startedAt()));
+                    row.put("dueAt", num(reading.dueAt()));
+                    row.put("status", "READING");
+                    activeRows.add(row);
+                }
+                activeRows.sort(Comparator.comparing(
+                        (Map<String, Object> row) -> String.valueOf(row.get("readId"))));
+
+                for (InformationModel.ClosedReading reading : state.closed()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("readId", reading.readId());
+                    row.put("personPartyId", reading.personPartyId());
+                    row.put("personName", partyName(registry, reading.personPartyId()));
+                    row.put("docId", reading.docId());
+                    row.put("version", num(reading.version()));
+                    row.put("startedAt", num(reading.startedAt()));
+                    row.put("dueAt", num(reading.dueAt()));
+                    row.put("closedAt", num(reading.closedAt()));
+                    row.put("status", reading.reason().name());
+                    closedRows.add(row);
+                }
+                closedRows.sort(Comparator.comparingLong(
+                                (Map<String, Object> row) -> parseLong(row.get("closedAt")))
+                        .thenComparing(row -> String.valueOf(row.get("readId"))).reversed());
+
+                for (InformationModel.ReadObservation observation : state.observations()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("readId", observation.readId());
+                    row.put("personPartyId", observation.personPartyId());
+                    row.put("personName", partyName(registry, observation.personPartyId()));
+                    row.put("docId", observation.docId());
+                    row.put("version", num(observation.version()));
+                    row.put("title", observation.title());
+                    row.put("publishedAt", num(observation.publishedAt()));
+                    row.put("completedAt", num(observation.completedAt()));
+                    row.put("bodyPreview", preview(observation.body(), 240));
+                    observationRows.add(row);
+                }
+                observationRows.sort(Comparator.comparingLong(
+                                (Map<String, Object> row) -> parseLong(row.get("completedAt")))
+                        .thenComparing(row -> String.valueOf(row.get("readId"))).reversed());
+
+                for (String person : state.persons()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("partyId", person);
+                    row.put("name", partyName(registry, person));
+                    int active = 0;
+                    for (InformationModel.Reading reading : state.active()) {
+                        if (reading.personPartyId().equals(person)) {
+                            active++;
+                        }
+                    }
+                    int completed = 0;
+                    for (InformationModel.ReadObservation observation : state.observations()) {
+                        if (observation.personPartyId().equals(person)) {
+                            completed++;
+                        }
+                    }
+                    row.put("activeReadings", Integer.toString(active));
+                    row.put("completedReadings", Integer.toString(completed));
+                    readerRows.add(row);
+                }
+
+                for (InformationRun.Report report : information.reports().values()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("taskId", report.taskId());
+                    row.put("commandId", report.commandId());
+                    row.put("kind", report.kind());
+                    row.put("accepted", report.accepted());
+                    row.put("reason", report.reason());
+                    row.put("subjectId", report.subjectId());
+                    row.put("readerPartyId", report.readerPartyId());
+                    row.put("timeMillis", num(report.timeMillis()));
+                    row.put("position", num(report.position()));
+                    reportRows.add(row);
+                }
+                sortReportsNewestFirst(reportRows);
+            }
+
+            List<String> notes = new ArrayList<>();
+            notes.add("资料含发布者、冻结受众与按序追加的版本；更正通过新版本发布，旧版本原文保留。");
+            notes.add("阅读完成才形成本人经历；未到期不交付全文，取消与到期复核拒绝都不产生经历。");
+            notes.add("正文预览最多 240 字并标注截断，完整原文以版本记录为准；本页是管理端只读观察，不是任何角色的阅读入口。");
+
+            return new InformationView(runId, Long.toString(snapshot.position()),
+                    Long.toString(snapshot.timeMillis()), bounded(documentRows),
+                    bounded(activeRows), bounded(closedRows), bounded(observationRows),
+                    bounded(readerRows), bounded(reportRows), notes);
+        });
+    }
+
+    /**
+     * 账户表现与历史（单 writer 任务、单快照；表现只来自 {@link PerformanceModel}）。
+     *
+     * @return 视图
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public PerformanceView performanceView() throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            OpeningRegistry registry = current.openingRegistry().orElse(null);
+            long position = snapshot.position();
+            boolean performanceAvailable = position <= MAX_PERFORMANCE_FRAMES;
+
+            List<Map<String, Object>> accountRows = new ArrayList<>();
+            snapshot.accounts().forEach((accountId, account) -> {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("accountId", accountId);
+                row.put("ownerId", account.ownerId());
+                row.put("ownerName", ownerName(registry, account.ownerId()));
+                row.put("cash", account.cash().toPlainString());
+                row.put("source", account.source());
+                accountRows.add(row);
+            });
+            accountRows.sort(Comparator.comparing(
+                    (Map<String, Object> row) -> String.valueOf(row.get("accountId"))));
+
+            List<Map<String, Object>> ownerRows = new ArrayList<>();
+            List<Map<String, Object>> holdingRows = new ArrayList<>();
+            // 同一笔资本流会同时出现在转出与转入两个主体的查询结果里；按 flowId 去重后再展示。
+            Map<String, Map<String, Object>> flowById = new LinkedHashMap<>();
+            List<String> ownerIds = new ArrayList<>();
+            if (registry != null) {
+                for (OpeningRegistry.PropertyOwner owner : registry.owners()) {
+                    ownerIds.add(owner.ownerId());
+                }
+            }
+            ownerIds.sort(Comparator.naturalOrder());
+            for (String ownerId : ownerIds) {
+                ValuationModel.Value value = current.valuation(ownerId);
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("ownerId", ownerId);
+                row.put("ownerName", ownerName(registry, ownerId));
+                row.put("kind", ownerKind(registry, ownerId));
+                row.put("valuationStatus", value.status().name());
+                row.put("cash", dec(value.cash()));
+                row.put("holdings", dec(value.holdings()));
+                row.put("dividendReceivable", dec(value.dividendReceivable()));
+                row.put("dividendPayable", dec(value.dividendPayable()));
+                row.put("netWorth", dec(value.netWorth()));
+                row.put("missingSymbols", String.join(",", value.missingSymbols()));
+                for (ValuationModel.HoldingLine line : value.lines()) {
+                    Map<String, Object> holding = new LinkedHashMap<>();
+                    holding.put("ownerId", ownerId);
+                    holding.put("accountId", line.accountId());
+                    holding.put("symbol", line.symbol());
+                    holding.put("quantity", num(line.quantity()));
+                    holding.put("priceSource", line.price().source().name());
+                    holding.put("price", dec(line.price().price()));
+                    holding.put("value", dec(line.value()));
+                    holdingRows.add(holding);
+                }
+                List<WorldRuntime.CapitalFlowReport> flows = current.capitalFlows(ownerId);
+                row.put("capitalFlowCount", Integer.toString(flows.size()));
+                for (WorldRuntime.CapitalFlowReport flow : flows) {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("flowId", flow.flowId());
+                    item.put("position", num(flow.position()));
+                    item.put("atMillis", num(flow.atMillis()));
+                    item.put("fromOwnerId", flow.fromOwnerId());
+                    item.put("fromAccountId", flow.fromAccountId());
+                    item.put("toOwnerId", flow.toOwnerId());
+                    item.put("toAccountId", flow.toAccountId());
+                    item.put("amount", dec(flow.amount()));
+                    item.put("evidenceRef", flow.evidenceRef());
+                    flowById.putIfAbsent(flow.flowId(), item);
+                }
+                if (performanceAvailable) {
+                    try {
+                        PerformanceModel.Performance performance =
+                                current.performance(ownerId, 1L, position);
+                        row.put("performanceStatus", performance.status().name());
+                        row.put("returnRate", dec(performance.returnRate()));
+                        row.put("index", dec(performance.index()));
+                        row.put("maxDrawdown", dec(performance.maxDrawdown()));
+                        row.put("segmentCount", Integer.toString(performance.segments().size()));
+                        row.put("performanceNote", null);
+                    } catch (RuntimeException invalid) {
+                        row.put("performanceStatus", "UNAVAILABLE");
+                        row.put("returnRate", null);
+                        row.put("index", null);
+                        row.put("maxDrawdown", null);
+                        row.put("segmentCount", null);
+                        row.put("performanceNote", invalid.getMessage() == null
+                                ? invalid.getClass().getSimpleName() : invalid.getMessage());
+                    }
+                } else {
+                    row.put("performanceStatus", "NOT_COMPUTED");
+                    row.put("returnRate", null);
+                    row.put("index", null);
+                    row.put("maxDrawdown", null);
+                    row.put("segmentCount", null);
+                    row.put("performanceNote", "确认帧 " + position + " 超过本页上限 "
+                            + MAX_PERFORMANCE_FRAMES + "，未计算期间表现");
+                }
+                ownerRows.add(row);
+            }
+            List<Map<String, Object>> flowRows = new ArrayList<>(flowById.values());
+            flowRows.sort(Comparator.comparingLong(
+                            (Map<String, Object> row) -> parseLong(row.get("atMillis")))
+                    .thenComparingLong(row -> parseLong(row.get("position"))).reversed());
+            holdingRows.sort(Comparator.comparing((Map<String, Object> row) ->
+                            String.valueOf(row.get("ownerId")))
+                    .thenComparing(row -> String.valueOf(row.get("accountId")))
+                    .thenComparing(row -> String.valueOf(row.get("symbol"))));
+
+            List<String> notes = new ArrayList<>();
+            notes.add("净资产 = 现金（含冻结，不重复相加）+ 原始价格估值持仓 + 已确认分红应收 − 分红应付；缺价时净资产保持空，不填 0。");
+            notes.add("期间收益率、指数与最大回撤全部来自 PerformanceModel：真实资本流前后估值几何链接，DECIMAL128 中间计算、12 位 HALF_EVEN 输出。");
+            notes.add("少于两个确认帧、存在缺价或非正权益时，期间表现显示为不适用；本页不另算一套收益率，也不把资本流当收益。");
+            notes.add("资本流只列真实确认的转移事实，按主体任一侧过滤；课程排行榜的初始权益口径不在此页混用。");
+
+            return new PerformanceView(runId, Long.toString(position),
+                    Long.toString(snapshot.timeMillis()), performanceAvailable,
+                    bounded(accountRows), bounded(ownerRows), bounded(holdingRows),
+                    bounded(flowRows), notes);
+        });
+    }
+
+    /** 有界包装：保留真实总量，只返回前 {@link #MAX_ROWS} 行。 */
+    private static Section bounded(List<Map<String, Object>> rows) {
+        int total = rows.size();
+        return new Section(total, rows.subList(0, Math.min(total, MAX_ROWS)));
+    }
+
+    /** 管理回报统一按「时点新→旧、同位按提交位置新→旧」排序（三个子集共用一个口径）。 */
+    private static void sortReportsNewestFirst(List<Map<String, Object>> rows) {
+        rows.sort(Comparator.comparingLong(
+                        (Map<String, Object> row) -> parseLong(row.get("timeMillis")))
+                .thenComparingLong(row -> parseLong(row.get("position"))).reversed());
+    }
+
+    /** 金额 → 精确十进制字符串。 */
+    private static String dec(BigDecimal value) {
+        return value == null ? null : value.toPlainString();
+    }
+
+    /** long → 精确十进制字符串。 */
+    private static String num(long value) {
+        return Long.toString(value);
+    }
+
+    /** 字符串 → long；非数字返回 0（只用于已由本类生成的排序键）。 */
+    private static long parseLong(Object value) {
+        if (value == null) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(String.valueOf(value));
+        } catch (NumberFormatException invalid) {
+            return 0L;
+        }
+    }
+
+    private static String partyName(OpeningRegistry registry, String partyId) {
+        if (registry == null || partyId == null || partyId.isBlank()) {
+            return null;
+        }
+        for (OpeningRegistry.Party party : registry.parties()) {
+            if (party.partyId().equals(partyId)) {
+                return party.name();
+            }
+        }
+        return null;
+    }
+
+    private static String organizationPartyOf(OpeningRegistry registry, String ownerId) {
+        if (registry == null || ownerId == null) {
+            return null;
+        }
+        OpeningRegistry.PropertyOwner owner = registry.owner(ownerId);
+        return owner == null ? null : owner.partyId();
+    }
+
+    private static String ownerName(OpeningRegistry registry, String ownerId) {
+        String partyId = organizationPartyOf(registry, ownerId);
+        String name = partyName(registry, partyId);
+        return name == null ? null : name;
+    }
+
+    private static String ownerKind(OpeningRegistry registry, String ownerId) {
+        OpeningRegistry.PropertyOwner owner = registry == null ? null : registry.owner(ownerId);
+        return owner == null ? null : owner.kind().name();
+    }
+
+    private static Map<String, Object> inventoryRow(String label,
+                                                    ManufacturingModel.Inventory inventory) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("label", label);
+        row.put("quantity", num(inventory.quantity()));
+        row.put("amount", dec(inventory.amount()));
+        row.put("unitCost", dec(inventory.unitCost()));
+        return row;
+    }
+
+    private static String proposedLines(List<BoardModel.BudgetLine> lines) {
+        List<String> parts = new ArrayList<>();
+        for (BoardModel.BudgetLine line : lines) {
+            parts.add(line.period() + "/" + line.category().name() + "="
+                    + line.newLimit().toPlainString());
+        }
+        return String.join(";", parts);
+    }
+
+    private static String ballots(Map<String, BoardModel.Ballot> ballots) {
+        List<String> parts = new ArrayList<>();
+        for (BoardModel.Ballot ballot : ballots.values()) {
+            parts.add(ballot.seatId() + "=" + ballot.vote().name());
+        }
+        return String.join(";", parts);
+    }
+
+    private static String metrics(List<BoardModel.EvidenceMetric> metrics) {
+        List<String> parts = new ArrayList<>();
+        for (BoardModel.EvidenceMetric metric : metrics) {
+            parts.add(metric.dimension().name() + "=" + metric.score().toPlainString());
+        }
+        return String.join(";", parts);
+    }
+
+    private static String appointmentStatus(RoleAccess.Appointment appointment, long now) {
+        if (appointment.revokedAt() != null && appointment.revokedAt() <= now) {
+            return "REVOKED";
+        }
+        if (now < appointment.startsAt()) {
+            return "SCHEDULED";
+        }
+        return appointment.activeAt(now) ? "ACTIVE" : "EXPIRED";
+    }
+
+    private static String preview(String body, int limit) {
+        if (body == null) {
+            return null;
+        }
+        if (body.length() <= limit) {
+            return body;
+        }
+        return body.substring(0, limit) + "…（已截断）";
+    }
+
+    /** 本档案实际使用的制造与治理实验常量（全部取真实常量，不另设数字）。 */
+    private static List<Map<String, Object>> companyRules() {
+        List<Map<String, Object>> rules = new ArrayList<>();
+        rules.add(rule("实验期间长度（毫秒）", Long.toString(ManufacturingModel.PERIOD_MILLIS)));
+        rules.add(rule("模拟日长度（毫秒）", Long.toString(ManufacturingModel.DAY_MILLIS)));
+        rules.add(rule("应收账期（毫秒）", Long.toString(ManufacturingModel.RECEIVABLE_TERM_MILLIS)));
+        rules.add(rule("供应商目录单价", ManufacturingModel.RAW_UNIT_PRICE.toPlainString()));
+        rules.add(rule("供应商每日容量", Long.toString(ManufacturingModel.SUPPLIER_DAILY_CAPACITY)));
+        rules.add(rule("人工单价", ManufacturingModel.LABOR_UNIT_PRICE.toPlainString()));
+        rules.add(rule("客户期间需求", Long.toString(ManufacturingModel.CUSTOMER_PERIOD_DEMAND)));
+        rules.add(rule("客户期间预算", ManufacturingModel.CUSTOMER_PERIOD_BUDGET.toPlainString()));
+        rules.add(rule("合同价格上限", ManufacturingModel.CONTRACT_PRICE_CAP.toPlainString()));
+        rules.add(rule("期间费用", ManufacturingModel.PERIOD_EXPENSE.toPlainString()));
+        rules.add(rule("期间折旧", ManufacturingModel.PERIOD_DEPRECIATION.toPlainString()));
+        rules.add(rule("设备原值", ManufacturingModel.EQUIPMENT_ORIGINAL_COST.toPlainString()));
+        rules.add(rule("董事会法定人数", Integer.toString(BoardModel.QUORUM)));
+        return rules;
+    }
+
+    private static Map<String, Object> rule(String label, String value) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("label", label);
+        row.put("value", value);
+        return row;
+    }
+
+    /**
+     * 由同一确认快照的 D0 派生制造报表所需的分红位置。
+     *
+     * <p>与 {@code WorldRuntime} 内部同名派生同口径：只用 {@link DividendModel} 的公共函数，
+     * 不新增任何记账规则；这里只读，不回写。</p>
+     */
+    private static ManufacturingModel.DividendPosition dividendPosition(DividendModel.State dividends) {
+        if (dividends == null) {
+            return ManufacturingModel.DividendPosition.none();
+        }
+        BigDecimal declared = new BigDecimal("0.00");
+        BigDecimal unpaid = new BigDecimal("0.00");
+        for (DividendModel.Scheme scheme : dividends.schemes().values()) {
+            if (scheme.phase() != DividendModel.Phase.EX_BOOKED
+                    && scheme.phase() != DividendModel.Phase.SETTLED) {
+                continue;
+            }
+            for (DividendModel.Claim claim : DividendModel.claims(dividends, scheme.schemeId())) {
+                declared = declared.add(claim.face());
+                unpaid = unpaid.add(DividendModel.faceUnpaid(claim));
+            }
+        }
+        return new ManufacturingModel.DividendPosition(declared, unpaid);
     }
 
     /**

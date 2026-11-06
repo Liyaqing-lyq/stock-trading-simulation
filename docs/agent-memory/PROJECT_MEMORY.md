@@ -2,6 +2,12 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
+## 最新接续（2026-11-07 05:42）
+
+当前分支codex/world-web-details，base67665d9。B2b PR29两轮CI均成功。Web详情8新增/1010标准、Root105 HTTP、GUI/CSV46成交121订单7排名、JavaDoc05:34:47及真实浏览器完成；独立Hermes82动态通过，交接与PR30/CI收尾中。唯一当前台账为主Plan“当前接续”，下方历史状态不代表现行写权。
+
+Root独占主树/Maven；d3c63e exec59426只独审私有范围，ed3b0f exec90021只B2c Runtime完成槽私有候选。16项Inbox私有测试通过含真实时钟边界失败回归，未集成主树。5key仍仅既有51token一次；Web真实角色调用/认知媒体/多公司银行/长跑均待完成。证据docs/05§33，下一合同docs/superpowers/plans/2026-11-07-live-web-runtime.md。
+
 ## 启动规则
 
 - 先读 `AGENTS.md` 与本文件，再动代码。
