@@ -98,7 +98,7 @@ Snapshot.dividends提供不可变管理查询。报告附于唯一日志的DIVID
 - [x] 明确授生产后新专项、原744、两处真实变异及完整恢复语义矩阵通过并交回。
 - [x] Root独立冻源、实际正常入口、Decimal及持久化故障反例核对通过。
 - [x] 真实Hermes最终源码独审、标准GUI/CSV/JavaDoc、评分/运行记录及主Plan完成。
-- [ ] AI-Generated草稿PR与实际CI通过，等待人工实质review。
+- [x] AI-Generated草稿PR与实际CI通过，等待人工实质review。
 
 ## 首稿复核与接续裁决
 

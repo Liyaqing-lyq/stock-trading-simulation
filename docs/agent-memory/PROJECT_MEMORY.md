@@ -131,3 +131,9 @@ D3c正式契约2026-11-06-capital-flow-performance.md作为接续计划随本阶
 最终交付形式确定为Web，上帝视角须能看到具体key配置。用户指定本机C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt，已仅在内存核对为5行、5个互不相同的key，未显示值、未发起服务请求。可按场景配置并由Codex判断是否测试。实现时凭据仅服务端加载，角色只看到模型别名，日志/恢复/导出/仓库不得含密钥。上帝配置默认遮罩，受限本机管理员显式查看完整值；请求不能被网页第三方来源触发。具体场景映射和有界真实调用待实现与核验，不宣称已接通。此为用户对Web候选的明确裁决，保留JavaFX课程入口。详见主Plan与Web凭据施工单。
 
 M6原离线审计页用户回复稍后手动查看，尚未显示验收，不绕过此前浏览器本地HTML策略。真实Hermes协作保持已有两个会话；不清理Temp、不触碰原G工作树及两个stash。所有PR保持草稿，等待人工实质review，无自动合并授权。
+
+## 2026-11-07远端合并状态核对
+
+GitHub实际查询显示PR6–22于2026-11-06 23:35–23:41（上海时间）由人工账号gujixuan12-rgb合并。PR22落到codex/world-role-trading，最新累计head de20df0d64fb9bd405c58d8c9984fabc440fc376；它包含原490f20c且文件树完全相同。main当前fdbe62f只接收较早阶段，不能将“PR均已合并”误称全部能力已进入main。上述阶段的“待review”是当时记录，当前合并状态以此条为准；未读取人工评审内容，不额外宣称实质review覆盖。
+
+D3b代码a133bbd6657b3111f3af20e03e07eba2d08a087a已推送并建立草稿PR23，base改用现存累计分支codex/world-role-trading。首次向已删除分支创建PR失败，没有改动代码；核对原基线祖先关系及相同文件树后重建成功。链接https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/23，已附当前会话。真实CI run42253286290已completed/success。新PR仍须人工review，Codex不执行合并。
