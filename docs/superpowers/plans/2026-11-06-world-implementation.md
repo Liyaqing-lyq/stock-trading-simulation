@@ -550,3 +550,5 @@ Root另用B2a冻结类编译实际旧DecisionRun4/Request3/Call8客户端，clas
 - 下一：Web四组只读业务详情私有候选105检查与正式测试集成；[B2c真实Web闭环准备](2026-11-07-live-web-runtime.md)明确固定首次接收、期限竞态和有界轮次，当前未授生产。总体基线继续。
 
 Web详情代码90e726a70c7d53b16cc255e6b897e56f1ca0ac81已建立草稿[PR30](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/30)，base为codex/world-live-decision-runtime，已附会话。实际[CI42299095951](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42299095951)已completed/success。1010标准、Root105 HTTP及准确400/401、真实浏览器与独审82通过。本阶段工程验收完成，待至少一名人工review，不自动合并。
+
+B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/32)，base codex/world-live-completion，已附会话。实际[CI42308822586](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42308822586) completed/success；1085标准/GUI/CSV/JavaDoc、74独审与最终JS复核及Root浏览器/容量/故障证据齐备。本单工程验收完成，等待人工review，不自动合并。下一M4f回忆纯核候选90源/14新增、Root14反例GREEN，仍待正式全套与独审，未接世界。

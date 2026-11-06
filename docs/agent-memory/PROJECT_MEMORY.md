@@ -256,3 +256,5 @@ Host作者d39b13原exec53092退出；14项私有测试曾删弱restart实际请�
 Root独占主树/Maven；B2c2 candidate3 Java同candidate2。1085标准/10HTTP/15Host/18容量/9IO/6executor均实际通过，CSV42/121/7、GUI、JavaDoc06:47:24和真实浏览器已过。独审d3c63e最终74动态通过，exec62389已完成candidate3的JS增量复核，无发现；此前exec94023已退出。待发布草稿PR/CI，不自动合并。
 
 ed3b0f纯回忆初稿10私有通过，Root查出重读后仍按首次Observation衰减的语义缺口；exec61639仅cognition-recall-author修复并测试。新Plan明确lastReadId/lastReadAt来自实际已完成ClosedReading，未来/取消/拒绝不能刷新；不改原InformationModel或Runtime，不把纯核视为世界已启用认知。真实Keys仍原一次51token，未新增供应商请求。
+
+B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/32)，base codex/world-live-completion，已附会话。实际[CI42308822586](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42308822586) completed/success；1085标准/GUI/CSV/JavaDoc、74独审与最终JS复核及Root浏览器/容量/故障证据齐备。本单工程验收完成，等待人工review，不自动合并。下一M4f回忆纯核候选90源/14新增、Root14反例GREEN，仍待正式全套与独审，未接世界。
