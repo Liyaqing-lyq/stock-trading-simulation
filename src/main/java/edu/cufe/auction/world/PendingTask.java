@@ -127,6 +127,48 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 自动子任务：到期复核阅读资格并终结（完成或明确拒绝）（COMPLETION）。 */
     public static final String INFORMATION_COMPLETE_READ_V1 = "INFORMATION_COMPLETE_READ_V1";
 
+    /** 人物会话：开始阅读一个明确版本，并核对本次观察任职（COMPLETION）。 */
+    public static final String ROLE_TRADING_READ_V1 = "ROLE_TRADING_READ_V1";
+
+    /** 人物会话：取消本人正在读的一单（COMPLETION）。 */
+    public static final String ROLE_TRADING_UNREAD_V1 = "ROLE_TRADING_UNREAD_V1";
+
+    /** 人物会话：研究员提交组织研究报告（COMPLETION）。 */
+    public static final String ROLE_TRADING_RESEARCH_V1 = "ROLE_TRADING_RESEARCH_V1";
+
+    /** 人物会话：经理建立或修改绝对目标（COMPLETION）。 */
+    public static final String ROLE_TRADING_TARGET_V1 = "ROLE_TRADING_TARGET_V1";
+
+    /** 人物会话：风控审核（COMPLETION）。 */
+    public static final String ROLE_TRADING_REVIEW_V1 = "ROLE_TRADING_REVIEW_V1";
+
+    /** 人物会话：经理确认获批版本（COMPLETION）。 */
+    public static final String ROLE_TRADING_CONFIRM_V1 = "ROLE_TRADING_CONFIRM_V1";
+
+    /** 人物会话：风控暂停（COMPLETION）。 */
+    public static final String ROLE_TRADING_HALT_V1 = "ROLE_TRADING_HALT_V1";
+
+    /** 人物会话：经理取消目标（COMPLETION）。 */
+    public static final String ROLE_TRADING_CANCEL_V1 = "ROLE_TRADING_CANCEL_V1";
+
+    /** 人物会话：执行员子单（admit + 唯一撮合 + 链接，同批）（COMPLETION）。 */
+    public static final String ROLE_TRADING_CHILD_V1 = "ROLE_TRADING_CHILD_V1";
+
+    /** 人物会话：执行员撤销本人子单（COMPLETION）。 */
+    public static final String ROLE_TRADING_CHILD_CANCEL_V1 = "ROLE_TRADING_CHILD_CANCEL_V1";
+
+    /** 系统任务：撤不相容旧单并在撤净后重建基点（RULES）。 */
+    public static final String ROLE_TRADING_SWEEP_V1 = "ROLE_TRADING_SWEEP_V1";
+
+    /** 系统任务：目标/审核到期（RULES）。 */
+    public static final String ROLE_TRADING_EXPIRE_V1 = "ROLE_TRADING_EXPIRE_V1";
+
+    /** 系统任务：任职结束或撤销，撤该任职发出的活动子单（RULES）。 */
+    public static final String ROLE_TRADING_APPOINTMENT_END_V1 = "ROLE_TRADING_APPOINTMENT_END_V1";
+
+    /** 系统任务：风险暂停到期，回到待审核（RULES）。 */
+    public static final String ROLE_TRADING_HALT_RELEASE_V1 = "ROLE_TRADING_HALT_RELEASE_V1";
+
     /** 校验必需字段与 kind/phase 对应关系。 */
     public PendingTask {
         if (taskId == null || taskId.isBlank()) {
@@ -151,13 +193,20 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  GOVERNANCE_IMPLEMENT_V1, BOARD_CLOSE_V1, BOARD_REVIEW_V1,
                  INFORMATION_PUBLISH_V1, INFORMATION_PUBLISH_VERSION_V1,
                  INFORMATION_START_READ_V1, INFORMATION_CANCEL_READ_V1,
-                 INFORMATION_COMPLETE_READ_V1 -> {
+                 INFORMATION_COMPLETE_READ_V1,
+                 ROLE_TRADING_READ_V1, ROLE_TRADING_UNREAD_V1,
+                 ROLE_TRADING_RESEARCH_V1, ROLE_TRADING_TARGET_V1,
+                 ROLE_TRADING_REVIEW_V1, ROLE_TRADING_CONFIRM_V1,
+                 ROLE_TRADING_HALT_V1, ROLE_TRADING_CANCEL_V1,
+                 ROLE_TRADING_CHILD_V1, ROLE_TRADING_CHILD_CANCEL_V1 -> {
                 if (phase != WorldScheduler.Phase.COMPLETION) {
                     throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }
             }
             case MANUFACTURING_PERIOD_CLOSE_V1, BOARD_OPEN_V1,
-                 ROLE_APPOINT_V1, ROLE_REVOKE_V1 -> {
+                 ROLE_APPOINT_V1, ROLE_REVOKE_V1,
+                 ROLE_TRADING_SWEEP_V1, ROLE_TRADING_EXPIRE_V1,
+                 ROLE_TRADING_APPOINTMENT_END_V1, ROLE_TRADING_HALT_RELEASE_V1 -> {
                 if (phase != WorldScheduler.Phase.RULES) {
                     throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
                 }

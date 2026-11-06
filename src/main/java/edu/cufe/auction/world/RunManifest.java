@@ -7,14 +7,16 @@ import java.util.TreeMap;
 /**
  * 扩展世界的运行清单：把运行、规则、模块、资料与模型版本在开局第一个提交里固定下来。
  *
- * <p>当前启用七种明确组合：纯现金、现金 + 开局登记、现金 + 开局登记 + 证券清算夹具、
+ * <p>当前启用八种明确组合：纯现金、现金 + 开局登记、现金 + 开局登记 + 证券清算夹具、
  * 现金 + 开局登记 + 证券台账 + 世界订单撮合、现金 + 登记 + 证券 + 撮合 + 制造经营、
- * 现金 + 登记 + 证券 + 撮合 + 制造 + 董事会治理，以及在此基础上再加任职与资料阅读的
- * {@code informed-stock-company-experiment-v1}。模块表与规则档案一一对应（现金
+ * 现金 + 登记 + 证券 + 撮合 + 制造 + 董事会治理、在此基础上再加任职与资料阅读的
+ * {@code informed-stock-company-experiment-v1}，以及再加四岗交易工作流的
+ * {@code role-trading-experiment-v1}。模块表与规则档案一一对应（现金
  * {@code {cash:1, scheduler:1}}、登记再加 {@code registry:1}、证券再加 {@code securities:1}、
  * 撮合再加 {@code matching:1}、制造再加 {@code manufacturing:1}、治理再加 {@code governance:1}、
- * 任职与阅读再加 {@code roles:1, information:1}），模型版本必须是 {@link #MODEL_NONE}。
- * 任何未启用的能力在构造期就被拒绝，避免运行到一半才发现缺少实现。</p>
+ * 任职与阅读再加 {@code roles:1, information:1}、四岗交易再加 {@code trading:1}），
+ * 模型版本必须是 {@link #MODEL_NONE}。任何未启用的能力在构造期就被拒绝，避免运行到一半才发现
+ * 缺少实现。</p>
  *
  * @param runId              运行标识；同一日志文件只能对应同一运行
  * @param seed               调度公平顺序种子
@@ -52,6 +54,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 在治理档案之上再加任职授权与资料阅读（M4a.2/M4b.2 新增的明确组合，model=none）。 */
     public static final String RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1 =
             "informed-stock-company-experiment-v1";
+
+    /** 在任职与阅读档案之上再加四岗交易工作流（M4c 新增的明确组合，model=none）。 */
+    public static final String RULES_ROLE_TRADING_EXPERIMENT_V1 = "role-trading-experiment-v1";
 
     /** 未接入模型时使用的模型配置版本。 */
     public static final String MODEL_NONE = "none";
@@ -119,6 +124,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("information");
     }
 
+    /**
+     * 是否启用四岗交易模块。
+     *
+     * @return 模块表包含 trading 时返回 true
+     */
+    public boolean hasTrading() {
+        return moduleVersions.containsKey("trading");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -130,14 +144,16 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
                     + RULES_SECURITIES_MATCHING_EXPERIMENT_V1 + "、"
                     + RULES_STOCK_COMPANY_EXPERIMENT_V1 + "、"
-                    + RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1 + " 或 "
-                    + RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1 + "，收到 " + rulesVersion);
+                    + RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1 + "、"
+                    + RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1 + " 或 "
+                    + RULES_ROLE_TRADING_EXPERIMENT_V1 + "，收到 " + rulesVersion);
         }
         Map<String, Integer> modules = new TreeMap<>();
         if (moduleVersions != null) {
@@ -156,34 +172,43 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 || RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
+                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("registry", 1);
         }
         if (RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
+                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("securities", 1);
         }
         if (RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
+                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("matching", 1);
         }
         if (RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
+                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("manufacturing", 1);
         }
         if (RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
+                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("governance", 1);
         }
-        if (RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)) {
+        if (RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("information", 1);
             expected.put("roles", 1);
+        }
+        if (RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)) {
+            expected.put("trading", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "

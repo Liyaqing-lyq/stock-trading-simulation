@@ -14,7 +14,7 @@
 
 - 金额BigDecimal金额2位、成本4位，数量long，精确算术。钱股、冻结及成交只取原世界账。
 - 单writer、due>now、固定RULES/DELIVERY/COMPLETION/OBSERVATION、完整命令幂等、候选→force→publish。失败暂停并保留完整旧Snapshot，恢复只读已确认记录。
-- 使用现有C工作树codex/world-role-trading，base fe30171。G树开工前的用户config/PROJECT_MEMORY由其原检出保留。所有代码走[AI-Generated]草稿PR，人工review后合入。
+- 使用现有C工作树。纯核codex/world-role-trading以fe30171为基线，运行桥codex/world-role-trading-runtime以997284d为基线。G树开工前的用户config/PROJECT_MEMORY由其原检出保留。所有代码走[AI-Generated]草稿PR，人工review后合入。
 - 新role-trading-experiment-v1精确启用现有九模块各1及trading:1，schema7、model=none。沿用八参构造，空交易工作流由新档案开局产生。旧schema1–6省略新字段，旧重载和真实旧二进制兼容保留。
 - 本施工单形成确定性四人执行入口。实际模型的屏障/尝试代次/费用属于后续M4d，届时再启用模型运行配置。
 
@@ -65,34 +65,34 @@
 
 **Interfaces:** 原WorldRuntime八参构造接受新档案，Snapshot新增Optional<RoleTradingRun>。new WorldState末尾trading字段仅schema7存在。Role任务在COMPLETION，目标/审核到期、任职结束及自动撤单在相应未来RULES，内部标识沿现有找空闲策略。
 
-- [ ] 先测试新档案模块/配置、伪造恢复元数据、任职绑定、完整命令重放、正文注入无权限变化。统一拒绝未知/无权，错误不泄露对象是否存在。
-- [ ] 实现任务排程和处理，调用RoleAccess及工作流→WorldExchange.submit/cancel→链接/领域事件/报告/全量Snapshot同批commitAndApply。买卖钱股交割只有WorldExchange原路径。
-- [ ] 真实普通对手单使角色被动单部分成交后，额度和人物进度立即取最新exchange。旧next所有路径保留工作流，引用的订单/成交/资料必须一致。
-- [ ] 测试同command合法已完成重放不写盘，换task/due/kind/版本/actor/引用拒绝。人物command/task按(person,clientId)无歧义命名空间，用户能读取的结果仅返回其clientId。
-- [ ] 目标连续更新、相反方向、旧版本迟到子单、风险限制更新、暂停、取消、有效期结束，以及已排撤单尚未确认时的成交竞态按上述合同通过。
-- [ ] 任职撤销或自然结束仅撤相应执行任职的活动子单，下一任执行员从真实剩余状态执行。旧任职会话即使同人重新上岗仍被拒绝。
-- [ ] 恢复保护研究与目标/风险版本的历史前缀、子单链接/交易字段不可改、自动撤单/到期任务双向一致；无未来创建、倒退版本或孤儿链接。
+- [x] 先测试新档案模块/配置、伪造恢复元数据、任职绑定、完整命令重放、正文注入无权限变化。统一拒绝未知/无权，错误不泄露对象是否存在。
+- [x] 实现任务排程和处理，调用RoleAccess及工作流→WorldExchange.submit/cancel→链接/领域事件/报告/全量Snapshot同批commitAndApply。买卖钱股交割只有WorldExchange原路径。
+- [x] 真实普通对手单使角色被动单部分成交后，额度和人物进度立即取最新exchange。旧next所有路径保留工作流，引用的订单/成交/资料必须一致。
+- [x] 测试同command合法已完成重放不写盘，换task/due/kind/版本/actor/引用拒绝。人物command/task按(person,clientId)无歧义命名空间，用户能读取的结果仅返回其clientId。
+- [x] 目标连续更新、相反方向、旧版本迟到子单、风险限制更新、暂停、取消、有效期结束，以及已排撤单尚未确认时的成交竞态按上述合同通过。
+- [x] 任职撤销或自然结束仅撤相应执行任职的活动子单，下一任执行员从真实剩余状态执行。旧任职会话即使同人重新上岗仍被拒绝。
+- [x] 恢复保护研究与目标/风险版本的历史前缀、子单链接/交易字段不可改、自动撤单/到期任务双向一致；无未来创建、倒退版本或孤儿链接。
 
 ## Task 3 人物正常入口及限权观察
 
 **Interfaces:** WorldRuntime.openRoleSession(String personPartyId)由可信宿主调用。WorldRoleSession公开view()、startReading/cancelReading/canCite、submitResearch、setTarget、reviewTarget、confirmTarget、haltTarget、cancelTarget、submitChild、cancelChild。动作参数仅含commandId/taskId/due及业务request，不含actor/appointmentId；内部从本会话固定的person及观察任职取可信值。
 
-- [ ] 先写人物入口测试，四个会话共用原PRODUCT资产，经理无法执行子单、执行员无法设目标、跨机构拒绝。新会话代表下一次观察，任务到期复核固定任职ID及当前任务/审核版本。
-- [ ] 同一人物可在不同组织有不同有效任职。会话固定全部观察任职的组织→appointmentId映射，业务组织从目标/授权范围选取，逐项复核，不能任选第一份任职绑定所有动作。
-- [ ] RoleTradingView组合原RoleView和授权产品内研究目录、母任务、审批、真实filled/leaves/remaining、本人client回报。研究全文须来自本人阅读经历，原始交易序号、他人私密来源和全局位置不输出。
-- [ ] view工具列表按有效岗位和实际方法生成，阅读包含取消。旧schema6的RoleView与工具列表保持原语义，新入口使用新观察DTO。
-- [ ] 未知/无权产品、任务与子单统一拒绝。ChildRef明确绑定parent/person/本人childId，外来/旧实例引用不影响他人的单。
-- [ ] 隐藏人物或其它机构额外研究/下单而本人公开行情/资产相同，本人JSON一致。所有只读查询使用同一已确认时点。
+- [x] 先写人物入口测试，四个会话共用原PRODUCT资产，经理无法执行子单、执行员无法设目标、跨机构拒绝。新会话代表下一次观察，任务到期复核固定任职ID及当前任务/审核版本。
+- [x] 同一人物可在不同组织有不同有效任职。会话固定全部观察任职的组织→appointmentId映射，业务组织从目标/授权范围选取，逐项复核，不能任选第一份任职绑定所有动作。
+- [x] RoleTradingView组合原RoleView和授权产品内研究目录、母任务、审批、真实filled/leaves/remaining、本人client回报。研究全文须来自本人阅读经历，原始交易序号、他人私密来源和全局位置不输出。
+- [x] view工具列表按有效岗位和实际方法生成，阅读包含取消。旧schema6的RoleView与工具列表保持原语义，新入口使用新观察DTO。
+- [x] 未知/无权产品、任务与子单统一拒绝。ChildRef明确绑定parent/person/本人childId，外来/旧实例引用不影响他人的单。
+- [x] 隐藏人物或其它机构额外研究/下单而本人公开行情/资产相同，本人JSON一致。所有只读查询使用同一已确认时点。
 
 ## Task 4 故障、演示及兼容
 
-- [ ] 子单/成交真实持久写入中断时，完整Snapshot、订单、钱股、工作流/链接/报告/待办均保留旧版并暂停；清中断后重开只执行一次。
-- [ ] 真实撤单完成帧半帧恢复时，旧活动单和额度仍在，再完成后只释放一次；原文件保留，使用副本。
-- [ ] WorldRoleTradingDemo prepare保存活动父子任务，full恢复到部分成交/暂停/撤单后重审确认/后续完成，第三JVM重发不重复成交。打印实际世界钱股、目标、风险上限、filled/leaves及人物角色回报。
-- [ ] 使用legacy-v6中fe30171真正旧classes生成的活动阅读存档，副本用新源码续写full，再由旧classes回读；旧schema6不增加trading字段。旧schema1–5已有回归保留。
-- [ ] Hermes交回源码/Maven后Codex独立重编、手算及正常入口复验，独立Hermes审查真实反例并修复。
-- [ ] 标准bash scripts/verify.sh --with-gui、JavaDoc真生成、评分映射/运行记录/架构接口/总Plan更新，明确实际模型与本地场景参数的范围。
-- [ ] 显式文件提交、秘密检查、推送、[AI-Generated]草稿PR依赖#13，核实远端CI和人工review状态。
+- [x] 子单/成交真实持久写入中断时，完整Snapshot、订单、钱股、工作流/链接/报告/待办均保留旧版并暂停；清中断后重开只执行一次。
+- [x] 真实撤单完成帧半帧恢复时，旧活动单和额度仍在，再完成后只释放一次；原文件保留，使用副本。
+- [x] WorldRoleTradingDemo prepare保存活动父子任务，full恢复到部分成交/暂停/撤单后重审确认/后续完成，第三JVM重发不重复成交。打印实际世界钱股、目标、风险上限、filled/leaves及人物角色回报。
+- [x] 使用legacy-v6中fe30171真正旧classes生成的活动阅读存档，副本用新源码续写full，再由旧classes回读；旧schema6不增加trading字段。旧schema1–5已有回归保留。
+- [x] Hermes交回源码/Maven后Codex独立重编、手算及正常入口复验，独立Hermes审查真实反例并修复。
+- [x] 标准bash scripts/verify.sh --with-gui、JavaDoc真生成、评分映射/运行记录/架构接口/总Plan更新，明确实际模型与本地场景参数的范围。
+- [ ] 显式文件提交、秘密检查、推送、[AI-Generated]运行桥草稿PR依赖#14，核实远端CI和人工review状态。
 
 ## 执行记录
 
@@ -104,3 +104,11 @@
 - Ruling M1。额度采用精确算术，异常状态的溢出进入一致性拒绝/暂停。新链接先按剩余限额比较，阻止正常路径形成溢出状态。
 - Ruling M5。风险收紧触发停止新单及后续真实撤单，确认前已有合法成交保留。桥在审核变更后撤掉不相容挂单，再允许对应确认及新单。M6原始原因码由观察阶段和任务状态共同解释。
 - 附加恢复/参数边界已用实际RED修复，包含未来目标/审核被提前使用、分数价格异常分类及HALTED期限与阶段矛盾。当前385项由原362+23构成。真实模型、Runtime桥、人物入口尚在后续任务中。
+- 纯核提交997284db216248e82b5ac4926b2eaebf8e9c9100已建立[草稿PR #14](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/14)，以#13分支为base。远端verify run42144982713实际completed/success，仍待人工review。运行桥分支codex/world-role-trading-runtime从997284d接续。
+- 正式运行桥作者继续使用真实Hermes会话20261106_091523_c9946f。09:39启动runtime-implementation-query.txt，260工具轮、5400秒，独占C源码/测试/Maven。准备稿与正式合同的语义差异已逐条写入查询文件，Codex在明确交回前只更新文档和私有验收材料。
+- 运行桥首稿于10:31前后交回，新增10专项、组合395项通过。Codex按最终71源文件冻结独立javac，实际正常入口61检查通过，包括现金4600/股份500守恒、部分成交/暂停撤单窗口、次日反向、重聘会话、真实中断及两次重启。证据为codex-runtime/author-final-1/，该轮仍有独审缺口待修。
+- Codex在首稿最终hash复现旧会话离任后可见新组织研究、更新后版本截止仍ACTIVE、四种语义伪造存档被接受。独立Hermes在冻结中间稿发现提前撤任后存量挂单存续至原任期结束，Codex用首稿最终hash重编其Probe后再次复现。完整命令due问题已由作者首轮修正，最终61检查已覆盖，不再作为未修项。
+- 20261106_091523_c9946f继续按runtime-fixes-query.txt修复，230工具轮、5400秒，独占C源码/测试/Maven。范围包括任职撤销存量单、观察绑定的实时读权限、独立目标/审核到期任务、恢复交叉校验、内部标识碰撞和同刻确认等待窗口。最终验收与PR在这些回归修复后推进。
+
+- Codex于11:21接回单writer，纠正恢复夹具的额外调试open与BigDecimal scale，再以实际RED修复目标基点、输入归属、旧会话、完整原请求、Long期限、缺失/改期/孤儿待办和旧版本sweep。最终运行桥38项、组合423项及标准GUI/CSV全绿，JavaDoc12:40:43实际生成。
+- 最终71源root-candidate-3与当前树hash一致，Codex主探针61检查及7重签反例、三JVM42→42两笔成交、真实旧6新续写旧回读通过。独审20261106_101643_be6a4c在最终hash上59 PASS/0 FAIL及3种timer伪造拒绝，覆盖盲区按报告保留。实际根因及恢复记录codex-runtime/root-debug-recovery.md。Task2–4本地验收，发布和人工review状态另记。

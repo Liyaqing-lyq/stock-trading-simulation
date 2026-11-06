@@ -1,0 +1,377 @@
+package edu.cufe.auction.world;
+
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.TreeMap;
+
+/**
+ * 绑定人物与本次观察任职的进程内会话。由可信宿主通过
+ * {@link WorldRuntime#openRoleSession(String)} 创建，模型拿不到它的 actor 字段。
+ *
+ * <p><b>观察固定</b>：打开时冻结 {@code observedAt} 与该人物当时<b>全部</b>有效任职的
+ * 组织→任职标识映射；同人多组织不会任选第一份。会话不写日志，恢复后必须重新打开。</p>
+ *
+ * <p><b>拒绝口径</b>：形状合法的动作一律排程并返回 {@code SCHEDULED:clientTaskId}；
+ * 未知对象、越权、旧版本在<b>完成期</b>统一产出 {{@code NOT_AUTHORIZED} 或真实业务原因，
+ * 排程期不查对象是否存在。静态非法字段与过期 due 抛 {@link IllegalArgumentException}。</p>
+ *
+ * <p><b>不再要求有效任职</b>：离任者仍可打开会话查看个人资产、已读经历与公开资料；
+ * 岗位动作会因观察任职失效而在完成期被拒。</p>
+ *
+ * @param runtime    所属运行（同包可信边界）
+ * @param personPartyId 人物
+ * @param observedAt 观察时点
+ * @param appointments 组织→任职标识（不可变）
+ */
+public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long observedAt,
+                               Map<String, String> appointments) {
+
+    /** 校验字段并冻结映射。 */
+    public WorldRoleSession {
+        Objects.requireNonNull(runtime, "运行");
+        if (personPartyId == null || personPartyId.isBlank()) {
+            throw new IllegalArgumentException("会话人物不能为空");
+        }
+        if (observedAt < 0) {
+            throw new IllegalArgumentException("观察时点不能为负");
+        }
+        appointments = Collections.unmodifiableMap(new TreeMap<>(appointments));
+    }
+
+    /** 研究发表意图：业务字段，不含人物。 */
+    public record ResearchDraft(String researchId, String organizationPartyId,
+                                String productOwnerId, String symbol, String docId, String title,
+                                String body, List<Citation> citations) {
+        /** 冻结证据列表。 */
+        public ResearchDraft {
+            requireText(researchId, organizationPartyId, productOwnerId, symbol, docId, title, body);
+            if (citations == null || citations.isEmpty() || citations.stream().anyMatch(Objects::isNull)) {
+                throw new IllegalArgumentException("研究须包含有效资料引用");
+            }
+            citations = List.copyOf(citations);
+        }
+    }
+
+    /** 已读资料引用：文档 + 定版本。 */
+    public record Citation(String docId, long version) {
+        /** 校验字段。 */
+        public Citation {
+            if (docId == null || docId.isBlank() || version < 1) {
+                throw new IllegalArgumentException("引用必须带资料与正版本");
+            }
+        }
+    }
+
+    /** 经理建立或修改绝对目标。 */
+    public record TargetDraft(String targetId, int expectedVersion, String organizationPartyId,
+                              String productOwnerId, String accountId, String symbol,
+                              long absoluteTargetQuantity, BigDecimal priceLimit,
+                              long deadlineMillis, String sourceResearchId) {
+        /** 校验静态字段。 */
+        public TargetDraft {
+            if (targetId == null || targetId.isBlank() || expectedVersion < 0
+                    || absoluteTargetQuantity < 0) {
+                throw new IllegalArgumentException("目标草稿标识或数量非法");
+            }
+            requireText(organizationPartyId, productOwnerId, accountId, symbol, sourceResearchId);
+            requirePrice(priceLimit);
+            if (deadlineMillis <= 0) {
+                throw new IllegalArgumentException("目标截止必须为正");
+            }
+        }
+    }
+
+    /** 风控审核。 */
+    public record ReviewDraft(String targetId, int expectedVersion, boolean approved,
+                              long maxTotalQuantity, long maxChildQuantity, BigDecimal priceLimit,
+                              long validUntilMillis, String reason) {
+        /** 校验静态字段。 */
+        public ReviewDraft {
+            if (targetId == null || targetId.isBlank() || expectedVersion < 1
+                    || maxTotalQuantity < 0 || maxChildQuantity < 0) {
+                throw new IllegalArgumentException("审核草稿标识或额度非法");
+            }
+            requirePrice(priceLimit);
+            requireText(reason);
+            if (validUntilMillis <= 0) {
+                throw new IllegalArgumentException("审核期限必须为正");
+            }
+        }
+    }
+
+    /** 风控暂停。 */
+    public record HaltDraft(String haltId, String targetId, int expectedVersion, long untilMillis,
+                            String reason) {
+        /** 校验静态字段。 */
+        public HaltDraft {
+            if (haltId == null || haltId.isBlank() || targetId == null || targetId.isBlank()
+                    || expectedVersion < 1 || untilMillis <= 0) {
+                throw new IllegalArgumentException("暂停草稿字段非法");
+            }
+            requireText(reason);
+        }
+    }
+
+    /** 执行员子单；账户、标的、方向从父任务取。 */
+    public record ChildDraft(String parentId, int parentVersion, int riskRevision, String childId,
+                             long quantity, BigDecimal limitPrice) {
+        /** 校验静态字段。 */
+        public ChildDraft {
+            if (parentId == null || parentId.isBlank() || parentVersion < 1 || riskRevision < 1
+                    || childId == null || childId.isBlank() || quantity <= 0) {
+                throw new IllegalArgumentException("子单草稿字段非法");
+            }
+            requirePrice(limitPrice);
+        }
+    }
+
+    /** 本人子单引用：父任务 + 所属人 + 本人子单标识；不含全局订单号。 */
+    public record ChildRef(String parentId, String personPartyId, String childId) {
+        /** 校验字段。 */
+        public ChildRef {
+            if (parentId == null || parentId.isBlank() || personPartyId == null
+                    || personPartyId.isBlank() || childId == null || childId.isBlank()) {
+                throw new IllegalArgumentException("子单引用字段不能为空");
+            }
+        }
+    }
+
+    /** 运行桥传输用：确认参数。人物入口仍用直接参数。 */
+    public record ConfirmDraft(String targetId, int expectedVersion, int riskRevision) {
+        /** 校验目标及待确认版本。 */
+        public ConfirmDraft {
+            requireText(targetId);
+            if (expectedVersion < 1 || riskRevision < 1) {
+                throw new IllegalArgumentException("确认版本必须为正");
+            }
+        }
+    }
+
+    /** 运行桥传输用：取消目标参数。 */
+    public record CancelTargetDraft(String targetId, int expectedVersion) {
+        /** 校验目标及待取消版本。 */
+        public CancelTargetDraft {
+            requireText(targetId);
+            if (expectedVersion < 1) {
+                throw new IllegalArgumentException("取消版本必须为正");
+            }
+        }
+    }
+
+    private static void requireText(String... values) {
+        for (String value : values) {
+            if (value == null || value.isBlank()) {
+                throw new IllegalArgumentException("业务文本字段不能为空");
+            }
+        }
+    }
+
+    private static void requirePrice(BigDecimal value) {
+        if (value == null || value.signum() <= 0 || value.stripTrailingZeros().scale() > 2) {
+            throw new IllegalArgumentException("价格须为正且精确到分");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 只读
+    // ------------------------------------------------------------------
+
+    /**
+     * 本次观察的只读视图。
+     *
+     * @return 视图；世界时间可能已前进，但任职映射保持打开时的固定观察
+     * @throws IOException 读取持久状态失败
+     */
+    public RoleTradingView view() throws IOException {
+        return runtime.roleTradingView(this);
+    }
+
+    /**
+     * 本人能否引用某资料的固定版本。
+     *
+     * @param docId   资料
+     * @param version 版本
+     * @return 已在世界当前时点前读完返回 true
+     */
+    public boolean canCite(String docId, long version) {
+        return runtime.canCite(personPartyId, docId, version);
+    }
+
+    // ------------------------------------------------------------------
+    // 阅读（复用阅读处理器；组织资料另核对观察任职）
+    // ------------------------------------------------------------------
+
+    /**
+     * 开始阅读一个明确版本。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须晚于当前时点
+     * @param docId           资料
+     * @param version         固定版本
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String startReading(String clientCommandId, String clientTaskId, long dueMillis,
+                               String docId, long version) throws IOException {
+        return runtime.scheduleRoleRead(this, clientCommandId, clientTaskId, dueMillis, docId,
+                version);
+    }
+
+    /**
+     * 取消本人正在读的一单。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param ref             本人范围引用（资料 + 版本 + 本人序号）
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String cancelReading(String clientCommandId, String clientTaskId, long dueMillis,
+                                RoleView.ReadingRef ref) throws IOException {
+        return runtime.scheduleRoleUnread(this, clientCommandId, clientTaskId, dueMillis, ref);
+    }
+
+    // ------------------------------------------------------------------
+    // 四个岗位动作
+    // ------------------------------------------------------------------
+
+    /**
+     * 研究员提交组织研究报告。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           研究草稿
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String submitResearch(String clientCommandId, String clientTaskId, long dueMillis,
+                                 ResearchDraft draft) throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_RESEARCH_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 经理设置或修改绝对目标。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           目标草稿
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String setTarget(String clientCommandId, String clientTaskId, long dueMillis,
+                            TargetDraft draft) throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_TARGET_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 风控给出审核。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           审核草稿
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String reviewTarget(String clientCommandId, String clientTaskId, long dueMillis,
+                               ReviewDraft draft) throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_REVIEW_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 风控发出有期限的暂停。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           暂停草稿
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String haltTarget(String clientCommandId, String clientTaskId, long dueMillis,
+                             HaltDraft draft) throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_HALT_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 经理确认获批版本。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param targetId        目标
+     * @param expectedVersion 执行版本
+     * @param riskRevision    审核版本
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String confirmTarget(String clientCommandId, String clientTaskId, long dueMillis,
+                                String targetId, int expectedVersion, int riskRevision)
+            throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_CONFIRM_V1,
+                clientCommandId, clientTaskId, dueMillis,
+                new ConfirmDraft(targetId, expectedVersion, riskRevision));
+    }
+
+    /**
+     * 经理取消目标。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param targetId        目标
+     * @param expectedVersion 执行版本
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String cancelTarget(String clientCommandId, String clientTaskId, long dueMillis,
+                               String targetId, int expectedVersion) throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_CANCEL_V1,
+                clientCommandId, clientTaskId, dueMillis,
+                new CancelTargetDraft(targetId, expectedVersion));
+    }
+
+    /**
+     * 执行员提交子单。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           子单草稿
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String submitChild(String clientCommandId, String clientTaskId, long dueMillis,
+                              ChildDraft draft) throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_CHILD_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 执行员撤销本人子单。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param ref             本人子单引用
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String cancelChild(String clientCommandId, String clientTaskId, long dueMillis,
+                              ChildRef ref) throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_CHILD_CANCEL_V1,
+                clientCommandId, clientTaskId, dueMillis, ref);
+    }
+}

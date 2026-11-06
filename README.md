@@ -21,10 +21,14 @@ mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldGovernanceDemo -De
 # 人物阅读：保存活动阅读，再由独立进程恢复完成；人物视图裁剪权限和正文
 mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldRoleReadingDemo -Dexec.args="logs/my-role-reading prepare"
 mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldRoleReadingDemo -Dexec.args="logs/my-role-reading full"
+# 四岗交易保存活动子单，再由独立进程恢复并逐条重发完整计划
+mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldRoleTradingDemo -Dexec.args="logs/my-role-trading prepare"
+mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldRoleTradingDemo -Dexec.args="logs/my-role-trading full"
+mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldRoleTradingDemo -Dexec.args="logs/my-role-trading full"
 # 原命令再跑一次不重复收付款。世界存档放logs，课程验收会清理data目录。
 ```
 
-制造夹具已连接同一世界交易/现金日志；治理夹具另加五席预算表决、经营承诺和固定期间复盘，full先检查35日再推进61日。人物阅读夹具另启用schema6：任职、固定版本、实际耗时、离任复核和本人经历都写入同一世界日志，RoleView裁剪个人可见数据。排程接口仍由可信场景管理者调用，尚无角色模型工具网关、四岗交易流程、银行或新世界界面；具体能力与证据见实施Plan和[运行记录](docs/05-运行与验证记录.md)。
+制造夹具连接同一世界交易和现金日志，治理夹具加入五席预算表决、经营承诺和固定期间复盘。schema6人物阅读夹具保存任职、固定版本、实际阅读和本人经历。schema7四岗交易夹具通过绑定人物会话依次提交研究、经理目标、风控审核、经理确认及真实子单，prepare保留部分成交后的活动单，full恢复到绝对目标60股，第三次启动逐条重发原计划并保持成交与位置不变。以上采用model=none，真实模型、认知、媒体、银行和新世界工作台继续按实施Plan推进。具体证据见[运行记录](docs/05-运行与验证记录.md)。
 
 需要 JDK 17+（本机为 JDK 21）。仓库自带 Maven Wrapper，**无需安装 Maven**。
 
