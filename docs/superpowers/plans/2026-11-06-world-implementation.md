@@ -55,10 +55,11 @@
 
 ### 当前接续
 
-- 当前分支codex/world-dividend-runtime，基线490f20c。D3a草稿PR22及两次CI成功，D3b最终candidate5本地已验收。816标准、46成交/121订单/7排名、GUI与JavaDoc2026-11-07 00:20:41，Root212独立检查及真实Hermes31+6复核通过，见docs/05§26；D3b草稿PR23（a133bbd）已创建，base为现存累计分支codex/world-role-trading，CI42253286290实际成功。
-- [D3c实际资本流及确认历史表现](2026-11-06-capital-flow-performance.md)已固定契约，前置D3b实际CI。每个确认帧都采样以保留最大回撤，尚未授生产。取消/重新公告、认知媒体、差异公司/银行和长时实验继续推进。
-- 用户于2026-11-07明确最终交付为Web，并授权使用指定文件中的五个key按不同场景配置。已核5个互异值，未调用；[Web与五key配置接续单](2026-11-07-web-key-configuration.md)固定入口、秘密边界和验收。JavaFX保留课程验证，Web为最终观察与控制入口。
-- M6原离线审计页由用户稍后手动查看，尚待显示反馈。PR6–22已由人工账号合并至各自累计基线，最新累计分支为codex/world-role-trading（de20df0），main尚未汇总全部阶段。新PR23保持草稿等待人工review。总体基线未完成，不把单阶段验收替代最终交付。
+- 当前分支 `codex/world-capital-performance`，基线 `bd200157`。D3b 草稿 PR23 的代码及文档 CI 已通过，完整证据见 docs/05 §26。
+- [D3c 实际资本流及确认历史表现](2026-11-06-capital-flow-performance.md)最终candidate3本地验收：42专项/858标准、47成交121订单7排名、GUI及JavaDoc01:38:11，Root123资本检查与Decimal通过，原D3b212/旧8/三JVM保持。真实Hermes最终独立20+2及12no-op/12反例通过。完整证据docs/05§27，当前发布草稿PR及等待实际CI。
+- Root 独占所有主源码、测试和 Maven。真实 Hermes aeafaa 仅在 web-root-candidate-1 私有目录修复 Root19HTTP检查确认的11失败，849817资本最终独审已释放，均不修改主树。私有目录的准备结果不能计作已集成能力。
+- 用户确定最终交付为 Web，并授权指定文件五个 key 按场景配置。[Web 与五 key 配置接续单](2026-11-07-web-key-configuration.md)保持服务端加载、上帝显式查看与人物隔离。实际文件仅验证五个值可读取，尚未调用提供方；私有 HTTP 宿主 48 项已通过，前端、场景配置、模型与浏览器验收仍在施工。
+- M6 原离线审计页由用户稍后手动查看，尚待反馈。PR6–22 已由人工账号合并到累计基线 `codex/world-role-trading`，main 尚未汇总全部阶段。新 PR23 仍为草稿，Codex 不自动合并。取消/重新公告、认知媒体、差异公司/银行和长时实验仍未完成，总体基线继续执行。
 
 以下保留各阶段任务与原始执行记录。
 

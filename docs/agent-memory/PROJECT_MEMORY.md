@@ -137,3 +137,11 @@ M6原离线审计页用户回复稍后手动查看，尚未显示验收，不绕
 GitHub实际查询显示PR6–22于2026-11-06 23:35–23:41（上海时间）由人工账号gujixuan12-rgb合并。PR22落到codex/world-role-trading，最新累计head de20df0d64fb9bd405c58d8c9984fabc440fc376；它包含原490f20c且文件树完全相同。main当前fdbe62f只接收较早阶段，不能将“PR均已合并”误称全部能力已进入main。上述阶段的“待review”是当时记录，当前合并状态以此条为准；未读取人工评审内容，不额外宣称实质review覆盖。
 
 D3b代码a133bbd6657b3111f3af20e03e07eba2d08a087a已推送并建立草稿PR23，base改用现存累计分支codex/world-role-trading。首次向已删除分支创建PR失败，没有改动代码；核对原基线祖先关系及相同文件树后重建成功。链接https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/23，已附当前会话。真实CI run42253286290已completed/success。新PR仍须人工review，Codex不执行合并。
+
+## D3c资本流最终本地验收
+
+当前codex/world-capital-performance basebd200157。Root独占主源码/测试/Maven，生产仅Runtime变动，原78生产与816测试保持。schema9资本元数据同时进入排程请求/待办幂等，真实付款后唯一CAPITAL_FLOW，方向由有限两侧owner派生。新9排程/完成/Notice逐批从原来源重建完整候选，普通批保护待办。每确认帧估值，起点流后无Flow，缺价仍保留已知资本事实，D1允许该组合，不新增NAV状态。
+
+最终candidate3 Runtime5BEAA4D0…4D839DA，42专项/858标准，CSV47成交121订单7排名、GUI与JavaDoc01:38:11通过。Root20+44+59=123独立检查与12帧资本/39帧分红Decimal通过，原D3b212/旧8/三JVM在candidate2通过；candidate3仅一行溢出guard。真实Hermes849817独立20+2及作者修正后12no-op控制/12反例在最终独立classes通过。作者初始浮点重写导致假覆盖已纠正，后发现恢复溢出异常类型真实缺口，正式42th RED后修复。详情docs/05§27。
+
+当前准备D3c草稿PR/CI，未完成总体基线。Web私有候选由Root19HTTP检查取得11失败（精度/严格JSON/会话/异步结果），aeafaa仅拥有web-root-candidate-1私有src/static修复，禁止主树/Maven。849817资本独审已释放。实际五key仅加载验证，没有提供方请求。
