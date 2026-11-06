@@ -73,7 +73,7 @@ static Performance calculate(String ownerId, String periodId, List<Point> points
 - [x] 复用D0分红的登记/除息/减值/清偿，100股@10、每股1的9元夹具价+100应收=1000，到账只资产形态变化。当前未接Runtime真实分红付款，不据此宣称现金闭环。
 - [x] 1000追加500无收益，先涨10%到1100再追加500至1600、后跌10%到1440得TWR=-1%、回撤10%。同毫秒多流、提现、错误边界、重复Flow、错误owner和跨缺价/非正期间拒绝或明确不适用。
 - [x] Codex独立手算与真实Hermes独审，专项及标准GUI/CSV/JavaDoc、评分映射和真实记录齐备。
-- [ ] AI-Generated草稿PR依赖PR19，实际CI通过，等待人工实质review。随后D2董事会授权与D3唯一世界批次实际分红。
+- [x] AI-Generated草稿PR依赖PR19，实际CI通过，等待人工实质review。随后D2董事会授权与D3唯一世界批次实际分红。
 
 ## 测试交接与实施裁决
 
@@ -95,3 +95,5 @@ Codex从当前测试源码直接抽取底层夹具函数，在最终D0的76源�
 缺价不妨碍记录已知外部资本流。非COMPLETE Point保留Flow及其原身份/证据，nav仍为空，calculate返回INCOMPLETE_VALUATION且收益/指数/回撤为空，不能删掉资金事实。此裁决取代作者首稿对缺价Flow的额外限制。PriceBook逐条验证价格来源时点/age与自身截止，OPENING_REFERENCE固定asOf=0，Long最大陈旧度可合法表示。结构化账户/标的二元键保留全部合法字符串标识，不依赖分隔符拆解。
 
 最终真实Hermescandidate2按78源hash独立重编，44原检查及20窄探针共64/64通过，原两个Important均修复，原76源逐字节相同。D1本地验收完成，当前发布依赖PR19的草稿PR，待实际CI及人工实质review。
+
+估值与表现代码dc90a607bbac4c6a330691f0d35dccc8a861c279已建立[草稿PR #20](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/20)，base为codex/world-dividend-core（PR19）。远端verify run42209352373实际completed/success，已附当前会话，待人工实质review。下一阶段D2董事会分红授权纯核继续施工。

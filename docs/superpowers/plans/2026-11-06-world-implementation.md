@@ -440,3 +440,5 @@ D1测试先行交40项仅缺API RED，Codex核对修正新夹具并增加4项，
 D1首稿44/660及两变异通过后，Codex独立取得未来Quote/age/开局时点、标识二元键碰撞和缺价已知Flow等实际反例。新增4项正式RED后修复，当前candidate2为48专项/664标准，GUI/CSV53成交140订单7排名、JavaDoc19:07:27、独立33及Decimal复算通过。最终Hermes独审进行中，D2董事会授权只读准备已交，尚未授源码。
 
 D1最终candidate2的真实Hermes独审64/64通过，原2条Important修复，78源hash一致且原76逐字节相同。48专项、664标准、独立33及Decimal、GUI/CSV/JavaDoc均通过，现发布草稿PR。下一D2正式Plan采用Meeting可选元数据并保留State五字段，实际旧二进制golden准备进行，尚未授测试/生产。
+
+估值与表现代码dc90a607bbac4c6a330691f0d35dccc8a861c279已建立[草稿PR #20](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/20)，base为codex/world-dividend-core（PR19）。远端verify run42209352373实际completed/success，已附当前会话，待人工实质review。下一阶段D2董事会分红授权纯核继续施工。
