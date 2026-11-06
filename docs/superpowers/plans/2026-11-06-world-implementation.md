@@ -484,3 +484,5 @@ D2测试交26项真实缺API RED，Codex核对修正重审时界/辅助构造及
 Root拥有全部主树/Maven；作者aeafaa仅拥有deepseek-adapter-preparation私有目录（exec26122）修Root7项中5个边界失败，不能用Temp/真实keys/主树/Maven。审查849817仅拥有web-independent-final私有目录（exec9516）复核candidate3，不能Maven/主树。真实五keys未发提供方请求。DeepSeek适配器只是私有准备，未集成世界，成本未知不能填0当账单。总体基线继续施工，下一发布Web草稿PR/实际CI后接正式适配器和Web业务链。
 
 最终candidate3真实Hermes增量独审已完成：86源hash一致，独立重编后64/64通过；同探针对candidate2取得6个cash-only失败，证明模块闸修复有效。Root24独编HTTP、902标准/43成交119订单7排名、GUI/JavaDoc及真实浏览器均已通过，现发布草稿PR，等待实际CI；总体基线继续施工。
+
+Web工作台代码3bbf337c8cbb87ef07ca2546a082ac73ee56e075已建立草稿[PR25](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/25)，base为codex/world-capital-performance；实际[CI42277171062](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42277171062)已completed/success。最终独审64/64。下一按2026-11-07-deepseek-provider.md继续，私有修复已由Root独立重新编译后7/7通过；真实keys未调用。Root另读出可选cache字段非法类型被当缺失、超int范围choice index可能截断为0两处待正式RED核验。整体基线未完成，无自动合并。

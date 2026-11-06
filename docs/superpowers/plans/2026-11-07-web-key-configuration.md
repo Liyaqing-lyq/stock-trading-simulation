@@ -19,12 +19,12 @@
 
 - [x] 核对用户指定文件存在及五个互异值，记录格式，不输出值。
 - [ ] 依据现有接口及基线细化Web服务/页面接线、预算和配置DTO，核对最新提供方接口。
-- [ ] 配置管理与场景路由先失败测试，再实现；验证角色及跨源访问拒绝、默认遮罩、显式查看、秘密不落日志和导出。
+- [x] 配置管理与场景路由先失败测试，再实现；验证角色及跨源访问拒绝、默认遮罩、显式查看、秘密不落日志和导出。
 - [ ] 真实世界同快照页面、控制、图表、历史及人物权限测试，浏览器真实交互验收。
 - [ ] 有界真实模型小试与费用/失败记录，测试或未测状态准确显示。
 - [ ] 完整总体基线回归、Web使用说明、草稿PR及实际CI、人类review。
 
-当前仅完成需求固定及文件格式核对，Web和五key路由尚未实现。原本地HTML审计页仍等待用户手动反馈；不得通过切换访问方式规避已经出现的浏览器策略限制。
+当前已完成本机Web工作台和五key场景配置，902项标准验证及真实浏览器验收通过，草稿PR25实际CI成功。真实模型执行、完整历史与业务页面继续施工。原本地HTML审计页仍等待用户手动反馈；不得通过切换访问方式规避已经出现的浏览器策略限制。
 
 ## Web第一阶段施工裁决（接D3c，2026-11-07）
 
@@ -52,7 +52,7 @@ D3c代码PR24已实际CI成功，当前分支codex/world-web-workbench，base831
 - [x] SceneRoutes正式接线，保存/重开/并发冲突/真实写失败及五槽权限测试。
 - [x] 静态资源只白名单，真实WorldRuntime启动，浏览器实际登录、推进、切人物、返回、刷新、配置和遮罩验收；超2^53精确数字及空状态检查。
 - [x] 保存本地API契约/可运行Postman集合，实际服务检查。当前Postman1.75可用collection run，status命令不支持，不能声称workspace已初始化；请求仅dummy凭据并禁远端报告。
-- [ ] 标准verify含GUI/CSV、JavaDoc、更新评分/记录/Plan/README、草稿PR与实际CI。
+- [x] 标准verify含GUI/CSV、JavaDoc、更新评分/记录/Plan/README、草稿PR与实际CI。
 
 后续完整工作台按基线§12的市场/股票、公司、账户、人物机构、新闻讨论、世界关系分页接入，并加入真实成交图表、确认历史与只读回看。信息与机制缺项显式标未实现，不用新页面标题冒充业务已完成。
 
@@ -61,3 +61,5 @@ D3c代码PR24已实际CI成功，当前分支codex/world-web-workbench，base831
 902标准、GUI/CSV（43成交119订单7排名）、JavaDoc03:05:52、Root24HTTP/线程/超2^53精度、Postman22请求56断言已通过。浏览器完整登录/推进/配置保存重启/显式查看自动清除/人物切换与刷新已实点。candidate3仅在candidate2上增加无decisions时的屏障模块闸；最终增量独审与草稿PR/CI尚未记完成。真实模型、完整业务页面及总体基线仍在上方未完成项，不能因配置保存成功勾成模型执行成功。
 
 最终candidate3真实Hermes增量独审已完成：86源hash一致，独立重编后64/64通过；同探针对candidate2取得6个cash-only失败，证明模块闸修复有效。Root24独编HTTP、902标准/43成交119订单7排名、GUI/JavaDoc及真实浏览器均已通过，现发布草稿PR，等待实际CI；总体基线继续施工。
+
+Web工作台代码3bbf337c8cbb87ef07ca2546a082ac73ee56e075已建立草稿[PR25](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/25)，base为codex/world-capital-performance；实际[CI42277171062](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42277171062)已completed/success。最终独审64/64。下一按2026-11-07-deepseek-provider.md继续，私有修复已由Root独立重新编译后7/7通过；真实keys未调用。Root另读出可选cache字段非法类型被当缺失、超int范围choice index可能截断为0两处待正式RED核验。整体基线未完成，无自动合并。
