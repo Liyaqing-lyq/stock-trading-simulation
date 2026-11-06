@@ -13,7 +13,8 @@ name: verify
 
 on:
   pull_request:
-    branches: [main]
+    # 分段实施的后续 PR 以 codex 分支为依赖，同样执行完整验证。
+    branches: [main, 'codex/**']
   push:
     branches: [main]
   workflow_dispatch:

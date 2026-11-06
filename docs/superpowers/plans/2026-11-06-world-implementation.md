@@ -20,7 +20,7 @@
 - 首轮精度 1 模拟毫秒，固定四阶段；新消息最早下一时间步。公平顺序来自运行种子并可记录。
 - 用户可见首版须含所启用公司的董事会、独立四岗、遗忘/偏信/习惯和真实图表来源；基础模块通过不代表首版完成。
 - 每阶段：专项测试 + `bash scripts/verify.sh --with-gui` + 评分映射 + 真实记录；代码通过 PR、`[AI-Generated]`、至少一名人工实质 review 后才能合入。
-- 保留启动时所有未提交改动。当前工作分支 `codex/world-implementation`，起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
+- 保留启动时所有未提交改动。基础草稿分支 `codex/world-implementation`，当前证券单元分支 `codex/world-securities-ledger`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
 
 ## Review Focus
 
@@ -41,8 +41,8 @@
 | 阶段 | 产出与范围 | 依赖 | 基线验收覆盖 | 当前状态 |
 | --- | --- | --- | --- | --- |
 | M0 现状核验/加固 | 课程全套实跑；静态风险；必要回归修复 | 无 | V06/V15 的课程部分 | 本地已验收，待 PR 人工 review |
-| M1 世界运行基础 | 模拟时序/阶段、运行清单、唯一提交、幂等事件日志、恢复与分支边界 | M0 | V10/V11/V12 | 执行中：时间/日志有专项证据，完整运行恢复未完成 |
-| M2 身份/开局/交易账 | 人物/组织/账户/任职；开局股份与现金清单；托管映射；版本化规则；T+1 批次/自成交 | M1 | V01/V02/V05/V06/V14 | M2.1/2.2 本地验收；批次/交易/任职仍待实施 |
+| M1 世界运行基础 | 模拟时序/阶段、运行清单、唯一提交、幂等事件日志、恢复与分支边界 | M0 | V10/V11/V12 | 现金运行子集本地验收；完整世界/实验分支仍待实施 |
+| M2 身份/开局/交易账 | 人物/组织/账户/任职；开局股份与现金清单；托管映射；版本化规则；T+1 批次/自成交 | M1 | V01/V02/V05/V06/V14 | M2.1–2.3 清算子集本地验收；撮合/任职待实施 |
 | M3 公司经营竖切 | 制造公司、外部客户/供应商、合同履约、现金与报表、董事会、现金分红、表现核算 | M2 | V04/V15/V16/V17 | 待细化 |
 | M4 角色与信息竖切 | 独立四岗机构、两类媒体、普通投资者；阅读/传播/权限、六层记忆与偏信/习惯、模型屏障与预算 | M1/M2/M3 | V07/V08/V09/V10/V13/V14 | 待细化 |
 | M5 差异公司与银行 | 工程回款、银行完整实验规则、直接/组合敞口迁移、其余十类公司及八类媒体逐项配置 | M3/M4 | V01/V02/V03/V13/V16 | 待细化 |
@@ -179,6 +179,56 @@
 
 **M2.3 进入施工前的固定口径：** 剩余持仓含冻结，冻结是其子集，不能用 remaining+frozen 再算一份库存；可卖量为 `Σ(remaining−frozen)` 且 `eligibleFromDay <= 当前实验交易日`。当日买入资格日=当前日+1。昨日100，今卖60/回补60后仅40合格，再冻结30仅10可用，撤单恢复40。本轮不以 UTC 自然日冒充真实交易日历，具体实验日规则在 M2.3 单元中版本化。
 
+### M2.3 持仓批次、冻结与同批清算夹具（本地已验收）
+
+**边界：** 实现有限库存和现金的清算夹具，先验证 V02/V05，不宣称已有订单簿、真实交易所档案、费用/价格限制、收益图或角色交易授权。只有管理端可排程系统清算夹具，model=none；未来角色工具不得直接调用此夹具制造成交。
+
+**Files:** 新增 `world/SecuritiesLedger.java`、`world/SecuritiesLedgerTest.java`、`world/WorldRuntimeSecuritiesTest.java`；修改 `RunManifest.java`、`PendingTask.java`、`WorldRuntime.java` 接入。保留原 121 项合理断言和课程入口，现金记账仍复用 CashLedger.computeTransfer，不创建平行资金账。
+
+**数据与纯计算契约：**
+- `Lot(lotId, accountId, symbol, remaining, eligibleFromDay, acquiredAtMillis, acquiredPosition, costPrice, classification)`：数量 long，成本 BigDecimal 4 位；remaining 是未售总量，**包含冻结部分**，不再存第二份 frozen 数量。取得时间与排序序号分开：初始 acquiredAtMillis=0，稳定初始 lot ID/取得顺序可由规范化序号生成；acquiredPosition **只表示批次内 FIFO 顺序，不是全局 journal 提交位置**。新买入顺序须晚于全部现存批次（如 max+1），发生时间用实际完成时点，源任务由唯一 lot ID/报告关联。不能让新买入批次因提交号小于开局数组序号而排到旧批次前面。
+- `LotQuantity(lotId, quantity)`；`SellReservation(reservationId, accountId, symbol, allocations)`：冻结唯一权威为这些批次分配，数量由 allocations 求和。完全成交/撤单移除活动预留，已用 reservationId 不复用。成交消耗预留，不可绕过批次资格。
+- `ActionReport(taskId, commandId, kind, accepted, reason, timeMillis, position)`；`State(lots, reservations, usedReservationIds, reports)`：集合深度不可变，结果按 taskId 保存且旧值不可改写。reports 是管理审计结果，不是已向角色送达的消息。
+- `opening(registry)`、`available(state, accountId, symbol, day)`、`reserve(...)`、`cancel(...)`、`fill(...)` 为无 I/O 的纯候选计算，Runtime 持久确认后才发布。FIFO 在合格 FLOAT 批次中按 acquiredPosition/lotId 消耗；LOCKED/TREASURY 计入发行总数但不能被本夹具卖出。
+- 当前实验规则固定 `DAY_MILLIS=86_400_000`、`day=floor(模拟毫秒/DAY_MILLIS)`。这是从运行起点计算的实验日，不是 UTC 自然日或真实交易日历。初始 FLOAT day=0 可卖；当日买入 day+1 可卖。金额=BigDecimal价格×long数量，禁止 long/double 金额运算；数量累计 Math.addExact。
+
+**唯一运行与版本：**
+- 新档案 `securities-clearing-experiment-v1` 精确模块 `{cash:1,scheduler:1,registry:1,securities:1}`，仍 model=none、必须有 registry。原 cash/registry 两种档案原样支持。
+- 新档案使用 WorldState schema 2，含完整 SecuritiesLedger.State；旧两档案保持 schema 1，新增的可空 securities 字段在 JSON 中必须省略（不能写 null 破坏旧读取器）。旧日志读取为空，继续写出的旧格式也保持。WorldCommit 帧格式不变；找不到模块版本明确拒绝。
+- 管理 Snapshot 同截止位置增加 `Optional<SecuritiesLedger.State> securities`；openingRegistry 仍表示初始分配，不能伪装成交易后的持仓。
+- 每个完整状态核对：各证券 Σremaining=已发行股份，所有账户/证券/批次引用有效，冻结分配合计≤对应 lot.remaining，无负数/溢出；现金总额沿既有守恒，账户权属不变。原子检查点包含现金+持仓+预留+待办+结果，不另开日志。
+
+**排程接口（返回原 SCHEDULED 回报，到期执行才产生 ActionReport）：**
+- `scheduleReserveSell(commandId, taskId, dueTimeMillis, actorOwnerId, accountId, symbol, reservationId, long quantity)`。
+- `scheduleCancelSell(commandId, taskId, dueTimeMillis, actorOwnerId, reservationId)`。
+- `scheduleFixtureFill(commandId, taskId, dueTimeMillis, reservationId, buyerAccountId, BigDecimal price, long quantity)`：仅受信的系统夹具，不是买方下单接口。成交双方必须有不同财产受益主体；同管理组织的不同产品主体不合并。
+- 三类 PendingTask `SELL_RESERVE_V1/SELL_CANCEL_V1/FILL_SETTLE_V1` 均在 COMPLETION 执行，due>now，线程/暂停/幂等规则与现有排程一致。未知能力在提交前拒绝；原命令重试先取原回报，不因过去时点重复排程。
+- 到期按最新状态复核。卖方预留不足、买方现金不足、同主体或无权动作形成明确业务拒绝，不改变资产；拒绝也保留报告，不能同原命令再次付款。冻结/撤销校验财产主体与账户，内部清算以明确系统夹具身份记载。
+- fill 同一 WorldCommit 保存：任务完成 + 现金转移 + 卖方 lot/预留减少 + 买方新 lot + 报告 + 全量状态。先持久再发布。失败/短写时旧钱、旧股、旧预留和原待办都保留；恢复不重跑已确认动作。
+
+**验收步骤：**
+- [x] RED：纯批次资格（初始/当日买入/次实验日）、锁定和库存股不可卖、冻结不双算、超量/重复预留拒绝、FIFO与成本 4 位、取消只释放未成交量。
+- [x] RED：发行 200，A/B 各100、现金各1000；A卖60给B，再由B的**旧底仓**卖60回A，A总量100但当日可卖40；再预留30可卖10、取消后40，次日100。不能让B把刚买到的60当日转卖。
+- [x] RED：预留80、成交30后 remaining70/预留50/可用20，撤销后可用70；现金只转价格×30，各证券总数守恒；独立公司账户现金不因二级成交增加。
+- [x] RED：同一受益主体两账户不能自成交、不同产品主体可独立结算；未知/越权、钱不足/股不足不留单边状态；同命令重发/重启后无重复付款或股份。
+- [x] RED：实际中断 fill 提交与完成帧半条截断，恢复资金/持仓/冻结/待办一致，继续只完成一次；暂停后拒绝新排程。
+- [x] RED：旧 cash 与旧 registry 运行继续可读/可推进且新证券接口明确未启用；Codex 用实际上一提交生成的文件做跨版本复验；同种子/不同入队顺序结果一致。
+- [x] 最小实现、全套、独立审计、标准 GUI/CSV 入口与 JavaDoc；M2.3 只报清算/批次子集，订单撮合与交易授权继续后续施工。
+
+### M2.4a 共享纯撮合计划（M2.3 验收后施工）
+
+**目的与边界：** 旧 MatchingEngine 直接修改账户/簿，不能放到可靠日志之前执行。先抽出唯一的无副作用撮合算法，旧入口通过它应用相同结果，下一单元世界订单也使用它；本步不宣称世界已经能下单。不改 Account、旧规则限制、GUI 或广播锁边界，不新增框架。
+
+**Files:** 新增 `engine/MatchPlanner.java` 和对应测试；`OrderBook` 增加按对手侧价格/FIFO 顺序的不可变报价副本；仅修改 `MatchingEngine.match` 与不再使用的预算辅助方法。现有所有课程断言保留。由 Hermes 独占上述源文件和 Maven，Codex 管理文档与最终验收。
+
+**契约：** 输入主动方向/类型/限价/数量/受益主体、按价格时间顺序的被动报价（orderId、受益主体、价格、剩余量），买方可用预算等于本单冻结加可用现金。输出不可变成交计划（makerId、被动价、数量）、剩余量、停止原因及触发自成交的 makerId。纯计算不改 Order/Account/簿、不读系统时钟、不做 I/O。预算按实际成交金额递减，先按剩余量封顶再转 long，防止巨大 BigDecimal 预算转 long 溢出。
+
+- [ ] RED：买卖两侧价格优先、同价 FIFO、被动价成交、不交叉停止、市价扫簿、部分数量；输入与输出不随旧可变 Order 后续变化。
+- [ ] RED：买方现金1000、市价数量100，卖10×50与11×100，先按卖一冻结1000可受理，实际50+45、花995、剩余5；现金1200请求200按卖一需2000，应由原受理层拒绝，不能错误宣称截断成交。
+- [ ] RED：前一第三方成交后遇同主体更优挂单，停止并取消主动剩余，保留前一成交和被动自有单；同价不跳队。
+- [ ] 将旧引擎委托纯计划，应用成交仍在原锁内，广播仍锁外；自成交原因文本/限价挂簿/市价撤销行为保持。
+- [ ] 专项与原课程断言全绿、独立核对、标准 GUI/CSV + JavaDoc，更新记录和评分映射；仅在本步完成后细化 M2.4b 世界订单状态/买方现金冻结。
+
 ## 进入后续阶段前必须冻结的规格
 
 - M2：开局资产负债、发行股份/所有者、托管/银行映射、授权对象与规则档案；实验 T+1/限价/费率，不冒称全部真实交易所制度。
@@ -221,8 +271,18 @@
 - Codex 用 `60fc1f4` 真实源码单独编译生成旧现金待办日志，再以 M2.2 新代码恢复与重跑，得到位置 5、900/100、1 条回报；原始文件/输出在 `legacy-v1/`。独立审查也核对了旧 openingContent 逐字节不变。不是只用新代码自写自读。
 - Ruling: 不人为缩小 long 股数范围来掩盖未来错误算术；数量累计用 Math.addExact，金额乘数量用 BigDecimal。登记 schema 由 `registry:1` 与对应规则档案联合固定，未来变更须显式升级并保留旧读写支，不另加无用途的版本号。代价是后续模块必须实际遵守精度与兼容契约，不能随意改字段。
 - M2.2 最终本地验收（`m22-standard-verify.log`）：121/121、72 笔成交/230 条订单/11 行排名、CSV 复算与 JavaFX 全绿，JavaDoc 构建成功。成本/估值与分类三元主键的反例先红后绿（`m22-fix-red/green.log`）；详见 `docs/05` §9。只完成不可变开局登记，未实现动态证券持仓/任职。
+- M2.2 已提交并推送 `025c45b` 至草稿 PR #6。原 Hermes 实现会话已有 462 条消息，已留下 `hermes-m22-fix-handoff.md`；在此已验收单元边界换新执行上下文承担 M2.3，避免无限增长上下文。新任务读取本 Plan/现有源码/交接，不用 latest 猜会话；查询和输出为 `hermes-m23-query.txt` / `hermes-m23.log`，140轮/2400秒有界执行。Codex 保留总体方向与单写入者管理。
+- Ruling: 批次的 acquiredPosition 采用局部取得顺序而非世界提交号，初始排序稳定，新买入取现存最大值+1；真实发生时间/来源另由 acquiredAtMillis 与源任务关联。这比把开局数组序号和真实提交号混用更直接，也保留 FIFO；代价是审计查询不能把该顺序号直接当 journal 位置。M2.3 契约已据实际最小实现澄清，未声称语义相异的数字可互换。
+- Ruling: 为限制一次人工审查的范围，PR #6 冻结在已验收 `025c45b`（121 项）；M2.3 改在同一工作区的 `codex/world-securities-ledger` 分支施工，后续草稿以 `codex/world-implementation` 为依赖基线。切分不改变源码/用户改动，不合入主干；代价是人工合入前需按依赖顺序审查，前一 PR 合入后重核后续基线。
+- CI 配合上述分段仅扩展 pull_request 目标匹配到 `codex/**`，原 main/push/验证命令和断言不变；依据 GitHub 官方 workflow-syntax 对目标分支过滤的定义。新草稿创建后须看真实远端 run，不能把匹配规则写好当成 CI 已通过。
+- M2.3 初稿 143 项通过；Codex 发现两项故障用例实际中断的是预留完成帧，原覆盖保留并更正名称，另补“预留已确认后 fill 故障”的真实中断/半帧用例。修补与独立会话 `20261106_023855_71c22d` 审查并行，生产实现冻结，尚未验收。
+- Codex 用 `025c45b` 的实际旧源码生成 registry 待办存档；本单元新程序续写至位置5、A900/B100、股份1000、回报1，再由原旧程序读取新追加的文件，数值/位置一致。证据 `legacy-registry-v1/m23-new-append.log`、`m23-old-read-new-append.log`，不依赖新代码自写自读。
+- Ruling: ActionReport 由 Runtime 结合权属与提交位置组装，纯证券函数只产候选与原因；reports 按 taskId 的不可变 Map 保存。这样避免在证券子集重复账户权属，报告仍与资产同批确认；清算夹具不因此成为角色授权接口。
+- M2.3 独立审查已保存（`hermes-m23-review.md`）：未发现错账或重复结算实现阻断，私有副本实测5场景27断言通过。真实fill故障缺口已补；Minor中的现金事件类型二义经新增断言实际1项失败后，改为独立 `SECURITIES_CASH_TRANSFERRED_V1`，载荷包含买方/卖方/实际金额，专项14/14（`m23-event-red/green.log`）；报告校验注释改为实际单向保证，不扩防伪造系统。
+- Codex 针对新增的两个fill故障测试分别编译私有错误副本：提前发布候选状态使中断测试失败（位置4却变5），不清除不完整尾部使截断测试在再次重启时报校验和错误。生产文件未作这些故障变更，证据 `m23-fill-mutation/early-publish.log`、`retain-tail.log`。局部取得序号允许退役后复用，历史审计以唯一lotId/任务为准。
+- M2.3 最终标准验收（`m23-final-verify.log`）：145/145、83笔成交/249条订单/11行排名、CSV复算与JavaFX全绿，JavaDoc成功（`m23-final-javadoc.log`）。评分映射已补、真实记录见 `docs/05` §10；清算子集本地验收，不代表 M2/世界撮合完成。
 - 方案取舍：总 Plan 采用滚动细化，避免给银行/认知等未到施工点的模块虚设签名。用户已明确执行方式为 Codex + Hermes，且要求今晚持续推进，因此不再增加一轮纯计划批准；涉及改变既定需求/架构或人工 review 合入时仍遵守仓库要求。
 
 ## 下一步
 
-将 M1.3a 已验收增量补入草稿 PR #6（不合入）→ 按 M2.2 已固定的显式身份/财产归属/开局股份契约施工 → 专项、独立审计与标准验收 → 再细化 M2.3 的交易批次。M1/M2 只有上述子集有证据，其他任务继续按依赖施工；不把“已派发”写成“已完成”。
+M2.3 独立审查与真正 fill 故障点补测 → 修复/标准验收 → 创建依赖 PR #6 的证券草稿（不合入）→ M2.4a 共享纯撮合 → 细化世界订单接入。M1/M2 只有上述已验收子集有证据，其他任务继续按依赖施工；不把“已派发”写成“已完成”。
