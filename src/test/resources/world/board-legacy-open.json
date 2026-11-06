@@ -1,0 +1,1 @@
+{"charter":{"companyPartyId":"acme","seats":[{"seatId":"s1","partyId":"p1"},{"seatId":"s2","partyId":"p2"},{"seatId":"s3","partyId":"p3"},{"seatId":"s4","partyId":"p4"},{"seatId":"s5","partyId":"p5"}],"chairSeatId":"s1","quorum":3},"meetings":{},"budgets":[],"commitments":[],"reviews":[]}

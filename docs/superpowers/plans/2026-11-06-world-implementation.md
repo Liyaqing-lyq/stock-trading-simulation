@@ -442,3 +442,15 @@ D1首稿44/660及两变异通过后，Codex独立取得未来Quote/age/开局时
 D1最终candidate2的真实Hermes独审64/64通过，原2条Important修复，78源hash一致且原76逐字节相同。48专项、664标准、独立33及Decimal、GUI/CSV/JavaDoc均通过，现发布草稿PR。下一D2正式Plan采用Meeting可选元数据并保留State五字段，实际旧二进制golden准备进行，尚未授测试/生产。
 
 估值与表现代码dc90a607bbac4c6a330691f0d35dccc8a861c279已建立[草稿PR #20](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/20)，base为codex/world-dividend-core（PR19）。远端verify run42209352373实际completed/success，已附当前会话，待人工实质review。下一阶段D2董事会分红授权纯核继续施工。
+
+### M3d D2 董事会分红授权纯核
+
+施工单见[分红授权Plan](2026-11-06-dividend-authorization.md)。D1代码PR20实际CI成功后进入D2。真实旧Board二进制生成三份固定JSON及旧编译客户端，Root已核预算可用400.00及评审66.00，原5参State/14参Meeting构造字节相同。现授真实Hermes aeafaa新BoardModelDividendTest及Maven独占，仅测试缺API RED，78生产源及旧664项保持。State仍5字段，授权元数据归所属Meeting，旧合法JSON和接口继续兼容。D3的真实现金与世界批次尚未接线。
+
+D2测试交26项真实缺API RED，Codex核对修正重审时界/辅助构造及来源对照，再补4项共30，78生产与旧664保持。现授同一真实Hermes仅BoardModel与新测试/Maven独占，目标694组合。原State保持5字段，Meeting可选元数据及旧14构造由新测试和真实旧golden共同保护。真实现金、参考及恢复桥沿D3准备，尚未授D3源码。
+
+## D2最终本地验收
+
+最终candidate2冻结78源，BoardModel815c8e7f...a09951e及Runtimeee0817b1...987a92c0，其余76生产源与D1逐字节相等。新47专项中14失败1错误的首稿RED已真实取得并修复，另1旧档能力闸恢复RED已修。最终712标准、52成交133订单7排名CSV、GUI、JavaDoc20:14:36通过。Root13分红+146世界+72审计检查，原编译旧客户端及旧构造、三golden逐字往返通过。真实Hermes最终独立重编74/74及旧档合法/伪造对照通过，已退出释放。当前Root独占源码/Maven，准备草稿PR，仍待人工实质review。D3从制造报表与除息参考接缝开始，随后完整新档案桥，不把纯核误记为真实付款。
+
+董事会分红授权代码eb9d96e2d0d69c63954b9539d5a01e6054a49dad已建立[草稿PR #21](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/21)，base为codex/world-valuation-performance（PR20）。远端verify run42217088050已实际completed/success，已附当前会话，等待人工实质review。D3a财务与除息参考接缝继续按新施工单推进，M3整体运行闭环仍在施工。

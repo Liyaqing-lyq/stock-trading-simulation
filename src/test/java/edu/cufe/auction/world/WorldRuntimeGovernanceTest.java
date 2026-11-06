@@ -1172,6 +1172,25 @@ class WorldRuntimeGovernanceTest {
                 new BudgetLine(0L, BudgetCategory.PRODUCTION_LABOR, bd(labor)));
     }
 
+    @Test
+    void legacyProfileCannotRestoreDividendMeetingEvenWithValidFrameHash() throws IOException {
+        Path source = tempDir.resolve("legacy-dividend-source.journal");
+        try (WorldRuntime runtime = open(source)) {
+            runtime.scheduleBoardMeeting("legacy-dividend-c", "legacy-dividend-t", 1,
+                    "s1", "legacy-meeting", 2, 3, 4, allSeats(), List.of());
+            runtime.advanceTo(1);
+            assertEquals(BoardModel.Topic.BUDGET, meeting(runtime, "legacy-meeting").topic());
+        }
+        try (WorldRuntime legal = open(source)) {
+            assertEquals(MeetingStatus.CONVENED, meeting(legal, "legacy-meeting").status());
+        }
+        Path forged = tamperSnapshots(source, "legacy-dividend-forged.journal",
+                root -> root.path("governance").path("board").path("meetings").has("legacy-meeting"),
+                root -> meetingNode(root, "legacy-meeting").put("topic", "DIVIDEND_AUTHORIZATION"));
+        IOException failure = assertThrows(IOException.class, () -> open(forged).close());
+        assertTrue(failure.getMessage().contains("分红"), failure.getMessage());
+    }
+
     private WorldRuntime open(Path file) throws IOException {
         return new WorldRuntime(file, governedManifest(), OPENINGS, registry(), MFG, charter());
     }

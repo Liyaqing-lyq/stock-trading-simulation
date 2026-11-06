@@ -79,3 +79,15 @@
 - 分红D0登记只固定含冻结/LOCKED/当日买入的remaining权益并排除TREASURY，登记零应付，除息才生成claims。持有人减值不消灭公司债务，整方案付款元数据记录减值转回。Receipt保留完整原请求及Event三字段，恢复逐事件核对阶段与金额历史。D0不执行现金转账或验证董事会授权，D1估值/TWR、D2授权、D3真实同批公司行为仍需接续，证据见docs/05第22节。
 
 - D1账户估值只加现金总额一次，remaining按原始价计价，缺价保留空净资产及缺失标的，组织完整经营净资产不支持。表现用显式流前后估值几何链接，DECIMAL128中间计算、输出12位HALF_EVEN，已知资本流与缺价事实可并存。证券acquiredPosition为本地FIFO序号，不能冒充世界位置。真实运行来源、资金事实和公司行为桥仍需D2/D3，证据见docs/05第23节。
+
+## D2 Root恢复核验与写权接回
+
+作者29119已退出释放，Root独占BoardModel/测试/Runtime/Maven。首稿candidate1的Root私有完整重签探针实际10失败，新增12正式测试取得42专项中10失败，缺字段合法0提案对照与重签合法对照通过。已修新Topic时序、主席/成员/回避、票/材料时间及阶段、及时授权、DTO必填、已实施和活动方案互斥。真实Hermes首稿独审38合法全过、forge16/20，报告三类时间缺口，已退出；需最终freeze复验。原77源首稿相同。
+
+Root以旧D1二进制实际生成治理日志，15帧前缀legal按新D2恢复BUDGET，首帧只改Topic并重签可恢复DIVIDEND_AUTHORIZATION，而旧二进制拒枚举。已新增Runtime回归取得真实RED，按正式Plan授权加入schema<=8的窄分红议题能力闸。旧664断言未改，仅在既有RuntimeGovernanceTest新增一项。当前组合目标707=664+42+1，尚未最终标准验收。证据dividend-board/{root-probe-1,root-regression-red,legacy-gate-*-2,root-runtime-red}.log，首轮私有脚本事件名错误证据保留，正确类型STATE_SNAPSHOT_V1的第二轮控制已成立。
+
+## D2最终本地验收
+
+最终candidate2冻结78源，BoardModel815c8e7f...a09951e及Runtimeee0817b1...987a92c0，其余76生产源与D1逐字节相等。新47专项中14失败1错误的首稿RED已真实取得并修复，另1旧档能力闸恢复RED已修。最终712标准、52成交133订单7排名CSV、GUI、JavaDoc20:14:36通过。Root13分红+146世界+72审计检查，原编译旧客户端及旧构造、三golden逐字往返通过。真实Hermes最终独立重编74/74及旧档合法/伪造对照通过，已退出释放。当前Root独占源码/Maven，准备草稿PR，仍待人工实质review。D3从制造报表与除息参考接缝开始，随后完整新档案桥，不把纯核误记为真实付款。
+
+董事会分红授权代码eb9d96e2d0d69c63954b9539d5a01e6054a49dad已建立[草稿PR #21](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/21)，base为codex/world-valuation-performance（PR20）。远端verify run42217088050已实际completed/success，已附当前会话，等待人工实质review。D3a财务与除息参考接缝继续按新施工单推进，M3整体运行闭环仍在施工。
