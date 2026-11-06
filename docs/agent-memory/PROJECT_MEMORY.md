@@ -267,3 +267,6 @@ B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://
 - 回忆尚未接Runtime/角色input/Web，不能当六层认知完成。运行桥新上下文exec81750仅cognition-runtime-preparation只读调查，60轮预算已到，等待报告后续接；原作者ed3b0f exec61639已退出。新schema/旧JSON/旧二进制和全文旁路合同待Root核准后实施。
 - Root已预编译旧InformationRun.Config/RoleView/RoleTradingView/inputText客户端，合并JSON指纹828217b8cf517410de92937772abe20a80067f4cc3ec52d3a318e4d3dbf553f4；运行桥验收只换类，不重编此客户端。
 - 真实Key仍仅既有key-1一次51token，其余4槽未测，本轮0新增供应商请求。信念/来源偏信/成熟习惯、媒体、多公司银行、完整图表长跑继续，不自动合并。
+
+回忆纯核代码4809bef4665128349b9296d09d1feade825d38dc已建立草稿[PR33](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/33)，base codex/world-live-web，已附会话。实际[CI42310013886](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42310013886) completed/success。首推遇GitHub Internal Server Error，经ls-remote核对无分支后再次推送成功，未变提交。1099标准及95独审/14Root通过，纯核工程验收完成，仍待人工review。
+下一施工单docs/superpowers/plans/2026-11-07-cognition-runtime.md。准备会话20261107_070330_f270fe初轮60工具到限，续90910报告完成；Root纠正默认模式仍live、角色DTO不得带Policy/score或全局READ-n。新schema11冻结策略、两条全文路径同时裁剪、本人scoped阅读引用、管理员独立审计是下一硬边界。Root独占主树/Maven，作者尚未获得主树写权。
