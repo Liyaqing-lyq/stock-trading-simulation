@@ -515,6 +515,11 @@ public final class WorldRuntime implements AutoCloseable {
                         InformationRun.Config information, DecisionModel.Config decisions)
             throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
+        if (decisions != null && decisions.profile() != null) {
+            // 旧档案（schema 1..9）只允许脚本决定；live profile 必须等新的版本化运行桥
+            throw new IllegalArgumentException("旧规则档案不接受 live 决定配置："
+                    + manifest.rulesVersion());
+        }
         if (manifest.hasRegistry() && registry == null) {
             throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
                     + " 必须提供开局登记");
@@ -2844,6 +2849,10 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(commandId, "命令标识");
         Objects.requireNonNull(reply, "回执");
         DecisionRun run = requireDecisions();
+        if (!run.state().config().live() && reply.usage() != null
+                && reply.usage().costStatus() != null) {
+            return "REJECTED:" + DecisionModel.REASON_USAGE_COST_INVALID;
+        }
         if (!run.state().runId().equals(reply.runId())) {
             return "REJECTED:RUN_MISMATCH";
         }
@@ -3640,6 +3649,13 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (!run.state().config().equals(decisionConfig)) {
             throw new IOException("决定配置与冻结开局不一致");
+        }
+        if (!run.state().config().live()) {
+            for (DecisionRun.Archive archive : run.archives()) {
+                if (archive.usage() != null && archive.usage().costStatus() != null) {
+                    throw new IOException("旧档案不得包含未知费用归档");
+                }
+            }
         }
         if (previous != null && previous.decisions() != null) {
             DecisionRun before = previous.decisions();
@@ -7278,6 +7294,10 @@ public final class WorldRuntime implements AutoCloseable {
             validateAuditWait(audit.receivedAtEpochMillis(), audit.receiveToRecordMillis());
             if (snapshot.decisions() == null) {
                 throw new IOException("无决定子集的批次出现审计：" + commit.position());
+            }
+            if (!snapshot.decisions().state().config().live() && audit.declaredUsage() != null
+                    && audit.declaredUsage().costStatus() != null) {
+                throw new IOException("旧档案不得包含未知费用审计");
             }
             DecisionModel.Attempt attempt = attemptOf(snapshot.decisions().state(),
                     audit.actionId(), audit.attemptId());

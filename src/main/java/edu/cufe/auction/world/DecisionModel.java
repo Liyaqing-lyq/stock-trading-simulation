@@ -1,6 +1,7 @@
 package edu.cufe.auction.world;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -46,6 +47,20 @@ public final class DecisionModel {
 
     /** 本单唯一启用的提供方种类。 */
     public static final String PROVIDER_SCRIPTED = "SCRIPTED";
+    /** 真实 HTTP 提供方种类；只有新 profile 才允许。 */
+    public static final String PROVIDER_DEEPSEEK_HTTP = "DEEPSEEK_HTTP";
+
+    /** 费用状态：只有 UNKNOWN 一种，缺失表示旧“已知费用”语义。 */
+    public enum CostStatus {
+        /** 真实费用未知，绝不等于 0.00。 */
+        UNKNOWN
+    }
+
+    /** 配置档案：旧档案没有该字段（null）。 */
+    public enum Profile {
+        /** 真实模型 live 运行；费用未知，只按 token 预算。 */
+        LIVE_HTTP_V1
+    }
     /** 唯一不排业务动作的内建工具。 */
     public static final String TOOL_WAIT = "role.wait";
 
@@ -152,65 +167,107 @@ public final class DecisionModel {
     }
 
     /** 用量与费用；费用单位元，固定两位小数。 */
-    public record Usage(long attempts, long inputTokens, long outputTokens, BigDecimal cost) {
+    public record Usage(long attempts, long inputTokens, long outputTokens, BigDecimal cost,
+                        @JsonInclude(JsonInclude.Include.NON_NULL) CostStatus costStatus) {
 
-        /** 校验非负并规范费用到两位小数。 */
+        /** 校验计数非负、费用（已知时）两位非负，并拒绝费用状态混用。 */
         public Usage {
             if (attempts < 0 || inputTokens < 0 || outputTokens < 0) {
                 throw new IllegalArgumentException("用量不能为负：" + attempts + "/" + inputTokens
                         + "/" + outputTokens);
             }
-            Objects.requireNonNull(cost, "费用");
-            if (cost.signum() < 0) {
-                throw new IllegalArgumentException("费用不能为负：" + cost);
+            if (cost != null) {
+                if (cost.signum() < 0) {
+                    throw new IllegalArgumentException("费用不能为负：" + cost);
+                }
+                try {
+                    cost = cost.setScale(2, RoundingMode.UNNECESSARY);
+                } catch (ArithmeticException notTwoDecimals) {
+                    throw new IllegalArgumentException("费用必须精确到分：" + cost, notTwoDecimals);
+                }
             }
-            try {
-                cost = cost.setScale(2, RoundingMode.UNNECESSARY);
-            } catch (ArithmeticException notTwoDecimals) {
-                throw new IllegalArgumentException("费用必须精确到分：" + cost, notTwoDecimals);
+            if (costStatus == CostStatus.UNKNOWN) {
+                if (cost != null) {
+                    throw new IllegalArgumentException("未知费用不能同时携带金额");
+                }
+            } else if (cost == null) {
+                throw new IllegalArgumentException("费用为 null 时必须显式标记 UNKNOWN");
             }
         }
 
+        /** 旧四参构造：费用必须已知（拒绝 null），状态缺省。 */
+        public Usage(long attempts, long inputTokens, long outputTokens, BigDecimal cost) {
+            this(attempts, inputTokens, outputTokens,
+                    Objects.requireNonNull(cost, "费用"), null);
+        }
+
+        /** @return 是否已知费用（未知不等于免费） */
+        public boolean costKnown() {
+            return cost != null;
+        }
+
+        /** @return 与实际次数一致、费用未知的用量 */
+        public static Usage unknownCost(long attempts, long inputTokens, long outputTokens) {
+            return new Usage(attempts, inputTokens, outputTokens, null, CostStatus.UNKNOWN);
+        }
+
         /**
-         * 逐项相加。
+         * 逐项相加；任一侧费用未知则结果未知（未知吸收已知，不会洗成 0）。
          *
          * @param other 另一份用量
          * @return 相加结果
-         * @throws ArithmeticException 计数溢出
          */
         public Usage plus(Usage other) {
+            BigDecimal sum = cost == null || other.cost == null ? null : cost.add(other.cost);
             return new Usage(Math.addExact(attempts, other.attempts),
                     Math.addExact(inputTokens, other.inputTokens),
-                    Math.addExact(outputTokens, other.outputTokens), cost.add(other.cost));
+                    Math.addExact(outputTokens, other.outputTokens), sum,
+                    sum == null ? CostStatus.UNKNOWN : null);
         }
 
         /**
-         * 逐项相减；结果不得为负。
+         * 逐项相减；先检查计数，费用未知时结果未知，已知费用仍做非负检查。
          *
          * @param other 被减去的用量
          * @return 差额
-         * @throws IllegalArgumentException 任一维度不足
          */
         public Usage minus(Usage other) {
-            if (!covers(other)) {
+            if (attempts < other.attempts || inputTokens < other.inputTokens
+                    || outputTokens < other.outputTokens) {
                 throw new IllegalArgumentException("用量差额为负");
             }
+            BigDecimal difference;
+            if (cost == null || other.cost == null) {
+                difference = null;
+            } else {
+                difference = cost.subtract(other.cost);
+                if (difference.signum() < 0) {
+                    throw new IllegalArgumentException("费用差额为负");
+                }
+            }
             return new Usage(attempts - other.attempts, inputTokens - other.inputTokens,
-                    outputTokens - other.outputTokens, cost.subtract(other.cost));
+                    outputTokens - other.outputTokens, difference,
+                    difference == null ? CostStatus.UNKNOWN : null);
         }
 
         /**
-         * 是否逐项不小于另一份用量。
+         * 旧预算比较：四项都要够；任一侧费用未知返回 false（未知不能被当成免费通过）。
          *
-         * @param other 另一份用量
-         * @return 每一项都足够时返回 true
+         * @param other 已用量
+         * @return 是否覆盖
          */
         public boolean covers(Usage other) {
-            return attempts >= other.attempts && inputTokens >= other.inputTokens
-                    && outputTokens >= other.outputTokens && cost.compareTo(other.cost) >= 0;
+            if (attempts < other.attempts || inputTokens < other.inputTokens
+                    || outputTokens < other.outputTokens) {
+                return false;
+            }
+            if (cost == null || other.cost == null) {
+                return false;
+            }
+            return cost.compareTo(other.cost) >= 0;
         }
 
-        /** @return 零用量，费用 0.00 */
+        /** @return 零用量，费用已知 0.00（旧语义） */
         public static Usage zero() {
             return new Usage(0, 0, 0, new BigDecimal("0.00"));
         }
@@ -261,22 +318,24 @@ public final class DecisionModel {
     public record Config(String providerKind, String providerId, String pricingVersion,
                          Map<String, Long> thinkMillisByWake,
                          Map<String, Long> actionMillisByTool,
-                         Limits limits, Budget budget) {
+                         Limits limits, Budget budget,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) Profile profile) {
 
-        /** 只接受 scripted 提供方与正耗时。 */
+        /** 旧七参构造：profile 为 null，继续严格 scripted-only。 */
+        public Config(String providerKind, String providerId, String pricingVersion,
+                      Map<String, Long> thinkMillisByWake,
+                      Map<String, Long> actionMillisByTool,
+                      Limits limits, Budget budget) {
+            this(providerKind, providerId, pricingVersion, thinkMillisByWake, actionMillisByTool,
+                    limits, budget, null);
+        }
+
+        /** 只接受 scripted（旧）或 live HTTP（新 profile）与对应费用预算语义。 */
         public Config {
-            if (!PROVIDER_SCRIPTED.equals(providerKind)) {
-                throw new IllegalArgumentException("当前只支持 " + PROVIDER_SCRIPTED + " 提供方，收到 "
-                        + providerKind);
-            }
             requireText(providerId, "提供方标识");
             requireText(pricingVersion, "计价版本");
             Objects.requireNonNull(limits, "限制");
             Objects.requireNonNull(budget, "预算");
-            if (budget.runCap().cost().signum() != 0
-                    || budget.personCap().values().stream().anyMatch(cap -> cap.cost().signum() != 0)) {
-                throw new IllegalArgumentException("脚本费用预算必须为0.00");
-            }
 
             Map<String, Long> think = new TreeMap<>();
             if (thinkMillisByWake == null || thinkMillisByWake.isEmpty()) {
@@ -299,13 +358,55 @@ public final class DecisionModel {
                         throw new IllegalArgumentException("观望工具不排业务动作，不能配置动作耗时");
                     }
                     if (millis == null || millis < 1) {
-                        throw new IllegalArgumentException("动作耗时必须为正：" + tool + "=" + millis);
+                        throw new IllegalArgumentException("动作耗时必须为正："
+                                + tool + "=" + millis);
                     }
                     action.put(tool, millis);
                 });
             }
             actionMillisByTool = Collections.unmodifiableMap(action);
+
+            if (profile == null) {
+                // 旧契约：只能 scripted，且费用预算必须是已知 0.00
+                if (!PROVIDER_SCRIPTED.equals(providerKind)) {
+                    throw new IllegalArgumentException("旧档案只支持 " + PROVIDER_SCRIPTED
+                            + " 提供方，收到 " + providerKind);
+                }
+                if (!allCostsKnownZero(budget)) {
+                    throw new IllegalArgumentException("脚本费用预算必须为0.00");
+                }
+            } else {
+                // 新档案：只允许真实 HTTP 提供方，费用预算必须是未知（不能写成 0.00）
+                if (!PROVIDER_DEEPSEEK_HTTP.equals(providerKind)) {
+                    throw new IllegalArgumentException(
+                            "LIVE_HTTP_V1 档案必须使用 " + PROVIDER_DEEPSEEK_HTTP + " 提供方");
+                }
+                if (anyCostKnown(budget)) {
+                    throw new IllegalArgumentException(
+                            "live 费用预算必须是未知（null），不能写成 0.00");
+                }
+            }
         }
+
+        /** @return 是否 live 档案 */
+        public boolean live() {
+            return profile == Profile.LIVE_HTTP_V1;
+        }
+    }
+
+    private static boolean allCostsKnownZero(Budget budget) {
+        if (budget.runCap().cost() == null || budget.runCap().cost().signum() != 0) {
+            return false;
+        }
+        return budget.personCap().values().stream()
+                .allMatch(cap -> cap.cost() != null && cap.cost().signum() == 0);
+    }
+
+    private static boolean anyCostKnown(Budget budget) {
+        if (budget.runCap().cost() != null) {
+            return true;
+        }
+        return budget.personCap().values().stream().anyMatch(cap -> cap.cost() != null);
     }
 
     /** 一次调用尝试；未返回时正文与来源为空、结算为零。 */
@@ -336,7 +437,7 @@ public final class DecisionModel {
                 if (outcome != Outcome.NONE) {
                     throw new IllegalArgumentException("未结算尝试不能带结果：" + outcome);
                 }
-                if (!settled.equals(Usage.zero()) || declaredUsage != null || replyReceived
+                if (!zeroLike(settled) || declaredUsage != null || replyReceived
                         || !replyBody.isEmpty() || !usageSource.isEmpty() || !reason.isEmpty()) {
                     throw new IllegalArgumentException("未结算尝试不能带回执正文");
                 }
@@ -507,7 +608,7 @@ public final class DecisionModel {
             decisions = copy;
 
             Map<String, Usage> computedPerson = new TreeMap<>();
-            Usage computedRun = Usage.zero();
+            Usage computedRun = zeroUsage(config);
             for (Decision decision : copy) {
                 for (Attempt attempt : decision.attempts()) {
                     if (!attempt.settledDone()) {
@@ -569,11 +670,18 @@ public final class DecisionModel {
                 throw new IllegalArgumentException("尝试代次或预留与冻结配置不一致");
             }
             previousGeneration = attempt.recoveryGeneration();
+            if (!config.live() && (attempt.settled().costStatus() != null
+                    || (attempt.declaredUsage() != null && attempt.declaredUsage().costStatus() != null))) {
+                throw new IllegalArgumentException("旧档案不得包含未知费用格式");
+            }
             if (index < decision.attempts().size() - 1
                     && (!attempt.settledDone() || attempt.outcome() != Outcome.TECHNICAL_FAILED)) {
                 throw new IllegalArgumentException("新尝试只能接续已结算的技术失败");
             }
             if (!attempt.settledDone()) {
+                if (!attempt.settled().equals(zeroUsage(config))) {
+                    throw new IllegalArgumentException("未结算费用状态与档案不一致");
+                }
                 continue;
             }
             Usage expectedUsage;
@@ -631,7 +739,7 @@ public final class DecisionModel {
 
     private static void validateBudget(Config config, List<Decision> decisions, Usage usedRun,
                                        Map<String, Usage> usedPerson) {
-        Usage outstandingRun = Usage.zero();
+        Usage outstandingRun = zeroUsage(config);
         Map<String, Usage> outstandingPerson = new TreeMap<>();
         for (Decision decision : decisions) {
             for (Attempt attempt : decision.attempts()) {
@@ -641,14 +749,15 @@ public final class DecisionModel {
                 }
             }
         }
-        if (!config.budget().runCap().covers(usedRun.plus(outstandingRun))) {
+        if (!coversFor(config, config.budget().runCap(), usedRun.plus(outstandingRun))) {
             throw new IllegalArgumentException("运行已用与预留超过预算");
         }
         for (Decision decision : decisions) {
             String person = decision.personPartyId();
-            Usage used = usedPerson.getOrDefault(person, Usage.zero());
-            Usage reserved = outstandingPerson.getOrDefault(person, Usage.zero());
-            if (!config.budget().personCap().getOrDefault(person, Usage.zero()).covers(used.plus(reserved))) {
+            Usage used = usedPerson.getOrDefault(person, zeroUsage(config));
+            Usage reserved = outstandingPerson.getOrDefault(person, zeroUsage(config));
+            if (!coversFor(config, config.budget().personCap().getOrDefault(person,
+                    zeroUsage(config)), used.plus(reserved))) {
                 throw new IllegalArgumentException("人物已用与预留超过预算");
             }
         }
@@ -712,7 +821,8 @@ public final class DecisionModel {
      * @return 未接续的初始状态
      */
     public static State open(String runId, long seed, Config config) {
-        return new State(runId, seed, config, 0L, false, List.of(), Usage.zero(), Map.of(), 1L);
+        return new State(runId, seed, config, 0L, false, List.of(), zeroUsage(config), Map.of(),
+                1L);
     }
 
     /**
@@ -801,7 +911,8 @@ public final class DecisionModel {
         String digest = canonicalDigest(request.toolContractVersion(), tools, request.inputText());
 
         Usage reserved = reservation(config);
-        if (!headroom(state, request.personPartyId()).covers(reserved)) {
+        boolean liveBlocked = config.live() && liveBudgetBlocked(state);
+        if (liveBlocked || !coversFor(config, headroom(state, request.personPartyId()), reserved)) {
             Decision blocked = new Decision(state.runId(), request.actionId(),
                     request.personPartyId(), request.wakeReason(), request.decisionAtMillis(),
                     barrier, request.cutoffPosition(), request.cutoffTimeMillis(),
@@ -812,7 +923,7 @@ public final class DecisionModel {
         }
 
         Attempt attempt = new Attempt(ATTEMPT_PREFIX + state.nextAttemptSequence(), 1,
-                state.recoveryGeneration(), digest, reserved, Usage.zero(), null, false,
+                state.recoveryGeneration(), digest, reserved, zeroUsage(config), null, false,
                 "", "", Outcome.NONE, "");
         Decision decision = new Decision(state.runId(), request.actionId(), request.personPartyId(),
                 request.wakeReason(), request.decisionAtMillis(), barrier,
@@ -831,6 +942,9 @@ public final class DecisionModel {
      * @return 处理结果
      */
     public static Result submitReply(State state, Reply reply) {
+        if (!state.config().live() && reply.usage() != null && reply.usage().costStatus() != null) {
+            return reject(Verdict.REJECTED, REASON_USAGE_COST_INVALID, state);
+        }
         if (!state.sessionOpen()) {
             return reject(Verdict.REJECTED, REASON_SESSION_NOT_OPEN, state);
         }
@@ -1100,11 +1214,12 @@ public final class DecisionModel {
      * @return 剩余额度；未登记个人上限时视为零
      */
     public static Usage headroom(State state, String personPartyId) {
-        Usage runCap = state.config().budget().runCap();
-        Usage personCap = state.config().budget().personCap().getOrDefault(personPartyId,
-                Usage.zero());
-        Usage outstandingRun = Usage.zero();
-        Usage outstandingPerson = Usage.zero();
+        Config config = state.config();
+        Usage runCap = config.budget().runCap();
+        Usage personCap = config.budget().personCap().getOrDefault(personPartyId,
+                zeroUsage(config));
+        Usage outstandingRun = zeroUsage(config);
+        Usage outstandingPerson = zeroUsage(config);
         for (Decision decision : state.decisions()) {
             for (Attempt attempt : decision.attempts()) {
                 if (attempt.settledDone()) {
@@ -1116,10 +1231,10 @@ public final class DecisionModel {
                 }
             }
         }
-        Usage runLeft = subtract(runCap, state.runUsage().plus(outstandingRun));
-        Usage personLeft = subtract(personCap, state.personUsage()
-                .getOrDefault(personPartyId, Usage.zero()).plus(outstandingPerson));
-        return min(runLeft, personLeft);
+        Usage runLeft = subtractFor(config, runCap, state.runUsage().plus(outstandingRun));
+        Usage personLeft = subtractFor(config, personCap, state.personUsage()
+                .getOrDefault(personPartyId, zeroUsage(config)).plus(outstandingPerson));
+        return minFor(config, runLeft, personLeft);
     }
 
     /**
@@ -1133,14 +1248,15 @@ public final class DecisionModel {
      */
     private static Usage headroomAfter(State state, String personPartyId, Usage settled,
                                        String excludedAttemptId) {
-        Usage runCap = state.config().budget().runCap();
-        Usage personCap = state.config().budget().personCap().getOrDefault(personPartyId,
-                Usage.zero());
+        Config config = state.config();
+        Usage runCap = config.budget().runCap();
+        Usage personCap = config.budget().personCap().getOrDefault(personPartyId,
+                zeroUsage(config));
         Usage runUsed = state.runUsage().plus(settled);
-        Usage personUsed = state.personUsage().getOrDefault(personPartyId, Usage.zero())
+        Usage personUsed = state.personUsage().getOrDefault(personPartyId, zeroUsage(config))
                 .plus(settled);
-        Usage outstandingRun = Usage.zero();
-        Usage outstandingPerson = Usage.zero();
+        Usage outstandingRun = zeroUsage(config);
+        Usage outstandingPerson = zeroUsage(config);
         for (Decision decision : state.decisions()) {
             for (Attempt attempt : decision.attempts()) {
                 if (attempt.settledDone() || attempt.attemptId().equals(excludedAttemptId)) {
@@ -1152,8 +1268,8 @@ public final class DecisionModel {
                 }
             }
         }
-        return min(subtract(runCap, runUsed.plus(outstandingRun)),
-                subtract(personCap, personUsed.plus(outstandingPerson)));
+        return minFor(config, subtractFor(config, runCap, runUsed.plus(outstandingRun)),
+                subtractFor(config, personCap, personUsed.plus(outstandingPerson)));
     }
 
     // ------------------------------------------------------------------
@@ -1223,7 +1339,7 @@ public final class DecisionModel {
     }
 
     private static State buildState(State base, List<Decision> decisions, long nextSequence) {
-        Usage run = Usage.zero();
+        Usage run = zeroUsage(base.config());
         Map<String, Usage> person = new TreeMap<>();
         for (Decision decision : decisions) {
             for (Attempt attempt : decision.attempts()) {
@@ -1263,10 +1379,17 @@ public final class DecisionModel {
                 reason = failure.reason;
             }
         }
-        boolean canRetry = decision.attempts().size() < state.config().limits().maxAttemptsPerDecision();
+        boolean liveOverrun = state.config().live() && reply != null && reply.usage() != null
+                && (reply.usage().inputTokens() > attempt.reserved().inputTokens()
+                || reply.usage().outputTokens() > attempt.reserved().outputTokens());
+        // 已有超额（来自任何已确认尝试）同样禁止自动重试：当前回执 guard 之外再查派生阻断
+        boolean liveBlocked = state.config().live() && liveBudgetBlocked(state);
+        boolean canRetry = !liveOverrun && !liveBlocked
+                && decision.attempts().size() < state.config().limits().maxAttemptsPerDecision();
         Usage reserved = reservation(state.config());
-        boolean budget = canRetry && headroomAfter(state, decision.personPartyId(), settled,
-                attempt.attemptId()).covers(reserved);
+        boolean budget = canRetry && coversFor(state.config(),
+                headroomAfter(state, decision.personPartyId(), settled, attempt.attemptId()),
+                reserved);
         if (canRetry && !budget) {
             reason += ":" + REASON_NO_RETRY_BUDGET;
         }
@@ -1284,8 +1407,8 @@ public final class DecisionModel {
         }
         long sequence = state.nextAttemptSequence();
         Attempt retry = new Attempt(ATTEMPT_PREFIX + sequence, attempts.size() + 1,
-                state.recoveryGeneration(), decision.inputDigest(), reserved, Usage.zero(), null, false, "",
-                "", Outcome.NONE, "");
+                state.recoveryGeneration(), decision.inputDigest(), reserved,
+                zeroUsage(state.config()), null, false, "", "", Outcome.NONE, "");
         attempts.add(retry);
         Decision reopened = withAttempts(decision, attempts, Status.OPEN,
                 Outcome.TECHNICAL_FAILED, "");
@@ -1379,8 +1502,11 @@ public final class DecisionModel {
     }
 
     private static Usage reservation(Config config) {
-        return new Usage(1, config.limits().perCallInputTokens(),
-                config.limits().perCallOutputTokens(), new BigDecimal("0.00"));
+        return config.live()
+                ? Usage.unknownCost(1, config.limits().perCallInputTokens(),
+                        config.limits().perCallOutputTokens())
+                : new Usage(1, config.limits().perCallInputTokens(),
+                        config.limits().perCallOutputTokens(), new BigDecimal("0.00"));
     }
 
     private static Usage settleUsage(Config config, Usage usage) {
@@ -1390,7 +1516,8 @@ public final class DecisionModel {
         if (usage.attempts() != 1L) {
             throw new ReplyFailure(REASON_USAGE_ATTEMPTS_INVALID);
         }
-        if (usage.cost().signum() != 0) {
+        if ((config.live() && usage.costKnown())
+                || (!config.live() && (usage.cost() == null || usage.cost().signum() != 0))) {
             throw new ReplyFailure(REASON_USAGE_COST_INVALID);
         }
         if (usage.inputTokens() > config.limits().perCallInputTokens()
@@ -1400,10 +1527,39 @@ public final class DecisionModel {
         return usage;
     }
 
-    private static Usage subtract(Usage cap, Usage used) {
+    // ------------------------------------------------------------------
+    // profile 相关零值、比较与派生阻断
+    // ------------------------------------------------------------------
+
+    /** @return 该档案下的零用量：旧档案已知 0.00，live 档案费用未知 */
+    private static Usage zeroUsage(Config config) {
+        return config.live() ? Usage.unknownCost(0, 0, 0) : Usage.zero();
+    }
+
+    /** @return 是否是零计数（费用可已知 0.00 或未知） */
+    private static boolean zeroLike(Usage usage) {
+        if (usage.attempts() != 0L || usage.inputTokens() != 0L || usage.outputTokens() != 0L) {
+            return false;
+        }
+        return usage.cost() == null || usage.cost().signum() == 0;
+    }
+
+    /** 预算比较：live 只按计数，旧档案仍要求已知费用。 */
+    private static boolean coversFor(Config config, Usage cap, Usage used) {
+        if (config.live()) {
+            return cap.attempts() >= used.attempts() && cap.inputTokens() >= used.inputTokens()
+                    && cap.outputTokens() >= used.outputTokens();
+        }
+        return cap.covers(used);
+    }
+
+    private static Usage subtractFor(Config config, Usage cap, Usage used) {
         long attempts = Math.max(0L, cap.attempts() - used.attempts());
         long input = Math.max(0L, cap.inputTokens() - used.inputTokens());
         long output = Math.max(0L, cap.outputTokens() - used.outputTokens());
+        if (config.live()) {
+            return Usage.unknownCost(attempts, input, output);
+        }
         BigDecimal cost = cap.cost().subtract(used.cost());
         if (cost.signum() < 0) {
             cost = new BigDecimal("0.00");
@@ -1411,11 +1567,39 @@ public final class DecisionModel {
         return new Usage(attempts, input, output, cost);
     }
 
-    private static Usage min(Usage left, Usage right) {
-        return new Usage(Math.min(left.attempts(), right.attempts()),
-                Math.min(left.inputTokens(), right.inputTokens()),
-                Math.min(left.outputTokens(), right.outputTokens()),
-                left.cost().min(right.cost()));
+    private static Usage minFor(Config config, Usage left, Usage right) {
+        long attempts = Math.min(left.attempts(), right.attempts());
+        long input = Math.min(left.inputTokens(), right.inputTokens());
+        long output = Math.min(left.outputTokens(), right.outputTokens());
+        if (config.live()) {
+            return Usage.unknownCost(attempts, input, output);
+        }
+        return new Usage(attempts, input, output, left.cost().min(right.cost()));
+    }
+
+    /**
+     * 从已确认尝试的声明与预留派生 live 阻断：任一已知声明超过其预留即冻结。
+     *
+     * @param state 当前状态
+     * @return 需要阻断新的 live 调用时返回 true
+     */
+    public static boolean liveBudgetBlocked(State state) {
+        if (!state.config().live()) {
+            return false;
+        }
+        for (Decision decision : state.decisions()) {
+            for (Attempt attempt : decision.attempts()) {
+                Usage declared = attempt.declaredUsage();
+                if (declared == null) {
+                    continue;
+                }
+                if (declared.inputTokens() > attempt.reserved().inputTokens()
+                        || declared.outputTokens() > attempt.reserved().outputTokens()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static long actionDue(Decision decision, Config config, String tool) {
