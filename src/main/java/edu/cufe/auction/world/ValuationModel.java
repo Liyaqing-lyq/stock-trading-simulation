@@ -38,6 +38,8 @@ public final class ValuationModel {
         TRADE,
         /** 该标的从未成交时的开局参考估值。 */
         OPENING_REFERENCE,
+        /** 已确认现金分红扣除每股股息后的除息参考价。 */
+        EX_DIVIDEND_REFERENCE,
         /** 既无成交也无开局参考。 */
         MISSING
     }
@@ -223,11 +225,43 @@ public final class ValuationModel {
      */
     public static PriceBook prices(long position, long cutoffMillis, WorldExchange.State exchange,
                                    OpeningRegistry registry, Collection<String> symbols) {
+        return prices(position, cutoffMillis, exchange, registry, symbols, DividendModel.empty());
+    }
+
+    /**
+     * 带已确认分红方案的除息参考价格簿。
+     *
+     * <p>先按原规则取截止前最后真实成交（同刻比成交号），没有成交才用明确开局参考；未知标的保持缺价。
+     * 仅对 {@code EX_BOOKED} 或 {@code SETTLED} 且 {@code baseTime < exAt <= cutoff} 的方案扣减每股股息，
+     * 同刻成交视为除息后成交不再扣减；扣减后为负价视为缺价。除息参考是独立来源，
+     * 不改写成交链、证券账或任何现金；付款账户归属由估值入口核对。</p>
+     *
+     * @param position     世界提交位置
+     * @param cutoffMillis 截止模拟时点
+     * @param exchange     交易子集；null 表示未启用撮合
+     * @param registry     开局登记
+     * @param symbols      需要定价的证券代码
+     * @param dividends    同一截止的分红状态；null 拒绝
+     * @return 同一截止的价格簿
+     * @throws IllegalArgumentException 位置/时间非法、D0 历史晚于截止、或方案映射不合法
+     */
+    public static PriceBook prices(long position, long cutoffMillis, WorldExchange.State exchange,
+                                   OpeningRegistry registry, Collection<String> symbols,
+                                   DividendModel.State dividends) {
+        if (dividends == null) {
+            throw new IllegalArgumentException("分红状态不能为空");
+        }
         if (position < 0 || cutoffMillis < 0) {
             throw new IllegalArgumentException("价格簿位置与时点不能为负");
         }
         Objects.requireNonNull(registry, "开局登记");
         Objects.requireNonNull(symbols, "证券代码集合");
+        if (dividends.lastPosition() > position || dividends.lastAtMillis() > cutoffMillis) {
+            throw new IllegalArgumentException("分红历史晚于查询截止");
+        }
+        for (DividendModel.Scheme scheme : dividends.schemes().values()) {
+            checkSchemeIssuerMapping(registry, scheme);
+        }
         Map<String, Price> prices = new TreeMap<>();
         for (String symbol : symbols) {
             requireText(symbol, "证券代码");
@@ -239,9 +273,70 @@ public final class ValuationModel {
                         : new Price(symbol, security.initialReferencePrice(),
                                 PriceSource.OPENING_REFERENCE, 0L, cutoffMillis);
             }
-            prices.put(symbol, price);
+            prices.put(symbol, withExDividend(price, symbol, cutoffMillis, dividends));
         }
         return new PriceBook(position, cutoffMillis, prices);
+    }
+
+    /**
+     * 在原始价格上叠加已确认现金分红的除息参考。
+     *
+     * @param base         原始价格（成交或开局参考）
+     * @param symbol       证券代码
+     * @param cutoffMillis 查询截止
+     * @param dividends    分红状态
+     * @return 除息参考价、原价格或缺价
+     */
+    private static Price withExDividend(Price base, String symbol, long cutoffMillis,
+                                        DividendModel.State dividends) {
+        if (base.source() == PriceSource.MISSING) {
+            return base;
+        }
+        BigDecimal deducted = ZERO;
+        long latestEx = -1L;
+        for (DividendModel.Scheme scheme : dividends.schemes().values()) {
+            if (!scheme.symbol().equals(symbol)) {
+                continue;
+            }
+            if (scheme.phase() != DividendModel.Phase.EX_BOOKED
+                    && scheme.phase() != DividendModel.Phase.SETTLED) {
+                continue;
+            }
+            long exAt = scheme.exAtMillis();
+            if (base.asOfMillis() >= exAt || exAt > cutoffMillis) {
+                continue;
+            }
+            deducted = deducted.add(scheme.perShare());
+            latestEx = Math.max(latestEx, exAt);
+        }
+        if (deducted.signum() <= 0) {
+            return base;
+        }
+        BigDecimal adjusted = base.price().subtract(deducted);
+        if (adjusted.signum() < 0) {
+            return new Price(symbol, null, PriceSource.MISSING, -1L, -1L);
+        }
+        return new Price(symbol, adjusted, PriceSource.EX_DIVIDEND_REFERENCE, latestEx,
+                cutoffMillis - latestEx);
+    }
+
+    /**
+     * 核对方案的发行财产主体与证券发行组织是同一登记组织。
+     *
+     * @param registry  开局登记
+     * @param scheme    分红方案
+     */
+    private static void checkSchemeIssuerMapping(OpeningRegistry registry,
+                                                 DividendModel.Scheme scheme) {
+        OpeningRegistry.PropertyOwner issuer = registry.owner(scheme.issuerOwnerId());
+        if (issuer == null || issuer.kind() != OpeningRegistry.OwnerKind.ORGANIZATION) {
+            throw new IllegalArgumentException("发行财产主体不是已登记组织：" + scheme.schemeId());
+        }
+        OpeningRegistry.Security security = registry.security(scheme.symbol());
+        if (security == null
+                || !Objects.equals(security.issuerOrganizationId(), issuer.partyId())) {
+            throw new IllegalArgumentException("证券发行组织与发行财产主体不一致：" + scheme.schemeId());
+        }
     }
 
     /**
@@ -389,14 +484,7 @@ public final class ValuationModel {
             }
         }
         for (DividendModel.Scheme scheme : dividends.schemes().values()) {
-            OpeningRegistry.PropertyOwner issuer = registry.owner(scheme.issuerOwnerId());
-            if (issuer == null || issuer.kind() != OpeningRegistry.OwnerKind.ORGANIZATION) {
-                throw new IllegalArgumentException("发行财产主体不是已登记组织：" + scheme.schemeId());
-            }
-            OpeningRegistry.Security security = registry.security(scheme.symbol());
-            if (security == null || !Objects.equals(security.issuerOrganizationId(), issuer.partyId())) {
-                throw new IllegalArgumentException("证券发行组织与发行财产主体不一致：" + scheme.schemeId());
-            }
+            checkSchemeIssuerMapping(registry, scheme);
             CashLedger.CashAccount company = accounts.get(scheme.companyAccountId());
             if (company == null || !company.ownerId().equals(scheme.issuerOwnerId())) {
                 throw new IllegalArgumentException("公司付款账户不属于发行财产主体：" + scheme.schemeId());
