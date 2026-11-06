@@ -20,7 +20,7 @@
 - 首轮精度 1 模拟毫秒，固定四阶段；新消息最早下一时间步。公平顺序来自运行种子并可记录。
 - 用户可见首版须含所启用公司的董事会、独立四岗、遗忘/偏信/习惯和真实图表来源；基础模块通过不代表首版完成。
 - 每阶段：专项测试 + `bash scripts/verify.sh --with-gui` + 评分映射 + 真实记录；代码通过 PR、`[AI-Generated]`、至少一名人工实质 review 后才能合入。
-- 保留启动时所有未提交改动。草稿依赖链 `codex/world-implementation` → `codex/world-securities-ledger` → `codex/world-matching` → `codex/world-exchange` → 当前 `codex/world-manufacturing`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
+- 保留启动时所有未提交改动。草稿依赖链 `codex/world-implementation` → `codex/world-securities-ledger` → `codex/world-matching` → `codex/world-exchange` → `codex/world-manufacturing` → `codex/world-governance` → `codex/world-role-information` → 当前 `codex/world-role-reading`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
 
 ## Review Focus
 
@@ -42,9 +42,9 @@
 | --- | --- | --- | --- | --- |
 | M0 现状核验/加固 | 课程全套实跑；静态风险；必要回归修复 | 无 | V06/V15 的课程部分 | 本地已验收，待 PR 人工 review |
 | M1 世界运行基础 | 模拟时序/阶段、运行清单、唯一提交、幂等事件日志、恢复与分支边界 | M0 | V10/V11/V12 | 现金运行子集本地验收；完整世界/实验分支仍待实施 |
-| M2 身份/开局/交易账 | 人物/组织/账户/任职；开局股份与现金清单；托管映射；版本化规则；T+1 批次/自成交 | M1 | V01/V02/V05/V06/V14 | M2.1–2.4b可靠交易核本地验收；银行托管/任职/角色授权待实施 |
+| M2 身份/开局/交易账 | 人物/组织/账户/任职；开局股份与现金清单；托管映射；版本化规则；T+1 批次/自成交 | M1 | V01/V02/V05/V06/V14 | M2.1–2.4b可靠交易核本地验收；任职/人物投影已接schema6，角色交易网关及银行托管待实施 |
 | M3 公司经营竖切 | 制造公司、外部客户/供应商、合同履约、现金与报表、董事会、现金分红、表现核算 | M2 | V04/V15/V16/V17 | M3a制造桥217项与PR10 CI通过；治理297项标准/GUI/CSV及原审查反例复验通过，独审Important已修复；均待人工review，分红待实施 |
-| M4 角色与信息竖切 | 独立四岗机构、两类媒体、普通投资者；阅读/传播/权限、六层记忆与偏信/习惯、模型屏障与预算 | M1/M2/M3 | V07/V08/V09/V10/V13/V14 | RoleAccess22项纯核与开局复核、资料/阅读29项及C全套293绿，原独审边界复验通过；G组合348项标准验收通过，待人工review；Runtime准备执行，四岗流程/认知待实施 |
+| M4 角色与信息竖切 | 独立四岗机构、两类媒体、普通投资者；阅读/传播/权限、六层记忆与偏信/习惯、模型屏障与预算 | M1/M2/M3 | V07/V08/V09/V10/V13/V14 | 22+29项纯核与schema6运行桥本地验收，G362项标准/GUI/CSV、95条独立检查及独审最终46/31通过；待人工review，四岗交易/媒体/认知待实施 |
 | M5 差异公司与银行 | 工程回款、银行完整实验规则、直接/组合敞口迁移、其余十类公司及八类媒体逐项配置 | M3/M4 | V01/V02/V03/V13/V16 | 待细化 |
 | M6 真实观察工作台 | 先接增量观察；白色市场/股票/公司/账户/人物机构/新闻/世界页面；同快照、权限裁剪、图表与历史回放 | M1 起增量，完整依赖 M2–M5 | V12/V14/V15 | 离线审计页私有原型与数据边界已查，浏览器实点待验；完整工作台与Web主界面选择仍保留 |
 | M7 行为/压力与交付 | 无 LLM 故障夹具、固定预算小试、多次独立实验、失败率/分布、课程报告/JavaDoc/PR 人工评审 | 所有启用能力 | V17/V18 及全矩阵回归 | 待细化 |
@@ -283,6 +283,8 @@ M3b.2的预算同批经营、持久会议与固定截止复盘按[治理接入�
 
 M4b.1在隔离树执行[资料版本与实际阅读纯核](2026-11-06-information-core.md)，复用RoleAccess；M6a的[离线审计观察页](2026-11-06-audit-observer.md)只在忽略目录准备，尚未进入正式代码分支，浏览器验收状态单独保留。
 
+M4a.2/M4b.2按[人物阅读运行施工单](2026-11-06-role-reading-runtime.md)接入schema6。当前已完成代码、标准及独审验收，草稿[PR #13](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/13)依赖#12，待人工review。下一执行单元先固定可信人物工具网关、经理母任务/风险限制/执行员子单合同，再写四岗交易；六层认知和媒体仍保留独立验收。离线观察页未通过浏览器实点，不计M6完成。
+
 ## 进入后续阶段前必须冻结的规格
 
 - M2：开局资产负债、发行股份/所有者、托管/银行映射、授权对象与规则档案；实验 T+1/限价/费率，不冒称全部真实交易所制度。
@@ -385,3 +387,12 @@ M2.4a 共享纯撮合 → 审查/标准验收 → M2.4b 世界订单接入；制
 - 治理最终297/297标准验收：70笔成交、219条订单、11行排名与CSV/JavaFX全绿；最终JavaDoc05:44:30重新生成。治理预算/复盘子集本地已验收，完整M3仍含分红等未完范围。评分映射与真实记录已更新，不将AI审查视作人工review。
 - 治理已提交bbd51818cf709db3383220e63cea05a294d6b16d至草稿[PR #11](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/11)，base world-manufacturing；远端verify42115434616 completed/success，未合并。后续在codex/world-role-information逐文件hash转入C已验收Role/Information四文件，未夹带C旧Model/Board。
 - 任职/信息组合G348/348、98成交/238订单/11排名、CSV/JavaFX全绿，JavaDoc05:46:37实际重新生成。证据rolecore/g-combined-standard-verify.log及g-combined-javadoc.log；纯核本地已验收，Runtime仍schema5，尚无真实持久阅读/角色工具。下一步按八参/schema6施工单接入，角色交易母任务与认知另做。
+- 任职/信息纯核已提交77e1136f78eb2febe77a6939e62e12542e9a7b79至草稿[PR #12](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/12)，base world-governance；verify42115778312 completed/success。主G继续codex/world-role-reading，Role/Info Runtime施工query在role-reading-query.txt（180轮/3000秒），真实Hermes独占G源码/Maven；Codex负责文档/独立验收。
+- C原生主检出无法归档（app primary checkout限制），没有绕道删除。核对只有8个本轮自建未跟踪文件、无tracked改动后，按显式路径stash保留，再detach到77e1136同步已交付代码；所有成果已逐hash转入G提交，原隔离版本仍可恢复。未移动用户G文件。
+- 已冻结真正旧schema5程序bbd5181至legacy-governance-v5，最终actual-old-run-final在20日/position30/cash200/AR1200/pending3，供新schema6跨版本续写再旧读回；先前实验目录保留但不作为最终旧程序证据。
+- 离线观察私有原型追加governance.html，来自实际61日治理日志：现金900/设备800/利润-300/权益1700、30日期间证据100/0/100、两次不完整复盘与500/300预算已花/0可用、真实现金流1200/500/800。静态序列化/精度/转义断言通过；仍无浏览器实点，不标M6完成。
+
+- M4a.2/M4b.2实施20261106_054749_91e011、独审20261106_061240_1c6562。首稿359项不能作为最终验收；Codex真实复现命令换due/task仍幂等、同人同毫秒旧引用误取消新单，原RED保留codex-run-1。修复为从原TASK_SCHEDULED比较完整请求，以及所属人物+本人实例序号引用；不增加资产副本或改旧schema5线格式。作者交回361项后Codex补完整Snapshot断言和同毫秒公平排序回归，最终362项标准/GUI/CSV全绿（79成交/221订单/11排名），JavaDoc06:52:22真生成。
+- M4最终私有证据codex-run-2：95检查通过；同毫秒start/cancel/restart旧ref→NOT_FOUND active=1、同刻同版本跨人ref拒绝；真实ClosedByInterruptException当场完整Snapshot相等并暂停，两次重启只完成一次；正式Demo prepare/full/full保持position18、1经历/1DENIED；bbd5181真实旧schema5→新续写→旧回读通过。独审按最终B7CE83D0/085D2564冻结源码复测46条自有检查、31条重放及91条旧版Root检查，全过且本人视图差异0。原作者交接旧hash与审查中旧API文字的时间差已在docs/05 §16校正，不把历史发现当当前未修项。
+- 下一施工口：在本地已验收schema6上固定人物身份绑定工具网关与四岗交易母任务/风险额度/执行员子单，不直接给RoleAccess.ALLOW接旧引擎submit。媒体/六层认知/银行/现金分红/TWR/完整白色工作台仍未完成；离线观察页只在忽略目录有静态数据验证，没有浏览器实点，未计M6通过。所有草稿仍须人工review，未合入main。
+- M4运行桥已提交3a60017dbef5481e85952ffb1451dc1eac208245并推送，草稿[PR #13](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/13)以world-role-information为base，已附当前会话。创建时verify run42125539654实际in_progress；远端最新结果以PR Checks为准，不把本地全绿冒充远端结论。config.properties/PROJECT_MEMORY的开工前SHA256保持，未纳入提交。草稿依赖链#6→#7→#8→#9→#10→#11→#12→#13，均未合入。

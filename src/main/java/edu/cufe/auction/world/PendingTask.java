@@ -106,6 +106,27 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 自动子任务：对期间证据评分（客观考核，不是多数表决）。 */
     public static final String BOARD_REVIEW_V1 = "BOARD_REVIEW_V1";
 
+    /** 受信管理夹具：到期建立一条任职（RULES）。 */
+    public static final String ROLE_APPOINT_V1 = "ROLE_APPOINT_V1";
+
+    /** 受信管理夹具：到期给已有任职写入一次撤销时刻（RULES）。 */
+    public static final String ROLE_REVOKE_V1 = "ROLE_REVOKE_V1";
+
+    /** 受信场景夹具：到期首次发表一篇资料，实际发布时间等于任务到期（COMPLETION）。 */
+    public static final String INFORMATION_PUBLISH_V1 = "INFORMATION_PUBLISH_V1";
+
+    /** 受信场景夹具：到期给已有资料追加一版，沿用原发布者与受众（COMPLETION）。 */
+    public static final String INFORMATION_PUBLISH_VERSION_V1 = "INFORMATION_PUBLISH_VERSION_V1";
+
+    /** 受信管理夹具：到期开始阅读固定版本，并同批排唯一自动完成待办（COMPLETION）。 */
+    public static final String INFORMATION_START_READ_V1 = "INFORMATION_START_READ_V1";
+
+    /** 受信管理夹具：到期取消本单阅读，只移除对应自动完成待办（COMPLETION）。 */
+    public static final String INFORMATION_CANCEL_READ_V1 = "INFORMATION_CANCEL_READ_V1";
+
+    /** 自动子任务：到期复核阅读资格并终结（完成或明确拒绝）（COMPLETION）。 */
+    public static final String INFORMATION_COMPLETE_READ_V1 = "INFORMATION_COMPLETE_READ_V1";
+
     /** 校验必需字段与 kind/phase 对应关系。 */
     public PendingTask {
         if (taskId == null || taskId.isBlank()) {
@@ -127,12 +148,16 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  MANUFACTURING_PAY_EXPENSE_BILL_V1,
                  GOVERNANCE_MEETING_V1, GOVERNANCE_MATERIAL_V1,
                  GOVERNANCE_BUDGET_PROPOSAL_V1, GOVERNANCE_VOTE_V1,
-                 GOVERNANCE_IMPLEMENT_V1, BOARD_CLOSE_V1, BOARD_REVIEW_V1 -> {
+                 GOVERNANCE_IMPLEMENT_V1, BOARD_CLOSE_V1, BOARD_REVIEW_V1,
+                 INFORMATION_PUBLISH_V1, INFORMATION_PUBLISH_VERSION_V1,
+                 INFORMATION_START_READ_V1, INFORMATION_CANCEL_READ_V1,
+                 INFORMATION_COMPLETE_READ_V1 -> {
                 if (phase != WorldScheduler.Phase.COMPLETION) {
                     throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }
             }
-            case MANUFACTURING_PERIOD_CLOSE_V1, BOARD_OPEN_V1 -> {
+            case MANUFACTURING_PERIOD_CLOSE_V1, BOARD_OPEN_V1,
+                 ROLE_APPOINT_V1, ROLE_REVOKE_V1 -> {
                 if (phase != WorldScheduler.Phase.RULES) {
                     throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
                 }

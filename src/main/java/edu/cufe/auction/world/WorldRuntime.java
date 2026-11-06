@@ -56,6 +56,8 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_MANUFACTURING = 4;
     /** 含完整董事会治理子集状态的世界状态版本（M3b.2）。 */
     private static final int STATE_SCHEMA_GOVERNANCE = 5;
+    /** 含任职授权与资料阅读子集状态的世界状态版本（M4a.2/M4b.2）。 */
+    private static final int STATE_SCHEMA_ROLE_READING = 6;
 
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
@@ -93,6 +95,12 @@ public final class WorldRuntime implements AutoCloseable {
     private final ManufacturingRun.Config manufacturingConfig;
     /** 董事会章程；只有 governed-stock-company-experiment-v1 档案非空。 */
     private final BoardModel.Charter charter;
+    /** 任职开局配置；只有 informed-stock-company-experiment-v1 档案非空。 */
+    private final RoleRun.Config roleConfig;
+    /** 资料阅读开局配置；只有 informed-stock-company-experiment-v1 档案非空。 */
+    private final InformationRun.Config informationConfig;
+    /** 规范化后的开局现金清单（按账户标识排序），供逐批权限来源校验复用。 */
+    private final List<OpeningAccount> orderedOpenings;
     private final long seed;
     private final WorldJournal journal;
     private final Thread writerThread = Thread.currentThread();
@@ -132,6 +140,8 @@ public final class WorldRuntime implements AutoCloseable {
      * @param exchange    世界订单/成交子集；仅撮合档案存在
      * @param manufacturing 制造经营子集；仅 stock-company-experiment-v1 存在
      * @param governance    董事会治理子集；仅 governed-stock-company-experiment-v1 存在
+     * @param roles        任职授权子集；仅 informed-stock-company-experiment-v1 存在
+     * @param information  资料阅读子集；仅 informed-stock-company-experiment-v1 存在
      * @param pending     未完成待办（不可变）
      * @param delivered   已投递回报（不可变）
      * @param usedTaskIds 已用任务标识（不可变）
@@ -142,6 +152,8 @@ public final class WorldRuntime implements AutoCloseable {
                            Optional<WorldExchange.State> exchange,
                            Optional<ManufacturingRun> manufacturing,
                            Optional<BoardRun> governance,
+                           Optional<RoleRun> roles,
+                           Optional<InformationRun> information,
                            List<PendingTask> pending, List<Notice> delivered,
                            Set<String> usedTaskIds) {
         /** 防御性冻结所有集合。 */
@@ -151,6 +163,8 @@ public final class WorldRuntime implements AutoCloseable {
             exchange = Objects.requireNonNull(exchange, "exchange");
             manufacturing = Objects.requireNonNull(manufacturing, "manufacturing");
             governance = Objects.requireNonNull(governance, "governance");
+            roles = Objects.requireNonNull(roles, "roles");
+            information = Objects.requireNonNull(information, "information");
             pending = List.copyOf(pending);
             delivered = List.copyOf(delivered);
             usedTaskIds = Collections.unmodifiableSet(new LinkedHashSet<>(usedTaskIds));
@@ -251,6 +265,24 @@ public final class WorldRuntime implements AutoCloseable {
     private record ManufacturingChildPayload(String commandId, String businessId, long period) {
     }
 
+    /** 任职任务的规范内容与任务参数；撤销动作只填 commandId 与 appointmentId。 */
+    private record AppointmentPayload(String commandId, String appointmentId, String personPartyId,
+                                      String organizationPartyId, String role, long startsAt,
+                                      long endsAt) {
+    }
+
+    /** 资料发表任务的规范内容与任务参数；追加版本时发布者与受众保留空串。 */
+    private record PublishPayload(String commandId, String docId, String publisherPartyId,
+                                  String audienceKind, String audiencePartyId, String title,
+                                  String body, String publicSourceDescription,
+                                  long readDurationMillis, List<String> internalSourceIds) {
+    }
+
+    /** 阅读任务的规范内容与任务参数；取消动作按本人范围引用（资料/版本/本人序号）解析。 */
+    private record ReadingPayload(String commandId, String personPartyId, String docId, long version,
+                                  String readId, long refIndex) {
+    }
+
     /** 外部治理命令的规范内容与任务参数；无效字段保持空串/0，便于稳定序列化。 */
     private record GovernancePayload(String commandId, String seatId, String meetingId,
                                      long materialDeadline, long opensAt, long closesAt,
@@ -272,7 +304,11 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               ManufacturingRun manufacturing,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              BoardRun governance) {
+                              BoardRun governance,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              RoleRun roles,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              InformationRun information) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -354,6 +390,32 @@ public final class WorldRuntime implements AutoCloseable {
     public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
                         OpeningRegistry registry, ManufacturingRun.Config manufacturing,
                         BoardModel.Charter charter) throws IOException {
+        this(file, manifest, openings, registry, manufacturing, charter, null, null);
+    }
+
+    /**
+     * 打开或恢复一次含任职与资料阅读的公司档案（{@code informed-stock-company-experiment-v1}）。
+     *
+     * <p>两个配置与对应模块必须成对：清单缺配置、或旧档案多带配置，都在创建任何文件之前拒绝。
+     * 首批校验还包括：登记读者必须是已登记 PERSON；产品管理授权与初始任职必须通过
+     * {@link RoleAccess#open} 与 {@link RoleAccess#validateAgainst} 的来源校验；组织受众必须是
+     * 已登记 ORGANIZATION、直投受众与发布者必须是配置中的登记读者。配置随第一批开局内容冻结，
+     * 换一套配置重开同一日志会在恢复期被拒绝。</p>
+     *
+     * @param file        运行日志（本类独占）
+     * @param manifest    运行清单
+     * @param openings    现金开局清单
+     * @param registry    开局登记
+     * @param manufacturing 制造开局配置
+     * @param charter     董事会章程
+     * @param roles       任职开局配置；旧档案为 null
+     * @param information 资料阅读开局配置；旧档案为 null
+     * @throws IOException 日志不可用、清单/开局/登记/配置与持久记录不一致
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                        OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                        BoardModel.Charter charter, RoleRun.Config roles,
+                        InformationRun.Config information) throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         if (manifest.hasRegistry() && registry == null) {
             throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
@@ -382,9 +444,36 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("治理档案必须同时启用制造经营模块："
                     + manifest.rulesVersion());
         }
+        if (manifest.hasRoles() && roles == null) {
+            throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                    + " 必须提供任职开局配置");
+        }
+        if (!manifest.hasRoles() && roles != null) {
+            throw new IllegalArgumentException("未启用任职模块的运行不接受任职配置："
+                    + manifest.rulesVersion());
+        }
+        if (manifest.hasInformation() && information == null) {
+            throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                    + " 必须提供资料阅读开局配置");
+        }
+        if (!manifest.hasInformation() && information != null) {
+            throw new IllegalArgumentException("未启用资料阅读模块的运行不接受阅读配置："
+                    + manifest.rulesVersion());
+        }
+        if (manifest.hasRoles() != manifest.hasInformation()) {
+            throw new IllegalArgumentException("任职与资料阅读模块必须同时启用："
+                    + manifest.rulesVersion());
+        }
+        if (manifest.hasRoles() && (!manifest.hasGovernance()
+                || !manifest.hasManufacturing() || !manifest.hasMatching())) {
+            throw new IllegalArgumentException("任职与资料阅读档案必须建立在完整公司治理档案之上："
+                    + manifest.rulesVersion());
+        }
         this.registry = registry;
         this.manufacturingConfig = manufacturing;
         this.charter = charter;
+        this.roleConfig = roles;
+        this.informationConfig = information;
         this.seed = manifest.seed();
         List<OpeningAccount> ordered = new ArrayList<>(Objects.requireNonNull(openings, "openings"));
         ordered.sort(Comparator.comparing(OpeningAccount::accountId));
@@ -410,6 +499,11 @@ public final class WorldRuntime implements AutoCloseable {
         if (charter != null) {
             // 章程组织/五席/登记人物在写盘前拒绝
             validateGovernanceOpening();
+        }
+        this.orderedOpenings = List.copyOf(ordered);
+        if (roleConfig != null) {
+            // 任职与阅读开局：mandates/初始任职/登记读者在写盘前拒绝
+            validateRoleReadingOpening();
         }
         WorldState initial = initialState(accounts);
         this.journal = new WorldJournal(file, manifest.runId());
@@ -1071,6 +1165,8 @@ public final class WorldRuntime implements AutoCloseable {
             if (!content.equals(state.commandContents().get(commandId))) {
                 throw new IllegalArgumentException("同一命令标识不能对应不同内容");
             }
+            requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
+                    kind, content);
             return state.commandOutcomes().get(commandId);
         }
         requireSchedulable(dueTimeMillis, taskId);
@@ -1294,6 +1390,9 @@ public final class WorldRuntime implements AutoCloseable {
         if (!actorOwnerId.equals(manufacturingConfig.accounting().companyOwnerId())) {
             throw new IllegalArgumentException("只有公司财产主体可以发起经营动作：" + actorOwnerId);
         }
+        ManufacturingPayload payload = new ManufacturingPayload(commandId, actorOwnerId,
+                businessId, resultId, quantity, unitPrice, promisedDeliveryAt, period);
+        String payloadJson = mapper.writeValueAsString(payload);
         ManufacturingCommand command = new ManufacturingCommand(commandId, taskId, dueTimeMillis,
                 actorOwnerId, businessId, resultId, quantity, unitPrice, promisedDeliveryAt, period);
         String content = mapper.writeValueAsString(command);
@@ -1301,14 +1400,355 @@ public final class WorldRuntime implements AutoCloseable {
             if (!content.equals(state.commandContents().get(commandId))) {
                 throw new IllegalArgumentException("同一命令标识不能对应不同内容");
             }
+            requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
+                    kind, payloadJson);
             return state.commandOutcomes().get(commandId);
         }
         requireSchedulable(dueTimeMillis, taskId);
-        ManufacturingPayload payload = new ManufacturingPayload(commandId, actorOwnerId,
-                businessId, resultId, quantity, unitPrice, promisedDeliveryAt, period);
         PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
-                kind, mapper.writeValueAsString(payload));
+                kind, payloadJson);
         return scheduleCompletionTask(task, commandId, content);
+    }
+
+    // ------------------------------------------------------------------
+    // 任职与资料阅读：受信管理排程（全部 due > 世界时间，到期才提交）
+    // ------------------------------------------------------------------
+
+    /**
+     * 排程一次任职建立：到期才写入授权状态，排程本身只持久待办与命令内容。
+     *
+     * <p>起点不得早于到期时刻（不能借排程倒填过去任职），身份种类与重叠冲突在排程期即按固定
+     * 开局登记预检，并在到期时用同一口径再校验一次。同一命令重发返回原 {@code SCHEDULED} 文本。</p>
+     *
+     * @param commandId           外部命令标识
+     * @param taskId              任务标识，运行内不复用
+     * @param dueTimeMillis       到期模拟毫秒，必须晚于当前时点
+     * @param appointmentId       任职标识，历史唯一
+     * @param personPartyId       任职人物
+     * @param organizationPartyId 任职组织
+     * @param role                岗位
+     * @param startsAt            任职起始（含），不得早于到期
+     * @param endsAt              任职结束（不含）
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、身份、区间或能力非法
+     */
+    public synchronized String scheduleAppointment(String commandId, String taskId,
+                                                   long dueTimeMillis, String appointmentId,
+                                                   String personPartyId,
+                                                   String organizationPartyId,
+                                                   RoleAccess.Role role, long startsAt, long endsAt)
+            throws IOException {
+        requireRoleReadingEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(appointmentId, "任职标识");
+        requireText(personPartyId, "任职人物");
+        requireText(organizationPartyId, "任职组织");
+        Objects.requireNonNull(role, "任职岗位");
+        AppointmentPayload payload = new AppointmentPayload(commandId, appointmentId,
+                personPartyId, organizationPartyId, role.name(), startsAt, endsAt);
+        String content = mapper.writeValueAsString(payload);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.RULES,
+                    PendingTask.ROLE_APPOINT_V1, content);
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        if (startsAt < dueTimeMillis) {
+            throw new IllegalArgumentException("任职起点不得早于执行到期：" + startsAt
+                    + " < " + dueTimeMillis);
+        }
+        // 固定登记与重叠预检：与到期时同一口径
+        new RoleAccess.Appointment(appointmentId, personPartyId, organizationPartyId, role,
+                startsAt, endsAt, null);
+        requireParty(personPartyId, OpeningRegistry.PartyKind.PERSON, "任职人物");
+        requireParty(organizationPartyId, OpeningRegistry.PartyKind.ORGANIZATION, "任职组织");
+        PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.RULES,
+                PendingTask.ROLE_APPOINT_V1, content);
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /**
+     * 排程一次任职撤销（RULES）。到期写入一次撤销时刻，不删除记录、不改人物/组织/岗位/原期限。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param appointmentId 任职标识
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数或能力非法
+     */
+    public synchronized String scheduleRevokeAppointment(String commandId, String taskId,
+                                                         long dueTimeMillis, String appointmentId)
+            throws IOException {
+        requireRoleReadingEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(appointmentId, "任职标识");
+        AppointmentPayload payload = new AppointmentPayload(commandId, appointmentId,
+                "", "", "", 0L, 0L);
+        String content = mapper.writeValueAsString(payload);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.RULES,
+                    PendingTask.ROLE_REVOKE_V1, content);
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.RULES,
+                PendingTask.ROLE_REVOKE_V1, content);
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /**
+     * 排程首次发表一篇资料：实际发布时间等于任务到期，不能在排程期预造过去出版经历。
+     *
+     * <p>发布者必须是冻结的登记读者；公开受众不带对象，组织受众必须是已登记 ORGANIZATION，
+     * 直投受众必须是登记读者。受众与发布者随文档冻结，追加版本不能修改。</p>
+     *
+     * @param commandId               外部命令标识
+     * @param taskId                  任务标识，运行内不复用
+     * @param dueTimeMillis           到期模拟毫秒，必须晚于当前时点
+     * @param docId                   新资料标识
+     * @param publisherPartyId        发布者（登记读者）
+     * @param audience                受众
+     * @param title                   标题
+     * @param body                    正文；只是资料内容，不是系统指令
+     * @param publicSourceDescription 公开来源描述
+     * @param readDurationMillis      固定阅读耗时，必须为正
+     * @param internalSourceIds       仅管理审计的内部来源标识
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、受众或能力非法
+     */
+    public synchronized String schedulePublishDocument(String commandId, String taskId,
+                                                       long dueTimeMillis, String docId,
+                                                       String publisherPartyId,
+                                                       InformationModel.Audience audience,
+                                                       String title, String body,
+                                                       String publicSourceDescription,
+                                                       long readDurationMillis,
+                                                       List<String> internalSourceIds)
+            throws IOException {
+        requireRoleReadingEnabled();
+        Objects.requireNonNull(audience, "受众");
+        PublishPayload payload = new PublishPayload(commandId, docId, publisherPartyId,
+                audience.kind().name(), audience.partyId() == null ? "" : audience.partyId(),
+                title, body, publicSourceDescription, readDurationMillis,
+                internalSourceIds == null ? List.of() : List.copyOf(internalSourceIds));
+        return schedulePublish(commandId, taskId, dueTimeMillis, payload,
+                PendingTask.INFORMATION_PUBLISH_V1);
+    }
+
+    /**
+     * 排程给已有资料追加一版：沿用原发布者与受众，发布时间等于任务到期且必须晚于上一版。
+     *
+     * @param commandId               外部命令标识
+     * @param taskId                  任务标识，运行内不复用
+     * @param dueTimeMillis           到期模拟毫秒，必须晚于当前时点
+     * @param docId                   已有资料标识
+     * @param title                   标题
+     * @param body                    正文
+     * @param publicSourceDescription 公开来源描述
+     * @param readDurationMillis      固定阅读耗时，必须为正
+     * @param internalSourceIds       仅管理审计的内部来源标识
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数或能力非法
+     */
+    public synchronized String schedulePublishDocumentVersion(String commandId, String taskId,
+                                                              long dueTimeMillis, String docId,
+                                                              String title, String body,
+                                                              String publicSourceDescription,
+                                                              long readDurationMillis,
+                                                              List<String> internalSourceIds)
+            throws IOException {
+        requireRoleReadingEnabled();
+        requireText(docId, "资料标识");
+        PublishPayload payload = new PublishPayload(commandId, docId, "", "", "",
+                title, body, publicSourceDescription, readDurationMillis,
+                internalSourceIds == null ? List.of() : List.copyOf(internalSourceIds));
+        return schedulePublish(commandId, taskId, dueTimeMillis, payload,
+                PendingTask.INFORMATION_PUBLISH_VERSION_V1);
+    }
+
+    /** 发表排程共用：命令幂等、固定受众校验与同批持久提交。 */
+    private String schedulePublish(String commandId, String taskId, long dueTimeMillis,
+                                   PublishPayload payload, String kind) throws IOException {
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(payload.docId(), "资料标识");
+        requireText(payload.title(), "资料标题");
+        requireText(payload.body(), "资料正文");
+        if (payload.readDurationMillis() <= 0) {
+            throw new IllegalArgumentException("阅读耗时必须为正毫秒："
+                    + payload.readDurationMillis());
+        }
+        String content = mapper.writeValueAsString(payload);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
+                    kind, content);
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        if (PendingTask.INFORMATION_PUBLISH_V1.equals(kind)) {
+            requireText(payload.publisherPartyId(), "发布者");
+            if (!informationConfig.readers().contains(payload.publisherPartyId())) {
+                throw new IllegalArgumentException("发布者必须是冻结的登记读者："
+                        + payload.publisherPartyId());
+            }
+            InformationModel.AudienceKind audienceKind =
+                    InformationModel.AudienceKind.valueOf(payload.audienceKind());
+            if (audienceKind == InformationModel.AudienceKind.ORGANIZATION) {
+                requireParty(payload.audiencePartyId(),
+                        OpeningRegistry.PartyKind.ORGANIZATION, "组织受众");
+            } else if (audienceKind == InformationModel.AudienceKind.DIRECT) {
+                requireParty(payload.audiencePartyId(), OpeningRegistry.PartyKind.PERSON,
+                        "直投受众");
+                if (!informationConfig.readers().contains(payload.audiencePartyId())) {
+                    throw new IllegalArgumentException("直投对象必须是冻结的登记读者："
+                            + payload.audiencePartyId());
+                }
+            }
+        }
+        PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
+                kind, content);
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /**
+     * 排程开始阅读一个明确版本：到期才预留工时，并同批排唯一匹配的自动完成待办。
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param personPartyId 读者（登记人物）
+     * @param docId         资料标识
+     * @param version       明确版本号，必须为正
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数或能力非法
+     */
+    public synchronized String scheduleStartReading(String commandId, String taskId,
+                                                    long dueTimeMillis, String personPartyId,
+                                                    String docId, long version)
+            throws IOException {
+        requireRoleReadingEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(personPartyId, "阅读者");
+        requireText(docId, "资料标识");
+        if (version < 1) {
+            throw new IllegalArgumentException("阅读版本必须从 1 开始：" + version);
+        }
+        requireParty(personPartyId, OpeningRegistry.PartyKind.PERSON, "阅读者");
+        if (!informationConfig.readers().contains(personPartyId)) {
+            throw new IllegalArgumentException("阅读者必须是冻结的登记读者：" + personPartyId);
+        }
+        ReadingPayload payload = new ReadingPayload(commandId, personPartyId, docId, version, "", 0L);
+        String content = mapper.writeValueAsString(payload);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
+                    PendingTask.INFORMATION_START_READ_V1, content);
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
+                PendingTask.INFORMATION_START_READ_V1, content);
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /**
+     * 排程取消一张活动阅读：到期后只取消本单，并只移除本单对应的自动完成待办。
+     *
+     * <p>入口按<b>本人范围引用</b>（所属人物 + 资料 + 固定版本 + 本人阅读序号）解析，不接受管理端全局
+     * {@code READ-n} 序号，因此别人多读或少读都不会改变本单的取消语义。</p>
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param personPartyId 读者（登记人物）
+     * @param ref           本人范围引用（来自 {@link RoleView.ReadingRef}）
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、引用归属或能力非法
+     */
+    public synchronized String scheduleCancelReading(String commandId, String taskId,
+                                                     long dueTimeMillis, String personPartyId,
+                                                     RoleView.ReadingRef ref)
+            throws IOException {
+        requireRoleReadingEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(personPartyId, "阅读者");
+        Objects.requireNonNull(ref, "阅读引用");
+        if (!ref.personPartyId().equals(personPartyId)) {
+            throw new IllegalArgumentException("阅读引用不属于该人物：" + ref.personPartyId());
+        }
+        ReadingPayload payload = new ReadingPayload(commandId, personPartyId, ref.docId(),
+                ref.version(), "", ref.index());
+        String content = mapper.writeValueAsString(payload);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
+                    PendingTask.INFORMATION_CANCEL_READ_V1, content);
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
+                PendingTask.INFORMATION_CANCEL_READ_V1, content);
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /** 登记人物/组织种类：只读取固定开局登记，不信任调用方声明。 */
+    private void requireParty(String partyId, OpeningRegistry.PartyKind kind, String field) {
+        OpeningRegistry.Party party = partyOf(partyId);
+        if (party == null || party.kind() != kind) {
+            throw new IllegalArgumentException(field + "未登记或种类不符：" + partyId);
+        }
+    }
+
+    /** 在固定开局登记里按标识查主体；不存在返回 null。 */
+    private OpeningRegistry.Party partyOf(String partyId) {
+        if (registry == null || partyId == null) {
+            return null;
+        }
+        for (OpeningRegistry.Party party : registry.parties()) {
+            if (party.partyId().equals(partyId)) {
+                return party;
+            }
+        }
+        return null;
     }
 
     /**
@@ -1359,6 +1799,13 @@ public final class WorldRuntime implements AutoCloseable {
                     case PendingTask.BOARD_OPEN_V1 -> completeBoardOpen(next);
                     case PendingTask.BOARD_CLOSE_V1 -> completeBoardClose(next);
                     case PendingTask.BOARD_REVIEW_V1 -> completeBoardReview(next);
+                    case PendingTask.ROLE_APPOINT_V1,
+                         PendingTask.ROLE_REVOKE_V1 -> completeRole(next);
+                    case PendingTask.INFORMATION_PUBLISH_V1,
+                         PendingTask.INFORMATION_PUBLISH_VERSION_V1,
+                         PendingTask.INFORMATION_START_READ_V1,
+                         PendingTask.INFORMATION_CANCEL_READ_V1,
+                         PendingTask.INFORMATION_COMPLETE_READ_V1 -> completeInformation(next);
                     default -> throw new IllegalStateException("未启用的任务种类：" + next.kind());
                 }
             }
@@ -1384,7 +1831,8 @@ public final class WorldRuntime implements AutoCloseable {
         return new Snapshot(state.position(), state.timeMillis(), state.lastPhase(),
                 state.accounts(), Optional.ofNullable(state.securities()),
                 Optional.ofNullable(state.exchange()), Optional.ofNullable(state.manufacturing()),
-                Optional.ofNullable(state.governance()),
+                Optional.ofNullable(state.governance()), Optional.ofNullable(state.roles()),
+                Optional.ofNullable(state.information()),
                 state.pending(), state.delivered(), state.usedTaskIds());
     }
 
@@ -1404,6 +1852,301 @@ public final class WorldRuntime implements AutoCloseable {
     /** @return 是否因提交失败而暂停 */
     public boolean isPaused() {
         return paused;
+    }
+
+    // ------------------------------------------------------------------
+    // 角色视图：只从同一已确认快照派生，不暴露管理端原始状态
+    // ------------------------------------------------------------------
+
+    /**
+     * 单个角色的只读视图：世界时间、本人当前任职、本人可见账户与证券汇总、公共市场聚合、
+     * 允许目录、本人真正读完的经历、本人阅读状态与已接入的阅读工具。
+     *
+     * <p><b>时间来源</b>：只用世界时点 {@code state.timeMillis()}，不接受调用方传入时间，
+     * 因此不能借视图把过去的授权复原。</p>
+     *
+     * <p><b>拒绝口径</b>：未登记且没有任职记录的人物得到同一条拒绝，不区分「不存在」与「无权」，
+     * 不泄露隐藏人物的存在性。</p>
+     *
+     * @param personPartyId 可信人物标识
+     * @return 该人物的角色视图
+     * @throws IllegalArgumentException 人物为空或不可见
+     * @throws IllegalStateException    当前运行未启用任职与阅读模块
+     */
+    public synchronized RoleView roleView(String personPartyId) {
+        requireOpen();
+        requireRoleReadingEnabled();
+        String person = personPartyId == null ? "" : personPartyId;
+        InformationModel.State information = requireInformationRun().information();
+        RoleAccess.State access = requireRoleRun().access();
+        boolean registered = information.persons().contains(person);
+        boolean appointed = false;
+        for (RoleAccess.Appointment appointment : access.appointments()) {
+            if (appointment.personPartyId().equals(person)) {
+                appointed = true;
+                break;
+            }
+        }
+        if (!registered && !appointed) {
+            throw new IllegalArgumentException("角色视图不可用");
+        }
+        long now = state.timeMillis();
+
+        List<RoleView.Appointment> appointments = new ArrayList<>();
+        for (RoleAccess.Appointment appointment : access.appointments()) {
+            if (appointment.personPartyId().equals(person) && appointment.activeAt(now)) {
+                appointments.add(new RoleView.Appointment(appointment.id(),
+                        appointment.organizationPartyId(), appointment.role(),
+                        appointment.startsAt(), appointment.effectiveEnd()));
+            }
+        }
+        Map<String, RoleView.AccountKind> visible = new LinkedHashMap<>();
+        for (RoleAccess.PersonAccount personal : access.personAccounts()) {
+            if (personal.personPartyId().equals(person)) {
+                visible.put(personal.accountId(), RoleView.AccountKind.PERSONAL);
+            }
+        }
+        for (RoleView.Appointment appointment : appointments) {
+            for (RoleAccess.ProductMandate mandate : access.mandates()) {
+                if (!mandate.organizationPartyId().equals(appointment.organizationPartyId())) {
+                    continue;
+                }
+                for (String accountId : mandate.accountIds()) {
+                    visible.putIfAbsent(accountId, RoleView.AccountKind.PRODUCT);
+                }
+            }
+        }
+        List<RoleView.Account> accounts = new ArrayList<>();
+        for (Map.Entry<String, RoleView.AccountKind> entry : visible.entrySet()) {
+            CashLedger.CashAccount cash = state.accounts().get(entry.getKey());
+            if (cash == null) {
+                continue;
+            }
+            BigDecimal frozen = ZERO;
+            if (state.exchange() != null) {
+                frozen = WorldExchange.frozenCash(state.exchange(), entry.getKey());
+            }
+            accounts.add(new RoleView.Account(entry.getKey(), entry.getValue(), cash.ownerId(),
+                    cash.cash(), frozen, cash.cash().subtract(frozen)));
+        }
+        List<RoleView.Holding> holdings = holdingsOf(visible.keySet());
+        List<RoleView.Market> market = marketOf();
+        List<InformationModel.CatalogEntry> catalog = InformationModel.catalog(information,
+                access, person, now);
+        Map<String, Integer> ordinals = readingOrdinals(information, person);
+        List<RoleView.Experience> observations = new ArrayList<>();
+        for (InformationModel.ReadObservation observation
+                : InformationModel.observations(information, person)) {
+            Integer index = ordinals.get(observation.readId());
+            if (index == null) {
+                throw new IllegalStateException("经历找不到本人阅读序号：" + observation.readId());
+            }
+            observations.add(new RoleView.Experience(
+                    new RoleView.ReadingRef(observation.personPartyId(), observation.docId(),
+                            observation.version(), index),
+                    observation.title(), observation.body(),
+                    observation.publicSourceDescription(), observation.publishedAt(),
+                    observation.completedAt()));
+        }
+        List<RoleView.Reading> readings = new ArrayList<>();
+        for (InformationModel.Reading reading : information.active()) {
+            if (reading.personPartyId().equals(person)) {
+                Integer index = ordinals.get(reading.readId());
+                if (index == null) {
+                    throw new IllegalStateException("活动阅读找不到本人序号：" + reading.readId());
+                }
+                readings.add(new RoleView.Reading(new RoleView.ReadingRef(reading.personPartyId(),
+                        reading.docId(), reading.version(), index), reading.dueAt()));
+            }
+        }
+        List<RoleView.Permission> permissions = permissionsOf(access, appointments, person, now);
+        return new RoleView(now, person, appointments, accounts, holdings, market, catalog,
+                observations, readings, permissions,
+                List.of(RoleView.TOOL_CATALOG, RoleView.TOOL_START_READ, RoleView.TOOL_CITE));
+    }
+
+    /**
+     * 引用判定：本人是否已在世界当前时点之前真正读完该资料的该固定版本。
+     *
+     * <p>只看本人经历，不看目录标题、不看别人的经历、不读正文里的指令；引用时刻取世界时间，
+     * 调用方不能传过去时间。</p>
+     *
+     * @param personPartyId 读者
+     * @param docId         资料标识
+     * @param version       被引版本
+     * @return 可引用返回 true
+     * @throws IllegalArgumentException 参数非法或版本号小于 1
+     * @throws IllegalStateException    当前运行未启用任职与阅读模块
+     */
+    public synchronized boolean canCite(String personPartyId, String docId, long version) {
+        requireOpen();
+        requireRoleReadingEnabled();
+        return InformationModel.canCite(requireInformationRun().information(), personPartyId,
+                docId, version, state.timeMillis());
+    }
+
+    /**
+     * 本人范围内的阅读序号：把该人物的活动与已终结阅读按内部记录顺序排列，得到 1..n。
+     *
+     * <p>只用于投影，不写入任何新状态；别人的阅读不参与排序，因此别人多读一次不会改变本人序号，
+     * 同一人物同刻取消后重开也会得到新的序号。</p>
+     */
+    private static Map<String, Integer> readingOrdinals(InformationModel.State information,
+                                                        String personPartyId) {
+        List<String> ids = new ArrayList<>();
+        for (InformationModel.Reading reading : information.active()) {
+            if (reading.personPartyId().equals(personPartyId)) {
+                ids.add(reading.readId());
+            }
+        }
+        for (InformationModel.ClosedReading closed : information.closed()) {
+            if (closed.personPartyId().equals(personPartyId)) {
+                ids.add(closed.readId());
+            }
+        }
+        ids.sort(Comparator.comparingLong(WorldRuntime::readSequence)
+                .thenComparing(Comparator.naturalOrder()));
+        Map<String, Integer> ordinals = new LinkedHashMap<>();
+        for (int i = 0; i < ids.size(); i++) {
+            ordinals.put(ids.get(i), i + 1);
+        }
+        return ordinals;
+    }
+
+    /** 内部阅读记录的顺序键；非 {@code READ-<n>} 标识排到最后并由标识本身决定顺序。 */
+    private static long readSequence(String readId) {
+        if (readId == null || !readId.startsWith("READ-")) {
+            return Long.MAX_VALUE;
+        }
+        try {
+            return Long.parseLong(readId.substring("READ-".length()));
+        } catch (NumberFormatException notNumeric) {
+            return Long.MAX_VALUE;
+        }
+    }
+
+    /** 证券按账户+代码汇总；冻结来自活动卖出预留，不暴露批次标识。 */
+    private List<RoleView.Holding> holdingsOf(Set<String> accountIds) {
+        List<RoleView.Holding> holdings = new ArrayList<>();
+        if (state.securities() == null) {
+            return holdings;
+        }
+        Map<String, long[]> totals = new LinkedHashMap<>();
+        for (SecuritiesLedger.Lot lot : state.securities().lots()) {
+            if (!accountIds.contains(lot.accountId())) {
+                continue;
+            }
+            long[] sums = totals.computeIfAbsent(lot.accountId() + "\u0000" + lot.symbol(),
+                    key -> new long[]{0L, 0L});
+            sums[0] = Math.addExact(sums[0], lot.remaining());
+        }
+        for (SecuritiesLedger.SellReservation reservation : state.securities().reservations()) {
+            if (!accountIds.contains(reservation.accountId())) {
+                continue;
+            }
+            long[] sums = totals.get(reservation.accountId() + "\u0000" + reservation.symbol());
+            if (sums != null) {
+                sums[1] = Math.addExact(sums[1], reservation.quantity());
+            }
+        }
+        for (Map.Entry<String, long[]> entry : totals.entrySet()) {
+            int split = entry.getKey().indexOf('\u0000');
+            String accountId = entry.getKey().substring(0, split);
+            String symbol = entry.getKey().substring(split + 1);
+            long quantity = entry.getValue()[0];
+            long frozen = entry.getValue()[1];
+            holdings.add(new RoleView.Holding(accountId, symbol, quantity, frozen,
+                    quantity - frozen));
+        }
+        return holdings;
+    }
+
+    /** 公共市场聚合：只给标的、最近成交价量与盘口，不给对手账户或内部成交序号。 */
+    private List<RoleView.Market> marketOf() {
+        List<RoleView.Market> market = new ArrayList<>();
+        if (registry == null || state.exchange() == null) {
+            return market;
+        }
+        for (OpeningRegistry.Security security : registry.securities()) {
+            String symbol = security.symbol();
+            WorldExchange.Trade lastTrade = null;
+            for (WorldExchange.Trade trade : state.exchange().trades()) {
+                if (!trade.symbol().equals(symbol)) {
+                    continue;
+                }
+                if (lastTrade == null || trade.timeMillis() > lastTrade.timeMillis()
+                        || (trade.timeMillis() == lastTrade.timeMillis()
+                        && trade.tradeId() > lastTrade.tradeId())) {
+                    lastTrade = trade;
+                }
+            }
+            BigDecimal bestBid = null;
+            BigDecimal bestAsk = null;
+            for (WorldExchange.Order order : state.exchange().orders()) {
+                if (!order.live() || !order.symbol().equals(symbol)
+                        || order.limitPrice() == null) {
+                    continue;
+                }
+                if (order.side() == Side.BUY
+                        && (bestBid == null || order.limitPrice().compareTo(bestBid) > 0)) {
+                    bestBid = order.limitPrice();
+                }
+                if (order.side() == Side.SELL
+                        && (bestAsk == null || order.limitPrice().compareTo(bestAsk) < 0)) {
+                    bestAsk = order.limitPrice();
+                }
+            }
+            market.add(new RoleView.Market(symbol,
+                    lastTrade == null ? null : lastTrade.price(),
+                    lastTrade == null ? 0L : lastTrade.quantity(),
+                    lastTrade == null ? -1L : lastTrade.timeMillis(), bestBid, bestAsk));
+        }
+        return market;
+    }
+
+    /** 岗位权限状态：只枚举本人当前任职范围内的组织、产品与账户。 */
+    private List<RoleView.Permission> permissionsOf(RoleAccess.State access,
+                                                    List<RoleView.Appointment> appointments,
+                                                    String person, long now) {
+        List<RoleView.Permission> permissions = new ArrayList<>();
+        for (RoleView.Appointment appointment : appointments) {
+            String organization = appointment.organizationPartyId();
+            RoleAccess.Target orgTarget = RoleAccess.Target.organization(organization);
+            for (RoleAccess.Action action : RoleAccess.Action.values()) {
+                if (action == RoleAccess.Action.READ_ORGANIZATION_FILE
+                        || action == RoleAccess.Action.WRITE_RESEARCH) {
+                    permissions.add(permission(access, person, action, orgTarget,
+                            "ORGANIZATION:" + organization, now));
+                    continue;
+                }
+                for (RoleAccess.ProductMandate mandate : access.mandates()) {
+                    if (!mandate.organizationPartyId().equals(organization)) {
+                        continue;
+                    }
+                    if (action == RoleAccess.Action.SET_PORTFOLIO_TARGET
+                            || action == RoleAccess.Action.ISSUE_RISK_HALT) {
+                        permissions.add(permission(access, person, action,
+                                RoleAccess.Target.product(organization, mandate.productOwnerId()),
+                                "PRODUCT:" + mandate.productOwnerId(), now));
+                        continue;
+                    }
+                    for (String accountId : mandate.accountIds()) {
+                        permissions.add(permission(access, person, action,
+                                RoleAccess.Target.account(organization,
+                                        mandate.productOwnerId(), accountId),
+                                "ACCOUNT:" + accountId, now));
+                    }
+                }
+            }
+        }
+        return permissions;
+    }
+
+    private RoleView.Permission permission(RoleAccess.State access, String person,
+                                          RoleAccess.Action action, RoleAccess.Target target,
+                                          String scope, long now) {
+        return new RoleView.Permission(action, scope,
+                RoleAccess.authorize(access, person, action, target, now));
     }
 
     /** 关闭日志；已发布快照仍可读取。 */
@@ -2291,6 +3034,279 @@ public final class WorldRuntime implements AutoCloseable {
         commitAndApply("task:" + task.taskId(), task.payload(), outcome.reason(), events, candidate);
     }
 
+    // ------------------------------------------------------------------
+    // 任职与资料阅读：到期执行、自动完成与报告
+    // ------------------------------------------------------------------
+
+    /** 自动阅读完成子任务：到期复核并终结，终态、经历、报告与待办同一批持久化。 */
+    private record ReadingChild(String stem, long dueTimeMillis, String readId,
+                                String personPartyId, String docId, long version,
+                                long startedAt) {
+    }
+
+    /**
+     * 任职任务到期：调用纯核 {@link RoleAccess#appoint} / {@link RoleAccess#revoke}。
+     *
+     * <p>语义拒绝（重叠、未知、已撤销、已到期）是显式管理结果，不中断世界：状态保持原样、
+     * 报告记为 {@code accepted=false}。所有成功与失败都与报告同批提交。</p>
+     */
+    private void completeRole(PendingTask task) throws IOException {
+        AppointmentPayload payload = mapper.readValue(task.payload(), AppointmentPayload.class);
+        long now = task.dueTimeMillis();
+        RoleRun run = requireRoleRun();
+        RoleAccess.State access = run.access();
+        boolean accepted;
+        String reason;
+        try {
+            if (PendingTask.ROLE_APPOINT_V1.equals(task.kind())) {
+                access = RoleAccess.appoint(registry, access, payload.appointmentId(),
+                        payload.personPartyId(), payload.organizationPartyId(),
+                        RoleAccess.Role.valueOf(payload.role()), payload.startsAt(),
+                        payload.endsAt(), now);
+            } else {
+                access = RoleAccess.revoke(access, payload.appointmentId(), now);
+            }
+            accepted = true;
+            reason = "OK";
+        } catch (IllegalArgumentException rejected) {
+            accepted = false;
+            reason = "REJECTED";
+            access = run.access();
+        }
+        RoleRun.Report entry = new RoleRun.Report(task.taskId(), payload.commandId(),
+                task.kind(), accepted, reason, payload.appointmentId(), now,
+                state.position() + 1);
+        finishRoleTask(task, run.withAccess(access).withReport(entry), entry);
+    }
+
+    /** 任职任务统一收尾：完成待办、写报告事件、保存全量状态后持久确认再发布。 */
+    private void finishRoleTask(PendingTask task, RoleRun roles, RoleRun.Report entry)
+            throws IOException {
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.add(new WorldEvent("role-report:" + task.taskId(), "ROLE_REPORT_V1",
+                mapper.writeValueAsString(entry)));
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
+                pending, state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), state.manufacturing(), state.governance(),
+                roles, state.information());
+        commitAndApply("task:" + task.taskId(), task.payload(), entry.reason(), events, candidate);
+    }
+
+    /**
+     * 资料阅读任务到期：发表、追加版本、开始阅读、取消阅读与自动完成共用同一收尾。
+     *
+     * <p>发表的实际时间就是任务到期；开始阅读成功时同批创建唯一匹配 {@code readId} 的自动完成
+     * 待办；取消只移除本单对应待办；自动完成以阅读的 {@code dueAt} 复核任职并终结，
+     * {@code DENIED} 也保留终态、释放工时并写报告。</p>
+     */
+    private void completeInformation(PendingTask task) throws IOException {
+        InformationRun run = requireInformationRun();
+        InformationModel.State before = run.information();
+        long now = task.dueTimeMillis();
+        InformationModel.State after = before;
+        boolean accepted;
+        String reason;
+        String subjectId = "";
+        String reader = "";
+        String commandId;
+        ReadingChild child = null;
+        boolean removeReadingChild = false;
+        String internalReadId = null;
+        InformationModel.ReadObservation observation = null;
+
+        switch (task.kind()) {
+            case PendingTask.INFORMATION_PUBLISH_V1 -> {
+                PublishPayload payload = mapper.readValue(task.payload(), PublishPayload.class);
+                commandId = payload.commandId();
+                subjectId = payload.docId();
+                try {
+                    after = InformationModel.publish(before, payload.docId(),
+                            payload.publisherPartyId(), audienceOf(payload),
+                            draftOf(payload, now));
+                    accepted = true;
+                    reason = "OK";
+                } catch (IllegalArgumentException rejected) {
+                    accepted = false;
+                    reason = "REJECTED";
+                    after = before;
+                }
+            }
+            case PendingTask.INFORMATION_PUBLISH_VERSION_V1 -> {
+                PublishPayload payload = mapper.readValue(task.payload(), PublishPayload.class);
+                commandId = payload.commandId();
+                subjectId = payload.docId();
+                try {
+                    after = InformationModel.publishVersion(before, payload.docId(),
+                            draftOf(payload, now));
+                    accepted = true;
+                    reason = "OK";
+                } catch (IllegalArgumentException rejected) {
+                    accepted = false;
+                    reason = "REJECTED";
+                    after = before;
+                }
+            }
+            case PendingTask.INFORMATION_START_READ_V1 -> {
+                ReadingPayload payload = mapper.readValue(task.payload(), ReadingPayload.class);
+                commandId = payload.commandId();
+                reader = payload.personPartyId();
+                subjectId = payload.docId();
+                InformationModel.Outcome outcome = InformationModel.startRead(before,
+                        requireRoleRun().access(), payload.personPartyId(), payload.docId(),
+                        payload.version(), now);
+                after = outcome.state();
+                accepted = outcome.status() == InformationModel.Status.STARTED;
+                reason = outcome.status().name();
+                if (accepted) {
+                    InformationModel.Reading started = readingView(after, reader);
+                    child = new ReadingChild("read:", started.dueAt(), started.readId(), reader,
+                            payload.docId(), payload.version(), started.startedAt());
+                }
+            }
+            case PendingTask.INFORMATION_CANCEL_READ_V1 -> {
+                ReadingPayload payload = mapper.readValue(task.payload(), ReadingPayload.class);
+                commandId = payload.commandId();
+                reader = payload.personPartyId();
+                subjectId = payload.docId();
+                InformationModel.Reading target = activeReadingOf(before, payload.personPartyId(),
+                        payload.docId(), payload.version(), payload.refIndex());
+                if (target == null) {
+                    after = before;
+                    accepted = false;
+                    reason = "NOT_FOUND";
+                } else {
+                    InformationModel.Outcome outcome = InformationModel.cancelRead(before,
+                            payload.personPartyId(), target.readId(), now);
+                    after = outcome.state();
+                    accepted = outcome.status() == InformationModel.Status.CANCELLED;
+                    reason = outcome.status().name();
+                    removeReadingChild = accepted;
+                    internalReadId = target.readId();
+                }
+            }
+            case PendingTask.INFORMATION_COMPLETE_READ_V1 -> {
+                ReadingPayload payload = mapper.readValue(task.payload(), ReadingPayload.class);
+                commandId = payload.commandId();
+                reader = payload.personPartyId();
+                subjectId = payload.readId();
+                InformationModel.Outcome outcome = InformationModel.completeRead(before,
+                        requireRoleRun().access(), payload.personPartyId(), payload.readId(), now);
+                after = outcome.state();
+                observation = outcome.observation();
+                accepted = outcome.status() == InformationModel.Status.COMPLETED;
+                reason = outcome.status().name();
+            }
+            default -> throw new IllegalStateException("未启用的阅读任务种类：" + task.kind());
+        }
+
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        if (removeReadingChild) {
+            removeReadingChildTask(pending, internalReadId);
+        }
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        if (child != null) {
+            String childId = freeInternalTaskId(child.stem(), child.readId(), used);
+            PendingTask scheduled = new PendingTask(childId, child.dueTimeMillis(),
+                    WorldScheduler.Phase.COMPLETION, PendingTask.INFORMATION_COMPLETE_READ_V1,
+                    mapper.writeValueAsString(new ReadingPayload(commandId, child.personPartyId(),
+                            child.docId(), child.version(), child.readId(), 0L)));
+            pending.add(scheduled);
+            used.add(childId);
+            events.add(new WorldEvent("task-scheduled:" + childId, "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(scheduled)));
+        }
+        if (observation != null) {
+            events.add(new WorldEvent("information-observation:" + task.taskId(),
+                    "INFORMATION_OBSERVATION_V1", mapper.writeValueAsString(observation)));
+        }
+        InformationRun.Report entry = new InformationRun.Report(task.taskId(), commandId,
+                task.kind(), accepted, reason, subjectId, reader, task.dueTimeMillis(),
+                state.position() + 1);
+        InformationRun candidateRun = run.withInformation(after).withReport(entry);
+        events.add(new WorldEvent("information-report:" + task.taskId(),
+                "INFORMATION_REPORT_V1", mapper.writeValueAsString(entry)));
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
+                pending, state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), state.manufacturing(), state.governance(),
+                state.roles(), candidateRun);
+        commitAndApply("task:" + task.taskId(), task.payload(), reason, events, candidate);
+    }
+
+    /** 按本人范围引用查活动阅读：序号、资料、版本都要对上；别人的阅读单返回 null。 */
+    private static InformationModel.Reading activeReadingOf(InformationModel.State state,
+                                                            String personPartyId, String docId,
+                                                            long version, long index) {
+        Map<String, Integer> ordinals = readingOrdinals(state, personPartyId);
+        for (InformationModel.Reading reading : state.active()) {
+            if (!reading.personPartyId().equals(personPartyId)
+                    || !reading.docId().equals(docId)
+                    || reading.version() != version) {
+                continue;
+            }
+            Integer ordinal = ordinals.get(reading.readId());
+            if (ordinal != null && ordinal == index) {
+                return reading;
+            }
+        }
+        return null;
+    }
+
+    /** 只移除与给定 readId 匹配的自动完成待办：不受理其它阅读单的取消。 */
+    private void removeReadingChildTask(List<PendingTask> pending, String readId)
+            throws IOException {
+        for (int i = 0; i < pending.size(); i++) {
+            PendingTask candidate = pending.get(i);
+            if (!PendingTask.INFORMATION_COMPLETE_READ_V1.equals(candidate.kind())) {
+                continue;
+            }
+            ReadingPayload payload = mapper.readValue(candidate.payload(), ReadingPayload.class);
+            if (readId.equals(payload.readId())) {
+                pending.remove(i);
+                return;
+            }
+        }
+    }
+
+    /** 由发表任务参数还原受众；种类在排程期已按固定登记校验，这里再解析一次。 */
+    private InformationModel.Audience audienceOf(PublishPayload payload) {
+        InformationModel.AudienceKind kind =
+                InformationModel.AudienceKind.valueOf(payload.audienceKind());
+        return switch (kind) {
+            case PUBLIC -> InformationModel.Audience.publicAudience();
+            case ORGANIZATION -> InformationModel.Audience.organization(payload.audiencePartyId());
+            case DIRECT -> InformationModel.Audience.direct(payload.audiencePartyId());
+        };
+    }
+
+    /** 发表草稿：发布时刻恒等于任务到期，不能由调用方指定过去出版经历。 */
+    private static InformationModel.VersionDraft draftOf(PublishPayload payload, long publishedAt) {
+        return new InformationModel.VersionDraft(payload.title(), payload.body(),
+                payload.publicSourceDescription() == null ? "" : payload.publicSourceDescription(),
+                publishedAt, payload.readDurationMillis(), payload.internalSourceIds());
+    }
+
+    /** 刚启动的阅读单：从候选状态里按读者取唯一活动阅读。 */
+    private InformationModel.Reading readingView(InformationModel.State state,
+                                                 String personPartyId) {
+        for (InformationModel.Reading reading : state.active()) {
+            if (reading.personPartyId().equals(personPartyId)) {
+                return reading;
+            }
+        }
+        throw new IllegalStateException("开始阅读后缺少活动阅读单：" + personPartyId);
+    }
+
     /**
      * 制造任务统一收尾：完成待办、追加自动子任务、写报告与资金事件、保存全量状态后在持久确认后发布。
      */
@@ -2372,6 +3388,31 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalStateException("当前运行没有治理子集状态");
         }
         return run;
+    }
+
+    private RoleRun requireRoleRun() {
+        RoleRun run = state.roles();
+        if (run == null) {
+            throw new IllegalStateException("当前运行没有任职子集状态");
+        }
+        return run;
+    }
+
+    private InformationRun requireInformationRun() {
+        InformationRun run = state.information();
+        if (run == null) {
+            throw new IllegalStateException("当前运行没有资料阅读子集状态");
+        }
+        return run;
+    }
+
+    /** 任职与阅读接口只对 informed-stock-company-experiment-v1 开放。 */
+    private void requireRoleReadingEnabled() {
+        if (!manifest.hasRoles() || !manifest.hasInformation()
+                || roleConfig == null || informationConfig == null) {
+            throw new IllegalStateException("当前运行未启用任职与资料阅读模块："
+                    + manifest.rulesVersion());
+        }
     }
 
     /** 采购下单预算：按下单期间 PROCUREMENT 占用 quantity×50，承诺标识与采购单一一对应。 */
@@ -2616,6 +3657,200 @@ public final class WorldRuntime implements AutoCloseable {
         validateExchange(candidate, previous);
         validateManufacturing(candidate, previous);
         validateGovernance(candidate, previous);
+        validateRoleReading(candidate, previous);
+    }
+
+    /**
+     * 校验任职与阅读子集：固定开局配置不漂移、旧历史只增不改、活动阅读与唯一自动完成待办双向一致。
+     *
+     * <p>这是恢复期的强制边界：{@code fromJson} 只保证内部自洽，不能证明任职、账户与受众来自
+     * 真实开局。这里每批都重新对照冻结登记与冻结配置，并调用
+     * {@link RoleAccess#validateAgainst} 复核账户/个人绑定/mandates/任职身份。</p>
+     */
+    private void validateRoleReading(WorldState candidate, WorldState previous) throws IOException {
+        if (expectedSchema() < STATE_SCHEMA_ROLE_READING) {
+            if (candidate.roles() != null || candidate.information() != null) {
+                throw new IOException("旧档案不得包含任职或阅读子集状态");
+            }
+            return;
+        }
+        if (candidate.roles() == null || candidate.information() == null) {
+            throw new IOException("任职与阅读档案缺少子集状态");
+        }
+        validateRole(candidate, previous);
+        validateInformation(candidate, previous);
+    }
+
+    /** 任职子集：来源校验 + 固定配置不漂移 + 旧任职只允许补一次撤销。 */
+    private void validateRole(WorldState candidate, WorldState previous) throws IOException {
+        RoleRun run = candidate.roles();
+        RoleAccess.State access = run.access();
+        RoleAccess.validateAgainst(registry, orderedOpenings, access);
+        RoleAccess.State baseline = roleStateOf(roleConfig);
+        if (!access.accounts().equals(baseline.accounts())) {
+            throw new IOException("任职账户集合与冻结开局不一致");
+        }
+        if (!access.personAccounts().equals(baseline.personAccounts())) {
+            throw new IOException("个人账户绑定与冻结开局不一致");
+        }
+        if (!access.mandates().equals(baseline.mandates())) {
+            throw new IOException("产品管理授权与冻结配置不一致");
+        }
+        Map<String, RoleAccess.Appointment> baselineById = appointmentsById(baseline);
+        Map<String, RoleAccess.Appointment> nowById = appointmentsById(access);
+        for (RoleAccess.Appointment initial : baseline.appointments()) {
+            RoleAccess.Appointment found = nowById.get(initial.id());
+            if (found == null) {
+                throw new IOException("初始任职被删除：" + initial.id());
+            }
+            if (!sameIdentity(initial, found)) {
+                throw new IOException("初始任职的身份、岗位或原期限被改写：" + initial.id());
+            }
+        }
+        if (previous != null && previous.roles() != null) {
+            for (RoleAccess.Appointment before : previous.roles().access().appointments()) {
+                RoleAccess.Appointment after = nowById.get(before.id());
+                if (after == null) {
+                    throw new IOException("旧任职记录被删除：" + before.id());
+                }
+                if (!sameIdentity(before, after)) {
+                    throw new IOException("旧任职的身份、岗位或原期限被改写：" + before.id());
+                }
+                if (before.revokedAt() != null && !before.revokedAt().equals(after.revokedAt())) {
+                    throw new IOException("旧任职的撤销时刻被改写：" + before.id());
+                }
+            }
+            for (Map.Entry<String, RoleRun.Report> entry : previous.roles().reports().entrySet()) {
+                if (!entry.getValue().equals(run.reports().get(entry.getKey()))) {
+                    throw new IOException("旧任职报告被改写：" + entry.getKey());
+                }
+            }
+        }
+        for (RoleRun.Report report : run.reports().values()) {
+            if (report.position() > candidate.position()) {
+                throw new IOException("任职报告的位置超过提交位置：" + report.taskId());
+            }
+        }
+        if (baselineById.size() != baseline.appointments().size()) {
+            throw new IOException("冻结配置的初始任职标识重复");
+        }
+    }
+
+    /** 任职身份/岗位/原期限完全一致；撤销时刻单独比较。 */
+    private static boolean sameIdentity(RoleAccess.Appointment left, RoleAccess.Appointment right) {
+        return left.personPartyId().equals(right.personPartyId())
+                && left.organizationPartyId().equals(right.organizationPartyId())
+                && left.role() == right.role()
+                && left.startsAt() == right.startsAt()
+                && left.endsAt() == right.endsAt();
+    }
+
+    private static Map<String, RoleAccess.Appointment> appointmentsById(RoleAccess.State state) {
+        Map<String, RoleAccess.Appointment> map = new LinkedHashMap<>();
+        for (RoleAccess.Appointment appointment : state.appointments()) {
+            map.put(appointment.id(), appointment);
+        }
+        return map;
+    }
+
+    /** 阅读子集：登记读者固定、旧文档/版本/终态/经历只增不改、活动阅读与唯一自动完成待办双向一致。 */
+    private void validateInformation(WorldState candidate, WorldState previous) throws IOException {
+        InformationRun run = candidate.information();
+        InformationModel.State information = run.information();
+        if (!information.persons().equals(informationConfig.readers())) {
+            throw new IOException("登记读者与冻结配置不一致");
+        }
+        if (previous != null && previous.information() != null) {
+            InformationModel.State before = previous.information().information();
+            if (information.nextReadSequence() < before.nextReadSequence()) {
+                throw new IOException("阅读序号倒退");
+            }
+            for (InformationModel.Document doc : before.documents()) {
+                InformationModel.Document now = documentOf(information, doc.docId());
+                if (now == null) {
+                    throw new IOException("旧资料被删除：" + doc.docId());
+                }
+                if (!now.publisherPartyId().equals(doc.publisherPartyId())
+                        || !now.audience().equals(doc.audience())) {
+                    throw new IOException("旧资料的发布者或受众被改写：" + doc.docId());
+                }
+                if (now.versions().size() < doc.versions().size()
+                        || !now.versions().subList(0, doc.versions().size()).equals(doc.versions())) {
+                    throw new IOException("旧资料版本前缀被改写：" + doc.docId());
+                }
+            }
+            for (InformationModel.ClosedReading closed : before.closed()) {
+                if (!information.closed().contains(closed)) {
+                    throw new IOException("已终结阅读被删改：" + closed.readId());
+                }
+            }
+            for (InformationModel.ReadObservation observation : before.observations()) {
+                if (!information.observations().contains(observation)) {
+                    throw new IOException("本人经历被删改：" + observation.readId());
+                }
+            }
+            for (InformationModel.Reading reading : before.active()) {
+                if (!information.active().contains(reading)
+                        && !closedContains(information.closed(), reading.readId())) {
+                    throw new IOException("活动阅读被无终态删除：" + reading.readId());
+                }
+            }
+            for (Map.Entry<String, InformationRun.Report> entry
+                    : previous.information().reports().entrySet()) {
+                if (!entry.getValue().equals(run.reports().get(entry.getKey()))) {
+                    throw new IOException("旧阅读报告被改写：" + entry.getKey());
+                }
+            }
+        }
+        for (InformationRun.Report report : run.reports().values()) {
+            if (report.position() > candidate.position()) {
+                throw new IOException("阅读报告的位置超过提交位置：" + report.taskId());
+            }
+        }
+        validateReadingChildren(candidate);
+    }
+
+    /** 活动阅读与其自动完成待办必须一一对应：活动单不能没有待办，待办也不能指向已终结阅读。 */
+    private void validateReadingChildren(WorldState candidate) throws IOException {
+        InformationModel.State information = candidate.information().information();
+        Map<String, Integer> children = new LinkedHashMap<>();
+        for (PendingTask task : candidate.pending()) {
+            if (!PendingTask.INFORMATION_COMPLETE_READ_V1.equals(task.kind())) {
+                continue;
+            }
+            ReadingPayload payload = mapper.readValue(task.payload(), ReadingPayload.class);
+            children.merge(payload.readId(), 1, Integer::sum);
+        }
+        for (InformationModel.Reading reading : information.active()) {
+            Integer count = children.remove(reading.readId());
+            if (count == null) {
+                throw new IOException("活动阅读缺少自动完成待办：" + reading.readId());
+            }
+            if (count != 1) {
+                throw new IOException("活动阅读的自动完成待办不唯一：" + reading.readId());
+            }
+        }
+        if (!children.isEmpty()) {
+            throw new IOException("自动完成待办指向不存在的活动阅读：" + children.keySet());
+        }
+    }
+
+    private static InformationModel.Document documentOf(InformationModel.State state, String docId) {
+        for (InformationModel.Document document : state.documents()) {
+            if (document.docId().equals(docId)) {
+                return document;
+            }
+        }
+        return null;
+    }
+
+    private static boolean closedContains(List<InformationModel.ClosedReading> closed, String readId) {
+        for (InformationModel.ClosedReading reading : closed) {
+            if (reading.readId().equals(readId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -3433,6 +4668,9 @@ public final class WorldRuntime implements AutoCloseable {
         List<ReportEntry> manufacturingReports = new ArrayList<>();
         List<BoardRun.Report> governanceReports = new ArrayList<>();
         List<BoardRun.PeriodEvidence> periodEvidence = new ArrayList<>();
+        List<RoleRun.Report> roleReports = new ArrayList<>();
+        List<InformationRun.Report> informationReports = new ArrayList<>();
+        List<InformationModel.ReadObservation> informationObservations = new ArrayList<>();
         for (WorldEvent event : commit.events()) {
             if (SNAPSHOT_TYPE.equals(event.type())) {
                 if (found != null) {
@@ -3450,6 +4688,14 @@ public final class WorldRuntime implements AutoCloseable {
             } else if ("PERIOD_EVIDENCE_V1".equals(event.type())) {
                 periodEvidence.add(mapper.readValue(event.payload(),
                         BoardRun.PeriodEvidence.class));
+            } else if ("ROLE_REPORT_V1".equals(event.type())) {
+                roleReports.add(mapper.readValue(event.payload(), RoleRun.Report.class));
+            } else if ("INFORMATION_REPORT_V1".equals(event.type())) {
+                informationReports.add(mapper.readValue(event.payload(),
+                        InformationRun.Report.class));
+            } else if ("INFORMATION_OBSERVATION_V1".equals(event.type())) {
+                informationObservations.add(mapper.readValue(event.payload(),
+                        InformationModel.ReadObservation.class));
             }
         }
         if (found == null) {
@@ -3496,6 +4742,30 @@ public final class WorldRuntime implements AutoCloseable {
                         + " 的期间证据与状态快照不一致：" + evidence.period());
             }
         }
+        for (RoleRun.Report report : roleReports) {
+            RoleRun.Report stored = found.roles() == null ? null
+                    : found.roles().reports().get(report.taskId());
+            if (!report.equals(stored)) {
+                throw new IOException("批次 " + commit.position()
+                        + " 的任职结果与状态快照不一致：" + report.taskId());
+            }
+        }
+        for (InformationRun.Report report : informationReports) {
+            InformationRun.Report stored = found.information() == null ? null
+                    : found.information().reports().get(report.taskId());
+            if (!report.equals(stored)) {
+                throw new IOException("批次 " + commit.position()
+                        + " 的阅读结果与状态快照不一致：" + report.taskId());
+            }
+        }
+        for (InformationModel.ReadObservation observation : informationObservations) {
+            boolean stored = found.information() != null
+                    && found.information().information().observations().contains(observation);
+            if (!stored) {
+                throw new IOException("批次 " + commit.position()
+                        + " 的阅读经历与状态快照不一致：" + observation.readId());
+            }
+        }
         return found;
     }
 
@@ -3519,6 +4789,13 @@ public final class WorldRuntime implements AutoCloseable {
         if (charter != null) {
             // 只有治理档案才加这个键：旧档案的开局内容保持逐字节不变
             content.put("governance", charter);
+        }
+        if (roleConfig != null) {
+            // 只有任职/阅读档案才加这两个键：旧档案的开局内容保持逐字节不变
+            content.put("roles", roleConfig);
+        }
+        if (informationConfig != null) {
+            content.put("information", informationConfig);
         }
         return mapper.writeValueAsString(content);
     }
@@ -3655,6 +4932,24 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 任职与阅读开局：在创建任何日志文件之前完成全部来源校验。
+     *
+     * <p>登记读者必须是已登记 PERSON；产品管理授权与初始任职必须通过
+     * {@link RoleAccess#open}、{@link RoleAccess#appoint} 与 {@link RoleAccess#validateAgainst}
+     * 的同一口径；初始任职不得携带撤销记录（由 {@link RoleRun.Config} 构造期拒绝）。</p>
+     */
+    private void validateRoleReadingOpening() {
+        if (registry == null || manufacturingConfig == null || charter == null) {
+            throw new IllegalArgumentException("任职与阅读档案必须同时提供登记、制造配置与章程");
+        }
+        for (String reader : informationConfig.readers()) {
+            requireParty(reader, OpeningRegistry.PartyKind.PERSON, "登记读者");
+        }
+        InformationModel.open(registry, informationConfig.readers());
+        roleStateOf(roleConfig);
+    }
+
+    /**
      * 治理开局：章程公司必须就是制造公司所属组织、也是证券发行人；五席是登记人物。
      *
      * <p>全部在创建日志之前完成，因此失败不会留下半成品档案。</p>
@@ -3748,9 +5043,68 @@ public final class WorldRuntime implements AutoCloseable {
         return outcome;
     }
 
+    /**
+     * 命令重放的身份校验：同一 commandId 必须对应完整同一个待办。
+     *
+     * <p>只比较 payload 会漏掉 taskId、到期与阶段——例如同一 payload 换一个到期重发会被静默
+     * 当成原命令。这里从原提交 {@code cmd:<commandId>} 的 {@code TASK_SCHEDULED_V1} 事件反序列化
+     * 完整 {@link PendingTask} 再逐字段比较，因此不需要给 {@link WorldState} 加第二份缓存，
+     * 也不改旧日志的 JSON 形状（旧 schema5 日志同样留有该事件，回读不受影响）。</p>
+     *
+     * @param commandId     外部命令标识
+     * @param taskId        本次请求的任务标识
+     * @param dueTimeMillis 本次请求的到期
+     * @param phase         本次请求的阶段
+     * @param kind          本次请求的任务种类
+     * @param payloadJson   本次请求的规范化参数
+     * @throws IllegalArgumentException 与首次排程不同
+     * @throws IOException              原始排程事件不可解析或自相矛盾
+     */
+    private void requireSameSchedule(String commandId, String taskId, long dueTimeMillis,
+                                     WorldScheduler.Phase phase, String kind, String payloadJson)
+            throws IOException {
+        PendingTask original = originalSchedule(commandId);
+        if (original == null) {
+            throw new IOException("已登记命令缺少首次排程事件：" + commandId);
+        }
+        if (original.dueTimeMillis() != dueTimeMillis
+                || original.phase() != phase
+                || !original.kind().equals(kind)
+                || !original.taskId().equals(taskId)
+                || !original.payload().equals(payloadJson)) {
+            throw new IllegalArgumentException("同一命令标识不能对应不同的任务、到期、阶段、种类或参数："
+                    + commandId);
+        }
+    }
+
+    /** 从已确认历史里取某命令首次排程的完整待办；没有对应提交返回 null。 */
+    private PendingTask originalSchedule(String commandId) throws IOException {
+        String target = "cmd:" + commandId;
+        for (WorldCommit commit : journal.commits()) {
+            if (!target.equals(commit.commandId())) {
+                continue;
+            }
+            PendingTask found = null;
+            for (WorldEvent event : commit.events()) {
+                if (!"TASK_SCHEDULED_V1".equals(event.type())) {
+                    continue;
+                }
+                PendingTask task = mapper.readValue(event.payload(), PendingTask.class);
+                if (found != null && !found.equals(task)) {
+                    throw new IOException("同一命令存在多个不同排程：" + commandId);
+                }
+                found = task;
+            }
+            return found;
+        }
+        return null;
+    }
+
     private WorldState initialState(Map<String, CashLedger.CashAccount> accounts) throws IOException {
         ManufacturingRun manufacturing = null;
         BoardRun governance = null;
+        RoleRun roles = null;
+        InformationRun information = null;
         List<PendingTask> pending = new ArrayList<>();
         Set<String> used = new LinkedHashSet<>();
         if (manufacturingConfig != null) {
@@ -3770,16 +5124,44 @@ public final class WorldRuntime implements AutoCloseable {
         if (charter != null) {
             governance = new BoardRun(BoardModel.open(registry, charter), Map.of(), Map.of());
         }
+        if (roleConfig != null) {
+            RoleAccess.State access = roleStateOf(roleConfig);
+            roles = new RoleRun(access, Map.of());
+        }
+        if (informationConfig != null) {
+            information = new InformationRun(
+                    InformationModel.open(registry, informationConfig.readers()), Map.of());
+        }
         return new WorldState(expectedSchema(), manifest.runId(), 1, 0L,
                 WorldScheduler.Phase.OBSERVATION.name(), accounts, pending, List.of(), used,
                 Map.of(), Map.of(),
                 manifest.hasSecurities() ? SecuritiesLedger.opening(registry) : null,
                 manifest.hasMatching() ? WorldExchange.opening() : null,
-                manufacturing, governance);
+                manufacturing, governance, roles, information);
+    }
+
+    /**
+     * 由冻结配置重建开局授权状态：产品授权 + 初始任职，并对照开局来源再校验一次。
+     *
+     * <p>初始任职的起点必须不早于世界开局（0），因此不需要在这里伪造调用时刻；
+     * 每条任职都要通过公开的 {@link RoleAccess#appoint} 同口径的身份/区间/重叠校验。</p>
+     */
+    private RoleAccess.State roleStateOf(RoleRun.Config config) {
+        RoleAccess.State access = RoleAccess.open(registry, orderedOpenings, config.mandates());
+        for (RoleAccess.Appointment appointment : config.appointments()) {
+            access = RoleAccess.appoint(registry, access, appointment.id(),
+                    appointment.personPartyId(), appointment.organizationPartyId(),
+                    appointment.role(), appointment.startsAt(), appointment.endsAt(), 0L);
+        }
+        RoleAccess.validateAgainst(registry, orderedOpenings, access);
+        return access;
     }
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasRoles()) {
+            return STATE_SCHEMA_ROLE_READING;
+        }
         if (manifest.hasGovernance()) {
             return STATE_SCHEMA_GOVERNANCE;
         }
@@ -3829,9 +5211,26 @@ public final class WorldRuntime implements AutoCloseable {
                             WorldExchange.State exchange,
                             ManufacturingRun manufacturing,
                             BoardRun governance) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                state.roles(), state.information());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
-                commandContents, commandOutcomes, securities, exchange, manufacturing, governance);
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information);
     }
 
     /**
