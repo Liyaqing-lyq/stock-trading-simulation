@@ -5,6 +5,10 @@ Java 程序设计课程项目（中央财经大学）：用多智能体模拟真
 
 ## 快速开始
 
+设计扩展请先读[总体设计基线](docs/design/总体设计基线.md)与[本轮复审及争议处置](docs/research/2026-11-05-设计复审与争议处置.md)。它们是待实施设计；下述运行入口仍是现有课程系统，HTML 草图不代表新世界已实现。
+
+持续施工与接续见[实施 Plan](docs/superpowers/plans/2026-11-06-world-implementation.md)。世界基础调试夹具可运行 `mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldFoundationDemo`；同一路径重跑复用原付款回报，不重复发钱。它尚未接入股票、公司、银行或模型。
+
 需要 JDK 17+（本机为 JDK 21）。仓库自带 Maven Wrapper，**无需安装 Maven**。
 
 ```bash

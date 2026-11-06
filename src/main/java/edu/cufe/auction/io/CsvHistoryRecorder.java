@@ -5,6 +5,7 @@ import edu.cufe.auction.engine.EngineListener;
 import edu.cufe.auction.market.MarketDataListener;
 import edu.cufe.auction.model.Order;
 import edu.cufe.auction.model.OrderRequest;
+import edu.cufe.auction.model.OrderResult;
 import edu.cufe.auction.model.Trade;
 
 import java.io.BufferedWriter;
@@ -68,10 +69,31 @@ public final class CsvHistoryRecorder implements EngineListener, MarketDataListe
         return directory;
     }
 
+    /**
+     * 受理订单落盘（含受理后业务取消原因）。
+     *
+     * <p>原因写进既有的“原因”列，不改变 CSV 表头：自成交防护取消剩余量时，
+     * 这一行是 {@code CANCELLED} + {@code SELF_TRADE_PREVENTED: ...}；正常成交或挂簿时该列为空。</p>
+     *
+     * @param result 受理结果
+     */
+    @Override
+    public void onOrderAccepted(OrderResult result) {
+        append(ordersFile, orderRow(result.getOrder(), "NEW", result.getStatus().name(),
+                result.getReason()));
+    }
+
+    /**
+     * 兼容旧回调：只拿订单与成交，因此原因列一律为空。
+     *
+     * <p>引擎已经改为调用 {@link #onOrderAccepted(OrderResult)}，本方法保留给直接调用方与旧测试。</p>
+     *
+     * @param order  受理的订单
+     * @param trades 本次成交
+     */
     @Override
     public void onOrderAccepted(Order order, List<Trade> trades) {
-        append(ordersFile, orderRow(order, "NEW",
-                order.getStatus().name()));
+        append(ordersFile, orderRow(order, "NEW", order.getStatus().name(), null));
     }
 
     @Override
@@ -138,12 +160,16 @@ public final class CsvHistoryRecorder implements EngineListener, MarketDataListe
     }
 
     private String orderRow(Order order, String action, String status) {
+        return orderRow(order, action, status, null);
+    }
+
+    private String orderRow(Order order, String action, String status, String reason) {
         return String.join(",",
                 now(), String.valueOf(order.getOrderId()), order.getAgentId(), order.getSymbol(),
                 order.getSide().name(), order.getType().name(),
                 order.getLimitPrice() == null ? "MARKET" : order.getLimitPrice().toPlainString(),
                 String.valueOf(order.getQuantity()), String.valueOf(order.getFilledQuantity()),
-                String.valueOf(order.getRemainingQuantity()), status, action, "");
+                String.valueOf(order.getRemainingQuantity()), status, action, escape(reason));
     }
 
     private void append(Path file, String row) {

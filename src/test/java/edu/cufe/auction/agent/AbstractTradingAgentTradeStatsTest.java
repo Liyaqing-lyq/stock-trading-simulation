@@ -60,7 +60,7 @@ class AbstractTradingAgentTradeStatsTest {
     }
 
     @Test
-    void countsBothSidesOfSelfTradeThroughMatchingEngineBroadcast() {
+    void preventedSelfTradeDoesNotInflateBroadcastStatistics() {
         AccountManager accounts = new AccountManager();
         Account account = accounts.createAccount(AGENT_ID, "Agent A", new BigDecimal("10000.00"));
         account.seedPosition("AAPL", 20L, new BigDecimal("100.00"));
@@ -75,8 +75,10 @@ class AbstractTradingAgentTradeStatsTest {
         agent.place(OrderRequest.limit(AGENT_ID, "AAPL", Side.BUY,
                 new BigDecimal("100.00"), 20L));
 
-        assertEquals(40L, agent.getFilledQuantity(),
-                "自成交应分别计入买方和卖方成交量，且广播与 submit 返回不能重复计数");
+        assertEquals(0L, agent.getFilledQuantity(),
+                "被阻止的自成交不得产生广播成交量");
+        assertEquals(0L, engine.marketSnapshot("AAPL", 5).getCumulativeVolume(),
+                "撮合与交易员统计均不得包含被阻止的自成交");
     }
 
     private static Trade trade(long tradeId, String buyer, String seller, long quantity) {
