@@ -56,7 +56,7 @@
 ### 当前接续
 
 - 当前分支 `codex/world-web-details`，base `67665d9`。B2b草稿PR29代码f56dea4/文档67665d9的实际CI42296162891/42296565417成功，1002标准及26独审通过，仍待人工review。
-- [Web业务详情](2026-11-07-web-details.md)：正式8新增、1010标准、46成交121订单7排名、GUI/JavaDoc和Root105 HTTP通过。真实浏览器验证四页、非空生产/阅读、筛选、五槽遮罩及切人物清DOM。candidate3的87 Java/JS/HTML与candidate2一致，仅删CSS末尾空行。真实Hermes d3c63e独立82动态通过，最终报告整理中；PR30/CI待发布。
+- [Web业务详情](2026-11-07-web-details.md)：正式8新增、1010标准、46成交121订单7排名、GUI/JavaDoc和Root105 HTTP通过。真实浏览器验证四页、非空生产/阅读、筛选、五槽遮罩及切人物清DOM。candidate3的87 Java/JS/HTML与candidate2一致，仅删CSS末尾空行。真实Hermes d3c63e独立82动态通过，最终报告已交；草稿PR30及代码CI42299095951成功。
 - Root独占全部主树/Maven；Web作者d39b13已退出。B2c作者ed3b0f仅live-web-preparation/runtime-candidate私有候选，exec90021；独审d3c63e仅web-details-independent，exec59426。任何私有候选都不计主树交付。
 - [B2c完成接线](2026-11-07-live-web-runtime.md)继续：Inbox16私有测试含真实负nano/回绕RED→GREEN已通过；Runtime内部自动持有完成槽，所有live回执/超时统一登记，不公开绑定旁路。下一步先测试运行桥，再接HTTP worker与Web有界开始/停止，不把配置保存视为调用。
 - 五Key仍外置；只key-1此前单次flash连通46输入5输出51总、931ms，无重试、账单未知；其它4槽未测，本阶段0新增提供方请求。完整自主经营、媒体/认知、多公司/银行、图表与长时实验仍未完成，总体基线持续实施。
@@ -547,3 +547,5 @@ Root另用B2a冻结类编译实际旧DecisionRun4/Request3/Call8客户端，clas
 - [x] Root三JVM28、真旧二进制4/3/8 JSON不变、旧schema9新time8/旧time9续写；真实Hermes独立26动态检查通过，最终Runtime6f3f1aa3…a21e532。证据docs/05§32。
 - [x] 草稿PR29代码f56dea4及实际CI42296162891成功；仍待人工review，AI不代替人工合入。
 - 下一：Web四组只读业务详情私有候选105检查与正式测试集成；[B2c真实Web闭环准备](2026-11-07-live-web-runtime.md)明确固定首次接收、期限竞态和有界轮次，当前未授生产。总体基线继续。
+
+Web详情代码90e726a70c7d53b16cc255e6b897e56f1ca0ac81已建立草稿[PR30](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/30)，base为codex/world-live-decision-runtime，已附会话。实际[CI42299095951](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42299095951)已completed/success。1010标准、Root105 HTTP及准确400/401、真实浏览器与独审82通过。本阶段工程验收完成，待至少一名人工review，不自动合并。

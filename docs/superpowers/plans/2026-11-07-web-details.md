@@ -16,10 +16,12 @@
 - [x] 核准真实Hermes私有候选及正式8项非空业务测试，先旧版RED；所有原1002测试保持。
 - [x] 最小集成5生产/资源文件与正式测试；非空采购生产、任职撤销、阅读前后、资本流与>2^53精度、401/403/只读、有界50条和400帧边界实测。
 - [x] Root独立实际HTTP与真实浏览器：四页、筛选、同截止、人物切换清理、配置遮罩；真实Hermes独审冻结源增量。
-- [ ] 标准verify含GUI/CSV、JavaDoc、评分/接口/证据/主Plan同步，AI草稿PR30与实际CI；人工review待办。
+- [x] 标准verify含GUI/CSV、JavaDoc、评分/接口/证据/主Plan同步，AI草稿PR30与实际CI；人工review待办。
 
 ## 私有阶段事实
 
 首个候选105/0实际HTTP检查通过，但只覆盖空开局为主；后续非空测试已发现资本流按owner循环出现双列，必须修去重并重验，不能拿旧105通过代替更新版本。采购/生产测试初稿使用非法2单位批次、未给预算与不够时间，属于夹具问题，按真实经营规则纠正；不得放松业务断言掩盖。Root最后核对测试与生产差异后才接受。
 
 最终本地1010标准、Root105实际HTTP、真实浏览器及独立Hermes82动态通过；JavaDoc05:34:47。正式测试先HTTP404 RED，再57owner误报40 RED→GREEN，未删旧断言。最终candidate3仅CSS末尾空行与candidate2不同，87Java/JS/HTML相同；PR/实际CI待补。
+
+Web详情代码90e726a70c7d53b16cc255e6b897e56f1ca0ac81已建立草稿[PR30](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/30)，base为codex/world-live-decision-runtime，已附会话。实际[CI42299095951](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42299095951)已completed/success。1010标准、Root105 HTTP及准确400/401、真实浏览器与独审82通过。本阶段工程验收完成，待至少一名人工review，不自动合并。
