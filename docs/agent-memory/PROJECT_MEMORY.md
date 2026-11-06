@@ -89,3 +89,5 @@ Root以旧D1二进制实际生成治理日志，15帧前缀legal按新D2恢复BU
 ## D2最终本地验收
 
 最终candidate2冻结78源，BoardModel815c8e7f...a09951e及Runtimeee0817b1...987a92c0，其余76生产源与D1逐字节相等。新47专项中14失败1错误的首稿RED已真实取得并修复，另1旧档能力闸恢复RED已修。最终712标准、52成交133订单7排名CSV、GUI、JavaDoc20:14:36通过。Root13分红+146世界+72审计检查，原编译旧客户端及旧构造、三golden逐字往返通过。真实Hermes最终独立重编74/74及旧档合法/伪造对照通过，已退出释放。当前Root独占源码/Maven，准备草稿PR，仍待人工实质review。D3从制造报表与除息参考接缝开始，随后完整新档案桥，不把纯核误记为真实付款。
+
+董事会分红授权代码eb9d96e2d0d69c63954b9539d5a01e6054a49dad已建立[草稿PR #21](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/21)，base为codex/world-valuation-performance（PR20）。远端verify run42217088050已实际completed/success，已附当前会话，等待人工实质review。D3a财务与除息参考接缝继续按新施工单推进，M3整体运行闭环仍在施工。

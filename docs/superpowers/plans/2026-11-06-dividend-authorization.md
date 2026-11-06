@@ -59,7 +59,7 @@ static boolean verifiesDividendAuthorization(State state, String authorizationRe
 - [x] 提案/材料/投票/关会/授权各时界及Long最大合法时间，空提案到期闭合，否决后可重审，同方案改经济/并行或重复实施拒绝。
 - [x] 原授权引用绑定全部实际来源，材料/席位/选票/经济/时间篡改反例与合法对照，JSON严格、旧JSON逐字、旧构造源码及已编译客户端兼容。
 - [x] 旧预算普通/特别门槛及绝对预算、承诺、完整/缺项评审均保持，新旧事项交替操作不丢历史。旧规则档案不因新议题而静默启用分红。
-- [ ] Codex独立取证与真实Hermes独审、标准GUI/CSV/JavaDoc、评分映射及运行记录，AI-Generated草稿PR和实际CI，待人工实质review。
+- [x] Codex独立取证与真实Hermes独审、标准GUI/CSV/JavaDoc、评分映射及运行记录，AI-Generated草稿PR和实际CI，待人工实质review。
 
 D2只完成董事会授权纯核。唯一WorldJournal同批授权/公告、截止登记、除息参考与应收、真实足额公司派息及恢复由D3接续。
 
@@ -90,3 +90,5 @@ Root以旧D1二进制实际生成治理日志，15帧前缀legal按新D2恢复BU
 ## D2最终本地验收
 
 最终candidate2冻结78源，BoardModel815c8e7f...a09951e及Runtimeee0817b1...987a92c0，其余76生产源与D1逐字节相等。新47专项中14失败1错误的首稿RED已真实取得并修复，另1旧档能力闸恢复RED已修。最终712标准、52成交133订单7排名CSV、GUI、JavaDoc20:14:36通过。Root13分红+146世界+72审计检查，原编译旧客户端及旧构造、三golden逐字往返通过。真实Hermes最终独立重编74/74及旧档合法/伪造对照通过，已退出释放。当前Root独占源码/Maven，准备草稿PR，仍待人工实质review。D3从制造报表与除息参考接缝开始，随后完整新档案桥，不把纯核误记为真实付款。
+
+董事会分红授权代码eb9d96e2d0d69c63954b9539d5a01e6054a49dad已建立[草稿PR #21](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/21)，base为codex/world-valuation-performance（PR20）。远端verify run42217088050已实际completed/success，已附当前会话，等待人工实质review。D3a财务与除息参考接缝继续按新施工单推进，M3整体运行闭环仍在施工。
