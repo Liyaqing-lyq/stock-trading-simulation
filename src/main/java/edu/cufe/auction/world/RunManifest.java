@@ -61,6 +61,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 在四岗交易档案之上再加决定屏障与尝试（M4d 新增的明确组合，scripted 模型）。 */
     public static final String RULES_DECISION_EXPERIMENT_V1 = "decision-experiment-v1";
 
+    /** 在决定档案之上再加现金分红世界桥（M3d D3b 新增的明确组合，scripted 模型）。 */
+    public static final String RULES_DIVIDEND_WORLD_EXPERIMENT_V1 = "dividend-world-experiment-v1";
+
     /** 未接入模型时使用的模型配置版本。 */
     public static final String MODEL_NONE = "none";
 
@@ -148,6 +151,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("decisions");
     }
 
+    /**
+     * 是否启用现金分红世界桥模块。
+     *
+     * @return 模块表包含 dividend 时返回 true
+     */
+    public boolean hasDividend() {
+        return moduleVersions.containsKey("dividend");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -161,7 +173,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -184,8 +197,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         Map<String, Integer> expected = new TreeMap<>();
         expected.put("cash", 1);
         expected.put("scheduler", 1);
+        boolean withDividend = RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion);
         boolean withTrading = RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion);
+                || RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)
+                || withDividend;
         boolean withRoles = RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 || withTrading;
         boolean withGovernance = RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
@@ -220,8 +235,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         if (withTrading) {
             expected.put("trading", 1);
         }
-        if (RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)) {
+        if (RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion) || withDividend) {
             expected.put("decisions", 1);
+        }
+        if (withDividend) {
+            expected.put("dividend", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "
@@ -240,7 +258,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         }
         dataVersions = Collections.unmodifiableMap(data);
 
-        if (RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)) {
+        if (RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion)) {
             if (!SCRIPTED_DECISIONS_V1.equals(modelConfigVersion)) {
                 throw new IllegalArgumentException("决定档案的模型配置版本必须是 "
                         + SCRIPTED_DECISIONS_V1 + "，收到 " + modelConfigVersion);

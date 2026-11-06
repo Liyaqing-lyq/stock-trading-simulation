@@ -169,6 +169,27 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 系统任务：风险暂停到期，回到待审核（RULES）。 */
     public static final String ROLE_TRADING_HALT_RELEASE_V1 = "ROLE_TRADING_HALT_RELEASE_V1";
 
+    /** 分红：召集分红授权会议（COMPLETION）。 */
+    public static final String DIVIDEND_MEETING_V1 = "DIVIDEND_MEETING_V1";
+
+    /** 分红：受理董事会分红提案并在同批形成 D0 PROPOSED（COMPLETION）。 */
+    public static final String GOVERNANCE_DIVIDEND_PROPOSAL_V1 = "GOVERNANCE_DIVIDEND_PROPOSAL_V1";
+
+    /** 分红：实施已通过的董事会决议、授权 D0 并排后续公告/登记/除息/付款（COMPLETION）。 */
+    public static final String GOVERNANCE_DIVIDEND_IMPLEMENT_V1 = "GOVERNANCE_DIVIDEND_IMPLEMENT_V1";
+
+    /** 分红：登记截止按真实剩余库存固定受益人（RULES）。 */
+    public static final String DIVIDEND_REGISTER_V1 = "DIVIDEND_REGISTER_V1";
+
+    /** 分红：除息截止确认 D0 claims 并派生参考价（RULES）。 */
+    public static final String DIVIDEND_BOOK_EX_V1 = "DIVIDEND_BOOK_EX_V1";
+
+    /** 分红：付款截止整批足额真实出款（COMPLETION）。 */
+    public static final String DIVIDEND_SETTLE_V1 = "DIVIDEND_SETTLE_V1";
+
+    /** 分红：持有人减值（COMPLETION）。 */
+    public static final String DIVIDEND_IMPAIR_V1 = "DIVIDEND_IMPAIR_V1";
+
     /** 校验必需字段与 kind/phase 对应关系。 */
     public PendingTask {
         if (taskId == null || taskId.isBlank()) {
@@ -198,12 +219,15 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  ROLE_TRADING_RESEARCH_V1, ROLE_TRADING_TARGET_V1,
                  ROLE_TRADING_REVIEW_V1, ROLE_TRADING_CONFIRM_V1,
                  ROLE_TRADING_HALT_V1, ROLE_TRADING_CANCEL_V1,
-                 ROLE_TRADING_CHILD_V1, ROLE_TRADING_CHILD_CANCEL_V1 -> {
+                 ROLE_TRADING_CHILD_V1, ROLE_TRADING_CHILD_CANCEL_V1,
+                 DIVIDEND_MEETING_V1, GOVERNANCE_DIVIDEND_PROPOSAL_V1,
+                 GOVERNANCE_DIVIDEND_IMPLEMENT_V1, DIVIDEND_SETTLE_V1, DIVIDEND_IMPAIR_V1 -> {
                 if (phase != WorldScheduler.Phase.COMPLETION) {
                     throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }
             }
             case MANUFACTURING_PERIOD_CLOSE_V1, BOARD_OPEN_V1,
+                 DIVIDEND_REGISTER_V1, DIVIDEND_BOOK_EX_V1,
                  ROLE_APPOINT_V1, ROLE_REVOKE_V1,
                  ROLE_TRADING_SWEEP_V1, ROLE_TRADING_EXPIRE_V1,
                  ROLE_TRADING_APPOINTMENT_END_V1, ROLE_TRADING_HALT_RELEASE_V1 -> {

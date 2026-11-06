@@ -117,3 +117,17 @@ Root以旧D1二进制实际生成治理日志，15帧前缀legal按新D2恢复BU
 真实Hermes849817最终独审从candidate1核78源hash并独立重编，制造17及除息参考26项自写断言合计43/43通过，未发现可复现缺陷，报告dividend-financial-review-candidate-1/handoff.md。Root随后仅移除新测试Fixture的三个未使用分量，所有断言及生产源保持，重新运行clean标准744全绿，最终CSV为37成交、119订单、7排名，JavaDoc21:11:18重新生成。最终日志standard-root-final-1-raw.log及javadoc-root-final-1-raw.log，冻结standard-final-raw。先前49/128及21:02:42为首轮结果，保留原证据。D3a本地验收完成，当前发布草稿PR及等待实际CI。
 
 财务及除息参考代码6220ed85275eda2826b17054ac570c32f01dadb9已建立[草稿PR #22](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/22)，base为codex/world-dividend-authorization（PR21）。实际verify run42223835571已completed/success，已附当前会话，待人工实质review。D3a验收及发布完成，下一D3b同批分红运行桥按正式施工单推进。
+
+## D3b最终本地验收与接续
+
+当前分支codex/world-dividend-runtime，base490f20c。Root拥有所有生产/测试及Maven；真实作者aeafaa已释放，独审849817最终candidate5已交回。schema9真实董事会授权、下一毫秒PUBLIC公告、证券登记、除息、足额现金付款及持有人减值已接入唯一WorldJournal。四已有生产及新Demo变化，其余74生产、D0/D1/D2/D3a和旧744测试保持。严格同批来源重算覆盖原请求、待办、会议、公告、账务、报告及完整事件。
+
+最终candidate5冻结79源，Runtime SHA256 CD2FA09FB0DB265B10FD5AF4D7C47D25CB1EBE4F26F8848FFA0EA81D063827E0。标准816项通过（新增72），CSV46成交/121订单/7排名，GUI启动，JavaDoc2026-11-07 00:20:41。Root独立47正常+74完整帧+13严格原请求+78故障共212检查通过，39帧Decimal现金4600/200股，旧二进制构造与schema8新旧交替接写、Demo三JVM均通过。两真实变异3失败/1失败后已还原再验。真实Hermes最终自编79源、31合法及6完整重签反例全部通过。详情docs/05§26，私有证据logs/implementation-20261106-continued/dividend-runtime。当前发布草稿PR及等待实际CI，禁止把整个总体基线标完成。
+
+D3c正式契约2026-11-06-capital-flow-performance.md作为接续计划随本阶段归档，实施仍待D3b实际CI后授权。Runtime-only类型化真实资本转移，复用现金/Notice，资本事件不复制NAV；每个确认帧重算表现，保留减值回撤。真实Hermes只读契约22检查通过，R1公司资格到期/R2两处元数据幂等/R3Point候选位置已裁决。Root资本探针尚未编译，不能把准备数字当实测。下一从D3b文档head建codex/world-capital-performance，先新测试RED再授生产。
+
+## 2026-11-07用户最新交付与凭据要求
+
+最终交付形式确定为Web，上帝视角须能看到具体key配置。用户指定本机C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt，已仅在内存核对为5行、5个互不相同的key，未显示值、未发起服务请求。可按场景配置并由Codex判断是否测试。实现时凭据仅服务端加载，角色只看到模型别名，日志/恢复/导出/仓库不得含密钥。上帝配置默认遮罩，受限本机管理员显式查看完整值；请求不能被网页第三方来源触发。具体场景映射和有界真实调用待实现与核验，不宣称已接通。此为用户对Web候选的明确裁决，保留JavaFX课程入口。详见主Plan与Web凭据施工单。
+
+M6原离线审计页用户回复稍后手动查看，尚未显示验收，不绕过此前浏览器本地HTML策略。真实Hermes协作保持已有两个会话；不清理Temp、不触碰原G工作树及两个stash。所有PR保持草稿，等待人工实质review，无自动合并授权。
