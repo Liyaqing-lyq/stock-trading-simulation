@@ -112,6 +112,8 @@ docs/       需求拆解、架构设计（类图/时序图）、接口定义、�
 
 扩展世界提供`DecisionModel`及schema8决定运行桥，支持冻结人物输入、真实推进屏障、双层预算、有界异步回执和恢复。`WorldDecisionDemo prepare|full <journal>`可按prepare/full/full在三个独立JVM复跑。当前提供方为scripted，费用0.00。新进程须用新的宿主命令接续，队列满时runner保留结果供retryPending重投。标准573项、持久回执审计、真实旧schema7/8交叉续写回读的证据见`docs/05`第20–21节。真实模型、六层认知和完整世界继续按实施Plan推进。
 
+现金分红的`DividendModel`已提供权利登记、除息应收、持有人减值和完整清偿元数据纯核。43项专项及616项组合标准验证、真实证券夹具复算见`docs/05`第22节。实际公司出款、董事会授权验证及NAV/TWR继续按D1–D3接入。
+
 ## 配置
 
 配置文件在 `src/main/resources/config.properties`：标的与参考价、各类 agent 的数量/初始资金/初始持仓、
