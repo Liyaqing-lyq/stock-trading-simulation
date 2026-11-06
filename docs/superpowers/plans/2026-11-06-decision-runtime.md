@@ -69,7 +69,7 @@
 - [x] C1调用前、C2决定落盘、C3业务完成分别测试真实Thread中断和半帧恢复。完整旧Snapshot与钱股守恒均断言。
 - [x] 三个独立JVM演示待决定恢复、已记录决定恢复和重发一次性，明确输出scripted配置与实际用量。
 - [x] 真正旧schema7存档由新代码续写，再由冻结旧二进制回读。全部既有测试、标准GUI/CSV和JavaDoc通过。
-- [ ] 独立Hermes和Codex本地验收已通过，评分映射、运行记录及主Plan已更新。形成依赖纯核PR16的[AI-Generated]草稿PR并记录真实CI结果后勾选。
+- [x] 独立Hermes和Codex本地验收通过，评分映射、运行记录及主Plan已更新。依赖PR16的[AI-Generated]草稿PR17已发布，远端CI通过。
 
 ## 认知阶段的接续
 
@@ -156,9 +156,11 @@ candidate4冻结75源，Codex独立146检查通过，桥55+runner12专项通过�
 - [x] Task2运行桥、世界屏障、原输入/任职、十工具同批动作与输入完整性本地核验。
 - [x] Task3的线程中断、半帧、真实交易反序、三JVM、真实旧7及本地专项核验。
 - [x] 最终候选4独审、GUI/JavaDoc与本地文档。
-- [ ] 草稿PR发布与远端CI记录收尾。
+- [x] 草稿PR17发布与代码e1ba440的远端CI记录完成。
 - [ ] 持久派发/回执等待墙钟审计、独立身份复用拒绝归档继续以明确后续单元补齐。
 
 Task2–3本单有两项后续审计缺口，当前只能称运行桥与故障子集已实现。完整M4、真实模型与六层认知继续保留。下一并行准备是M3现金分红/TWR，已有只读proposal仍待Codex裁决，不得把建议当实现。
 
 最终candidate4独审42断言exit0，67桥/runner专项及549标准、GUI/CSV和JavaDoc16:15:59通过。五份schema8与一份schema7日志的独立Decimal复算通过，详见docs/05第20节。下一步发布草稿PR及核对远端CI，再接M4d审计补项和M3分红/TWR施工。
+
+运行桥代码e1ba4402503c773c508a3547d9b1e3f5ab593ad8已建立[草稿PR #17](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/17)，base为codex/world-decisions（PR16）。远端verify run42186774016实际completed/success，已附当前会话，尚待人工实质review。
