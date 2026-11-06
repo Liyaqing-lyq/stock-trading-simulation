@@ -414,3 +414,9 @@ M2.4a 共享纯撮合 → 审查/标准验收 → M2.4b 世界订单接入；制
 - M4d candidate4最终75源一致，真实Hermes独审42断言及原六组探针通过。标准549项、GUI/CSV、JavaDoc16:15:59和独立Decimal预算/钱股复算完成，当前发布草稿PR。M4d两项审计补充和M3分红/TWR仍保留施工状态。
 
 - 运行桥代码e1ba4402503c773c508a3547d9b1e3f5ab593ad8已建立[草稿PR #17](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/17)，base为codex/world-decisions（PR16）。远端verify run42186774016实际completed/success，已附当前会话，尚待人工实质review。 持久等待审计及身份复用拒绝记录继续以M4e明确补齐，准备轮只读进行，随后接M3分红/TWR。
+
+### M4e 决定审计补项（依赖PR17）
+
+施工单见[决定审计Plan](2026-11-06-decision-audit.md)。代码基线46478b2，PR17代码与文档head的远端verify分别42186774016、42187176239均已实际成功。真实Hermes20261106_162110_27a01f只读准备后取得8项缺能力RED，Codex纠正三处新测试夹具并核对生产零改动。现授权同会话仅写WorldRuntime及该测试文件，Maven独占，80工具/2400秒。审计附加在原WorldJournal批次，不增加快照字段或第二账。完整Reply去重含原文、声明及来源，持久拒绝不改决定、预算与经济。完成后再推进M3分红/TWR，原只读建议尚需裁决。
+
+- M4e审计补项candidate4本地验收完成，573标准、53成交/129订单/7排名、GUI、JavaDoc17:38:15，独立72+146及Hermes35断言通过。旧7新续写旧回读、旧8旧prepare由新代码接续、含4审计的新日志由旧二进制实际转账8→10再由新代码读回均通过。当前发布草稿PR，随后接M3分红权利纯核。分红准备稿中的金额类型、减值与债务口径已纠正，登记时应付确认及价格边界仍以正式D0施工裁决为准。

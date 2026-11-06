@@ -19,9 +19,11 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1474,6 +1476,587 @@ class WorldRuntimeDecisionTest {
         return new DecisionModel.Config(normal.providerKind(), normal.providerId(), normal.pricingVersion(),
                 normal.thinkMillisByWake(), normal.actionMillisByTool(), normal.limits(),
                 new DecisionModel.Budget(normal.budget().runCap(), caps));
+    }
+
+    // ------------------------------------------------------------------
+    // 18. M4e 决定墙钟审计（测试先行：缺 DecisionAudit / decisionAudits）
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("审计：已知派发与回执记录完整身份、真实位置与两段等待")
+    void auditRecordsKnownDispatchWaitForReply() throws Exception {
+        try (WorldRuntime rt = open(tempDir.resolve("audit-reply.journal"))) {
+            rt.beginDecisionSession("open-1");
+            rt.openDecisions("d-1", List.of(request(ALICE, "au-a")));
+            DecisionModel.Usage declared = usage(1, 120, 45);
+            DecisionRun.Call call = rt.dispatchDecision("au-a");
+            Thread.sleep(20L);
+
+            String body = body(DecisionModel.TOOL_WAIT, null);
+            DecisionModel.Reply reply = new DecisionModel.Reply(call.runId(), call.actionId(),
+                    call.attemptId(), call.attemptNo(), call.recoveryGeneration(), body, declared,
+                    "scripted:test-v1");
+            long receiveLower = System.currentTimeMillis();
+            assertEquals("QUEUED", rt.offerDecisionCallback(reply));
+            long receiveUpper = System.currentTimeMillis();
+            assertEquals(1, rt.drainDecisionCallbacks());
+            long recordUpper = System.currentTimeMillis();
+
+            List<WorldRuntime.DecisionAudit> audits = rt.decisionAudits();
+            assertEquals(1, audits.size(), "一次回执恰一条审计");
+            WorldRuntime.DecisionAudit audit = audits.get(0);
+            assertEquals("REPLY", audit.kind());
+            assertEquals("RECORDED", audit.outcome());
+            assertEquals(RUN, audit.runId());
+            assertEquals("au-a", audit.actionId());
+            assertEquals(call.attemptId(), audit.attemptId());
+            assertEquals(call.attemptNo(), audit.attemptNo());
+            assertEquals(call.recoveryGeneration(), audit.recoveryGeneration());
+            assertEquals(rt.snapshot().position(), audit.position(), "审计位置必须是真实提交位置");
+
+            assertNotNull(audit.dispatchedAtEpochMillis(), "本进程派发必须有派发时点");
+            assertNotNull(audit.receivedAtEpochMillis(), "回调必须带接收时点");
+            assertTrue(audit.receivedAtEpochMillis() >= receiveLower);
+            assertTrue(audit.receivedAtEpochMillis() <= receiveUpper + 1L,
+                    "接收时点不得晚于入队观测上界");
+            assertTrue(audit.recordedAtEpochMillis() >= audit.receivedAtEpochMillis(),
+                    "记录时点不得早于接收时点");
+            assertTrue(audit.recordedAtEpochMillis() <= recordUpper + 1L);
+
+            assertNotNull(audit.dispatchToRecordMillis(), "已知派发必须给出等待量");
+            assertTrue(audit.dispatchToRecordMillis() >= 15L,
+                    "派发等待量必须覆盖真实 sleep 20ms：" + audit.dispatchToRecordMillis());
+            assertTrue(audit.dispatchToRecordMillis()
+                            <= recordUpper - audit.dispatchedAtEpochMillis() + 1L,
+                    "等待量不得超过墙钟观测上界");
+            assertNotNull(audit.receiveToRecordMillis());
+            assertTrue(audit.receiveToRecordMillis() >= 0L);
+            assertTrue(audit.receiveToRecordMillis() <= audit.dispatchToRecordMillis(),
+                    "接收等待量不得大于派发等待量");
+
+            assertEquals("", audit.body(), "正常回执只在快照保存正文");
+            assertEquals(sha256Hex(body), audit.bodySha256(), "审计以摘要关联同批原尝试正文");
+            assertEquals(declared, audit.declaredUsage());
+            assertEquals("scripted:test-v1", audit.usageSource());
+            assertEquals(declared, decision(rt, "au-a").lastAttempt().settled(),
+                    "接受回执按真实用量结算，不按预留");
+        }
+    }
+
+    @Test
+    @DisplayName("审计：宿主直投没有派发标记，派发时点与派发等待明确缺失")
+    void auditMarksUnknownDispatchWhenHostSubmitsDirectly() throws IOException {
+        try (WorldRuntime rt = open("audit-direct.journal")) {
+            rt.beginDecisionSession("open-1");
+            rt.openDecisions("d-1", List.of(request(ALICE, "au-direct")));
+            DecisionModel.Decision decision = decision(rt, "au-direct");
+            DecisionModel.Attempt attempt = decision.lastAttempt();
+            DecisionModel.Usage declared = usage(1, 40, 8);
+            DecisionModel.Reply reply = new DecisionModel.Reply(decision.runId(), decision.actionId(),
+                    attempt.attemptId(), attempt.attemptNo(), attempt.recoveryGeneration(),
+                    body(DecisionModel.TOOL_WAIT, null), declared, "scripted:test-v1");
+            long before = rt.snapshot().position();
+
+            assertEquals("RECORDED", rt.acceptDecisionReply("host-direct-1", reply));
+            assertEquals(before + 1, rt.snapshot().position(), "直投回执仍只加一帧");
+
+            WorldRuntime.DecisionAudit audit = rt.decisionAudits().get(0);
+            assertEquals("REPLY", audit.kind());
+            assertEquals(rt.snapshot().position(), audit.position());
+            assertNull(audit.dispatchedAtEpochMillis(), "未派发不得补造派发时点");
+            assertNull(audit.dispatchToRecordMillis(), "未知派发不得补造等待量");
+            assertNotNull(audit.receivedAtEpochMillis(), "直投以入口时刻为接收时点");
+            assertNotNull(audit.receiveToRecordMillis());
+            assertTrue(audit.recordedAtEpochMillis() >= audit.receivedAtEpochMillis());
+        }
+    }
+
+    @Test
+    @DisplayName("审计：候选在队列真实等待，接收时点取回调线程而非 writer 处理时刻")
+    void auditKeepsArrivalTimeWhileCallbackWaitsInQueue() throws Exception {
+        try (WorldRuntime rt = open(tempDir.resolve("audit-queue.journal"))) {
+            rt.beginDecisionSession("open-1");
+            rt.openDecisions("d-1", List.of(request(ALICE, "au-q")));
+            DecisionRun.Call call = rt.dispatchDecision("au-q");
+            DecisionModel.Reply reply = new DecisionModel.Reply(call.runId(), call.actionId(),
+                    call.attemptId(), call.attemptNo(), call.recoveryGeneration(),
+                    body(DecisionModel.TOOL_WAIT, null), usage(1, 30, 10), "scripted:test-v1");
+
+            long beforeOffer = System.nanoTime();
+            assertEquals("QUEUED", rt.offerDecisionCallback(reply));
+            long offeredAt = System.currentTimeMillis();
+            Thread.sleep(60L);
+            assertEquals(1, rt.drainDecisionCallbacks());
+            long totalMillis = (System.nanoTime() - beforeOffer) / 1_000_000L;
+
+            WorldRuntime.DecisionAudit audit = rt.decisionAudits().get(0);
+            assertTrue(audit.receivedAtEpochMillis() <= offeredAt + 1L,
+                    "接收时点必须是入队时刻，不能是 writer 处理时刻");
+            assertTrue(audit.recordedAtEpochMillis() >= audit.receivedAtEpochMillis() + 40L,
+                    "真实排队至少 40ms 必须体现在记录时点");
+            assertNotNull(audit.receiveToRecordMillis());
+            assertTrue(audit.receiveToRecordMillis() >= 40L,
+                    "接收等待量必须覆盖真实排队时间：" + audit.receiveToRecordMillis());
+            assertTrue(audit.receiveToRecordMillis() <= totalMillis);
+            assertTrue(audit.dispatchToRecordMillis() >= audit.receiveToRecordMillis(),
+                    "派发等待量不小于接收等待量");
+        }
+    }
+
+    @Test
+    @DisplayName("审计：重开只读原审计、不生成新墙钟，且不落进状态快照")
+    void auditIsReadOnlyAcrossReopen() throws Exception {
+        Path file = tempDir.resolve("audit-reopen.journal");
+        List<WorldRuntime.DecisionAudit> before;
+        long position;
+        try (WorldRuntime rt = open(file)) {
+            rt.beginDecisionSession("open-1");
+            rt.openDecisions("d-1", List.of(request(ALICE, "au-r")));
+            DecisionModel.Reply reply = dispatchedReply(rt, "au-r", DecisionModel.TOOL_WAIT, null,
+                    usage(1, 25, 5));
+            assertEquals("QUEUED", rt.offerDecisionCallback(reply));
+            assertEquals(1, rt.drainDecisionCallbacks());
+            before = rt.decisionAudits();
+            position = rt.snapshot().position();
+            assertEquals(1, before.size());
+        }
+        try (WorldRuntime reopened = open(file)) {
+            assertEquals(before, reopened.decisionAudits(), "重开必须逐字段复现原审计");
+            assertEquals(position, reopened.snapshot().position(), "读取审计不得写盘");
+            reopened.beginDecisionSession("open-2");
+            assertEquals(before, reopened.decisionAudits(), "接续不得生成新审计或补造时点");
+        }
+        try (WorldJournal reader = new WorldJournal(file, RUN)) {
+            for (WorldCommit commit : reader.commits()) {
+                for (WorldEvent event : commit.events()) {
+                    assertFalse("STATE_SNAPSHOT_V1".equals(event.type())
+                                    && event.payload().contains("DECISION_AUDIT"),
+                            "审计不得进入状态快照：" + commit.position());
+                }
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("审计：已结算相同回执 DUPLICATE 零写盘，换宿主命令也不重复")
+    void duplicateReceiptKeepsAuditAndPositionUnchanged() throws IOException {
+        try (WorldRuntime rt = open("audit-duplicate.journal")) {
+            rt.beginDecisionSession("open-1");
+            rt.openDecisions("d-1", List.of(request(ALICE, "au-dup")));
+            DecisionModel.Reply reply = dispatchedReply(rt, "au-dup", DecisionModel.TOOL_WAIT, null,
+                    usage(1, 20, 5));
+            assertEquals("RECORDED", rt.acceptDecisionReply("r-1", reply));
+            long position = rt.snapshot().position();
+            int audits = rt.decisionAudits().size();
+            assertEquals(1, audits);
+
+            assertEquals("RECORDED", rt.acceptDecisionReply("r-1", reply));
+            assertEquals(position, rt.snapshot().position(), "同一宿主命令重放须返回原结果且不得写盘");
+            assertEquals(audits, rt.decisionAudits().size());
+
+            assertEquals("DUPLICATE", rt.acceptDecisionReply("r-2", reply),
+                    "换宿主命令的相同回执仍按已消费身份去重");
+            assertEquals(position, rt.snapshot().position(), "换宿主命令也不得写盘");
+            assertEquals(audits, rt.decisionAudits().size(), "不得新增审计");
+        }
+    }
+
+    @Test
+    @DisplayName("审计：已消费身份换正文/用量/来源各留一条，原文精确，同一条重投零写盘")
+    void identityReuseRecordsEachDistinctReplyOnce() throws IOException {
+        List<WorldRuntime.DecisionAudit> refused;
+        long refusedPosition;
+        try (WorldRuntime rt = open("audit-identity.journal")) {
+            rt.beginDecisionSession("open-1");
+            rt.openDecisions("d-1", List.of(request(ALICE, "au-id")));
+            DecisionModel.Usage firstUsage = usage(1, 20, 5);
+            DecisionModel.Reply accepted = dispatchedReply(rt, "au-id", DecisionModel.TOOL_WAIT,
+                    null, firstUsage);
+            assertEquals("RECORDED", rt.acceptDecisionReply("r-1", accepted));
+
+            DecisionModel.State frozen = decisions(rt);
+            DecisionModel.Attempt consumed = decision(rt, "au-id").lastAttempt();
+            Map<String, CashLedger.CashAccount> accounts = rt.snapshot().accounts();
+            List<PendingTask> pending = rt.snapshot().pending();
+            long position = rt.snapshot().position();
+            int audits = rt.decisionAudits().size();
+
+            String otherBody = "{\"tool\":\"role.wait\",\"args\":{}}";
+            DecisionModel.Reply changedBody = replyOf("au-id", consumed, otherBody, firstUsage,
+                    "scripted:test-v1");
+            assertEquals("REJECTED:IDENTITY_REUSE",
+                    rt.acceptDecisionReply("rej-body", changedBody));
+            assertEquals(position + 1, rt.snapshot().position(), "拒绝必须留下独立审计批次");
+            assertEquals(audits + 1, rt.decisionAudits().size());
+            WorldRuntime.DecisionAudit rejected = rt.decisionAudits().get(audits);
+            assertEquals("REJECTED_IDENTITY_REUSE", rejected.kind());
+            assertEquals("REJECTED:IDENTITY_REUSE", rejected.outcome());
+            assertEquals(rt.snapshot().position(), rejected.position());
+            assertEquals(RUN, rejected.runId());
+            assertEquals("au-id", rejected.actionId());
+            assertEquals(consumed.attemptId(), rejected.attemptId());
+            assertEquals(consumed.attemptNo(), rejected.attemptNo());
+            assertEquals(consumed.recoveryGeneration(), rejected.recoveryGeneration());
+            assertEquals(otherBody, rejected.body(), "必须保留被拒绝回执的精确原文");
+            assertEquals(sha256Hex(otherBody), rejected.bodySha256());
+            assertEquals(firstUsage, rejected.declaredUsage(), "必须记录该回执的声明用量");
+            assertEquals("scripted:test-v1", rejected.usageSource());
+            assertNull(rejected.dispatchedAtEpochMillis(), "已结算身份没有在途派发");
+            assertNull(rejected.dispatchToRecordMillis());
+            assertNotNull(rejected.receivedAtEpochMillis());
+
+            assertEquals(frozen, decisions(rt), "拒绝不得改变决定、尝试或预算");
+            assertEquals(accounts, rt.snapshot().accounts(), "拒绝不得改变钱股");
+            assertEquals(pending, rt.snapshot().pending(), "拒绝不得增删待办");
+
+            assertEquals("REJECTED:IDENTITY_REUSE",
+                    rt.acceptDecisionReply("rej-body-2", changedBody));
+            assertEquals(position + 1, rt.snapshot().position(),
+                    "同一非法回执换宿主命令重投不得重复落盘");
+            assertEquals(audits + 1, rt.decisionAudits().size());
+
+            DecisionModel.Usage secondUsage = usage(1, 21, 6);
+            assertEquals("REJECTED:IDENTITY_REUSE", rt.acceptDecisionReply("rej-usage",
+                    replyOf("au-id", consumed, otherBody, secondUsage, "scripted:test-v1")),
+                    "同正文改用量也必须留一条独立记录");
+            assertEquals(position + 2, rt.snapshot().position());
+            assertEquals(audits + 2, rt.decisionAudits().size());
+            assertEquals(secondUsage, rt.decisionAudits().get(audits + 1).declaredUsage());
+
+            assertEquals("REJECTED:IDENTITY_REUSE", rt.acceptDecisionReply("rej-source",
+                    replyOf("au-id", consumed, otherBody, secondUsage, "scripted:test-v2")),
+                    "同正文同用量改来源也必须留一条独立记录");
+            assertEquals(position + 3, rt.snapshot().position());
+            assertEquals(audits + 3, rt.decisionAudits().size());
+            assertEquals("scripted:test-v2", rt.decisionAudits().get(audits + 2).usageSource());
+
+            assertEquals(frozen, decisions(rt), "全部拒绝后决定与预算仍逐字段不变");
+            assertEquals(accounts, rt.snapshot().accounts());
+            assertEquals(pending, rt.snapshot().pending());
+
+            // 队列路径的拒绝：仍写审计批次，但 drain 不把它计为已应用决定。
+            DecisionModel.Reply queued = replyOf("au-id", consumed, otherBody,
+                    usage(1, 22, 7), "scripted:test-v1");
+            assertEquals("QUEUED", rt.offerDecisionCallback(queued));
+            long queuedBefore = rt.snapshot().position();
+            int queuedAudits = rt.decisionAudits().size();
+            assertEquals(0, rt.drainDecisionCallbacks(), "拒绝不得计为已应用决定");
+            assertEquals(queuedBefore + 1, rt.snapshot().position(), "拒绝仍留下一个审计批次");
+            assertEquals(queuedAudits + 1, rt.decisionAudits().size());
+            assertEquals(0, rt.queuedDecisionCallbacks(), "候选已被处理并移除");
+            refused = rt.decisionAudits();
+            refusedPosition = rt.snapshot().position();
+        }
+        try (WorldRuntime reopened = open("audit-identity.journal")) {
+            assertEquals(refusedPosition, reopened.snapshot().position(), "读取不得写盘");
+            assertEquals(refused, reopened.decisionAudits(),
+                    "含拒绝审计的档案必须按原尝试与拒绝原文关系恢复");
+        }
+    }
+
+    @Test
+    @DisplayName("审计：无回执的失败与超时不冒充收到回执")
+    void failureAndTimeoutAuditHaveNoReceipt() throws Exception {
+        try (WorldRuntime rt = open(tempDir.resolve("audit-failure.journal"))) {
+            rt.beginDecisionSession("open-1");
+            rt.openDecisions("d-1", List.of(request(ALICE, "au-f")));
+            DecisionRun.Call call = rt.dispatchDecision("au-f");
+            assertEquals("TECHNICAL_FAILED:SCRIPT_ERROR", rt.failDecisionAttempt("au-f",
+                    call.attemptNo(), call.attemptId(), call.recoveryGeneration(), "SCRIPT_ERROR"));
+
+            WorldRuntime.DecisionAudit audit = rt.decisionAudits().get(0);
+            assertEquals("FAILURE", audit.kind());
+            assertEquals("TECHNICAL_FAILED:SCRIPT_ERROR", audit.outcome());
+            assertEquals(rt.snapshot().position(), audit.position());
+            assertEquals(call.attemptId(), audit.attemptId());
+            assertNull(audit.receivedAtEpochMillis(), "无回执不得补接收时点");
+            assertNull(audit.receiveToRecordMillis());
+            assertNotNull(audit.dispatchedAtEpochMillis());
+            assertNotNull(audit.dispatchToRecordMillis());
+            assertTrue(audit.dispatchToRecordMillis() >= 0L);
+            assertEquals("", audit.body());
+            assertNull(audit.declaredUsage(), "无回执时没有提供方声明用量");
+        }
+        try (WorldRuntime rt = open(tempDir.resolve("audit-timeout.journal"),
+                config(4, 4, 5L, 2))) {
+            rt.beginDecisionSession("open-1");
+            rt.openDecisions("d-1", List.of(request(ALICE, "au-t")));
+            rt.dispatchDecision("au-t");
+            Thread.sleep(30L);
+            assertEquals(1, rt.expireDecisionTimeouts());
+
+            WorldRuntime.DecisionAudit audit = rt.decisionAudits().get(0);
+            assertEquals("TIMEOUT", audit.kind());
+            assertEquals("TIMEOUT", audit.outcome());
+            assertEquals(rt.snapshot().position(), audit.position());
+            assertNull(audit.receivedAtEpochMillis(), "超时没有回执");
+            assertNull(audit.receiveToRecordMillis());
+            assertNotNull(audit.dispatchedAtEpochMillis());
+            assertTrue(audit.dispatchToRecordMillis() >= 20L,
+                    "等待量必须覆盖真实超时等待：" + audit.dispatchToRecordMillis());
+        }
+    }
+
+    @Test
+    @DisplayName("审计：真实写盘失败时旧快照、待处理候选与已确认审计都不变")
+    void ioFailureKeepsSnapshotQueueAndAudits() throws IOException {
+        Path file = tempDir.resolve("audit-io.journal");
+        long position;
+        WorldRuntime.Snapshot checkpoint;
+        List<WorldRuntime.DecisionAudit> before;
+        WorldRuntime rt = open(file);
+        try {
+            rt.beginDecisionSession("open-1");
+            rt.openDecisions("d-1", List.of(request(ALICE, "au-io")));
+            DecisionModel.Reply reply = dispatchedReply(rt, "au-io", DecisionModel.TOOL_WAIT, null,
+                    usage(1, 25, 5));
+            assertEquals("QUEUED", rt.offerDecisionCallback(reply));
+            checkpoint = rt.snapshot();
+            position = checkpoint.position();
+            before = rt.decisionAudits();
+
+            Thread.currentThread().interrupt();
+            try {
+                assertThrows(IOException.class, rt::drainDecisionCallbacks,
+                        "真实 I/O 失败必须抛 IOException");
+            } finally {
+                Thread.interrupted();
+            }
+            assertTrue(rt.isPaused(), "写失败必须暂停");
+            assertEquals(checkpoint, rt.snapshot(), "旧快照必须完整保留");
+            assertEquals(position, rt.snapshot().position(), "失败批次不得生效");
+            assertEquals(1, rt.queuedDecisionCallbacks(), "候选必须保留而不是静默丢弃");
+            assertEquals(before, rt.decisionAudits(), "失败不得产生已确认审计");
+        } finally {
+            quietClose(rt);
+        }
+        try (WorldRuntime reopened = open(file)) {
+            assertEquals(position, reopened.snapshot().position(), "中断帧不得生效");
+            assertEquals(before, reopened.decisionAudits(), "重开只读原历史，不补造审计");
+            assertEquals(0, reopened.queuedDecisionCallbacks(), "新进程队列为空");
+        }
+    }
+
+    @Test
+    void committedRejectionBindsTheOriginalHostCommand() throws IOException {
+        try (WorldRuntime rt = open("rejected-host.journal")) {
+            rt.beginDecisionSession("session");
+            rt.openDecisions("observe", List.of(request(ALICE, "one")));
+            var original = dispatchedReply(rt, "one", DecisionModel.TOOL_WAIT, null, usage(1, 20, 5));
+            rt.acceptDecisionReply("accepted", original);
+            var rejected = new DecisionModel.Reply(original.runId(), original.actionId(), original.attemptId(),
+                    original.attemptNo(), original.recoveryGeneration(), original.body(), usage(1, 21, 5), original.usageSource());
+            assertEquals("REJECTED:IDENTITY_REUSE", rt.acceptDecisionReply("rejected-host", rejected));
+            WorldRuntime.Snapshot before = rt.snapshot();
+            var different = new DecisionModel.Reply(rejected.runId(), rejected.actionId(), rejected.attemptId(),
+                    rejected.attemptNo(), rejected.recoveryGeneration(), rejected.body(), rejected.usage(), "different-source");
+            assertThrows(IllegalArgumentException.class, () -> rt.acceptDecisionReply("rejected-host", different));
+            assertEquals(before, rt.snapshot());
+            assertFalse(rt.isPaused());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"usage", "source", "body", "run", "outcome", "negative-wait",
+            "stale-usage", "stale-source"})
+    void resignedRejectionAuditMustMatchTheWholeCommittedReceipt(String mutation) throws Exception {
+        Path file = tempDir.resolve("rejection-source-" + mutation + ".journal");
+        List<WorldRuntime.DecisionAudit> expected;
+        WorldRuntime.Snapshot snapshot;
+        try (WorldRuntime rt = open(file)) {
+            rt.beginDecisionSession("session");
+            rt.openDecisions("observe", List.of(request(ALICE, "one")));
+            var original = dispatchedReply(rt, "one", DecisionModel.TOOL_WAIT, null, usage(1, 20, 5));
+            if (mutation.startsWith("stale-")) {
+                rt.beginDecisionSession("second-session");
+                rt.acceptDecisionReply("stale", original);
+            } else {
+                rt.acceptDecisionReply("accepted", original);
+                var rejected = new DecisionModel.Reply(original.runId(), original.actionId(), original.attemptId(),
+                        original.attemptNo(), original.recoveryGeneration(), "{\"tool\":\"role.wait\",\"args\":{}}",
+                        usage(1, 21, 5), "scripted:rejected");
+                rt.acceptDecisionReply("rejected", rejected);
+            }
+            expected = rt.decisionAudits();
+            snapshot = rt.snapshot();
+        }
+        Path control = rewriteAuditEvents("rejection-control-" + mutation + ".journal", file, audit -> { });
+        try (WorldRuntime rt = open(control)) {
+            assertEquals(snapshot, rt.snapshot(), "合法重签对照须先恢复完整快照");
+            assertEquals(expected, rt.decisionAudits());
+        }
+        int[] changed = {0};
+        Path forged = rewriteAuditEvents("rejection-forged-" + mutation + ".journal", file, audit -> {
+            boolean target = mutation.startsWith("stale-")
+                    ? audit.path("outcome").asText().equals("STALE_GENERATION")
+                    : audit.path("kind").asText().equals("REJECTED_IDENTITY_REUSE");
+            if (!target) return;
+            changed[0]++;
+            switch (mutation) {
+                case "usage", "stale-usage" -> ((com.fasterxml.jackson.databind.node.ObjectNode) audit.path("declaredUsage"))
+                        .put("inputTokens", 22);
+                case "source", "stale-source" -> audit.put("usageSource", "forged-source");
+                case "run" -> audit.put("runId", "other-run");
+                case "outcome" -> audit.put("outcome", "REJECTED:OTHER_REASON");
+                case "negative-wait" -> audit.put("receiveToRecordMillis", -1);
+                case "body" -> {
+                    String body = "{\"tool\":\"role.wait\",\"args\":{\"forged\":true}}";
+                    audit.put("body", body).put("bodySha256", sha256Hex(body));
+                }
+                default -> throw new AssertionError(mutation);
+            }
+        });
+        assertTrue(changed[0] > 0);
+        assertThrows(IOException.class, () -> {
+            try (WorldRuntime ignored = open(forged)) { }
+        }, mutation);
+    }
+
+    @Test
+    void pastSettledAttemptCannotAcquireAnotherReplyAuditInALaterBatch() throws Exception {
+        Path source = tempDir.resolve("audit-causality-source.journal");
+        try (WorldRuntime rt = open(source)) {
+            rt.beginDecisionSession("session");
+            rt.openDecisions("observe", List.of(request(ALICE, "one")));
+            rt.acceptDecisionReply("original", dispatchedReply(rt, "one", DecisionModel.TOOL_WAIT,
+                    null, usage(1, 20, 5)));
+            rt.advanceTo(1);
+        }
+        Path control = rewriteAuditEvents("audit-causality-control.journal", source, audit -> { });
+        try (WorldRuntime rt = open(control)) {
+            assertEquals(1, rt.decisionAudits().size(), "合法重签对照只有原回执审计");
+        }
+        List<WorldCommit> commits;
+        try (WorldJournal reader = new WorldJournal(source, RUN)) {
+            commits = reader.commits();
+        }
+        WorldCommit original = commits.stream()
+                .filter(commit -> commit.events().stream().anyMatch(event -> event.type().equals("DECISION_AUDIT_V1")))
+                .findFirst().orElseThrow();
+        String auditJson = original.events().stream().filter(event -> event.type().equals("DECISION_AUDIT_V1"))
+                .findFirst().orElseThrow().payload();
+        var json = com.fasterxml.jackson.databind.json.JsonMapper.builder()
+                .enable(com.fasterxml.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                .nodeFactory(com.fasterxml.jackson.databind.node.JsonNodeFactory.withExactBigDecimals(true)).build();
+        Path forged = tempDir.resolve("audit-causality-forged.journal");
+        try (WorldJournal writer = new WorldJournal(forged, RUN)) {
+            for (WorldCommit commit : commits) {
+                if (commit.position() != commits.size()) {
+                    writer.commit(commit.commandId(), commit.commandContent(), commit.result(), commit.events());
+                    continue;
+                }
+                var audit = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(auditJson);
+                audit.put("position", commit.position());
+                List<WorldEvent> events = new ArrayList<>(commit.events());
+                events.add(new WorldEvent("dec-audit:" + audit.path("attemptId").asText() + ":" + commit.position(),
+                        "DECISION_AUDIT_V1", json.writeValueAsString(audit)));
+                writer.commit("forged-later-reply", original.commandContent(), "RECORDED", events);
+            }
+        }
+        assertThrows(IOException.class, () -> {
+            try (WorldRuntime ignored = open(forged)) { }
+        }, "旧尝试不能在后续批次再次冒充首次回执");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"body-direct", "usage-direct", "source-direct", "body-queue", "usage-queue", "source-queue"})
+    void conflictingArchivedReplyIsAuditedWithoutBlockingTheCurrentAttempt(String variant) throws Exception {
+        Path file = tempDir.resolve("stale-conflict-" + variant + ".journal");
+        List<WorldRuntime.DecisionAudit> expected;
+        try (WorldRuntime rt = open(file)) {
+            rt.beginDecisionSession("first-session");
+            rt.openDecisions("observe", List.of(request(ALICE, "one")));
+            DecisionModel.Reply old = dispatchedReply(rt, "one", DecisionModel.TOOL_WAIT, null, usage(1, 20, 5));
+            rt.beginDecisionSession("next-session");
+            assertEquals("STALE_GENERATION", rt.acceptDecisionReply("first-old", old));
+            WorldRuntime.Snapshot before = rt.snapshot();
+            var conflict = new DecisionModel.Reply(old.runId(), old.actionId(), old.attemptId(), old.attemptNo(),
+                    old.recoveryGeneration(), variant.startsWith("body") ? "{\"tool\":\"role.wait\",\"args\":{}}" : old.body(),
+                    variant.startsWith("usage") ? usage(1, 21, 5) : old.usage(),
+                    variant.startsWith("source") ? "scripted:other" : old.usageSource());
+            DecisionModel.Reply current = dispatchedReply(rt, "one", DecisionModel.TOOL_WAIT, null, usage(1, 22, 6));
+            if (variant.endsWith("queue")) {
+                rt.offerDecisionCallback(conflict);
+                rt.offerDecisionCallback(current);
+                assertEquals(1, org.junit.jupiter.api.Assertions.assertDoesNotThrow(rt::drainDecisionCallbacks),
+                        "拒绝旧冲突后当前回执仍须能够记录");
+                assertEquals(0, rt.queuedDecisionCallbacks());
+            } else {
+                assertEquals("REJECTED:IDENTITY_REUSE", org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                        () -> rt.acceptDecisionReply("conflict", conflict)));
+                assertEquals(before.decisions(), rt.snapshot().decisions(), "旧冲突不改变决定或预算");
+                assertEquals(before.position() + 1, rt.snapshot().position());
+                assertEquals("RECORDED", rt.acceptDecisionReply("current", current));
+            }
+            assertEquals(before.accounts(), rt.snapshot().accounts());
+            assertEquals(before.pending(), rt.snapshot().pending());
+            assertEquals(before.position() + 2, rt.snapshot().position());
+            assertEquals(1, rt.snapshot().decisions().orElseThrow().archives().size());
+            assertEquals(DecisionModel.Status.RECORDED, decision(rt, "one").status());
+            assertEquals(3, rt.decisionAudits().size());
+            WorldRuntime.DecisionAudit rejected = rt.decisionAudits().get(1);
+            assertEquals("REJECTED_IDENTITY_REUSE", rejected.kind());
+            assertEquals(conflict.body(), rejected.body());
+            assertEquals(conflict.usage(), rejected.declaredUsage());
+            assertEquals(conflict.usageSource(), rejected.usageSource());
+            long position = rt.snapshot().position();
+            assertEquals("REJECTED:IDENTITY_REUSE", rt.acceptDecisionReply("conflict-again", conflict));
+            assertEquals(position, rt.snapshot().position(), "相同旧冲突也按完整回执去重");
+            assertFalse(rt.isPaused());
+            expected = rt.decisionAudits();
+        }
+        try (WorldRuntime rt = open(file)) {
+            assertEquals(expected, rt.decisionAudits());
+        }
+    }
+
+    private Path rewriteAuditEvents(String name, Path source,
+            java.util.function.Consumer<com.fasterxml.jackson.databind.node.ObjectNode> change) throws IOException {
+        var json = com.fasterxml.jackson.databind.json.JsonMapper.builder()
+                .enable(com.fasterxml.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                .nodeFactory(com.fasterxml.jackson.databind.node.JsonNodeFactory.withExactBigDecimals(true)).build();
+        List<WorldCommit> commits;
+        try (WorldJournal reader = new WorldJournal(source, RUN)) {
+            commits = reader.commits();
+        }
+        Path destination = tempDir.resolve(name);
+        try (WorldJournal writer = new WorldJournal(destination, RUN)) {
+            for (WorldCommit commit : commits) {
+                List<WorldEvent> events = new ArrayList<>();
+                for (WorldEvent event : commit.events()) {
+                    if (event.type().equals("DECISION_AUDIT_V1")) {
+                        var audit = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(event.payload());
+                        change.accept(audit);
+                        event = new WorldEvent(event.eventId(), event.type(), json.writeValueAsString(audit));
+                    }
+                    events.add(event);
+                }
+                writer.commit(commit.commandId(), commit.commandContent(), commit.result(), events);
+            }
+        }
+        return destination;
+    }
+
+    private static DecisionModel.Reply replyOf(String actionId, DecisionModel.Attempt attempt,
+                                               String body, DecisionModel.Usage usage,
+                                               String source) {
+        return new DecisionModel.Reply(RUN, actionId, attempt.attemptId(), attempt.attemptNo(),
+                attempt.recoveryGeneration(), body, usage, source);
+    }
+
+    private static String sha256Hex(String text) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(StandardCharsets.UTF_8));
+            StringBuilder out = new StringBuilder(digest.length * 2);
+            for (byte value : digest) {
+                out.append(Character.forDigit((value >> 4) & 0xF, 16));
+                out.append(Character.forDigit(value & 0xF, 16));
+            }
+            return out.toString();
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("运行环境缺少 SHA-256", impossible);
+        }
     }
 
     // ------------------------------------------------------------------

@@ -157,10 +157,12 @@ candidate4冻结75源，Codex独立146检查通过，桥55+runner12专项通过�
 - [x] Task3的线程中断、半帧、真实交易反序、三JVM、真实旧7及本地专项核验。
 - [x] 最终候选4独审、GUI/JavaDoc与本地文档。
 - [x] 草稿PR17发布与代码e1ba440的远端CI记录完成。
-- [ ] 持久派发/回执等待墙钟审计、独立身份复用拒绝归档继续以明确后续单元补齐。
+- [x] 宿主派发/回执等待持久审计及独立身份复用拒绝已在M4e本地补齐，证据见docs/05第21节。
 
 Task2–3本单有两项后续审计缺口，当前只能称运行桥与故障子集已实现。完整M4、真实模型与六层认知继续保留。下一并行准备是M3现金分红/TWR，已有只读proposal仍待Codex裁决，不得把建议当实现。
 
 最终candidate4独审42断言exit0，67桥/runner专项及549标准、GUI/CSV和JavaDoc16:15:59通过。五份schema8与一份schema7日志的独立Decimal复算通过，详见docs/05第20节。下一步发布草稿PR及核对远端CI，再接M4d审计补项和M3分红/TWR施工。
 
 运行桥代码e1ba4402503c773c508a3547d9b1e3f5ab593ad8已建立[草稿PR #17](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/17)，base为codex/world-decisions（PR16）。远端verify run42186774016实际completed/success，已附当前会话，尚待人工实质review。
+
+M4e以573标准、独立72+146检查和35独审断言补齐本单两项审计，旧代次异回执队列阻塞已修复。M4其余认知/媒体与真实模型继续主Plan。

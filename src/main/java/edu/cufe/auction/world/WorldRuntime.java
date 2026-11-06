@@ -14,10 +14,12 @@ import edu.cufe.auction.world.WorldExchange.OrderReport;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -111,8 +113,8 @@ public final class WorldRuntime implements AutoCloseable {
     private final java.util.concurrent.ArrayBlockingQueue<DecisionCandidate> decisionQueue;
     /** 进程本地派发/应用门闸；构造后一律关闭，必须显式 beginDecisionSession。 */
     private boolean decisionGateOpen;
-    /** 已派发但未结算的尝试 → 派发墙钟纳秒（只作超时判定，不进世界时间）。 */
-    private final Map<String, Long> decisionInFlight = new TreeMap<>();
+    /** 已派发但未结算的尝试 → 宿主派发许可的墙钟标记（只算等待与超时，不进世界时间）。 */
+    private final Map<String, DispatchMark> decisionInFlight = new TreeMap<>();
     /** 严格 DTO 映射：未知字段、尾随内容与浮点截断一律失败。 */
     private final ObjectMapper decisionMapper = new ObjectMapper()
             .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
@@ -2274,6 +2276,203 @@ public final class WorldRuntime implements AutoCloseable {
                                 String commandId, long dueMillis, String payloadJson) {
     }
 
+    /** 决定审计事件类型：只出现在已确认批次里，不进入状态快照。 */
+    private static final String DECISION_AUDIT_V1 = "DECISION_AUDIT_V1";
+
+    /**
+     * 管理端只读决定审计：来源于唯一世界日志的已确认事件，不参与人物输入、模拟时间、
+     * 公平排序或决定摘要。
+     *
+     * <p>墙钟值只供管理端核对。派发时点表示**宿主派发许可**的时点（含执行器等待），
+     * 不声称观测到真实外部提供方的调用起点；恢复后没有本进程标记时该值为 {@code null}，
+     * 不得用当前时间补造。两段等待量只用单调纳秒差换算，负值明确为未知。</p>
+     *
+     * @param runId                    运行标识
+     * @param actionId                 动作标识
+     * @param attemptId                尝试标识
+     * @param attemptNo                尝试序号
+     * @param recoveryGeneration       尝试所属恢复代次
+     * @param kind                     审计类别：REPLY/FAILURE/TIMEOUT/REJECTED_IDENTITY_REUSE
+     * @param outcome                  与同批命令回报一致的结果码
+     * @param position                 该审计所在的已确认提交位置
+     * @param dispatchedAtEpochMillis  宿主派发许可时点；未知为空
+     * @param receivedAtEpochMillis    成功入队或宿主直投入口的接收时点；未知为空
+     * @param recordedAtEpochMillis    宿主提交准备时点
+     * @param dispatchToRecordMillis   派发到记录的等待量；未知为空
+     * @param receiveToRecordMillis    接收到记录的等待量；未知为空
+     * @param body                     被拒绝回执的精确原文；其余类别为空串
+     * @param bodySha256               回执正文摘要，用于关联同批已记录尝试；无正文时为空串
+     * @param declaredUsage            该回执声明的提供方用量；无回执时为空
+     * @param usageSource              用量来源；无回执时为空串
+     */
+    public record DecisionAudit(String runId, String actionId, String attemptId, int attemptNo,
+                                long recoveryGeneration, String kind, String outcome,
+                                long position, Long dispatchedAtEpochMillis,
+                                Long receivedAtEpochMillis, long recordedAtEpochMillis,
+                                Long dispatchToRecordMillis, Long receiveToRecordMillis,
+                                String body, String bodySha256,
+                                DecisionModel.Usage declaredUsage, String usageSource) {
+
+        /** 校验身份与文本字段；未知时间保持 null，不用 0 冒充。 */
+        public DecisionAudit {
+            if (runId == null || runId.isBlank() || actionId == null || actionId.isBlank()
+                    || attemptId == null || attemptId.isBlank() || kind == null || kind.isBlank()
+                    || outcome == null || outcome.isBlank()) {
+                throw new IllegalArgumentException("审计身份与结果不能为空");
+            }
+            if (attemptNo < 1 || recoveryGeneration < 1 || position < 1) {
+                throw new IllegalArgumentException("审计序号与提交位置必须从 1 开始");
+            }
+            if (recordedAtEpochMillis < 0) {
+                throw new IllegalArgumentException("审计记录时点不能为负");
+            }
+            body = body == null ? "" : body;
+            bodySha256 = bodySha256 == null ? "" : bodySha256;
+            usageSource = usageSource == null ? "" : usageSource;
+        }
+    }
+
+    /** 本进程派发许可的墙钟标记：纳秒只算耗时，epoch 只做审计。 */
+    private record DispatchMark(long nanos, long epochMillis) {
+    }
+
+    /** 回执接收元数据：在调用线程上打点，不读世界状态。 */
+    private record ReceiptTiming(Long receivedAtEpochMillis, long receivedAtNanos) {
+
+        /** 回调线程入队或宿主直投入口：当前调用线程时刻即接收时刻。 */
+        static ReceiptTiming arrival() {
+            return new ReceiptTiming(System.currentTimeMillis(), System.nanoTime());
+        }
+    }
+
+    /** 三点墙钟与两段等待；未知值保持 null。 */
+    private record AuditTiming(Long dispatchedAtEpochMillis, Long receivedAtEpochMillis,
+                               long recordedAtEpochMillis, Long dispatchToRecordMillis,
+                               Long receiveToRecordMillis) {
+    }
+
+    /**
+     * 由本进程派发标记与候选接收元数据算出审计时间；未知即 null，负耗时明确未知。
+     *
+     * @param attemptId           尝试标识
+     * @param receipt             候选携带的接收元数据；无回执为空
+     * @param recordedAtNanos     记录时点的单调纳秒
+     * @param recordedAtEpochMillis 记录时点的 epoch 毫秒
+     * @return 审计时间
+     */
+    private AuditTiming auditTiming(String attemptId, ReceiptTiming receipt,
+                                    long recordedAtNanos, long recordedAtEpochMillis) {
+        DispatchMark mark = decisionInFlight.get(attemptId);
+        Long dispatchedAt = mark == null ? null : mark.epochMillis();
+        Long dispatchToRecord = mark == null ? null
+                : elapsedMillis(recordedAtNanos - mark.nanos());
+        Long receivedAt = receipt == null ? null : receipt.receivedAtEpochMillis();
+        Long receiveToRecord = receipt == null ? null
+                : elapsedMillis(recordedAtNanos - receipt.receivedAtNanos());
+        return new AuditTiming(dispatchedAt, receivedAt, recordedAtEpochMillis,
+                dispatchToRecord, receiveToRecord);
+    }
+
+    /** 单调纳秒差换毫秒；负值（时钟或线程异常）明确未知，不伪造零。 */
+    private static Long elapsedMillis(long nanos) {
+        if (nanos < 0) {
+            return null;
+        }
+        return nanos / 1_000_000L;
+    }
+
+    /** 由完整身份、类别与实际结算关系构造一条审计。 */
+    private static DecisionAudit decisionAudit(String runId, String actionId, String attemptId,
+                                               int attemptNo, long generation, String kind,
+                                               String outcome, long position, AuditTiming timing,
+                                               String body, String bodySha256,
+                                               DecisionModel.Usage usage, String usageSource) {
+        return new DecisionAudit(runId, actionId, attemptId, attemptNo, generation, kind, outcome,
+                position, timing.dispatchedAtEpochMillis(), timing.receivedAtEpochMillis(),
+                timing.recordedAtEpochMillis(), timing.dispatchToRecordMillis(),
+                timing.receiveToRecordMillis(), body, bodySha256, usage, usageSource);
+    }
+
+    /** 一次正常回执结算的审计：正文只在快照保存，这里用摘要关联同批已记录尝试。 */
+    private static DecisionAudit replyAudit(DecisionRun run, DecisionModel.Decision decision,
+                                            DecisionModel.Attempt attempt, String outcome,
+                                            long position, AuditTiming timing) {
+        return decisionAudit(run.state().runId(), decision.actionId(), attempt.attemptId(),
+                attempt.attemptNo(), attempt.recoveryGeneration(), "REPLY", outcome, position,
+                timing, "", sha256Hex(attempt.replyBody()), attempt.declaredUsage(),
+                attempt.usageSource());
+    }
+
+    /** 审计事件：payload 与只读视图是同一个不可变记录，不复制第二套字段。 */
+    private String auditJson(DecisionAudit audit) {
+        try {
+            return decisionMapper.writeValueAsString(audit);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalStateException("无法生成决定审计原文", failure);
+        }
+    }
+
+    /** 事件标识按尝试与提交位置稳定派生；位置在一份日志内唯一。 */
+    private WorldEvent auditEvent(DecisionAudit audit) {
+        return new WorldEvent("dec-audit:" + audit.attemptId() + ":" + audit.position(),
+                DECISION_AUDIT_V1, auditJson(audit));
+    }
+
+    /** 按尝试标识取该决定下的尝试；不存在返回 null。 */
+    private static DecisionModel.Attempt attemptOf(DecisionModel.State model, String actionId,
+                                                   String attemptId) {
+        DecisionModel.Decision decision = DecisionModel.decision(model, actionId).orElse(null);
+        if (decision == null) {
+            return null;
+        }
+        for (DecisionModel.Attempt candidate : decision.attempts()) {
+            if (candidate.attemptId().equals(attemptId)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** 摘要只用于去重与关联，不能替代语义校验。 */
+    private static String sha256Hex(String text) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("运行环境缺少 SHA-256", impossible);
+        }
+    }
+
+    /**
+     * 管理端只读审计列表：只从唯一世界日志的已确认批次导出，不补时间、不写盘。
+     *
+     * <p>返回不可变列表，按提交顺序排列；旧档案没有审计事件时为空。严格语义校验发生在
+     * 恢复期逐批核对，读取本身不修改任何状态。</p>
+     *
+     * @return 不可变审计列表
+     */
+    public synchronized List<DecisionAudit> decisionAudits() {
+        requireOpen();
+        List<DecisionAudit> audits = new ArrayList<>();
+        for (WorldCommit commit : journal.commits()) {
+            for (WorldEvent event : commit.events()) {
+                if (DECISION_AUDIT_V1.equals(event.type())) {
+                    audits.add(readAudit(event.payload()));
+                }
+            }
+        }
+        return List.copyOf(audits);
+    }
+
+    /** 读取一条已确认审计原文；恢复期已按语义核对过。 */
+    private DecisionAudit readAudit(String payload) {
+        try {
+            return decisionMapper.readValue(payload, DecisionAudit.class);
+        } catch (IOException | RuntimeException invalid) {
+            throw new IllegalStateException("已确认决定审计原文无法解析", invalid);
+        }
+    }
+
     private void requireDecisionsEnabled() {
         if (!manifest.hasDecisions() || state.decisions() == null) {
             throw new IllegalStateException("当前运行未启用决定模块：" + manifest.rulesVersion());
@@ -2494,6 +2693,22 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public synchronized String acceptDecisionReply(String commandId, DecisionModel.Reply reply)
             throws IOException {
+        return acceptDecisionReply(commandId, reply, ReceiptTiming.arrival());
+    }
+
+    /**
+     * 回执结算的统一入口：宿主直投与 writer 处理队列候选共用。
+     *
+     * <p>调用方必须持有本对象监视器；候选接收时点由调用方按来源传入，本方法不推断。</p>
+     *
+     * @param commandId 可信宿主命令标识
+     * @param reply     提供方回执
+     * @param receipt   接收元数据（回调线程打点或宿主直投入口）
+     * @return 与公共入口相同的结果码
+     * @throws IOException 持久提交失败
+     */
+    private String acceptDecisionReply(String commandId, DecisionModel.Reply reply,
+                                       ReceiptTiming receipt) throws IOException {
         requireOpen();
         requireWriter();
         requireNotPaused();
@@ -2529,13 +2744,16 @@ public final class WorldRuntime implements AutoCloseable {
             return "REJECTED:GENERATION_MISMATCH";
         }
         if (reply.recoveryGeneration() != run.state().recoveryGeneration()) {
-            return archiveStale(commandId, content, run, reply);
+            return archiveStale(commandId, content, run, reply, attempt, receipt);
         }
         if (attempt.settledDone()) {
             boolean same = attempt.replyReceived() && attempt.replyBody().equals(reply.body())
                     && Objects.equals(attempt.declaredUsage(), reply.usage())
                     && attempt.usageSource().equals(reply.usageSource());
-            return same ? "DUPLICATE" : "REJECTED:IDENTITY_REUSE";
+            if (same) {
+                return "DUPLICATE";
+            }
+            return rejectIdentityReuse(internalCommand, content, run, decision, attempt, reply, receipt);
         }
         if (decision.status() != DecisionModel.Status.OPEN) {
             return "REJECTED:" + (decision.status() == DecisionModel.Status.RECORDED
@@ -2555,12 +2773,22 @@ public final class WorldRuntime implements AutoCloseable {
         DecisionModel.State accepted = result.state();
         DecisionModel.Decision recorded = result.decision();
         DecisionRun withState = run.withState(accepted);
+        DecisionModel.Attempt settled = attemptOf(accepted, recorded.actionId(), reply.attemptId());
+        if (settled == null) {
+            throw new IllegalStateException("已记录回执缺少对应尝试：" + reply.attemptId());
+        }
+        // 记录时点在即将提交前取一次；等待量只用单调纳秒差，未知值保持 null。
+        AuditTiming marks = auditTiming(reply.attemptId(), receipt, System.nanoTime(),
+                System.currentTimeMillis());
+        long position = state.position() + 1L;
         if (recorded.outcome() == DecisionModel.Outcome.TECHNICAL_FAILED) {
-            return commitDecisionOnly(commandId, content, withState, "TECHNICAL_FAILED:"
-                    + recorded.lastAttempt().reason(), reply.attemptId());
+            String outcome = "TECHNICAL_FAILED:" + recorded.lastAttempt().reason();
+            return commitDecisionOnly(commandId, content, withState, outcome, reply.attemptId(),
+                    replyAudit(run, recorded, settled, outcome, position, marks));
         }
         if (recorded.outcome() == DecisionModel.Outcome.WAIT) {
-            return commitDecisionOnly(commandId, content, withState, "RECORDED", reply.attemptId());
+            return commitDecisionOnly(commandId, content, withState, "RECORDED", reply.attemptId(),
+                    replyAudit(run, recorded, settled, "RECORDED", position, marks));
         }
 
         DecisionRun.Binding binding = run.binding(recorded.actionId());
@@ -2579,9 +2807,17 @@ public final class WorldRuntime implements AutoCloseable {
                 throw new IllegalStateException("无法记录工具参数技术失败：" + rejected.reason(),
                         failure);
             }
-            return commitDecisionOnly(commandId, content, run.withState(rejected.state()),
-                    "TECHNICAL_FAILED:" + DecisionModel.REASON_TOOL_ARGS_INVALID,
+            DecisionModel.State rejectedState = rejected.state();
+            DecisionModel.Attempt rejectedAttempt = attemptOf(rejectedState, recorded.actionId(),
                     reply.attemptId());
+            if (rejectedAttempt == null) {
+                throw new IllegalStateException("工具参数失败缺少对应尝试：" + reply.attemptId(),
+                        failure);
+            }
+            String outcome = "TECHNICAL_FAILED:" + DecisionModel.REASON_TOOL_ARGS_INVALID;
+            return commitDecisionOnly(commandId, content, run.withState(rejectedState), outcome,
+                    reply.attemptId(), replyAudit(run, recorded, rejectedAttempt, outcome,
+                            state.position() + 1L, marks));
         }
 
         DecisionRun withRef = withState.withActionRef(new DecisionRun.ActionRef(
@@ -2601,42 +2837,109 @@ public final class WorldRuntime implements AutoCloseable {
                 state.delivered(), used, contents, outcomes, state.securities(), state.exchange(),
                 state.manufacturing(), state.governance(), state.roles(), state.information(),
                 state.trading(), withRef);
-        commitAndApply(internalCommand, content, "RECORDED",
-                List.of(new WorldEvent("dec-scheduled:" + placed.taskId(),
-                        "DECISION_ACTION_SCHEDULED_V1", placed.payloadJson())), world);
+        DecisionAudit scheduled = replyAudit(run, recorded, settled, "RECORDED", world.position(),
+                marks);
+        if (scheduled.position() != world.position()) {
+            throw new IllegalStateException("审计位置与提交位置不一致");
+        }
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("dec-scheduled:" + placed.taskId(),
+                "DECISION_ACTION_SCHEDULED_V1", placed.payloadJson()));
+        events.add(auditEvent(scheduled));
+        commitAndApply(internalCommand, content, "RECORDED", events, world);
         decisionInFlight.remove(reply.attemptId());
         return "RECORDED";
     }
 
-    /** 旧代次回执：只在归档里追加一条，模型状态与经济一律不变。 */
-    private String archiveStale(String commandId, String content, DecisionRun run, DecisionModel.Reply reply)
-            throws IOException {
+    /** 旧代次回执：只在归档里追加一条，模型状态与经济一律不变；审计与归档同批。 */
+    private String archiveStale(String commandId, String content, DecisionRun run,
+                                DecisionModel.Reply reply, DecisionModel.Attempt attempt,
+                                ReceiptTiming receipt) throws IOException {
         DecisionRun.Archive archive = new DecisionRun.Archive(reply.actionId(),
                 reply.attemptId(), reply.attemptNo(), reply.recoveryGeneration(), reply.body(),
                 reply.usage(), reply.usageSource(), "STALE_GENERATION", "OLD_GENERATION");
-        if (run.archived(archive)) {
-            return "STALE_GENERATION";
+        for (DecisionRun.Archive existing : run.archives()) {
+            if (existing.sameKey(archive)) {
+                if (existing.equals(archive)) {
+                    return "STALE_GENERATION";
+                }
+                DecisionModel.Decision decision = DecisionModel.decision(run.state(), reply.actionId()).orElseThrow();
+                return rejectIdentityReuse("dec-reply:" + commandId, content, run, decision,
+                        attempt, reply, receipt);
+            }
         }
         DecisionRun candidate = run.withArchive(archive);
         WorldState world = decisionWorld(candidate, "dec-reply:" + commandId, content, "STALE_GENERATION");
-        commitAndApply("dec-reply:" + commandId, content, "STALE_GENERATION",
-                List.of(new WorldEvent("dec-archived:" + archive.actionId() + ":"
-                        + archive.attemptId(), "DECISION_STALE_ARCHIVED_V1", content)), world);
+        AuditTiming marks = auditTiming(reply.attemptId(), receipt, System.nanoTime(),
+                System.currentTimeMillis());
+        DecisionAudit audit = decisionAudit(run.state().runId(), reply.actionId(),
+                reply.attemptId(), reply.attemptNo(), reply.recoveryGeneration(), "REPLY",
+                "STALE_GENERATION", world.position(), marks, "", sha256Hex(reply.body()),
+                reply.usage(), reply.usageSource());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("dec-archived:" + archive.actionId() + ":"
+                + archive.attemptId(), "DECISION_STALE_ARCHIVED_V1", content));
+        events.add(auditEvent(audit));
+        commitAndApply("dec-reply:" + commandId, content, "STALE_GENERATION", events, world);
         decisionInFlight.remove(reply.attemptId());
         return "STALE_GENERATION";
     }
 
-    /** 只提交决定状态（观望、技术失败、重试），不排任何业务动作。 */
-    private String commitDecisionOnly(String commandId, String content, DecisionRun candidate, String outcome,
-                                      String attemptId) throws IOException {
+    /** 只提交决定状态（观望、技术失败、重试），不排任何业务动作；审计与原回执同批。 */
+    private String commitDecisionOnly(String commandId, String content, DecisionRun candidate,
+                                      String outcome, String attemptId, DecisionAudit audit)
+            throws IOException {
         WorldState world = decisionWorld(candidate, "dec-reply:" + commandId, content, outcome);
-        commitAndApply("dec-reply:" + commandId, content, outcome,
-                List.of(new WorldEvent("dec-reply:" + commandId, "DECISION_REPLIED_V1", outcome)),
-                world);
+        if (audit.position() != world.position()) {
+            throw new IllegalStateException("审计位置与提交位置不一致");
+        }
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("dec-reply:" + commandId, "DECISION_REPLIED_V1", outcome));
+        events.add(auditEvent(audit));
+        commitAndApply("dec-reply:" + commandId, content, outcome, events, world);
         if (attemptId != null) {
             decisionInFlight.remove(attemptId);
         }
         return outcome;
+    }
+
+    /**
+     * 已消费身份复用了不同正文、声明用量或来源：按完整规范回执的摘要留一条独立审计批次。
+     *
+     * <p>命令标识取完整回执原文的 SHA-256，因此同一非法回执换宿主命令重投也不重复落盘；
+     * 决定、预算、待办与钱股一律不变。合法摘要只作幂等键，语义判定仍在调用前完成。</p>
+     *
+     * @return 固定返回 {@code REJECTED:IDENTITY_REUSE}
+     * @throws IOException 持久提交失败
+     */
+    private String rejectIdentityReuse(String hostCommand, String content, DecisionRun run,
+                                       DecisionModel.Decision decision,
+                                       DecisionModel.Attempt attempt, DecisionModel.Reply reply,
+                                       ReceiptTiming receipt) throws IOException {
+        String rejectId = "dec-reject:" + sha256Hex(content);
+        String replay = decisionCommandResult(rejectId, content);
+        if (replay != null) {
+            return replay;
+        }
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(rejectId, content);
+        contents.put(hostCommand, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        outcomes.put(rejectId, "REJECTED:IDENTITY_REUSE");
+        outcomes.put(hostCommand, "REJECTED:IDENTITY_REUSE");
+        WorldState world = next(state.timeMillis(), state.lastPhase(), state.accounts(), state.pending(),
+                state.delivered(), state.usedTaskIds(), contents, outcomes, state.securities(),
+                state.exchange(), state.manufacturing(), state.governance(), state.roles(),
+                state.information(), state.trading(), run);
+        AuditTiming marks = auditTiming(attempt.attemptId(), receipt, System.nanoTime(),
+                System.currentTimeMillis());
+        DecisionAudit audit = decisionAudit(run.state().runId(), decision.actionId(),
+                attempt.attemptId(), attempt.attemptNo(), attempt.recoveryGeneration(),
+                "REJECTED_IDENTITY_REUSE", "REJECTED:IDENTITY_REUSE", world.position(), marks,
+                reply.body(), sha256Hex(reply.body()), reply.usage(), reply.usageSource());
+        commitAndApply(hostCommand, content, "REJECTED:IDENTITY_REUSE",
+                List.of(auditEvent(audit)), world);
+        return "REJECTED:IDENTITY_REUSE";
     }
 
     /** 原始宿主命令在派生观察或读取可变决定状态之前校验。 */
@@ -2694,7 +2997,8 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalStateException("并发派发超过 maxInFlight="
                     + decisionConfig.limits().maxInFlight());
         }
-        decisionInFlight.putIfAbsent(attempt.attemptId(), System.nanoTime());
+        decisionInFlight.putIfAbsent(attempt.attemptId(),
+                new DispatchMark(System.nanoTime(), System.currentTimeMillis()));
         return new DecisionRun.Call(run.state().runId(), decision.actionId(), attempt.attemptId(),
                 attempt.attemptNo(), attempt.recoveryGeneration(), decision.wakeReason(),
                 decision.allowedTools(), decision.inputText());
@@ -2712,7 +3016,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (queue == null) {
             throw new IllegalStateException("当前运行未启用决定模块");
         }
-        return queue.offer(new DecisionCandidate(reply, null)) ? "QUEUED" : "QUEUE_FULL";
+        return queue.offer(new DecisionCandidate(reply, null, ReceiptTiming.arrival()))
+                ? "QUEUED" : "QUEUE_FULL";
     }
 
     /** @return 队列当前长度（管理端审计用） */
@@ -2738,7 +3043,8 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 两种不可变候选共享一个容量，只有世界写入线程能够移除。 */
-    private record DecisionCandidate(DecisionModel.Reply reply, DecisionFailure failure) {
+    private record DecisionCandidate(DecisionModel.Reply reply, DecisionFailure failure,
+                                     ReceiptTiming receipt) {
         String actionId() {
             return reply != null ? reply.actionId() : failure.actionId();
         }
@@ -2760,7 +3066,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (queue == null) {
             throw new IllegalStateException("当前运行未启用决定模块");
         }
-        return queue.offer(new DecisionCandidate(null, failure)) ? "QUEUED" : "QUEUE_FULL";
+        return queue.offer(new DecisionCandidate(null, failure, null)) ? "QUEUED" : "QUEUE_FULL";
     }
 
     /**
@@ -2784,11 +3090,15 @@ public final class WorldRuntime implements AutoCloseable {
         requireDecisionGate();
         requireNotPaused();
         DecisionRun run = requireDecisions();
+        DecisionModel.Attempt failed = attemptOf(run.state(), actionId, attemptId);
         DecisionModel.Result result = DecisionModel.failAttempt(run.state(), actionId, attemptNo,
                 attemptId, recoveryGeneration, reason);
         if (result.verdict() != DecisionModel.Verdict.ACCEPTED) {
             decisionInFlight.remove(attemptId);
             return "REJECTED:" + result.reason();
+        }
+        if (failed == null) {
+            throw new IllegalStateException("已结算失败缺少对应尝试：" + attemptId);
         }
         DecisionRun candidate = run.withState(result.state());
         String content = "{\"actionId\":\"" + actionId + "\",\"attemptId\":\"" + attemptId
@@ -2798,11 +3108,21 @@ public final class WorldRuntime implements AutoCloseable {
                 state.commandOutcomes(), state.securities(), state.exchange(),
                 state.manufacturing(), state.governance(), state.roles(), state.information(),
                 state.trading(), candidate);
-        commitAndApply("dec-fail:" + attemptId, content, "TECHNICAL_FAILED:" + reason,
-                List.of(new WorldEvent("dec-fail:" + attemptId, "DECISION_FAILED_V1", content)),
-                world);
+        String outcome = "TECHNICAL_FAILED:" + reason;
+        AuditTiming marks = auditTiming(attemptId, null, System.nanoTime(),
+                System.currentTimeMillis());
+        DecisionAudit audit = decisionAudit(run.state().runId(), actionId, attemptId,
+                failed.attemptNo(), failed.recoveryGeneration(), "FAILURE", outcome,
+                world.position(), marks, "", "", null, "");
+        if (audit.position() != world.position()) {
+            throw new IllegalStateException("审计位置与提交位置不一致");
+        }
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("dec-fail:" + attemptId, "DECISION_FAILED_V1", content));
+        events.add(auditEvent(audit));
+        commitAndApply("dec-fail:" + attemptId, content, outcome, events, world);
         decisionInFlight.remove(attemptId);
-        return "TECHNICAL_FAILED:" + reason;
+        return outcome;
     }
 
     /**
@@ -2831,7 +3151,8 @@ public final class WorldRuntime implements AutoCloseable {
             String code;
             if (candidate.reply() != null) {
                 // 由已确认位置派生本次自动命令，重复回执仍由尝试身份判定。
-                code = acceptDecisionReply("callback:" + state.position(), candidate.reply());
+                code = acceptDecisionReply("callback:" + state.position(), candidate.reply(),
+                        candidate.receipt());
             } else {
                 DecisionFailure failure = candidate.failure();
                 code = failDecisionAttempt(failure.actionId(), failure.attemptNo(),
@@ -2863,8 +3184,9 @@ public final class WorldRuntime implements AutoCloseable {
         long timeoutMillis = decisionConfig.limits().wallTimeoutMillis();
         long now = System.nanoTime();
         List<String> expired = new ArrayList<>();
-        for (Map.Entry<String, Long> entry : decisionInFlight.entrySet()) {
-            if (java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(now - entry.getValue()) >= timeoutMillis) {
+        for (Map.Entry<String, DispatchMark> entry : decisionInFlight.entrySet()) {
+            if (java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(now - entry.getValue().nanos())
+                    >= timeoutMillis) {
                 expired.add(entry.getKey());
             }
         }
@@ -2895,9 +3217,20 @@ public final class WorldRuntime implements AutoCloseable {
                     state.commandContents(), state.commandOutcomes(), state.securities(),
                     state.exchange(), state.manufacturing(), state.governance(), state.roles(),
                     state.information(), state.trading(), candidate);
+            AuditTiming marks = auditTiming(attemptId, null, System.nanoTime(),
+                    System.currentTimeMillis());
+            DecisionAudit audit = decisionAudit(run.state().runId(), decision.actionId(),
+                    attemptId, attempt.attemptNo(), attempt.recoveryGeneration(), "TIMEOUT",
+                    "TIMEOUT", world.position(), marks, "", "", null, "");
+            if (audit.position() != world.position()) {
+                throw new IllegalStateException("审计位置与提交位置不一致");
+            }
+            List<WorldEvent> events = new ArrayList<>();
+            events.add(new WorldEvent("dec-timeout:" + attemptId, "DECISION_TIMEOUT_V1",
+                    content));
+            events.add(auditEvent(audit));
             commitAndApply("dec-timeout:" + decision.actionId() + ":" + attemptId, content,
-                    "TIMEOUT", List.of(new WorldEvent("dec-timeout:" + attemptId,
-                            "DECISION_TIMEOUT_V1", content)), world);
+                    "TIMEOUT", events, world);
             run = candidate;
             decisionInFlight.remove(attemptId);
             settled++;
@@ -4824,6 +5157,8 @@ public final class WorldRuntime implements AutoCloseable {
         List<WorldEvent> events = new ArrayList<>(domainEvents);
         events.add(snapshotEvent(candidate));
         try {
+            validateAudits(new WorldCommit(1, candidate.position(), manifest.runId(), commandId,
+                    content, result, events), candidate, state);
             WorldCommit committed = journal.commit(commandId, content, result, events);
             if (committed.position() != candidate.position()) {
                 throw new IOException("候选快照缺少对应的新持久批次");
@@ -5944,12 +6279,180 @@ public final class WorldRuntime implements AutoCloseable {
         for (WorldCommit commit : commits) {
             WorldState snapshot = decodeSnapshot(commit);
             validate(snapshot, commit.position(), previous);
+            validateAudits(commit, snapshot, previous);
             if (previous == null && !expectedInitial.equals(snapshot)) {
                 throw new IOException("开局快照与期望开局状态不一致（必须等于清单绑定的初始资产）");
             }
             previous = snapshot;
         }
         return previous;
+    }
+
+    /**
+     * 恢复期逐批核对审计事件：位置、完整尝试身份、类别、正文摘要与声明必须与同批已确认
+     * 尝试或拒绝归档形成真实关系。合法摘要不能替代语义。
+     *
+     * @param commit   已确认批次
+     * @param snapshot 该批次的状态快照
+     * @throws IOException 审计与已确认状态不一致
+     */
+    private void validateAudits(WorldCommit commit, WorldState snapshot, WorldState previous) throws IOException {
+        for (WorldEvent event : commit.events()) {
+            if (!DECISION_AUDIT_V1.equals(event.type())) {
+                continue;
+            }
+            DecisionAudit audit;
+            try {
+                audit = decisionMapper.readValue(event.payload(), DecisionAudit.class);
+            } catch (IOException | RuntimeException invalid) {
+                throw new IOException("批次 " + commit.position() + " 的审计原文不合法", invalid);
+            }
+            if (audit.position() != commit.position()) {
+                throw new IOException("审计位置与批次不一致：" + audit.position()
+                        + "/" + commit.position());
+            }
+            if (!audit.runId().equals(commit.runId()) || !audit.runId().equals(snapshot.runId())
+                    || !audit.outcome().equals(commit.result())) {
+                throw new IOException("审计运行或结果与批次不一致：" + commit.position());
+            }
+            validateAuditWait(audit.dispatchedAtEpochMillis(), audit.dispatchToRecordMillis());
+            validateAuditWait(audit.receivedAtEpochMillis(), audit.receiveToRecordMillis());
+            if (snapshot.decisions() == null) {
+                throw new IOException("无决定子集的批次出现审计：" + commit.position());
+            }
+            DecisionModel.Attempt attempt = attemptOf(snapshot.decisions().state(),
+                    audit.actionId(), audit.attemptId());
+            if (attempt == null || attempt.attemptNo() != audit.attemptNo()
+                    || attempt.recoveryGeneration() != audit.recoveryGeneration()) {
+                throw new IOException("审计身份无法对应已确认尝试：" + audit.attemptId());
+            }
+            DecisionModel.Attempt prior = previous == null || previous.decisions() == null ? null
+                    : attemptOf(previous.decisions().state(), audit.actionId(), audit.attemptId());
+            if (prior == null) {
+                throw new IOException("审计缺少调用前已确认尝试：" + audit.attemptId());
+            }
+            switch (audit.kind()) {
+                case "REPLY" -> {
+                    if (!audit.outcome().equals("STALE_GENERATION") && prior.settledDone()) {
+                        throw new IOException("已消费尝试不能再次记录首次回执：" + audit.attemptId());
+                    }
+                    validateReplyAudit(audit, attempt, snapshot.decisions(), previous.decisions());
+                }
+                case "FAILURE", "TIMEOUT" -> {
+                    if (prior.settledDone()) {
+                        throw new IOException("已消费尝试不能再次结算无回执失败：" + audit.attemptId());
+                    }
+                    validateNoReceiptAudit(audit, attempt);
+                }
+                case "REJECTED_IDENTITY_REUSE" -> {
+                    if (!prior.settledDone()) {
+                        throw new IOException("复用拒绝缺少此前已结算尝试：" + audit.attemptId());
+                    }
+                    validateRejectedAudit(audit, attempt, commit, snapshot);
+                }
+                default -> throw new IOException("未知审计类别：" + audit.kind());
+            }
+        }
+    }
+
+    /** 已知等待必须非负并有对应打点；负的单调差在写入时已明确转为未知。 */
+    private static void validateAuditWait(Long atEpochMillis, Long waitMillis) throws IOException {
+        if (waitMillis != null && (waitMillis < 0 || atEpochMillis == null)) {
+            throw new IOException("审计等待量缺少对应时点或为负");
+        }
+    }
+
+    /** 回执审计：正常回执以摘要关联原尝试；旧代次以摘要关联同批归档原文。 */
+    private void validateReplyAudit(DecisionAudit audit, DecisionModel.Attempt attempt,
+                                    DecisionRun run, DecisionRun before) throws IOException {
+        if ("STALE_GENERATION".equals(audit.outcome())) {
+            if (!audit.body().isEmpty()) {
+                throw new IOException("旧代次审计不得保存正文：" + audit.attemptId());
+            }
+            boolean archived = false;
+            for (DecisionRun.Archive archive : run.archives()) {
+                if (archive.actionId().equals(audit.actionId())
+                        && archive.attemptId().equals(audit.attemptId())
+                        && archive.attemptNo() == audit.attemptNo()
+                        && archive.generation() == audit.recoveryGeneration()
+                        && sha256Hex(archive.body()).equals(audit.bodySha256())
+                        && Objects.equals(archive.usage(), audit.declaredUsage())
+                        && archive.usageSource().equals(audit.usageSource())) {
+                    if (before.archives().contains(archive)) {
+                        throw new IOException("旧回执归档不能在后续批次重复冒充新增：" + audit.attemptId());
+                    }
+                    archived = true;
+                }
+            }
+            if (!archived) {
+                throw new IOException("旧代次审计缺少对应归档原文：" + audit.attemptId());
+            }
+            return;
+        }
+        if (!attempt.settledDone() || !attempt.replyReceived()) {
+            throw new IOException("回执审计缺少已结算原尝试：" + audit.attemptId());
+        }
+        if (!audit.body().isEmpty()) {
+            throw new IOException("正常回执审计不得重复保存正文：" + audit.attemptId());
+        }
+        if (!sha256Hex(attempt.replyBody()).equals(audit.bodySha256())) {
+            throw new IOException("审计正文摘要与原尝试不一致：" + audit.attemptId());
+        }
+        if (!Objects.equals(audit.declaredUsage(), attempt.declaredUsage())
+                || !audit.usageSource().equals(attempt.usageSource())) {
+            throw new IOException("审计声明用量或来源与原尝试不一致：" + audit.attemptId());
+        }
+    }
+
+    /** 无回执失败或超时：不得出现接收时点或接收等待量。 */
+    private void validateNoReceiptAudit(DecisionAudit audit, DecisionModel.Attempt attempt)
+            throws IOException {
+        if (!attempt.settledDone() || attempt.replyReceived()) {
+            throw new IOException("无回执审计与原尝试不一致：" + audit.attemptId());
+        }
+        if (!audit.body().isEmpty() || !audit.bodySha256().isEmpty()
+                || audit.receivedAtEpochMillis() != null
+                || audit.receiveToRecordMillis() != null) {
+            throw new IOException("无回执审计不得带正文或接收时间：" + audit.attemptId());
+        }
+        if ("FAILURE".equals(audit.kind()) && !audit.outcome().startsWith("TECHNICAL_FAILED:")) {
+            throw new IOException("失败审计结果码不合法：" + audit.outcome());
+        }
+        if ("TIMEOUT".equals(audit.kind()) && !"TIMEOUT".equals(audit.outcome())) {
+            throw new IOException("超时审计结果码不合法：" + audit.outcome());
+        }
+    }
+
+    /** 已消费身份复用：原文摘要必须自洽，且语义上不得与原回执完全相同。 */
+    private void validateRejectedAudit(DecisionAudit audit, DecisionModel.Attempt attempt,
+                                       WorldCommit commit, WorldState snapshot)
+            throws IOException {
+        if (!attempt.settledDone()) {
+            throw new IOException("复用拒绝缺少已结算原尝试：" + audit.attemptId());
+        }
+        if (!sha256Hex(audit.body()).equals(audit.bodySha256())) {
+            throw new IOException("复用拒绝正文摘要不自洽：" + audit.attemptId());
+        }
+        if (!"REJECTED:IDENTITY_REUSE".equals(audit.outcome())) {
+            throw new IOException("复用拒绝结果码不合法：" + audit.outcome());
+        }
+        boolean sameBody = attempt.replyReceived() && attempt.replyBody().equals(audit.body());
+        boolean sameUsage = Objects.equals(attempt.declaredUsage(), audit.declaredUsage());
+        boolean sameSource = attempt.usageSource().equals(audit.usageSource());
+        if (sameBody && sameUsage && sameSource) {
+            throw new IOException("复用拒绝与原回执完全相同，应作为重复回执处理："
+                    + audit.attemptId());
+        }
+        String content = mapper.writeValueAsString(new DecisionModel.Reply(audit.runId(),
+                audit.actionId(), audit.attemptId(), audit.attemptNo(), audit.recoveryGeneration(),
+                audit.body(), audit.declaredUsage(), audit.usageSource()));
+        String rejectId = "dec-reject:" + sha256Hex(content);
+        if (!content.equals(commit.commandContent())
+                || !content.equals(snapshot.commandContents().get(commit.commandId()))
+                || !content.equals(snapshot.commandContents().get(rejectId))
+                || !audit.outcome().equals(snapshot.commandOutcomes().get(rejectId))) {
+            throw new IOException("拒绝审计与完整原回执或宿主请求不一致：" + audit.attemptId());
+        }
     }
 
     private WorldState decodeSnapshot(WorldCommit commit) throws IOException {
