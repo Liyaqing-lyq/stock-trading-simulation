@@ -544,5 +544,5 @@ Root另用B2a冻结类编译实际旧DecisionRun4/Request3/Call8客户端，clas
 
 - [x] schema10严格档案与持久一次派发、完整原命令逐帧审计及失败JSON；26新增/1002标准、40成交126订单7排名、GUI/JavaDoc。
 - [x] Root三JVM28、真旧二进制4/3/8 JSON不变、旧schema9新time8/旧time9续写；真实Hermes独立26动态检查通过，最终Runtime6f3f1aa3…a21e532。证据docs/05§32。
-- [ ] 草稿PR29及实际CI（下一发布）；人工review不由AI代替。
+- [x] 草稿PR29代码f56dea4及实际CI42296162891成功；仍待人工review，AI不代替人工合入。
 - 下一：Web四组只读业务详情私有候选105检查与正式测试集成；[B2c真实Web闭环准备](2026-11-07-live-web-runtime.md)明确固定首次接收、期限竞态和有界轮次，当前未授生产。总体基线继续。

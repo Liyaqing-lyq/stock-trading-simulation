@@ -221,3 +221,5 @@ candidate1恢复marketOf读取未初始化state导致NPE，Root第二JVM与真�
 Root已接回全部主树/Maven。最终candidate3 Runtime6f3f1aa3…a21e532，1002标准/40成交126订单7排名/GUI/JavaDoc通过，Root三JVM28、旧二进制JSONf6f6081b…bc871、真实旧9新time8/旧time9现金4100通过。真实Hermes afc0c5独立87源重编26动态通过，含DTO/安全失败/full taskId改名/纯拒绝批末帧平衡移转。详情docs/05§32。当前发布草稿PR/实际CI待确认，总体仍施工。
 
 B2b作者ed3b0f exec16971现在仅live-web-preparation准备B2c合同，无主树/Maven写权；Web作者d39b13 exec82370仅web-details-preparation/tests私有准备真实详情回归，最终Web5文件105HTTP检查已交；独审89624最终已交并退出。Root不把私有Web候选视为正式交付。B2c草案2026-11-07-live-web-runtime.md已留入口，尚未授权生产；5keys仍仅原51token一次。
+
+B2b代码f56dea4845fbc242ef4bfa2ec18b85b69160001e已建立草稿[PR29](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/29)，base为codex/world-scene-decision-budget；真实[CI42296162891](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42296162891)已completed/success，已附当前会话。1002标准及最终独审26通过，本阶段工程验收完成，等待人工review、不自动合并。下一独立分支集成Web四组只读详情；B2c完成槽仅私有候选准备，不能先称模型已驱动世界。

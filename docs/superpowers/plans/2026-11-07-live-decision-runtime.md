@@ -21,7 +21,7 @@
 - [x] 两个新正式测试类WorldRuntimeLiveDecisionTest、DecisionRunDispatchTest先RED；保留原976测试。必要测试：manifest严格成对/旧档隔离；旧构造及JSON；准确输入冻结/route重放冲突；先持久后返回；同command和同attempt不同command均只授一次；旧入口拒live；未派发回执拒绝；run/scene并发与降cap；全局超额停发；失败不返回Call；重启新attempt须新授权；原dispatch保留；无关批次改决定拒绝；所有转换合法对照和重新签帧篡改拒绝。
 - [x] 最小生产实现、新旧全套绿。真实旧编译4/3/8构造客户端及旧schema9新旧进程交替；三进程真实重启确认旧attempt永不再授权、预算不复原，无网络请求。
 - [x] Root独立边界与真实Hermes冻结源独审；标准verify含GUI/CSV、JavaDoc、评分/接口/证据/总Plan同步。
-- [ ] AI草稿PR、实际CI、人工review待办；随后B2c，完整总体基线继续。
+- [x] AI草稿PR29与实际CI42296162891成功；人工review仍待办，随后B2c，完整总体基线继续。
 
 独审反例必须从合法journal完整复制/重签再改目标字段，同时有原日志可恢复对照；不能因为无关缺字段失败就宣称目标已防护。旧9由实际旧二进制生成，不拿新程序的旧schema选项代替旧程序兼容验证。
 
