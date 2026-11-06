@@ -44,7 +44,7 @@
 - live Runtime构造时自动私有创建Inbox，无公开bind/Claim输入；容量先于dispatch提交检查，持久确认后同writer用同一个DispatchMark open，之后才返回Call。构造及启动不发网络。
 - 任意线程offerLiveDecisionCompletion只向小锁内存槽登记完整身份、不可变Reply及固定failureCode；不读世界、不允许外传到达时间。旧offerDecisionCallback在live委托；旧scripted队列保持。
 - live的drain/expire共享唯一内部pump；及时REPLY、TIMEOUT、LATE分别持久提交后ack，异常retry保留同claim。超时后等待物理HTTP返回的槽仍占容量，不无限启动新请求。
-- 原acceptDecisionReply/failDecisionAttempt在live拒绝LIVE_COMPLETION_REQUIRED，旧1..9仍原签名/原行为/原JSON。此为明确的schema10接线约束升级；B2b live测试须迁移完成登记方式但保留全部原业务/审计/恢复断言，不能把它说成旧测试完全没改。直接接口不能成为期限旁路。
+- 原acceptDecisionReply仅对当前已派发、未结算的新业务回执在live拒绝LIVE_COMPLETION_REQUIRED；未知/未派发/身份不符保持原拒绝，已结算及旧代次保留原审计路径且不能产生业务效果。failDecisionAttempt及offerDecisionFailure在live明确拒绝，必须用规范技术完成。旧1..9仍原签名/原行为/原JSON。此为明确的schema10接线约束升级；B2b live测试须迁移完成登记方式但保留全部原业务/审计/恢复断言，不能把它说成旧测试完全没改。直接接口不能成为期限旁路。
 - 已知usage技术失败规范化emptybody+fixedcode，使用rejectReply；新增明确provider-failure来源事件和规范JSON，在schema10按原命令逐批重算，保留真实声明，不伪造WAIT、不产生业务任务。LATE只审计，不再次消费或下单。
 - begin在本进程仍有槽时拒切代次；轮次开始不重复begin。close释放自身槽。新进程初始槽空，恢复旧代次由已有保守结算完成，不自动网络调用。
 - Nano时钟允许负值和Long回绕，用有界间隔差值比较；16项私有Inbox测试已含4项真实RED→GREEN边界。公开epoch时点和模拟时间不可混用。

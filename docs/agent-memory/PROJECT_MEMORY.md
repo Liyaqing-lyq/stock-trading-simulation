@@ -2,11 +2,11 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 最新接续（2026-11-07 05:42）
+## 最新接续（2026-11-07 06:06）
 
-当前分支codex/world-web-details，base67665d9。B2b PR29两轮CI均成功。Web详情8新增/1010标准、Root105 HTTP、GUI/CSV46成交121订单7排名、JavaDoc05:34:47及真实浏览器完成；独立Hermes82动态通过，交接已完成，PR30与代码CI42299095951成功。唯一当前台账为主Plan“当前接续”，下方历史状态不代表现行写权。
+当前codex/world-live-completion，base ea0ddd3。B2c1完成本地验收：新增49/总1059标准、73专项、32成交118订单7排名CSV、GUI、JavaDoc06:06:23；Root双claim真实RED→GREEN/三JVM15/旧binary与旧9交替，真实Hermes独审26。candidate3 Runtime0bdfebd8…68815只对candidate2移动补齐JavaDoc，可执行文本等价；其余88源相同。正在草稿PR/CI，不自动合并。
 
-Root独占主树/Maven；d3c63e exec59426只独审私有范围，ed3b0f exec90021只B2c Runtime完成槽私有候选。16项Inbox私有测试通过含真实时钟边界失败回归，未集成主树。5key仍仅既有51token一次；Web真实角色调用/认知媒体/多公司银行/长跑均待完成。证据docs/05§33，下一合同docs/superpowers/plans/2026-11-07-live-web-runtime.md。
+Root独占全部主树/Maven，已集成Runtime+Inbox+Provider；ed3b0f Runtime已交并退出、afc0c5独审已交。当前真实Hermes d39b13 exec53092仅live-host-preparation私有Host/Scenario/测试，合同2026-11-07-live-web-host.md。下一步连接Web开始/停止/暂停与实际回环角色请求，不能把组件称Web闭环。五Key仍仅此前51token一次；认知媒体、多公司/银行、图表长跑未完成，继续实施。旧离线审计页用户稍后手验，无绕过。
 
 ## 启动规则
 
