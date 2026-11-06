@@ -20,7 +20,7 @@
 - 首轮精度 1 模拟毫秒，固定四阶段；新消息最早下一时间步。公平顺序来自运行种子并可记录。
 - 用户可见首版须含所启用公司的董事会、独立四岗、遗忘/偏信/习惯和真实图表来源；基础模块通过不代表首版完成。
 - 每阶段：专项测试 + `bash scripts/verify.sh --with-gui` + 评分映射 + 真实记录；代码通过 PR、`[AI-Generated]`、至少一名人工实质 review 后才能合入。
-- 保留启动时所有未提交改动。草稿依赖链 `codex/world-implementation` → `codex/world-securities-ledger` → `codex/world-matching` → `codex/world-exchange` → `codex/world-manufacturing` → `codex/world-governance` → `codex/world-role-information` → `codex/world-role-reading` → `codex/world-role-trading` → `codex/world-role-trading-runtime` → `codex/world-decisions` → 当前 `codex/world-decision-runtime`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
+- 保留启动时所有未提交改动。草稿依赖链 `codex/world-implementation` → `codex/world-securities-ledger` → `codex/world-matching` → `codex/world-exchange` → `codex/world-manufacturing` → `codex/world-governance` → `codex/world-role-information` → `codex/world-role-reading` → `codex/world-role-trading` → `codex/world-role-trading-runtime` → `codex/world-decisions` → `codex/world-decision-runtime` → `codex/world-decision-audit` → `codex/world-dividend-core` → 当前 `codex/world-valuation-performance`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
 
 ## Review Focus
 
@@ -430,3 +430,15 @@ M2.4a 共享纯撮合 → 审查/标准验收 → M2.4b 世界订单接入；制
 D0最终candidate3的真实Hermes独审90/90通过，原4条发现全部修复，76源hash一致。本地验收完成，现发布草稿PR，随后接D1估值/TWR纯核。D0首稿与中间614项结果保留，最终标准为616项。
 
 分红纯核代码d2fb92607b24e5da893f6626bcd3525c52418cc3已建立[草稿PR #19](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/19)，base为codex/world-decision-audit（PR18）。远端verify run42204395506实际completed/success，已附当前会话，待人工实质review。下一阶段D1账户估值与时间加权收益纯核继续施工。
+
+### M3d D1 账户估值与时间加权收益
+
+施工单见[估值与表现Plan](2026-11-06-valuation-performance.md)。父版本D0草稿PR19已通过代码CI。现授真实Hermes aeafaa两个新测试文件及Maven独占，先取得缺API RED，76生产源和旧616项不得改。D1采用同一截止现金/剩余持仓/分红净应收查询、原始价格与缺价状态、明确流前后估值和几何链接表现指数。公司完整NAV、份额申赎、董事会授权及实际派息沿后续施工。Root当前只维护文档和私有证据，测试交回后核对再授生产。
+
+D1测试先行交40项仅缺API RED，Codex核对修正新夹具并增加4项，44新测试与真实底层夹具已核准，76生产源保持。现授同一真实Hermes两新生产文件及两测试/Maven独占，专项目标44、组合至少660。D0最终文档head4e33ce1的verify run42204747497也已实际completed/success，原PR19继续等待人工review。
+
+D1首稿44/660及两变异通过后，Codex独立取得未来Quote/age/开局时点、标识二元键碰撞和缺价已知Flow等实际反例。新增4项正式RED后修复，当前candidate2为48专项/664标准，GUI/CSV53成交140订单7排名、JavaDoc19:07:27、独立33及Decimal复算通过。最终Hermes独审进行中，D2董事会授权只读准备已交，尚未授源码。
+
+D1最终candidate2的真实Hermes独审64/64通过，原2条Important修复，78源hash一致且原76逐字节相同。48专项、664标准、独立33及Decimal、GUI/CSV/JavaDoc均通过，现发布草稿PR。下一D2正式Plan采用Meeting可选元数据并保留State五字段，实际旧二进制golden准备进行，尚未授测试/生产。
+
+估值与表现代码dc90a607bbac4c6a330691f0d35dccc8a861c279已建立[草稿PR #20](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/20)，base为codex/world-dividend-core（PR19）。远端verify run42209352373实际completed/success，已附当前会话，待人工实质review。下一阶段D2董事会分红授权纯核继续施工。
