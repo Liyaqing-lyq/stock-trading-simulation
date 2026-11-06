@@ -14,7 +14,7 @@ WorldRuntime最小增量，新增LiveCompletionInbox、LiveDecisionProvider；�
 - [x] Runtime私有候选定稿、Root核验正式失败测试；补多claim首项保存失败、直接live期限旁路、已结算重复/旧代次审计保留、provider-failure严格逐批恢复。
 - [x] 最小集成并完成专项/旧live测试迁移、全部旧scripted断言不变；真实多进程与旧9/二进制兼容。
 - [x] 冻结源真实Hermes独立审查/Root故障复验；标准verify含GUI/CSV与JavaDoc、评分/接口/证据/总Plan同步。
-- [ ] AI草稿PR与实际CI。
+- [x] AI草稿PR31，代码08298f9、实际CI42302221792 completed/success。
 - [ ] 接续Host Web单线程pump、实际回环网络闭环、开始停止暂停及有界真实角色单次试验（B2c2）；该项不计本B2c1完成。
 
 ## 当前写权及证据
@@ -28,3 +28,5 @@ Root独占主树/Maven。作者ed3b0f exec49155仅live-web-preparation/runtime-c
 最终本地1059标准/73专项、32成交118订单7排名、GUI、JavaDoc06:02:53、Root三JVM15/旧binary/旧9交替及26独审通过；candidate2与主树89源相同。上方完整工程交付复选项中的PR/CI仍待下一步实际结果，不能提前视为远端完成。Host作者d39b13 exec53092只私有live-host-preparation，Root仍独占主树/Maven。
 
 最终candidate3仅修中文JavaDoc归属及scripted队列计数说明，可执行文本与candidate2相同；最终Runtime0bdfebd8…68815，JavaDoc06:06:23。
+
+阶段已交草稿PR31与实际CI，继续B2c2；上文“PR/CI待补”描述为历史施工状态，不是当前状态。

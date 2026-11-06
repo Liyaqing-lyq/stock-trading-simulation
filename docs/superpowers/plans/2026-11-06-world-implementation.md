@@ -57,7 +57,7 @@
 
 - 当前分支 `codex/world-live-completion`，base `ea0ddd3`；Web草稿PR30代码90e726a/文档ea0ddd3，实际CI42299095951/42299422149均成功，1010标准、GUI/CSV/JavaDoc、Root105 HTTP、400/401精确边界及Hermes82独审通过，真实Web浏览器四页/生产/阅读/切身份有截图。
 - [B2c1完成登记](2026-11-07-live-completion.md)本地验收：Inbox16+Provider17+Runtime16新增49，总1059/73专项全绿；32成交118订单7排名、GUI/JavaDoc06:06:23、Root三JVM15与旧binary/旧9续写、真实Hermes26独审通过。多claim故障实际RED1→GREEN2，活动回执限Inbox，原重复/旧代次审计保留。
-- candidate3仅移动补齐Runtime JavaDoc，Runtime hash0bdfebd8…68815，可执行文本与全验candidate2相同；其余88源逐字同。原live20项交付入口迁移/旧任意reason压缩兼容样本保留，旧scripted不改。准备草稿PR与CI。
+- candidate3仅移动补齐Runtime JavaDoc，Runtime hash0bdfebd8…68815，可执行文本与全验candidate2相同；其余88源逐字同。原live20项交付入口迁移/旧任意reason压缩兼容样本保留，旧scripted不改。草稿PR31及实际CI42302221792成功。
 - Root独占主树/Maven；ed3b0f作者与afc0c5独审已交。真实Hermes d39b13 exec53092只私有live-host-preparation实施[Host合同](2026-11-07-live-web-host.md)：有界四岗、显式start/stop、独立writer pump、暂停与故障分开；Root后接Server/UI/App。未把私有代码计Web完成。
 - 五Key仍外置，仅此前key-1一次51token（46输入5输出），费用未知；其余4槽未测，此阶段0新增请求。整体认知媒体、多公司/银行、图表与长跑未完成，继续实施。
 - 原离线审计页由用户稍后手动查看，未绕过限制。PR6–22人工合入累计分支；PR23起仍草稿，Codex不自动合并。

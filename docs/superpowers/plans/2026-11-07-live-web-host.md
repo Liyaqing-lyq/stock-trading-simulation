@@ -20,3 +20,11 @@
 私有目录 logs/implementation-20261106-continued/live-host-preparation/ 内复制Host、Scenario和新WorldWebLiveHostTest；其余89生产源从冻结candidate2编译（覆盖这两文件），不使用主target。Root独占主树/Maven。新增公开API中文JavaDoc。不读真实keys、不供应商网络，仅已有DeepSeekClient包内loopback+dummy、不得Temp。
 
 测试真实回环：启动/保存配置/读取不调用；显式start恰一次/无人刷新也持久；四岗受限input与scene，配置切换后原call冻结；同scene并发1、run2，停止不派未开始，暂停及时结果不超时但迟到不做业务；预算触顶不增加请求；关闭/重开不自动网络、显式start保守结算；传输失败/已知usage/无usage；expectedPosition/revision/invalidperson无副作用；scripted原构造行为。测试前真实RED，再实现GREEN，失败不得放宽断言。交handoff+哈希+真实日志+未覆盖。Root独审后才集成。
+
+## Root Web接线合同
+
+在Host候选核准后，Root修改WorldWebServer/WorldWebApp与web三资源、新HTTP测试。新增管理员GET /api/admin/live与POST /api/admin/live/start|stop|pause|resume，严格字段、Origin/Host/X-World-Request、完整会话鉴权不变；全部变更同writer校验expectedPosition，start另验expectedRevision及1..4明确人物。拒绝不自动重试调用。暂停/恢复需Host同任务位置校验，不能前读后写。
+
+UI新增“模型运行”页，四岗选择、单轮开始/停止/暂停/继续、真实当前状态/物理在途/尚未派发人数、场景累计/预留/上限和最近决定输入输出预览（截断标明）。最多选择四人，每人一次；没有启用对应场景时提示跳过。两秒只读轮询仅当管理员停留该页，切身份清timer/内容且generation挡迟到；服务器推进不依赖轮询。配置页五场景显示只有research/trading已连接，其余配置保留待接，不暗示已运行。完整Key仍显式查看限时清除。
+
+WorldWebApp第四参数live/scripted，默认live；原工作目录不变，live用新world-live.journal，scripted仍world.journal，schema9 open入口不变。启动/读取/保存配置无自动请求。发生WORLD_IO不称可由普通继续解除，UI明确须重启恢复。默认所有场景依旧关闭。
