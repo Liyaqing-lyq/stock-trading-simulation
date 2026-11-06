@@ -28,3 +28,30 @@
 UI新增“模型运行”页，四岗选择、单轮开始/停止/暂停/继续、真实当前状态/物理在途/尚未派发人数、场景累计/预留/上限和最近决定输入输出预览（截断标明）。最多选择四人，每人一次；没有启用对应场景时提示跳过。两秒只读轮询仅当管理员停留该页，切身份清timer/内容且generation挡迟到；服务器推进不依赖轮询。配置页五场景显示只有research/trading已连接，其余配置保留待接，不暗示已运行。完整Key仍显式查看限时清除。
 
 WorldWebApp第四参数live/scripted，默认live；原工作目录不变，live用新world-live.journal，scripted仍world.journal，schema9 open入口不变。启动/读取/保存配置无自动请求。发生WORLD_IO不称可由普通继续解除，UI明确须重启恢复。默认所有场景依旧关闭。
+
+Root补充核准：为Host在open之前区分已超时未物理返回、已登记未归档的占额，允许WorldRuntime新增只读liveCompletionSlots()，不暴露Inbox/Claim、无schema或预算字段变化；Root独占Runtime及计数回归，作者只消费该接口。Host派前同时检查实际worker与完成槽容量，按scene限制物理请求，任何拒绝不能遗留新未派发OPEN屏障。
+
+## 本轮进度与验收
+
+- [x] Root Runtime只读完成槽计数17专项通过；不改变schema或预算。
+- [x] Root 8HTTP独立回归已实际运行；早期诊断快照7过1失败，重启后明确开始409为真实缺陷。两项原journal正文独占锁错误为测试夹具问题，已修且保留日志。
+- [ ] Hermes私有最终Host/Scenario修复并恢复完整重启断言；旧14绿不计最终验收。
+- [ ] 完整候选冻结后Root HTTP、主树正式测试及真实Hermes独审。
+- [ ] Web实际浏览器、verify含GUI/CSV、JavaDoc、文档、秘密扫描与草稿PR/实际CI。
+
+当前作者exec28031、独审准备exec89635；Root独占主树/Maven。UI字段补充LiveStatus.completionSlots、runBudget、personBudgets，每项预算按已耗/预留/上限显示精确字符串。网络占用与结果槽有交集，不能在页面相加。真实keys本轮未调用。
+
+Root最小复用决定：WorldScheduler已有纯函数fairOrder改为public并补中文JavaDoc，算法不变；集成Host时直接调用并删除私有候选复制的SHA算法。当前cognition-preparation只读准备由ed3b0f完成（本轮exec53092已退出），不授下一阶段生产写权。Root HTTP现为10项，另可控Runtime时钟+真实阻塞HTTP容量探针已复现旧Host误开第二决定；补预算原因重启保留验收。
+
+## 06:55 最终候选进度（覆盖上文历史未完成状态）
+
+- [x] Host/Scenario15回归，完整重启实际新HTTP断言；Root已移除作者测试setup重试，原样15通过。
+- [x] Root10 HTTP、可控 Runtime 时钟18检查；早期超时仍物理在途却打开新决定和预算拒绝显示EMPTY均先RED后修复。
+- [x] 主树1085标准、CSV42成交121订单7排名、真实GUI及JavaDoc06:47:24通过。
+- [x] 实际浏览器四岗loopback调用、冻结配置/预算/输入输出、重启无自动请求及身份切换清空。
+- [ ] 最终真实Hermes独审与UI增量复核。
+- [ ] 文档/秘密扫描/草稿PR及实际CI。
+
+candidate3全部89 Java与candidate2相同，只有页面截止及导航保护的JS增量；日志详见live-web-root。真实Key0新增请求。AccessDenied诊断只确认Windows文件替换异常，未确证扫描器或持有句柄进程，生产SceneRoutes未改。
+
+最终收口：candidate2独审74动态通过；candidate3全部89Java相同，最终JS增量静态复核无发现（exec62389完成）。Root追加9真实IO+6executor拒绝通过，最终浏览器cut17→18同步已验。代码与文档进入草稿PR，远端CI结果随后记录，人工review尚未完成。

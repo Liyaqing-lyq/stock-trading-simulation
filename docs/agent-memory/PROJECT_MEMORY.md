@@ -2,11 +2,13 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 最新接续（2026-11-07 06:06）
+## 最新接续（2026-11-07 B2c2 Web施工）
 
-当前codex/world-live-completion，base ea0ddd3。B2c1完成本地验收：新增49/总1059标准、73专项、32成交118订单7排名CSV、GUI、JavaDoc06:06:23；Root双claim真实RED→GREEN/三JVM15/旧binary与旧9交替，真实Hermes独审26。candidate3 Runtime0bdfebd8…68815只对candidate2移动补齐JavaDoc，可执行文本等价；其余88源相同。草稿PR31/代码08298f9/实际CI42302221792 success，待人工review，不自动合并。
+当前codex/world-live-web，base3b468ffb48a1faf1d65409af63c9cae403fc5abf。B2c1草稿PR31代码08298f9与文档3b468ff，两轮CI42302221792/42302662795 success；1059标准与73专项、GUI/CSV、JavaDoc、三JVM/旧binary/独审证据见docs/05§34。总体基线未完成。
 
-Root独占全部主树/Maven，已集成Runtime+Inbox+Provider；ed3b0f Runtime已交并退出、afc0c5独审已交。当前真实Hermes d39b13 exec53092仅live-host-preparation私有Host/Scenario/测试，合同2026-11-07-live-web-host.md。下一步连接Web开始/停止/暂停与实际回环角色请求，不能把组件称Web闭环。五Key仍仅此前51token一次；认知媒体、多公司/银行、图表长跑未完成，继续实施。旧离线审计页用户稍后手验，无绕过。
+Root独占主树/Maven，主树生产仍B2c1。Host作者真实Hermes d39b13 exec53092只live-host-preparation私有Host/Scenario/测试，11私有初绿但尚未接回。Root在live-web-root私有准备Server/App/UI及7HTTP测试：旧Server缺新API实际7/7 RED；第一轮login地址错误已修，第二轮才是正确接口RED。Root已写host-review-before-integration.md，重点拒绝削弱原restart显式start测试，补物理在途/完成槽/逻辑数量分开、暂停原子位置校验、typed冲突、准确失败码/预算视图。候选仍有已知静态风险，不能计完成。
+
+独审d3c63e exec89635仅live-web-independent准备，禁止把未冻结候选当最终结论；等Root明确冻结再动态审查。原Runtime作者ed3b0f/独审afc0c5已结束。后续合同docs/superpowers/plans/2026-11-07-live-web-host.md（含Root Web接线）。五Key真实调用仍只有此前51token一次，这轮0新增供应商请求。旧离线审计页用户稍后手验，无绕过。
 
 ## 启动规则
 
@@ -231,3 +233,26 @@ B2b作者ed3b0f exec16971现在仅live-web-preparation准备B2c合同，无主�
 B2b代码f56dea4845fbc242ef4bfa2ec18b85b69160001e已建立草稿[PR29](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/29)，base为codex/world-scene-decision-budget；真实[CI42296162891](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42296162891)已completed/success，已附当前会话。1002标准及最终独审26通过，本阶段工程验收完成，等待人工review、不自动合并。下一独立分支集成Web四组只读详情；B2c完成槽仅私有候选准备，不能先称模型已驱动世界。
 
 Web详情代码90e726a70c7d53b16cc255e6b897e56f1ca0ac81已建立草稿[PR30](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/30)，base为codex/world-live-decision-runtime，已附会话。实际[CI42299095951](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42299095951)已completed/success。1010标准、Root105 HTTP及准确400/401、真实浏览器与独审82通过。本阶段工程验收完成，待至少一名人工review，不自动合并。
+
+
+### B2c2当前接续：真实Web恢复缺陷
+
+当前codex/world-live-web base3b468ff；PR31代码/文档实际CI42302221792/42302662795均success。Root拥有全部主树/Maven。Runtime新增只读liveCompletionSlots，SHA74d7f024…e299b，17专项通过，含超时后槽保留到晚到ack的真实断言，无schema变化。
+
+Host作者d39b13原exec53092退出；14项私有测试曾删弱restart实际请求，Root拒收。续exec28031仅live-host-preparation/final修复重启接续、物理/完成槽/逻辑容量、同writer位置校验、公平顺序及真实预算状态。Root私有Server/App/UI+8HTTP：integration-0只补早期Host typed接口来连接HTTP，修正Windows独占journal正文读取夹具后7过1失败，真实restart显式start409应200；不是可发布候选。新版UI已准备run/person/scene预算与completionSlots，等待最终合同。
+
+真实独审d3c63e exec89635仅live-web-independent准备，未对完整冻结验收。Root还需接回最终候选、8HTTP/正式全套/浏览器/独审/PR。五Key仍仅原key-1一次51token，本轮0新增提供方调用。总体基线未完成，不能以B2c2代替认知媒体/多公司银行/完整图表与长跑。
+
+### B2c2 06:55 接续
+
+- 当前分支 `codex/world-live-web`，base `3b468ff`。PR31 代码/文档 CI42302221792/42302662795均success；Root独占主树/Maven。
+- B2c2 最终冻结 `live-web-candidate-3`：89 Java 与 candidate2逐字相同；增加当前页截止/导航迟到响应保护的 app.js。Root10 HTTP、15 Host、18物理容量检查及1085标准全过；42成交121订单7排名CSV、GUI、JavaDoc06:47:24通过。真实浏览器完成四岗一轮/预算/输入输出、重启零自动调用、切个人清空管理员数据，证据 `live-web-root/browser-acceptance.md`。
+- 真实 Hermes d3c63e exec94023 正独审 candidate2；独审首轮恢复场景未通过，正在定位夹具与生产原因，未计独审通过。最终 UI 增量待复核；文档、秘密扫描、草稿PR/实际CI随后。
+- Host按同writer位置/配置版本校验；默认live新world-live.journal，旧scripted保持world.journal。启动/读页/保存配置不调用；单轮最多四岗各一次，仅research/trading接执行器。超时仍占实际请求与完成槽，不能靠逻辑预算释放挤入新请求。
+- 五Key仍仅此前key-1一次51token，费用未知，其余4槽未测；本阶段0新增供应商调用。认知/媒体、多公司银行、完整图表/长跑继续施工。原离线审计页用户稍后手验，不自动合并。
+
+### B2c2 最终复核与M4f私有准备（06:58）
+
+Root独占主树/Maven；B2c2 candidate3 Java同candidate2。1085标准/10HTTP/15Host/18容量/9IO/6executor均实际通过，CSV42/121/7、GUI、JavaDoc06:47:24和真实浏览器已过。独审d3c63e最终74动态通过，exec62389已完成candidate3的JS增量复核，无发现；此前exec94023已退出。待发布草稿PR/CI，不自动合并。
+
+ed3b0f纯回忆初稿10私有通过，Root查出重读后仍按首次Observation衰减的语义缺口；exec61639仅cognition-recall-author修复并测试。新Plan明确lastReadId/lastReadAt来自实际已完成ClosedReading，未来/取消/拒绝不能刷新；不改原InformationModel或Runtime，不把纯核视为世界已启用认知。真实Keys仍原一次51token，未新增供应商请求。

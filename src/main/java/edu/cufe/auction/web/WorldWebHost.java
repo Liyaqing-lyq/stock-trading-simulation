@@ -2,8 +2,10 @@ package edu.cufe.auction.web;
 
 import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.BoardRun;
+import edu.cufe.auction.world.DecisionModel;
 import edu.cufe.auction.world.DecisionRun;
 import edu.cufe.auction.world.DividendModel;
+import edu.cufe.auction.world.LiveCompletionInbox;
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.InformationRun;
 import edu.cufe.auction.world.ManufacturingModel;
@@ -17,17 +19,25 @@ import edu.cufe.auction.world.RoleView;
 import edu.cufe.auction.world.ValuationModel;
 import edu.cufe.auction.world.WorldExchange;
 import edu.cufe.auction.world.WorldRuntime;
+import edu.cufe.auction.world.WorldScheduler;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -139,6 +149,26 @@ public final class WorldWebHost implements AutoCloseable {
     private volatile boolean closed;
     private volatile WorldRuntime runtime;
 
+    /** 场景路由；只有 live Host 组合才非空。 */
+    private final SceneRoutes routes;
+    /** 提供方适配器；只有 live Host 组合才非空。 */
+    private final LiveDecisionProvider provider;
+    /** 有界 worker 池；非 live 组合为 null，不创建任何线程。 */
+    private final ExecutorService workers;
+    /** 物理在途：只在 worker 真正持有该次调用时占位；value 为场景标识，用于同场景物理并发。 */
+    private final Map<LiveCompletionInbox.AttemptKey, String> physicalInFlight =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** 当前轮次（writer 私有状态）。 */
+    private LiveRound liveRound;
+    /** Host 级暂停标记；与 Runtime 自身的故障暂停分开。 */
+    private boolean livePaused;
+    /** Host 级持久故障：只由 IO 失败置位，resume 不能清除。 */
+    private String liveFault;
+    /** 本进程是否已显式接续过决定会话。 */
+    private boolean sessionBegun;
+    /** 上一轮结束时的跳过原因（有界，保留给状态页）。 */
+    private List<SkipReason> lastSkips = List.of();
+
     /**
      * 启动 writer 线程并在其中创建运行。
      *
@@ -147,10 +177,33 @@ public final class WorldWebHost implements AutoCloseable {
      * @param supplier 可信工厂
      */
     public WorldWebHost(IOSupplier supplier) {
+        this(supplier, null, null);
+    }
+
+    /**
+     * live 生产构造：只有「场景路由 + 提供方 + live Runtime」三者同时成立才创建执行器；
+     * 构造本身不接续会话、不发网络请求。
+     *
+     * @param supplier 可信工厂（返回 live schema10 Runtime）
+     * @param routes   本 Host 独占的场景路由存储；非 live 传 null
+     * @param provider 同步提供方适配器；非 live 传 null
+     */
+    public WorldWebHost(IOSupplier supplier, SceneRoutes routes, LiveDecisionProvider provider) {
         if (supplier == null) {
             throw new IllegalArgumentException("宿主参数不合法");
         }
+        if ((routes == null) != (provider == null)) {
+            throw new IllegalArgumentException("场景路由与提供方必须同时提供");
+        }
         this.supplier = supplier;
+        this.routes = routes;
+        this.provider = provider;
+        this.workers = provider == null ? null : new ThreadPoolExecutor(2, 2, 0L,
+                TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(2), runnable -> {
+            Thread thread = new Thread(runnable, "world-web-live-worker");
+            thread.setDaemon(true);
+            return thread;
+        }, new ThreadPoolExecutor.AbortPolicy());
         this.writer = new Thread(this::loop, "world-web-writer");
         this.writer.setDaemon(true);
         this.writer.start();
@@ -1413,6 +1466,9 @@ public final class WorldWebHost implements AutoCloseable {
             if (position != expectedPosition) {
                 throw new PositionMismatch(position);
             }
+            if (livePaused) {
+                throw new IllegalStateException("Host 已暂停，不能推进世界");
+            }
             current.advanceTo(targetMillis);
             return current.snapshot().position();
         });
@@ -1452,6 +1508,9 @@ public final class WorldWebHost implements AutoCloseable {
                     queue.offer(POISON);
                 }
             }
+        }
+        if (workers != null) {
+            workers.shutdownNow();
         }
         if (self) {
             return;
@@ -1493,11 +1552,16 @@ public final class WorldWebHost implements AutoCloseable {
             runtime = created;
             ready.complete(created);
             while (true) {
-                Task<?> task = queue.take();
+                Task<?> task = queue.poll(POLL_MILLIS, TimeUnit.MILLISECONDS);
                 if (task == POISON) {
                     break;
                 }
+                if (task == null) {
+                    safePump();
+                    continue;
+                }
                 complete(task);
+                safePump();
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
@@ -1541,5 +1605,620 @@ public final class WorldWebHost implements AutoCloseable {
                 pending.future().completeExceptionally(fatal);
             }
         }
+    }
+
+    // ================================================================ live 角色轮次
+
+    /** writer 空闲轮询间隔：唯一 pump 的真实触发节奏。 */
+    private static final long POLL_MILLIS = 250L;
+
+    /** 预览上限：准确输入与回执各最多 4000 字符。 */
+    private static final int PREVIEW_LIMIT = 4_000;
+
+    /** 允许发起角色的四岗（固定公平顺序）。 */
+    public static final List<String> LIVE_ROLE_PERSONS =
+            List.of("alice", "bob", "carol", "dave");
+
+    /** 单场景累计视图；数字均为精确字符串，来源 DecisionModel。 */
+    public record SceneState(String sceneId, String slotId, String model, String revision,
+                             boolean enabled, String usedCalls, String reservedCalls,
+                             String capCalls, String usedInputTokens, String reservedInputTokens,
+                             String usedOutputTokens, String reservedOutputTokens,
+                             String capTotalTokens) {
+    }
+
+    /** 本轮被跳过的人物与固定原因。 */
+    public record SkipReason(String personPartyId, String reason) {
+    }
+
+    /** 预算视图：已结算 + 未结算预留，与冻结上限分开；全部精确字符串。 */
+    public record BudgetUsage(String usedCalls, String reservedCalls, String capCalls,
+                              String usedInputTokens, String reservedInputTokens,
+                              String capInputTokens, String usedOutputTokens,
+                              String reservedOutputTokens, String capOutputTokens) {
+    }
+
+    /** 单人预算视图。 */
+    public record PersonBudget(String personPartyId, BudgetUsage budget) {
+    }
+
+    /** 最近一次决定/尝试的只读视图；未知值保持 null。 */
+    public record DecisionView(String personPartyId, String actionId, String status, String outcome,
+                               String sceneId, String slotId, String model, String revision,
+                               String declaredInputTokens, String declaredOutputTokens,
+                               String costStatus, String reason, String inputPreview,
+                               String inputLength, boolean inputTruncated, String replyPreview,
+                               String replyLength, boolean replyTruncated) {
+    }
+
+    /**
+     * live 运行状态（同 writer 采样、同一确认截止）。
+     *
+     * @param runId           运行标识
+     * @param position        已确认位置（精确字符串）
+     * @param timeMillis      世界时点（精确字符串）
+     * @param phase           SCRIPTED / IDLE / RUNNING / STOPPING / PAUSED / FAULT
+     * @param paused          是否 Host 暂停
+     * @param fault           持久故障原因；无故障为 null
+     * @param pendingPersons  本轮尚未派发的人物
+     * @param physicalInFlight 物理 HTTP 仍在执行的调用数（worker 持有）
+     * @param completionSlots  Runtime 完成槽占用数（含超时未返回、已登记未归档）
+     * @param runBudget       运行累计预算
+     * @param personBudgets   四岗逐人预算
+     * @param scenes          五场景累计用量与上限
+     * @param skips           本轮跳过原因
+     * @param decisions       最近最多 10 条决定
+     */
+    public record LiveStatus(String runId, String position, String timeMillis, String phase,
+                             boolean paused, String fault, List<String> pendingPersons,
+                             int physicalInFlight, int completionSlots, BudgetUsage runBudget,
+                             List<PersonBudget> personBudgets, List<SceneState> scenes,
+                             List<SkipReason> skips, List<DecisionView> decisions) {
+    }
+
+    /** 一轮的 writer 私有状态。 */
+    private static final class LiveRound {
+        private final String roundId;
+        private final LinkedHashSet<String> pending;
+        private final Map<String, String> skipped = new LinkedHashMap<>();
+        private boolean stopping;
+
+        private LiveRound(String roundId, List<String> persons) {
+            this.roundId = roundId;
+            this.pending = new LinkedHashSet<>(persons);
+        }
+    }
+
+    /**
+     * 显式开始一次有界角色轮次；这是本进程唯一的模型调用入口。
+     *
+     * @param expectedPosition 调用方看到的世界位置
+     * @param expectedRevision 调用方看到的场景配置修订
+     * @param persons          1..4 个不同四岗人物
+     * @throws BusyException            队列满
+     * @throws IllegalArgumentException 位置/修订/人物非法（无副作用）
+     * @throws IllegalStateException    Host 未接线 live、暂停、故障、已有轮次或有屏障
+     * @throws Exception                世界读写失败
+     */
+    public void startLiveRound(long expectedPosition, long expectedRevision, List<String> persons)
+            throws BusyException, Exception {
+        call(() -> {
+            startLiveRoundOnWriter(expectedPosition, expectedRevision, persons);
+            return null;
+        });
+    }
+
+    /**
+     * 停止当前轮次：清空未开始名单，已在途继续结算；不宣称提供方未收费。
+     *
+     * @param expectedPosition 调用方看到的世界位置
+     * @throws BusyException            队列满
+     * @throws IllegalArgumentException 位置不一致
+     * @throws Exception                世界读写失败
+     */
+    public void stopLiveRound(long expectedPosition) throws BusyException, Exception {
+        call(() -> {
+            WorldRuntime current = readyNow();
+            if (current.snapshot().position() != expectedPosition) {
+                throw new PositionMismatch(current.snapshot().position());
+            }
+            if (liveRound != null) {
+                liveRound.stopping = true;
+                liveRound.pending.clear();
+            }
+            return null;
+        });
+    }
+
+    /**
+     * 暂停本轮调度：阻止推进、新派发与 pump；worker 仍只登记完成。
+     *
+     * @param expectedPosition 调用方看到的世界位置，必须在同一 writer 任务内匹配
+     * @throws BusyException   队列满
+     * @throws PositionMismatch 位置已变化（无副作用）
+     * @throws Exception       读取失败
+     */
+    public void pauseLive(long expectedPosition) throws BusyException, Exception {
+        call(() -> {
+            WorldRuntime current = readyNow();
+            if (current.snapshot().position() != expectedPosition) {
+                throw new PositionMismatch(current.snapshot().position());
+            }
+            livePaused = true;
+            return null;
+        });
+    }
+
+    /**
+     * 解除 Host 暂停；不解除 Runtime 自身的故障暂停，也不清除持久故障。
+     *
+     * @param expectedPosition 调用方看到的世界位置，必须在同一 writer 任务内匹配
+     * @throws BusyException   队列满
+     * @throws PositionMismatch 位置已变化（无副作用）
+     * @throws IllegalStateException 持久故障尚未通过重启解除
+     * @throws Exception       读取失败
+     */
+    public void resumeLive(long expectedPosition) throws BusyException, Exception {
+        call(() -> {
+            WorldRuntime current = readyNow();
+            if (current.snapshot().position() != expectedPosition) {
+                throw new PositionMismatch(current.snapshot().position());
+            }
+            if (liveFault != null) {
+                throw new IllegalStateException("live 故障需要重启，不能靠恢复解除");
+            }
+            livePaused = false;
+            safePump();
+            return null;
+        });
+    }
+
+    /**
+     * 保存场景配置：只针对本 Host 持有的 {@link SceneRoutes}，修订检查先于任何轮次副作用。
+     *
+     * @param expectedRevision 调用方看到的修订号
+     * @param updated          五条完整路由
+     * @throws BusyException   队列满
+     * @throws IllegalArgumentException 路由不合法
+     * @throws Exception       写入失败或修订不一致（由 SceneRoutes 抛出）
+     */
+    public void replaceRoutes(long expectedRevision, List<SceneRoutes.Route> updated)
+            throws BusyException, Exception {
+        call(() -> {
+            if (routes == null) {
+                throw new IllegalStateException("当前 Host 不持有场景配置");
+            }
+            routes.replace(expectedRevision, updated);
+            return null;
+        });
+    }
+
+    /**
+     * 读取 live 状态。
+     *
+     * @return 同 writer、同一确认截止的状态
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public LiveStatus liveStatus() throws BusyException, Exception {
+        return call(this::buildLiveStatus);
+    }
+
+    // ---------------------------------------------------------------- writer 内部
+
+    private void startLiveRoundOnWriter(long expectedPosition, long expectedRevision,
+                                        List<String> persons)
+            throws IOException, PositionMismatch, SceneRoutes.RevisionMismatch {
+        WorldRuntime current = readyNow();
+        if (workers == null || !liveRuntime()) {
+            throw new IllegalStateException("当前 Host 未接线 live 场景");
+        }
+        if (liveFault != null) {
+            throw new IllegalStateException("live 故障需要重启");
+        }
+        if (livePaused) {
+            throw new IllegalStateException("Host 已暂停，先恢复再开始");
+        }
+        if (current.isPaused()) {
+            throw new IllegalStateException("世界已因故障暂停，需要重启");
+        }
+        if (current.snapshot().position() != expectedPosition) {
+            throw new PositionMismatch(current.snapshot().position());
+        }
+        long revision = routes.view().revision();
+        if (revision != expectedRevision) {
+            throw new SceneRoutes.RevisionMismatch(revision);
+        }
+        if (persons == null || persons.isEmpty() || persons.size() > LIVE_ROLE_PERSONS.size()) {
+            throw new IllegalArgumentException("本轮人数必须在 1..4");
+        }
+        Set<String> distinct = new LinkedHashSet<>(persons);
+        if (distinct.size() != persons.size() || !LIVE_ROLE_PERSONS.containsAll(distinct)) {
+            throw new IllegalArgumentException("人物必须是四岗中的不同人物");
+        }
+        if (liveRound != null && (!liveRound.pending.isEmpty()
+                || !physicalInFlight.isEmpty())) {
+            throw new IllegalStateException("已有活动轮次或未结算调用");
+        }
+        String roundId = "live:" + expectedPosition + ":" + expectedRevision;
+        lastSkips = List.of();
+        // 先接续旧代次（保守结算），再检查剩余业务屏障与残留工作：
+        // 新进程的旧未结算决定不得永久挡住显式接续。
+        if (!sessionBegun) {
+            current.beginDecisionSession("session:" + roundId);
+            sessionBegun = true;
+        }
+        if (hasUnsettledWork()) {
+            throw new IllegalStateException("仍有未结算调用，先等待结算");
+        }
+        if (current.pendingBarrier().isPresent()) {
+            throw new IllegalStateException("仍有未解决屏障");
+        }
+        liveRound = new LiveRound(roundId,
+                fairOrder(current.snapshot().decisions().orElseThrow().state().seed(), persons));
+        pumpLive();
+    }
+
+    /** 按冻结种子与人物标识的稳定公平顺序排列本轮人物，不采用客户端数组顺序。 */
+    private static List<String> fairOrder(long seed, List<String> persons) {
+        List<String> ordered = new ArrayList<>(persons);
+        ordered.sort(Comparator
+                .comparing((String person) -> WorldScheduler.fairOrder(seed, person))
+                .thenComparing(Comparator.naturalOrder()));
+        return List.copyOf(ordered);
+    }
+
+    /** 是否有任何未结算工作：物理请求、完成槽、逻辑未结算或未派完名单。 */
+    private boolean hasUnsettledWork() {
+        if (!physicalInFlight.isEmpty()) {
+            return true;
+        }
+        if (runtime != null && runtime.liveCompletionSlots() > 0) {
+            return true;
+        }
+        if (unsettledCount() > 0) {
+            return true;
+        }
+        return liveRound != null && (!liveRound.pending.isEmpty() || liveRound.stopping);
+    }
+
+    /** writer 线程唯一的结算与派发入口；异常转为持久故障。 */
+    private void safePump() {
+        if (workers == null || runtime == null) {
+            return;
+        }
+        try {
+            pumpLive();
+        } catch (IOException io) {
+            liveFault = "IO_FAILURE";
+        } catch (RuntimeException unexpected) {
+            liveFault = "INTERNAL_FAILURE";
+        }
+    }
+
+    private void pumpLive() throws IOException {
+        WorldRuntime current = readyNow();
+        if (closed || workers == null || !liveRuntime() || livePaused || liveFault != null
+                || current.isPaused()) {
+            return;
+        }
+        if (!sessionBegun) {
+            return;
+        }
+        current.drainDecisionCallbacks();
+        current.expireDecisionTimeouts();
+        LiveRound round = liveRound;
+        if (round == null) {
+            return;
+        }
+        if (round.pending.isEmpty() && physicalInFlight.isEmpty()
+                && current.liveCompletionSlots() == 0 && unsettledCount() == 0) {
+            lastSkips = collectSkips(round);
+            liveRound = null;
+            return;
+        }
+        int capacity = current.snapshot().decisions().isPresent()
+                ? decisionConfigOf(current).limits().maxInFlight() : 0;
+        if (capacity < 1) {
+            return;
+        }
+        SceneRoutes.Snapshot snapshot = routes.view();
+        Iterator<String> iterator = round.pending.iterator();
+        while (iterator.hasNext()) {
+            if (physicalInFlight.size() >= capacity
+                    || current.liveCompletionSlots() >= capacity
+                    || unsettledCount() >= capacity) {
+                break;
+            }
+            String person = iterator.next();
+            String scene = sceneFor(person);
+            SceneRoutes.Route route = routeOf(snapshot, scene);
+            if (route == null || !route.enabled()) {
+                round.skipped.put(person, "SCENE_DISABLED");
+                iterator.remove();
+                continue;
+            }
+            if (scenePhysical(scene) >= route.maxConcurrency()) {
+                continue;
+            }
+            String actionId = round.roundId + ":act:" + person;
+            String commandId = round.roundId + ":open:" + person;
+            DecisionRun.Call call;
+            String openResult;
+            try {
+                openResult = current.openDecisions(commandId,
+                        List.of(new DecisionRun.Request(person, actionId, "wake",
+                                decisionRoute(route, snapshot.revision()))));
+            } catch (IllegalArgumentException | IllegalStateException rejected) {
+                // 状态/资格前置拒绝：不留下任何已开未派决定，也不重试。
+                round.skipped.put(person, "OPEN_REJECTED");
+                iterator.remove();
+                continue;
+            }
+            DecisionModel.Decision opened = DecisionModel.decision(
+                    current.snapshot().decisions().orElseThrow().state(), actionId).orElseThrow();
+            if (opened.status() != DecisionModel.Status.OPEN) {
+                // 预算拒绝已经是持久终态；直接展示原结果，不再派发成 EMPTY。
+                round.skipped.put(person, opened.outcome().name());
+                iterator.remove();
+                continue;
+            }
+            try {
+                WorldRuntime.DispatchResult dispatch =
+                        current.dispatchLiveDecision(commandId, actionId);
+                if (!"DISPATCHED".equals(dispatch.verdict()) || dispatch.call() == null) {
+                    String reason = dispatch.reason() == null || dispatch.reason().isBlank()
+                            ? dispatch.verdict()
+                            : dispatch.verdict() + ":" + dispatch.reason();
+                    round.skipped.put(person, reason);
+                    iterator.remove();
+                    continue;
+                }
+                call = dispatch.call();
+            } catch (IllegalArgumentException | IllegalStateException rejected) {
+                round.skipped.put(person, openResult);
+                iterator.remove();
+                continue;
+            }
+            iterator.remove();
+            submitCall(call, decisionConfigOf(current).limits().wallTimeoutMillis());
+        }
+    }
+
+    private void submitCall(DecisionRun.Call call, long timeoutMillis) {
+        String scene = call.plan() == null ? "unknown" : call.plan().route().sceneId();
+        LiveCompletionInbox.AttemptKey key = LiveCompletionInbox.AttemptKey.of(call);
+        physicalInFlight.put(key, scene);
+        try {
+            workers.execute(() -> {
+                try {
+                    LiveCompletionInbox.Completion completion =
+                            provider.evaluate(call, timeoutMillis);
+                    runtime.offerLiveDecisionCompletion(completion);
+                } catch (RuntimeException local) {
+                    runtime.offerLiveDecisionCompletion(localFailure(call,
+                            "LOCAL_PROVIDER_ERROR"));
+                } finally {
+                    physicalInFlight.remove(key);
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            physicalInFlight.remove(key);
+            runtime.offerLiveDecisionCompletion(localFailure(call, "LOCAL_EXECUTOR_REJECTED"));
+        }
+    }
+
+    /** 固定形状的本地技术失败：身份取 Call，正文为空，usage 未知。 */
+    private static LiveCompletionInbox.Completion localFailure(DecisionRun.Call call,
+                                                              String code) {
+        return LiveCompletionInbox.Completion.failure(code, new DecisionModel.Reply(
+                call.runId(), call.actionId(), call.attemptId(), call.attemptNo(),
+                call.recoveryGeneration(), "", null, "LOCAL_HOST"));
+    }
+
+    private boolean liveRuntime() {
+        if (runtime == null) {
+            return false;
+        }
+        WorldRuntime.Snapshot snapshot = runtime.snapshot();
+        return snapshot.decisions().isPresent() && snapshot.decisions().get().state().config().live();
+    }
+
+    private DecisionModel.Config decisionConfigOf(WorldRuntime current) {
+        return current.snapshot().decisions().orElseThrow().state().config();
+    }
+
+    private int unsettledCount() {
+        WorldRuntime current = runtime;
+        if (current == null) {
+            return 0;
+        }
+        WorldRuntime.Snapshot snapshot = current.snapshot();
+        if (snapshot.decisions().isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (DecisionModel.Decision decision : snapshot.decisions().get().state().decisions()) {
+            for (DecisionModel.Attempt attempt : decision.attempts()) {
+                if (!attempt.settledDone()) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    private static String sceneFor(String person) {
+        return "alice".equals(person) ? "research" : "trading";
+    }
+
+    private static SceneRoutes.Route routeOf(SceneRoutes.Snapshot snapshot, String sceneId) {
+        for (SceneRoutes.Route route : snapshot.routes()) {
+            if (route.scene().id().equals(sceneId)) {
+                return route;
+            }
+        }
+        return null;
+    }
+
+    private static DecisionModel.Route decisionRoute(SceneRoutes.Route route, long revision) {
+        return new DecisionModel.Route(route.scene().id(), route.slotId(), route.model(),
+                revision, route.maxCalls(), route.maxTotalTokens(), route.maxOutputTokens(),
+                route.maxConcurrency());
+    }
+
+    private LiveStatus buildLiveStatus() {
+        WorldRuntime current = readyNow();
+        WorldRuntime.Snapshot snapshot = current.snapshot();
+        boolean live = workers != null && liveRuntime();
+        String phase;
+        if (!live) {
+            phase = "SCRIPTED";
+        } else if (liveFault != null || current.isPaused()) {
+            phase = "FAULT";
+        } else if (livePaused) {
+            phase = "PAUSED";
+        } else if (liveRound != null && liveRound.stopping) {
+            phase = "STOPPING";
+        } else if (liveRound != null) {
+            phase = "RUNNING";
+        } else {
+            phase = "IDLE";
+        }
+        List<String> pending = liveRound == null ? List.of()
+                : List.copyOf(liveRound.pending);
+        List<SkipReason> skips = liveRound != null ? collectSkips(liveRound) : lastSkips;
+        List<SceneState> scenes = new ArrayList<>();
+        if (snapshot.decisions().isPresent() && routes != null) {
+            SceneRoutes.Snapshot view = routes.view();
+            DecisionModel.State model = snapshot.decisions().get().state();
+            for (SceneRoutes.Route route : view.routes()) {
+                DecisionModel.Usage used = DecisionModel.sceneUsage(model, route.scene().id());
+                DecisionModel.Usage reserved =
+                        DecisionModel.sceneReserved(model, route.scene().id());
+                scenes.add(new SceneState(route.scene().id(), route.slotId(), route.model(),
+                        Long.toString(view.revision()), route.enabled(),
+                        Long.toString(used.attempts()), Long.toString(reserved.attempts()),
+                        Integer.toString(route.maxCalls()), Long.toString(used.inputTokens()),
+                        Long.toString(reserved.inputTokens()), Long.toString(used.outputTokens()),
+                        Long.toString(reserved.outputTokens()),
+                        Integer.toString(route.maxTotalTokens())));
+            }
+        }
+        List<DecisionView> decisions = new ArrayList<>();
+        BudgetUsage runBudget = null;
+        List<PersonBudget> personBudgets = List.of();
+        if (snapshot.decisions().isPresent()) {
+            DecisionModel.State model = snapshot.decisions().get().state();
+            Map<String, String> failureOutcomes = new java.util.HashMap<>();
+            for (WorldRuntime.DecisionAudit audit : current.decisionAudits()) {
+                if (audit.outcome().startsWith("TECHNICAL_FAILED:")) {
+                    failureOutcomes.put(audit.attemptId(), audit.outcome());
+                }
+            }
+            DecisionModel.Usage runReserved = DecisionModel.Usage.zero();
+            Map<String, DecisionModel.Usage> personReserved = new java.util.TreeMap<>();
+            for (DecisionModel.Decision decision : model.decisions()) {
+                for (DecisionModel.Attempt attempt : decision.attempts()) {
+                    if (attempt.settledDone()) {
+                        continue;
+                    }
+                    runReserved = runReserved.plus(attempt.reserved());
+                    personReserved.merge(decision.personPartyId(), attempt.reserved(),
+                            DecisionModel.Usage::plus);
+                }
+            }
+            runBudget = budgetUsage(model.runUsage(), runReserved,
+                    model.config().budget().runCap());
+            List<PersonBudget> budgets = new ArrayList<>();
+            for (String person : LIVE_ROLE_PERSONS) {
+                DecisionModel.Usage used = model.personUsage().getOrDefault(person,
+                        DecisionModel.Usage.zero());
+                DecisionModel.Usage cap = model.config().budget().personCap().getOrDefault(person,
+                        DecisionModel.Usage.zero());
+                budgets.add(new PersonBudget(person, budgetUsage(used,
+                        personReserved.getOrDefault(person, DecisionModel.Usage.zero()), cap)));
+            }
+            personBudgets = List.copyOf(budgets);
+            List<DecisionModel.Decision> all =
+                    snapshot.decisions().get().state().decisions();
+            int from = Math.max(0, all.size() - 10);
+            for (int index = all.size() - 1; index >= from; index--) {
+                DecisionModel.Decision decision = all.get(index);
+                String attemptId = decision.attempts().isEmpty()
+                        ? null : decision.lastAttempt().attemptId();
+                String auditOutcome = attemptId == null ? null : failureOutcomes.get(attemptId);
+                decisions.add(decisionView(decision, auditOutcome));
+            }
+        }
+        return new LiveStatus(runId, Long.toString(snapshot.position()),
+                Long.toString(snapshot.timeMillis()), phase, livePaused, liveFault,
+                pending, physicalInFlight.size(), current.liveCompletionSlots(), runBudget,
+                personBudgets, scenes, skips, decisions);
+    }
+
+    /** 预算视图：已结算 + 未结算预留 + 冻结上限。 */
+    private static BudgetUsage budgetUsage(DecisionModel.Usage used, DecisionModel.Usage reserved,
+                                           DecisionModel.Usage cap) {
+        return new BudgetUsage(Long.toString(used.attempts()),
+                Long.toString(reserved.attempts()), Long.toString(cap.attempts()),
+                Long.toString(used.inputTokens()), Long.toString(reserved.inputTokens()),
+                Long.toString(cap.inputTokens()), Long.toString(used.outputTokens()),
+                Long.toString(reserved.outputTokens()), Long.toString(cap.outputTokens()));
+    }
+
+    /** 同场景物理 HTTP 并发数（只看 worker 仍持有者）。 */
+    private int scenePhysical(String sceneId) {
+        int count = 0;
+        for (String scene : physicalInFlight.values()) {
+            if (scene.equals(sceneId)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static DecisionView decisionView(DecisionModel.Decision decision,
+                                             String failureOutcome) {
+        DecisionModel.Attempt attempt = decision.attempts().isEmpty()
+                ? null : decision.lastAttempt();
+        String scene = decision.plan() == null ? null : decision.plan().route().sceneId();
+        String slot = decision.plan() == null ? null : decision.plan().route().slotId();
+        String model = decision.plan() == null ? null : decision.plan().route().model();
+        String revision = decision.plan() == null ? null
+                : Long.toString(decision.plan().route().revision());
+        DecisionModel.Usage declared = attempt == null ? null : attempt.declaredUsage();
+        String input = decision.inputText();
+        String reply = attempt == null ? "" : attempt.replyBody();
+        String reason = attempt == null
+                ? (decision.outcome() == DecisionModel.Outcome.NONE
+                ? failureOutcome : decision.outcome().name())
+                : (attempt.reason().isBlank() && failureOutcome == null ? null
+                : (failureOutcome != null && (attempt.reason().isBlank()
+                || "UNKNOWN_USAGE".equals(attempt.reason())) ? failureOutcome
+                : attempt.reason()));
+        return new DecisionView(decision.personPartyId(), decision.actionId(),
+                decision.status().name(), attempt == null ? decision.outcome().name()
+                : attempt.outcome().name(), scene, slot, model, revision,
+                declared == null ? null : Long.toString(declared.inputTokens()),
+                declared == null ? null : Long.toString(declared.outputTokens()),
+                declared == null || declared.costStatus() == null ? null
+                        : declared.costStatus().name(),
+                reason,
+                preview(input), Integer.toString(input.length()), input.length() > PREVIEW_LIMIT,
+                preview(reply), Integer.toString(reply.length()), reply.length() > PREVIEW_LIMIT);
+    }
+
+    private static List<SkipReason> collectSkips(LiveRound round) {
+        List<SkipReason> skips = new ArrayList<>();
+        round.skipped.forEach((person, reason) -> skips.add(new SkipReason(person, reason)));
+        return List.copyOf(skips);
+    }
+
+    private static String preview(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.length() <= PREVIEW_LIMIT ? value : value.substring(0, PREVIEW_LIMIT);
     }
 }

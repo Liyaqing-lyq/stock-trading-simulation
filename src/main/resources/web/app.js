@@ -13,7 +13,12 @@ const state = {
   revealTimer: null,
   routeRevision: null,
   page: "overview",
-  details: {}
+  pageVersion: 0,
+  details: {},
+  live: null,
+  liveTimer: null,
+  liveRequest: 0,
+  liveBusy: false
 };
 
 const ADMIN_TABLES = ["accounts", "owners", "pending", "trades", "dividends", "keys"];
@@ -120,6 +125,7 @@ function clearSecrets() {
 }
 
 function clearAdminDom() {
+  clearLiveDom();
   state.position = null;
   state.routeRevision = null;
   $("routes-list").replaceChildren();
@@ -190,23 +196,26 @@ function providerLabel(kind) {
 
 async function enterAdmin() {
   showMode("admin");
-  selectPage("overview");
+  selectPage("overview", false);
   setStatus("管理员视角");
   await refreshAdmin();
 }
 
 async function refreshAdmin() {
+  stopLivePoll();
   const generation = state.generation;
+  const pageVersion = ++state.pageVersion;
+  const current = () => isCurrent(generation) && state.mode === "admin" && pageVersion === state.pageVersion;
   let result;
   try {
     result = await request("GET", "/api/admin/view");
   } catch (failure) {
-    if (isCurrent(generation) && state.mode === "admin") {
+    if (current()) {
       setMessage("admin-error", failure.message);
     }
     return;
   }
-  if (!isCurrent(generation) || state.mode !== "admin") {
+  if (!current()) {
     return;
   }
   if (result.status === 401 || result.status === 403) {
@@ -219,12 +228,20 @@ async function refreshAdmin() {
   }
   setMessage("admin-error", "");
   renderAdmin(result.payload);
-  await refreshKeys(generation);
-  await refreshRoutes(generation);
+  await refreshKeys(generation, current);
+  if (!current()) return;
+  await refreshRoutes(generation, current);
+  if (!current()) return;
+  if (state.page === "models") await refreshLive();
   if (DETAIL_PAGES[state.page]) {
     state.details[state.page] = null;
     await loadDetail(state.page);
   }
+}
+
+function renderAdminCut(view) {
+  $("context-time").textContent = view.runId + " · " + view.timeMillis + " 毫秒";
+  setStatus("管理员视角 · 已确认记录 " + view.position);
 }
 
 function renderAdmin(view) {
@@ -303,17 +320,17 @@ function renderAdmin(view) {
   $("dividends-empty").hidden = (view.dividendReports || []).length !== 0;
 }
 
-async function refreshKeys(generation) {
+async function refreshKeys(generation, current = () => true) {
   let result;
   try {
     result = await request("GET", "/api/admin/keys");
   } catch (failure) {
-    if (isCurrent(generation) && state.mode === "admin") {
+    if (isCurrent(generation) && state.mode === "admin" && current()) {
       setMessage("admin-error", failure.message);
     }
     return;
   }
-  if (!isCurrent(generation) || state.mode !== "admin") {
+  if (!isCurrent(generation) || state.mode !== "admin" || !current()) {
     return;
   }
   if (result.status === 401 || result.status === 403) {
@@ -561,12 +578,15 @@ const pages = {
   org: ["人物与任职", "谁能做什么，任职何时生效或结束。"],
   information: ["信息与阅读", "谁发布了什么版本，谁实际读到什么。"],
   people: ["人物视角", "以各自的权限观察世界，保留信息边界。"],
+  models: ["模型运行", "让人物依据自己的观察完成一次判断，查看实际输入与回报。"],
   settings: ["模型与密钥", "为五类场景配置模型、密钥槽位和调用预算。"]
 };
-function selectPage(page) {
+function selectPage(page, refresh = true) {
   if (!pages[page]) return;
   clearSecrets();
+  stopLivePoll();
   state.page = page;
+  state.pageVersion += 1;
   $("page-title").textContent = pages[page][0];
   $("page-description").textContent = pages[page][1];
   document.querySelectorAll("[data-panel]").forEach(node => { node.hidden = node.dataset.panel !== page; });
@@ -574,7 +594,10 @@ function selectPage(page) {
     if (node.dataset.page === page) node.setAttribute("aria-current", "page");
     else node.removeAttribute("aria-current");
   });
-  if (DETAIL_PAGES[page]) guard(loadDetail(page));
+  if (refresh) {
+    setStatus("正在读取本页确认状态…");
+    guard(refreshAdmin());
+  }
 }
 function routeField(container, scene, name, labelText, value, choices) {
   const group = document.createElement("div");
@@ -603,10 +626,10 @@ function routeField(container, scene, name, labelText, value, choices) {
   group.append(label, control);
   container.appendChild(group);
 }
-async function refreshRoutes(generation) {
-  if (!isCurrent(generation) || state.mode !== "admin") return;
+async function refreshRoutes(generation, current = () => true) {
+  if (!isCurrent(generation) || state.mode !== "admin" || !current()) return;
   const result = await request("GET", "/api/admin/routes");
-  if (!isCurrent(generation) || state.mode !== "admin") return;
+  if (!isCurrent(generation) || state.mode !== "admin" || !current()) return;
   if (result.status === 401 || result.status === 403) { sessionLost(); return; }
   if (result.status !== 200 || !result.payload) {
     setMessage("routes-result", "场景配置读取失败，请刷新重试。");
@@ -617,7 +640,7 @@ async function refreshRoutes(generation) {
   state.routeRevision = config.revision;
   $("route-provider").textContent = "DeepSeek · " + config.baseUrl + " · 配置版本 " + config.revision;
   $("route-runtime").textContent = config.connected
-    ? "场景路由已连接运行，实际调用以运行记录为准。"
+    ? "研究与交易已连接执行器；保存配置不会自动调用。公司治理、媒体与评估仍待接入。"
     : "配置可保存，尚未连接世界决策执行器；当前不会因此产生模型调用。";
   $("routes-list").replaceChildren();
   for (const route of config.routes) {
@@ -805,14 +828,15 @@ async function loadDetail(page) {
   const url = DETAIL_PAGES[page];
   if (!url || state.mode !== "admin") return;
   const generation = state.generation;
+  const pageVersion = state.pageVersion;
   let result;
   try {
     result = await request("GET", url);
   } catch (failure) {
-    if (isCurrent(generation) && state.mode === "admin") setMessage("admin-error", failure.message);
+    if (isCurrent(generation) && state.mode === "admin" && pageVersion === state.pageVersion) setMessage("admin-error", failure.message);
     return;
   }
-  if (!isCurrent(generation) || state.mode !== "admin") return;
+  if (!isCurrent(generation) || state.mode !== "admin" || pageVersion !== state.pageVersion || page !== state.page) return;
   if (result.status === 401 || result.status === 403) { sessionLost(); return; }
   if (result.status !== 200 || !result.payload) {
     setMessage("admin-error", "读取" + pages[page][0] + "失败（" + result.status + "），请稍后重试。");
@@ -823,6 +847,7 @@ async function loadDetail(page) {
 }
 
 function renderDetail(page, view) {
+  if (page === state.page) renderAdminCut(view);
   if (page === "company") renderCompany(view);
   else if (page === "performance") renderPerformance(view);
   else if (page === "org") renderPeopleAdmin(view);
@@ -1266,3 +1291,148 @@ for (const [id, render] of [["company-report-filter", renderCompanyReports],
 }
 
 guard(boot());
+
+
+// 模型运行：只读轮询用于显示，服务端独立处理完成结果。
+const LIVE_PHASES = { SCRIPTED: "脚本模式 · 未接模型", IDLE: "等待开始", READY: "等待开始",
+  RUNNING: "本轮运行中", STOPPING: "等待已发请求结束", PAUSED: "已暂停处理", FAULT: "需要重启恢复" };
+const LIVE_SCENES = { research: "机构研究", trading: "交易执行", governance: "公司治理（待接入）",
+  media: "媒体社交（待接入）", evaluation: "评估实验（待接入）" };
+function stopLivePoll() {
+  if (state.liveTimer) clearTimeout(state.liveTimer);
+  state.liveTimer = null;
+  state.liveRequest += 1;
+}
+function clearLiveDom() {
+  stopLivePoll();
+  state.live = null;
+  state.liveBusy = false;
+  fillTable("live-scenes", [], () => undefined);
+  fillTable("live-budgets", [], () => undefined);
+  $("live-decisions").replaceChildren();
+  $("live-skips").replaceChildren();
+  $("live-cut").textContent = "尚未读取运行状态。";
+  $("live-phase").textContent = "—";
+  $("live-summary").textContent = "";
+  setMessage("live-error", "");
+  setMessage("live-result", "");
+  for (const action of ["start", "stop", "pause", "resume"]) $("live-" + action).disabled = true;
+}
+function liveButtons() {
+  const v = state.live;
+  const connected = v && v.phase !== "SCRIPTED" && v.phase !== "FAULT";
+  $("live-start").disabled = state.liveBusy || !connected || !["IDLE", "READY"].includes(v.phase);
+  $("live-stop").disabled = state.liveBusy || !connected || !(v.physicalInFlight || v.completionSlots || v.pendingPersons.length);
+  $("live-pause").disabled = state.liveBusy || !connected || v.paused;
+  $("live-resume").disabled = state.liveBusy || !connected || !v.paused;
+}
+function renderLive(v) {
+  state.live = v;
+  renderAdminCut(v);
+  $("live-cut").textContent = "运行 " + v.runId + " · 确认记录 " + v.position + " · 模拟时点 " + v.timeMillis + " 毫秒";
+  $("live-phase").textContent = LIVE_PHASES[v.phase] || v.phase;
+  $("live-summary").textContent = v.phase === "FAULT" ? "本地记录保存失败，须关闭并重启恢复。普通继续不会解除故障。"
+    : "尚未发起 " + v.pendingPersons.length + " 人 · 网络请求 " + v.physicalInFlight
+      + " 个 · 结果处理占用 " + v.completionSlots + " 个";
+  const budgets = v.runBudget ? [{ personPartyId: "整次实验", budget: v.runBudget }, ...v.personBudgets] : [];
+  fillTable("live-budgets", budgets, (tr, row) => {
+    const b = row.budget;
+    cell(tr, row.personPartyId);
+    cell(tr, b.usedCalls + " / " + b.reservedCalls + " / " + b.capCalls);
+    cell(tr, b.usedInputTokens + " / " + b.reservedInputTokens + " / " + b.capInputTokens);
+    cell(tr, b.usedOutputTokens + " / " + b.reservedOutputTokens + " / " + b.capOutputTokens);
+  });
+  fillTable("live-scenes", v.scenes, (tr, row) => {
+    cell(tr, LIVE_SCENES[row.sceneId] || row.sceneId);
+    cell(tr, row.slotId + " · " + row.model + " · 版本 " + row.revision);
+    cell(tr, row.enabled ? "允许" : "关闭");
+    cell(tr, row.usedCalls + " / " + row.reservedCalls + " / " + row.capCalls);
+    cell(tr, row.usedInputTokens + " / " + row.reservedInputTokens);
+    cell(tr, row.usedOutputTokens + " / " + row.reservedOutputTokens);
+    cell(tr, row.capTotalTokens);
+  });
+  $("live-skips").replaceChildren();
+  for (const item of v.skips) {
+    const li = document.createElement("li");
+    li.textContent = item.personPartyId + "：" + item.reason;
+    $("live-skips").appendChild(li);
+  }
+  if (!v.skips.length) {
+    const li = document.createElement("li"); li.textContent = "本轮没有跳过记录。"; $("live-skips").appendChild(li);
+  }
+  const expanded = new Set(Array.from($("live-decisions").querySelectorAll("details[open]"), node => node.dataset.actionId));
+  $("live-decisions").replaceChildren();
+  for (const item of v.decisions) {
+    const detail = document.createElement("details");
+    detail.dataset.actionId = item.actionId;
+    detail.open = expanded.has(item.actionId);
+    const summary = document.createElement("summary");
+    summary.textContent = item.personPartyId + " · " + item.status + " · " + text(item.outcome) + " · " + item.actionId;
+    detail.appendChild(summary);
+    const meta = document.createElement("p"); meta.className = "hint";
+    meta.textContent = text(item.sceneId) + " / " + text(item.slotId) + " / " + text(item.model)
+      + " · 冻结版本 " + text(item.revision) + " · 声明用量 输入 " + text(item.declaredInputTokens)
+      + " / 输出 " + text(item.declaredOutputTokens) + " · 费用 " + text(item.costStatus)
+      + (item.reason ? " · 原因 " + item.reason : "");
+    detail.appendChild(meta);
+    for (const [label, prefix] of [["实际输入", "input"], ["模型回执", "reply"]]) {
+      const heading = document.createElement("h3");
+      heading.textContent = label + "（" + item[prefix + "Length"] + " 字符"
+        + (item[prefix + "Truncated"] ? "，仅显示前 4000 字符" : "") + "）";
+      const pre = document.createElement("pre"); pre.textContent = item[prefix + "Preview"] || "尚无正文";
+      detail.append(heading, pre);
+    }
+    $("live-decisions").appendChild(detail);
+  }
+  $("live-empty").hidden = v.decisions.length > 0;
+  liveButtons();
+}
+async function refreshLive() {
+  if (state.mode !== "admin" || state.page !== "models") return;
+  stopLivePoll();
+  const generation = state.generation, requestId = state.liveRequest;
+  const current = () => isCurrent(generation) && state.mode === "admin" && state.page === "models" && requestId === state.liveRequest;
+  try {
+    const response = await request("GET", "/api/admin/live");
+    if (!current()) return;
+    if (response.status === 401 || response.status === 403) { sessionLost(); return; }
+    if (response.status !== 200 || !response.payload) throw new Error("模型运行状态读取失败（" + response.status + "）。");
+    renderLive(response.payload);
+    setMessage("live-error", "");
+  } catch (failure) {
+    if (current()) setMessage("live-error", failure.message);
+  } finally {
+    if (current()) state.liveTimer = setTimeout(() => { guard(refreshLive()); }, 2000);
+  }
+}
+async function liveAction(action, event) {
+  if (event) event.preventDefault();
+  if (state.mode !== "admin" || !state.live || state.liveBusy) return;
+  const generation = state.generation;
+  const body = { expectedPosition: state.live.position };
+  if (action === "start") {
+    const persons = Array.from(document.querySelectorAll('input[name="live-person"]:checked'), node => node.value);
+    if (!persons.length) { setMessage("live-error", "请选择至少一位人物。"); return; }
+    body.persons = persons;
+    body.expectedRevision = state.routeRevision;
+  }
+  state.liveBusy = true;
+  liveButtons();
+  try {
+    const response = await request("POST", "/api/admin/live/" + action, body);
+    if (!isCurrent(generation) || state.mode !== "admin") return;
+    if (response.status === 401 || response.status === 403) { sessionLost(); return; }
+    if (response.status !== 200) {
+      setMessage("live-result", response.payload && response.payload.message || "操作未完成，请刷新核对。");
+      if (response.status === 409) await refreshRoutes(generation);
+    } else {
+      setMessage("live-result", ({ start: "本轮已开始，实际派发与回报见下方。", stop: "已停止新调用，已发请求继续结算。",
+        pause: "已暂停推进与结果处理。", resume: "已恢复处理。" })[action]);
+    }
+    await refreshLive();
+  } finally {
+    if (isCurrent(generation) && state.mode === "admin") { state.liveBusy = false; liveButtons(); }
+  }
+}
+$("live-start-form").addEventListener("submit", event => guard(liveAction("start", event)));
+for (const action of ["stop", "pause", "resume"]) $("live-" + action).addEventListener("click", () => guard(liveAction(action)));

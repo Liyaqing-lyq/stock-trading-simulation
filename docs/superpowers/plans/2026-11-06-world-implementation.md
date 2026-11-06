@@ -46,7 +46,7 @@
 | M3 公司经营竖切 | 制造公司、外部客户/供应商、合同履约、现金与报表、董事会、现金分红、表现核算 | M2 | V04/V15/V16/V17 | 制造及治理桥、D0/D1/D2/D3a草稿PR19–22实际CI通过，744标准，均待人工review。D3b最终816标准、212独立检查及真实Hermes31+6独审通过，草稿PR23及实际CI42253286290通过。D3c最终858标准/123独立/最终独审通过，草稿PR24及实际CI42264571970成功；取消/重新公告接续 |
 | M4 角色与信息竖切 | 独立四岗机构、两类媒体、普通投资者；阅读/传播/权限、六层记忆与偏信/习惯、模型屏障与预算 | M1/M2/M3 | V07/V08/V09/V10/V13/V14 | schema6阅读桥及PR13 CI通过；M4c纯核23专项/组合385标准及PR14 CI通过；schema7运行桥38专项/组合423标准及GUI/CSV、61正常入口、三JVM、旧6兼容与最终hash独审通过，PR15 CI通过；M4d纯核58专项/481标准与最终hash独审及PR16 CI通过，schema8桥55+runner12专项与549标准本地通过，三JVM/旧7兼容通过，最终独审42断言及GUI/CSV/JavaDoc通过，PR17代码CI通过，M4e573项审计补项及PR18代码CI通过，待人工review |
 | M5 差异公司与银行 | 工程回款、银行完整实验规则、直接/组合敞口迁移、其余十类公司及八类媒体逐项配置 | M3/M4 | V01/V02/V03/V13/V16 | 待细化 |
-| M6 真实观察工作台 | 先接增量观察；白色市场/股票/公司/账户/人物机构/新闻/世界页面；同快照、权限裁剪、图表与历史回放 | M1 起增量，完整依赖 M2–M5 | V12/V14/V15 | 离线审计页私有原型与数据边界已查，浏览器实点待验；用户已确定最终Web主界面及上帝五key配置，完整工作台待实施 |
+| M6 真实观察工作台 | 先接增量观察；白色市场/股票/公司/账户/人物机构/新闻/世界页面；同快照、权限裁剪、图表与历史回放 | M1 起增量，完整依赖 M2–M5 | V12/V14/V15 | 本机白色Web、五Key/五场景、四组真实业务详情及模型单轮已实现并实测，完整股票图表/历史工作台仍待实施；原file审计页用户稍后手验 |
 | M7 行为/压力与交付 | 无 LLM 故障夹具、固定预算小试、多次独立实验、失败率/分布、课程报告/JavaDoc/PR 人工评审 | 所有启用能力 | V17/V18 及全矩阵回归 | 待细化 |
 
 阶段覆盖的是责任，不表示整条 Vxx 已通过。多公司、银行、媒体、认知目标保留；今晚按依赖推进，不用虚构数据或跳过检查换取页面数量。
@@ -55,12 +55,13 @@
 
 ### 当前接续
 
-- 当前分支 `codex/world-live-completion`，base `ea0ddd3`；Web草稿PR30代码90e726a/文档ea0ddd3，实际CI42299095951/42299422149均成功，1010标准、GUI/CSV/JavaDoc、Root105 HTTP、400/401精确边界及Hermes82独审通过，真实Web浏览器四页/生产/阅读/切身份有截图。
-- [B2c1完成登记](2026-11-07-live-completion.md)本地验收：Inbox16+Provider17+Runtime16新增49，总1059/73专项全绿；32成交118订单7排名、GUI/JavaDoc06:06:23、Root三JVM15与旧binary/旧9续写、真实Hermes26独审通过。多claim故障实际RED1→GREEN2，活动回执限Inbox，原重复/旧代次审计保留。
-- candidate3仅移动补齐Runtime JavaDoc，Runtime hash0bdfebd8…68815，可执行文本与全验candidate2相同；其余88源逐字同。原live20项交付入口迁移/旧任意reason压缩兼容样本保留，旧scripted不改。草稿PR31及实际CI42302221792成功。
-- Root独占主树/Maven；ed3b0f作者与afc0c5独审已交。真实Hermes d39b13 exec53092只私有live-host-preparation实施[Host合同](2026-11-07-live-web-host.md)：有界四岗、显式start/stop、独立writer pump、暂停与故障分开；Root后接Server/UI/App。未把私有代码计Web完成。
-- 五Key仍外置，仅此前key-1一次51token（46输入5输出），费用未知；其余4槽未测，此阶段0新增请求。整体认知媒体、多公司/银行、图表与长跑未完成，继续实施。
-- 原离线审计页由用户稍后手动查看，未绕过限制。PR6–22人工合入累计分支；PR23起仍草稿，Codex不自动合并。
+- 当前分支 `codex/world-live-web`，base `3b468ff`。PR31 代码/文档 CI42302221792/42302662795均success；Root独占主树/Maven。
+- B2c2 最终冻结 `live-web-candidate-3`：89 Java 与 candidate2逐字相同；增加当前页截止/导航迟到响应保护的 app.js。Root10 HTTP、15 Host、18物理容量检查及1085标准全过；42成交121订单7排名CSV、GUI、JavaDoc06:47:24通过。真实浏览器完成四岗一轮/预算/输入输出、重启零自动调用、切个人清空管理员数据，证据 `live-web-root/browser-acceptance.md`。
+- 真实 Hermes d3c63e candidate2独审74动态已过；首轮恢复失败为同revision不同Route的非法夹具，改真实Host接续已过。最终candidate3 UI增量exec62389复核已过并退出；Root另9 IO与6 executor实际故障检查通过。秘密扫描、草稿PR/实际CI随后。
+- Host按同writer位置/配置版本校验；默认live新world-live.journal，旧scripted保持world.journal。启动/读页/保存配置不调用；单轮最多四岗各一次，仅research/trading接执行器。超时仍占实际请求与完成槽，不能靠逻辑预算释放挤入新请求。
+- 五Key仍仅此前key-1一次51token，费用未知，其余4槽未测；本阶段0新增供应商调用。认知/媒体、多公司银行、完整图表/长跑继续施工。原离线审计页用户稍后手验，不自动合并。
+
+下一认知入口：[M4f已有经历有界回忆](2026-11-07-cognition-recall.md)。真实Hermes ed3b0f只写cognition-recall-author，exec61639；Root发现首次Observation去重使重读后仍遗忘，已裁决从真实ClosedReading刷新获取时间，先RED再修。纯核尚未集成，世界仍未启用遗忘。
 
 以下保留各阶段任务与原始执行记录。
 

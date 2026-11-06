@@ -165,7 +165,14 @@ public final class WorldScheduler {
         }
     }
 
-    static String fairOrder(long seed, String eventId) {
+    /**
+     * 计算稳定公平排序键，供世界排程与角色唤醒共用；不依赖调用先后或网络返回速度。
+     *
+     * @param seed 运行清单冻结的种子
+     * @param eventId 稳定事件或人物标识
+     * @return 可按字典序比较的 SHA-256 键
+     */
+    public static String fairOrder(long seed, String eventId) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest((seed + ":" + eventId).getBytes(StandardCharsets.UTF_8));

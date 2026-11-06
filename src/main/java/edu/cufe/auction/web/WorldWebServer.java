@@ -57,6 +57,10 @@ public final class WorldWebServer implements AutoCloseable {
     /** 管理端详情页：只读 GET，一个页面一个请求。 */
     private static final Set<String> DETAIL_PATHS = Set.of("/api/admin/company",
             "/api/admin/people", "/api/admin/information", "/api/admin/performance");
+    private static final Set<String> LIVE_START_FIELDS = Set.of("expectedPosition", "expectedRevision", "persons");
+    private static final Set<String> LIVE_CONTROL_FIELDS = Set.of("expectedPosition");
+    private static final Set<String> LIVE_ACTIONS = Set.of("/api/admin/live/start", "/api/admin/live/stop",
+            "/api/admin/live/pause", "/api/admin/live/resume");
     private static final Set<String> ADVANCE_FIELDS = Set.of("expectedPosition", "targetMillis");
     private static final Set<String> REVEAL_FIELDS = Set.of("confirm");
     private static final Set<String> ROUTE_REPLACE_FIELDS = Set.of("expectedRevision", "routes");
@@ -242,6 +246,15 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> replaceRoutes(exchange));
                 return;
             }
+            if ("/api/admin/live".equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> send(exchange, 200,
+                        mapper.writeValueAsString(liveState())));
+                return;
+            }
+            if (LIVE_ACTIONS.contains(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> liveAction(exchange, path));
+                return;
+            }
             if ("/api/admin/advance".equals(path) && "POST".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> advance(exchange));
                 return;
@@ -304,6 +317,10 @@ public final class WorldWebServer implements AutoCloseable {
         }
         if ("/api/admin/routes".equals(path)
                 && ("GET".equals(method) || "POST".equals(method))) {
+            return true;
+        }
+        if (("/api/admin/live".equals(path) && "GET".equals(method))
+                || (LIVE_ACTIONS.contains(path) && "POST".equals(method))) {
             return true;
         }
         if ("/api/admin/advance".equals(path) && "POST".equals(method)) {
@@ -512,12 +529,12 @@ public final class WorldWebServer implements AutoCloseable {
     }
 
     /** GET /api/admin/routes：固定提供方/地址、未连接状态与五场景配置。 */
-    private void readRoutes(HttpExchange exchange) throws IOException {
+    private void readRoutes(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
         send(exchange, 200, routesJson());
     }
 
     /** POST /api/admin/routes：全量替换，成功后才发布 revision。 */
-    private void replaceRoutes(HttpExchange exchange) throws IOException {
+    private void replaceRoutes(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
         JsonNode body = jsonBody(exchange, ROUTE_REPLACE_FIELDS);
         JsonNode revisionNode = body.get("expectedRevision");
         Long expected = revisionNode != null && revisionNode.isTextual()
@@ -538,7 +555,8 @@ public final class WorldWebServer implements AutoCloseable {
             parsed.add(route);
         }
         try {
-            routes.replace(expected, parsed);
+            if (!"SCRIPTED".equals(liveState().phase())) host.replaceRoutes(expected, parsed);
+            else routes.replace(expected, parsed);
             send(exchange, 200, routesJson());
         } catch (SceneRoutes.RevisionMismatch mismatch) {
             send(exchange, 409, "{\"error\":\"REVISION_MISMATCH\","
@@ -548,16 +566,20 @@ public final class WorldWebServer implements AutoCloseable {
             send(exchange, 503, error("ROUTES_IO", "场景路由写入失败，旧配置保持不变"));
         } catch (IllegalArgumentException invalid) {
             send(exchange, 400, error("INVALID", "路由取值不合法"));
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
         }
     }
 
-    private String routesJson() throws IOException {
+    private String routesJson() throws IOException, WorldWebHost.BusyException {
         SceneRoutes.Snapshot snapshot = routes.view();
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("revision", Long.toString(snapshot.revision()));
         root.put("provider", SceneRoutes.PROVIDER);
         root.put("baseUrl", SceneRoutes.BASE_URL);
-        root.put("connected", false);
+        root.put("connected", !"SCRIPTED".equals(liveState().phase()));
         List<Map<String, Object>> rows = new ArrayList<>();
         for (SceneRoutes.Route route : snapshot.routes()) {
             Map<String, Object> row = new LinkedHashMap<>();
@@ -625,6 +647,68 @@ public final class WorldWebServer implements AutoCloseable {
             return Long.parseLong(text);
         } catch (NumberFormatException overflow) {
             return null;
+        }
+    }
+
+    /** 读取同一writer采样的模型状态；不把自由异常文本发送给浏览器。 */
+    private WorldWebHost.LiveStatus liveState() throws IOException, WorldWebHost.BusyException {
+        try {
+            return host.liveStatus();
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+    }
+
+    /** 管理员明确发起单轮或控制处理，权限与同源检查已由统一路由完成。 */
+    private void liveAction(HttpExchange exchange, String path)
+            throws IOException, WorldWebHost.BusyException {
+        boolean start = path.endsWith("/start");
+        JsonNode body = jsonBody(exchange, start ? LIVE_START_FIELDS : LIVE_CONTROL_FIELDS);
+        Long position = strictLong(body.get("expectedPosition"));
+        Long revision = start ? strictLong(body.get("expectedRevision")) : 0L;
+        if (position == null || position < 0 || revision == null || revision < 0) {
+            send(exchange, 400, error("INVALID", "记录序号与配置版本必须是非负整数"));
+            return;
+        }
+        List<String> persons = new ArrayList<>();
+        if (start) {
+            JsonNode array = body.get("persons");
+            if (array == null || !array.isArray() || array.size() < 1 || array.size() > 4) {
+                send(exchange, 400, error("INVALID", "请选择一到四位不同人物"));
+                return;
+            }
+            for (JsonNode person : array) {
+                if (!person.isTextual() || !WorldWebHost.LIVE_ROLE_PERSONS.contains(person.textValue())
+                        || persons.contains(person.textValue())) {
+                    send(exchange, 400, error("INVALID", "人物不在允许列表或被重复选择"));
+                    return;
+                }
+                persons.add(person.textValue());
+            }
+        }
+        try {
+            switch (path) {
+                case "/api/admin/live/start" -> host.startLiveRound(position, revision, persons);
+                case "/api/admin/live/stop" -> host.stopLiveRound(position);
+                case "/api/admin/live/pause" -> host.pauseLive(position);
+                case "/api/admin/live/resume" -> host.resumeLive(position);
+                default -> throw new IllegalArgumentException("未知操作");
+            }
+            send(exchange, 200, mapper.writeValueAsString(liveState()));
+        } catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, error("POSITION_MISMATCH", "世界记录已变化，请刷新后重新选择操作"));
+        } catch (SceneRoutes.RevisionMismatch mismatch) {
+            send(exchange, 409, error("REVISION_MISMATCH", "场景配置已变化，请核对后再开始"));
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "人物或操作参数不合法"));
+        } catch (IllegalStateException unavailable) {
+            send(exchange, 409, error("LIVE_UNAVAILABLE", "当前无法执行，请核对运行模式、暂停状态或在途请求"));
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
         }
     }
 

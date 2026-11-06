@@ -9,6 +9,7 @@ import edu.cufe.auction.world.ManufacturingRun;
 import edu.cufe.auction.world.OpeningRegistry;
 import edu.cufe.auction.world.RoleAccess;
 import edu.cufe.auction.world.RoleRun;
+import edu.cufe.auction.world.RoleTradingView;
 import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.WorldRuntime;
 
@@ -31,6 +32,10 @@ public final class WorldWebScenario {
     public static final String RUN_ID = "web-workbench";
     /** 实验档案标识，明确写进 manifest 元数据。 */
     public static final String PROFILE = "web-workbench-internal-debug-v1";
+    /** live 档案运行标识（独立目录，与旧档案并存，不迁移）。 */
+    public static final String LIVE_RUN_ID = "web-live";
+    /** live 档案标识。 */
+    public static final String LIVE_PROFILE = "web-live-http-v1";
     /** 唯一证券代码。 */
     public static final String SYMBOL = "CUFE1";
     /** 公司组织主体。 */
@@ -173,6 +178,63 @@ public final class WorldWebScenario {
                 "scripted-v1", Map.of("wake", 1L), Map.of(),
                 new DecisionModel.Limits(1, 1_000, 1_000, 200, 200, 1, 1, 1_000),
                 new DecisionModel.Budget(zero, caps));
+    }
+
+    /**
+     * 打开（或按同一开局继续）live 实验世界：schema10、真实 HTTP 模型、与经济开局完全相同。
+     *
+     * @param journal 世界日志（独立于旧 scripted 档案）
+     * @return 运行时与 manifest 的运行标识
+     * @throws Exception 创建失败
+     */
+    public static WorldWebHost.Opened openLive(Path journal) throws Exception {
+        RunManifest manifest = liveManifest();
+        WorldRuntime runtime = new WorldRuntime(journal, manifest, openings(), registry(),
+                new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
+                        "SUP", "CUS", "OPS"), SYMBOL), charter(), roles(), information(),
+                liveConfig());
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
+    /** @return live 档案 manifest（schema10、live 决定模块、真实 HTTP 模型版本） */
+    public static RunManifest liveManifest() {
+        Map<String, Integer> modules = new TreeMap<>();
+        for (String name : List.of("cash", "scheduler", "registry", "securities", "matching",
+                "manufacturing", "governance", "roles", "information", "trading", "decisions",
+                "dividend", "live-decisions")) {
+            modules.put(name, 1);
+        }
+        return new RunManifest(LIVE_RUN_ID, 11L,
+                RunManifest.RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1, modules,
+                Map.of("profile", LIVE_PROFILE), RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    /**
+     * live 冻结配置：全部为内部实验限制，费用未知，只按 token 预算。
+     *
+     * @return 决定配置
+     */
+    public static DecisionModel.Config liveConfig() {
+        Map<String, Long> think = Map.of("wake", 1_000L);
+        Map<String, Long> actions = new TreeMap<>();
+        for (String tool : List.of(RoleTradingView.TOOL_READING_START,
+                RoleTradingView.TOOL_READING_CANCEL, RoleTradingView.TOOL_CITE,
+                RoleTradingView.TOOL_RESEARCH_SUBMIT, RoleTradingView.TOOL_TARGET_SET,
+                RoleTradingView.TOOL_TARGET_REVIEW, RoleTradingView.TOOL_TARGET_HALT,
+                RoleTradingView.TOOL_TARGET_CONFIRM, RoleTradingView.TOOL_TARGET_CANCEL,
+                RoleTradingView.TOOL_CHILD_SUBMIT, RoleTradingView.TOOL_CHILD_CANCEL)) {
+            actions.put(tool, 2_000L);
+        }
+        Map<String, DecisionModel.Usage> caps = new TreeMap<>();
+        for (String person : WorldWebHost.LIVE_ROLE_PERSONS) {
+            caps.put(person, DecisionModel.Usage.unknownCost(25, 250_000, 50_000));
+        }
+        return new DecisionModel.Config(DecisionModel.PROVIDER_DEEPSEEK_HTTP, "deepseek:api",
+                DecisionModel.ESTIMATE_VERSION, think, actions,
+                new DecisionModel.Limits(1, 32_768, 65_536, 60_000, 8_192, 4, 2, 15_000),
+                new DecisionModel.Budget(DecisionModel.Usage.unknownCost(100, 1_000_000, 200_000),
+                        caps),
+                DecisionModel.Profile.LIVE_HTTP_V1);
     }
 
     private static BigDecimal money(String value) {
