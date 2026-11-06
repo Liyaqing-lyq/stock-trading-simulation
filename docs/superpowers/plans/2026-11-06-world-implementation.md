@@ -20,7 +20,7 @@
 - 首轮精度 1 模拟毫秒，固定四阶段；新消息最早下一时间步。公平顺序来自运行种子并可记录。
 - 用户可见首版须含所启用公司的董事会、独立四岗、遗忘/偏信/习惯和真实图表来源；基础模块通过不代表首版完成。
 - 每阶段：专项测试 + `bash scripts/verify.sh --with-gui` + 评分映射 + 真实记录；代码通过 PR、`[AI-Generated]`、至少一名人工实质 review 后才能合入。
-- 保留启动时所有未提交改动。草稿依赖链 `codex/world-implementation` → `codex/world-securities-ledger` → `codex/world-matching` → `codex/world-exchange` → `codex/world-manufacturing` → `codex/world-governance` → `codex/world-role-information` → 当前 `codex/world-role-reading`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
+- 保留启动时所有未提交改动。草稿依赖链 `codex/world-implementation` → `codex/world-securities-ledger` → `codex/world-matching` → `codex/world-exchange` → `codex/world-manufacturing` → `codex/world-governance` → `codex/world-role-information` → `codex/world-role-reading` → 当前 `codex/world-role-trading`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
 
 ## Review Focus
 
@@ -44,7 +44,7 @@
 | M1 世界运行基础 | 模拟时序/阶段、运行清单、唯一提交、幂等事件日志、恢复与分支边界 | M0 | V10/V11/V12 | 现金运行子集本地验收；完整世界/实验分支仍待实施 |
 | M2 身份/开局/交易账 | 人物/组织/账户/任职；开局股份与现金清单；托管映射；版本化规则；T+1 批次/自成交 | M1 | V01/V02/V05/V06/V14 | M2.1–2.4b可靠交易核本地验收；任职/人物投影已接schema6，角色交易网关及银行托管待实施 |
 | M3 公司经营竖切 | 制造公司、外部客户/供应商、合同履约、现金与报表、董事会、现金分红、表现核算 | M2 | V04/V15/V16/V17 | M3a制造桥217项与PR10 CI通过；治理297项标准/GUI/CSV及原审查反例复验通过，独审Important已修复；均待人工review，分红待实施 |
-| M4 角色与信息竖切 | 独立四岗机构、两类媒体、普通投资者；阅读/传播/权限、六层记忆与偏信/习惯、模型屏障与预算 | M1/M2/M3 | V07/V08/V09/V10/V13/V14 | 22+29项纯核与schema6运行桥本地验收，G362项标准/GUI/CSV、95条独立检查及独审最终46/31通过；待人工review，四岗交易/媒体/认知待实施 |
+| M4 角色与信息竖切 | 独立四岗机构、两类媒体、普通投资者；阅读/传播/权限、六层记忆与偏信/习惯、模型屏障与预算 | M1/M2/M3 | V07/V08/V09/V10/V13/V14 | schema6阅读桥及PR13 CI通过；M4c纯核23专项/组合385标准、GUI/CSV/JavaDoc及独审反例修复完成；运行桥准备已交接，接续人物会话与真实四人交易链 |
 | M5 差异公司与银行 | 工程回款、银行完整实验规则、直接/组合敞口迁移、其余十类公司及八类媒体逐项配置 | M3/M4 | V01/V02/V03/V13/V16 | 待细化 |
 | M6 真实观察工作台 | 先接增量观察；白色市场/股票/公司/账户/人物机构/新闻/世界页面；同快照、权限裁剪、图表与历史回放 | M1 起增量，完整依赖 M2–M5 | V12/V14/V15 | 离线审计页私有原型与数据边界已查，浏览器实点待验；完整工作台与Web主界面选择仍保留 |
 | M7 行为/压力与交付 | 无 LLM 故障夹具、固定预算小试、多次独立实验、失败率/分布、课程报告/JavaDoc/PR 人工评审 | 所有启用能力 | V17/V18 及全矩阵回归 | 待细化 |
@@ -283,7 +283,7 @@ M3b.2的预算同批经营、持久会议与固定截止复盘按[治理接入�
 
 M4b.1在隔离树执行[资料版本与实际阅读纯核](2026-11-06-information-core.md)，复用RoleAccess；M6a的[离线审计观察页](2026-11-06-audit-observer.md)只在忽略目录准备，尚未进入正式代码分支，浏览器验收状态单独保留。
 
-M4a.2/M4b.2按[人物阅读运行施工单](2026-11-06-role-reading-runtime.md)接入schema6。当前已完成代码、标准及独审验收，草稿[PR #13](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/13)依赖#12，待人工review。下一执行单元先固定可信人物工具网关、经理母任务/风险限制/执行员子单合同，再写四岗交易；六层认知和媒体仍保留独立验收。离线观察页未通过浏览器实点，不计M6完成。
+M4a.2/M4b.2按[人物阅读运行施工单](2026-11-06-role-reading-runtime.md)接入schema6，草稿[PR #13](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/13)依赖#12，待人工review。当前按[四岗交易运行施工单](2026-11-06-role-trading-runtime.md)推进M4c，落地研究报告、经理目标、风控审核、经理确认、执行员子单及人物会话。六层认知和媒体保留独立验收。用户已回复稍后手动查看离线审计页，M6继续待人工界面验收。
 
 ## 进入后续阶段前必须冻结的规格
 
@@ -396,3 +396,5 @@ M2.4a 共享纯撮合 → 审查/标准验收 → M2.4b 世界订单接入；制
 - M4最终私有证据codex-run-2：95检查通过；同毫秒start/cancel/restart旧ref→NOT_FOUND active=1、同刻同版本跨人ref拒绝；真实ClosedByInterruptException当场完整Snapshot相等并暂停，两次重启只完成一次；正式Demo prepare/full/full保持position18、1经历/1DENIED；bbd5181真实旧schema5→新续写→旧回读通过。独审按最终B7CE83D0/085D2564冻结源码复测46条自有检查、31条重放及91条旧版Root检查，全过且本人视图差异0。原作者交接旧hash与审查中旧API文字的时间差已在docs/05 §16校正，不把历史发现当当前未修项。
 - 下一施工口：在本地已验收schema6上固定人物身份绑定工具网关与四岗交易母任务/风险额度/执行员子单，不直接给RoleAccess.ALLOW接旧引擎submit。媒体/六层认知/银行/现金分红/TWR/完整白色工作台仍未完成；离线观察页只在忽略目录有静态数据验证，没有浏览器实点，未计M6通过。所有草稿仍须人工review，未合入main。
 - M4运行桥已提交3a60017dbef5481e85952ffb1451dc1eac208245并推送，草稿[PR #13](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/13)以world-role-information为base，已附当前会话。创建时verify run42125539654实际in_progress；远端最新结果以PR Checks为准，不把本地全绿冒充远端结论。config.properties/PROJECT_MEMORY的开工前SHA256保持，未纳入提交。草稿依赖链#6→#7→#8→#9→#10→#11→#12→#13，均未合入。
+- 用户继续授权完成，采用C当前树codex/world-role-trading，basefe30171。真实Hermes调查/测试20261106_084239_687e0f，Codex实现纯核并修正状态夹具，独审20261106_091128_ff456b。最终RoleTradingModel源码98AD58EF…7EFC17，23专项与全套385通过，标准49成交/123订单/7排名及GUI/CSV全绿，JavaDoc09:31:25真生成。G原用户改动继续位于原检出。详见docs/05 §17及M4c子Plan的审查裁决。
+- M4c运行桥准备会话20261106_091523_c9946f已产生接口合同和6条测试草稿，保存在logs/implementation-20261106-continued/role-trading/runtime-preparation/。纯核之后接续新schema7、人物会话、完整I/O/重启及旧schema6对照。草稿把更新后撤单前成交改为更新前，且故障用例只有文件截断，正式实施须补回真实因果窗口和Thread中断写入验收。
