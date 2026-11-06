@@ -12,8 +12,8 @@
 
 - [x] 按当前源文件及997284d固定接口调查缺口，恢复既有设计。
 - [x] Codex裁定屏障、输入保存、恢复代次和验收范围。
-- [ ] M4c运行桥交回并通过独立验收。
-- [ ] 在已验收分支上启动本单实现，固定实际base和测试基线。
+- [x] M4c运行桥交回并通过独立验收。
+- [x] 在已验收分支上启动本单实现，固定实际base和测试基线。
 
 ## 实施裁决
 
@@ -47,10 +47,10 @@
 
 ## Task 1 纯决定与预算状态
 
-- [ ] 先写实际失败测试，明确状态转换、屏障计算、尝试身份和预算预留/结算。
-- [ ] 实现不可变决定、尝试、结果及预算记录，精确算术，拒绝溢出、倒退代次、未来观察和重复效果。
-- [ ] 结果先校验结构和允许动作。正文中的指令不改变工具合同，未知动作留下可分类技术失败。
-- [ ] 验证同一动作重试、重复候选、晚到旧代次和预算耗尽的纯规则。
+- [x] 先写实际失败测试，明确状态转换、屏障计算、尝试身份和预算预留/结算。
+- [x] 实现不可变决定、尝试、结果及预算记录，精确算术，拒绝溢出、倒退代次、未来观察和重复效果。
+- [x] 结果先校验结构和允许动作。正文中的指令不改变工具合同，未知动作留下可分类技术失败。
+- [x] 验证同一动作重试、重复候选、晚到旧代次和预算耗尽的纯规则。
 
 ## Task 2 运行桥与人物输入
 
@@ -78,3 +78,55 @@
 ## 执行记录
 
 - 2026-11-06，准备会话20261106_094824_aa419b完成只读提案，未运行Maven或真实模型。Codex按原基线裁定本单，尚未进入源码实现。
+
+## Task1 入场裁决（2026-11-06，Codex）
+
+M4c提交ffb49d4，草稿PR #15已创建。当前codex/world-decisions以该提交为base，标准423项已通过。真实旧schema7 classes及活动存档保存于logs/implementation-20261106-continued/decision-preparation/legacy-v7。Task1为独立纯核提交，Task2–3在其后接续。
+
+准备稿core-draft/contract.md及14测试仅供复用，以下修正为正式合同。
+
+- State保存runId及不可变Config。open(runId,seed,config)冻结配置，后续转换从State取配置，禁止逐次替换预算/耗时。Reply明确带runId，所有身份项与实际尝试共同核对，跨运行回执不得被接受。
+- Config只接受SCRIPTED。删除未使用的defaultThinkMillis与微元callMicros。保留明确providerId/pricingVersion、按唤醒原因的正思考耗时、按工具的正动作耗时、预算和限制。金钱使用BigDecimal两位，Usage第四维为cost，当前脚本费用及预算严格0.00，真实计价以后单独实施。
+- Attempt保存准确回执body、usageSource、reserved/settled、outcome及reason，未返回时正文和来源为空。Decision保存明确recordedTool，INTENT恢复必须仍能取得原动作全部参数。输入摘要采用无歧义的规范JSON编码，包含工具合同、排序去重工具与准确inputText。
+- 请求的runId须等于State，decisionAt不得晚于已确认时点，cutoffTime不得晚于decisionAt及已确认时点，cutoffPosition不得晚于已确认位置。工具名须存在于冻结动作耗时合同，role.wait为唯一不排业务动作的内建工具。
+- headroom只扣尚未结算尝试的全部reserved。已结算尝试即使所属决定正在重试，其reserved与settled差额已释放，不继续占用。回执用量attempts必须为1，费用0.00，超预留或非法声明按技术失败保守结算一次。
+- 同一回执重复为DUPLICATE，异正文/用量复用已消费身份为REJECTED。旧未消费代次为STALE_GENERATION且无结算。当前session未开启则拒绝所有派发与应用。
+- beginSession只开启新代次。另提供可信宿主resumeDecision(state,actionId)，仅处理OPEN且最后未结算尝试属于旧代次的决定，保守结算旧尝试并在当前代次按原输入/屏障有界重试。不能由旧回执触发重试，不能让已记录决定重问。
+- JSON回执严格校验外壳，WAIT只有tool，INTENT只有tool/args且args为对象。未知外壳字段、未知工具、恶意正文或到期溢出为技术失败，不观望。工具业务字段由Task2的明确DTO合同校验。maxReplyChars与maxInputChars限制原文，不静默截断。
+- actionDueMillis(state,actionId)仅对已记录INTENT取实际recordedTool，不能传入另一个工具计算时间。相同屏障以WorldScheduler.fairOrder(seed,actionId)及actionId排序，复用现有算法。
+- 提供toJson/fromJson，反序列化验证身份、摘要、连续尝试、预留/结算、全局及逐人累计、已记录正文/工具和终态，不以合法SHA代替语义。合法状态roundtrip精确相等。
+
+Task1公开接口采用open、recover、beginSession、openDecision、submitReply、failAttempt、resumeDecision、decision、earliestBarrier、actionDueMillis、headroom、toJson/fromJson。去掉逐操作Config参数，其余记录细节由实现者按上述最小合同固定。测试先落盘并真实运行缺能力RED，再实现。原runBudgetExhaustion草稿上限1000小于单次预留1200，须修成至少容纳首个调用，不能照抄假定首调用成功。
+
+- Task1续接真实Hermes20261106_094824_aa419b，120工具/3600秒，唯二源码/测试文件及Maven独占。实际Task2准备由原运行桥会话20261106_091523_c9946f只读进行，45工具/1200秒。PR15远端verify run42164122461已completed/success。
+
+
+## Task2 运行桥入场裁决（Codex）
+
+真实Hermes只读准备稿runtime-preparation/implementation-contract.md和test-scenarios.md已交。该稿未经编译，以下明确修正后才能实现。
+
+- 新档案decision-experiment-v1、decisions:1、schema8及scripted-decisions-v1，配置直接采用DecisionModel.Config。旧八参构造委托新九参可选Config，旧档案有新参数或新档案缺Config都在建文件前拒绝。新字段NON_NULL，所有next路径保留状态。
+- openDecisions(commandId,List<DecisionRequest(personPartyId,actionId,wakeReason)>)使用当前已确认时点，不接受调用方指定未来decisionAt。同批每人从同一截止位置投影，原任职绑定另存内部。一个人物至多一个OPEN决定，批内重复人/动作也拒绝。完整原宿主请求在计算当前输入前先查幂等，已完成重放不重投影新世界。
+- 输入必须含获权的原RoleTradingView.profile资产、市场、目录和已读经历，以及研究、目标、子单和本人回报，不能只保留任务清单漏掉经济状态。规范JSON以明确DTO序列化，不得靠“数字很长”猜测内部标识而误删正文。排除cutoffPosition、attemptId、代次、世界日志位置及全局订单/经历序号。
+- 新决定的输入、工具和任职在validate(candidate,previous)中应能由previous的相同截止快照重新生成核验。为原角色投影增加明确WorldState参数重载并复用，可用现有公共入口委托当前state。禁止验证时临时替换全局state，禁止拷贝第二套资产/权限算法。旧决定和其原观察有历史前缀约束。
+- 首批支持全部10个可变四岗工具及role.wait。role.cite作为当前可引用资料事实提供，明确不属于可返回业务动作。ChildCancel的模型args只含parentId/childId，person由绑定人物填入，取消阅读只接docId/version/index并由绑定人物组装原ReadingRef。工具DTO严格拒绝额外字段，静态参数失败在接受决定前分类为技术失败，业务授权和资金/股数到完成期原路径裁决。
+- 若纯核先解析为INTENT，但运行层DTO结构失败，必须以原未消费状态通过同一次纯核技术失败结算/重试，不能先持久RECORDED再改回。可以为纯核failAttempt增加明确已知用量失败入口，以保留真实脚本回执和用量。不能把已知用量一律写成未知保守结算，也不能将静态错误记为观望。
+- 重用原RoleActionPayload及原完成处理器。决定记录、精确回执、动作引用、原指令映射、usedTaskIds和PendingTask在一个candidate及一次commitAndApply中提交。不得调用会自行提交的公开WorldRoleSession动作方法。action任务标识以原actionId稳定派生，与回调顺序和attempt序号无关，遇原前缀占用使用现有确定性找空闲逻辑。
+- 屏障只允许既有四阶段，不新增BARRIER枚举或lastPhase字符串。advanceTo最多到最早OPEN屏障，处理全部更早任务和同刻RULES/DELIVERY/COMPLETION，在OBSERVATION前停下。即使inclusive恰等于屏障也必须停在观察前，反复推进未决屏障不加空批。pendingBarrier()返回明确时间及稳定排序actionIds。
+- 回执先到可以记录并排未来动作，但任一同屏障决定未解时世界仍停住。业务任务采用原公平队列稳定顺序。后续输入与经济状态作为可比较结果，真实回执归档先后允许不同。
+- 新运行和重开均需显式beginDecisionSession(commandId)开闸，提交代次变更并按稳定次序接续旧OPEN尝试。重开后的本地派发/应用默认关闭，旧档案不会增加该提交。迟到旧代次只归档，不改变预算或经济。相同已消费回执不重复写盘，异正文复用有单独拒绝记录。
+- bounded回调队列只允许offer原候选，回调线程不能读写世界领域对象。writer处理使用peek→持久成功→移除，I/O失败或暂停保留候选。明确容量、maxInFlight和真实墙钟超时。派发许可在已确认输入/尝试/预算后产生，派发身份只返回程序绑定字段。脚本提供方和runner单独类，异步仅使用Java17现有Executor，无网络。
+- 记录派发/回执等待的墙钟审计不进入人物inputText。重复派发、同一尝试并发和已确认未执行业务都从确定状态/受控宿主状态去重，不能以CPU快慢改变世界次序。未知用量失败按预留结算，已知脚本用量按实际声明结算，费用0.00。
+- 恢复须核对原输入生成、任职绑定、尝试身份与历史、预算总和、实际动作原文及任务/完成回报双向关系。单有usedTaskIds不能证明业务已排程，漏掉尚未完成动作的PendingTask必须拒绝。
+
+Task2与Task3可以按有证据的可验收单元拆分PR，任何骨架阶段仍标明实际覆盖。施工顺序为专项RED、最小实现、专项/全套绿、私有独立探针与审查，再标准GUI/CSV/Javadoc/文档/草稿PR。原schema7兼容使用真实旧程序产物副本及旧二进制回读。
+
+补充输入及进程门闸细节。人物input使用明确投影字段，profile提供原资产/市场/目录/经历/权限，旧RoleView.tools中的information.*说明不作为本轮可返回动作混入prompt。只列新决定合同的enabledTools、参数及耗时。当前session是否开放派发由进程本地门闸与已确认代次共同决定，重开门闸默认关闭。已确认Snapshot不得为关闭门闸而未经日志替换为recover副本，beginDecisionSession的候选才使用recover→beginSession及接续转换，再一次确认后打开本地门闸。纯核recover是无副作用函数，不属于自动世界提交。
+
+- Task1首稿449项后Codex新增30专项，实际RED修复严格JSON、恢复配置/预算/代次/全局序号、原声明与回执留存。最终479标准、49成交/121订单/7排名、GUI/CSV及JavaDoc13:22:44通过，72源root-candidate-3独立编译，20正常入口手算检查通过，等待最终hash独审交回及草稿PR。技术失败仍保留TECHNICAL_FAILED，同时以NO_RETRY_BUDGET明确记录重试停止原因，区别零调用初次预算耗尽。
+
+最后的JSON数值校验补充。整数计数和序号禁止浮点自动截断，DecisionModel与Task2工具DTO均关闭ACCEPT_FLOAT_AS_INT。Codex以尝试序号1.9和预留token100.9取得两项实际RED，不能把静默变为1/100当合法读取。初轮479项及candidate3保留为中间证据，加入这两项后最终以481项及candidate4为准。
+
+- 最终纯核candidate4在32审计+26作者专项下，481项标准/GUI/CSV及JavaDoc13:29:10通过。相对candidate3仅增加禁止整数浮点截断，原72源清单已重新核对，独立20检查通过。独立Hermes候选3为263 PASS/0 FAIL、20合法对照，最终单配置变更复验进行中。
+
+- 真实Hermes独立终审20261106_130606_fdbe9f对最终candidate4核对72源一致，263 PASS/0 FAIL、20合法对照、7整数/浮点检查通过，无可复现残留。Task1完成本地验收，Task2–3仍依该正式合同接续。源码71c1a160…d9f61f，证据core-review-final-4/。

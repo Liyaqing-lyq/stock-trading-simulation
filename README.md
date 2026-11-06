@@ -110,6 +110,8 @@ docs/       需求拆解、架构设计（类图/时序图）、接口定义、�
      会要求 JavaFX 位于 *module-path*，而 Maven 依赖在 classpath，实测报「缺少 JavaFX 运行时组件」。
      入口与实现分离正是为了让"随手点入口"这件事不会失败。
 
+扩展世界另提供`DecisionModel`决定纯核，固定准确可见输入、工具合同、提交屏障、尝试身份和双层预算。当前仅接受scripted用量，费用0.00。新世界的屏障推进、异步提供方及schema8运行桥按M4d接续，现有运行档案仍为schema1–7。
+
 ## 配置
 
 配置文件在 `src/main/resources/config.properties`：标的与参考价、各类 agent 的数量/初始资金/初始持仓、
