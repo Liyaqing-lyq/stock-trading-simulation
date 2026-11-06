@@ -159,3 +159,10 @@ Root拥有全部主树/Maven；作者aeafaa仅拥有deepseek-adapter-preparation
 最终candidate3真实Hermes增量独审已完成：86源hash一致，独立重编后64/64通过；同探针对candidate2取得6个cash-only失败，证明模块闸修复有效。Root24独编HTTP、902标准/43成交119订单7排名、GUI/JavaDoc及真实浏览器均已通过，现发布草稿PR，等待实际CI；总体基线继续施工。
 
 Web工作台代码3bbf337c8cbb87ef07ca2546a082ac73ee56e075已建立草稿[PR25](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/25)，base为codex/world-capital-performance；实际[CI42277171062](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42277171062)已completed/success。最终独审64/64。下一按2026-11-07-deepseek-provider.md继续，私有修复已由Root独立重新编译后7/7通过；真实keys未调用。Root另读出可选cache字段非法类型被当缺失、超int范围choice index可能截断为0两处待正式RED核验。整体基线未完成，无自动合并。
+
+## 2026-11-07 DeepSeek A 当前状态
+当前分支codex/world-deepseek-provider，base5f68a16。Web PR25代码CI42277171062与文档CI42277945916均实际success。Root收回全部主树/Maven；适配器新增1生产/1测试，原86源/902旧测试保持。正式23先真实3行为RED后修，925标准/CSV47成交126订单7排名/GUI及JavaDoc03:27:17通过；冻结6436d61e…a2cbc，Root独编10通过，纠正审查夹具后42/42对旧版9失败。真实Hermes849817仅私有最终补正index漏usage，exec93387；不能Maven/主树。
+真实key-1已于03:30:15单次flash调用成功：46输入5输出51总、cache hit0/miss46、931ms、预期JSON正确、128输出/15秒/无重试。实际费用null未知，其余4key未调用；原文/凭据未归档。禁止重跑live-once：唯一尝试标记已创建。世界connected=false，适配器不是世界运行桥。
+aeafaa exec30920仅私有live-decision-core-preparation准备新profile/未知费用纯核，禁止主树/Maven/真实keys/Temp。下步接最终独审、发布适配器草稿PR/CI，再纯核正式RED及版本化接线；B草案见live-provider-preparation/root-decisions.md。总体基线仍未完成，不自动合并。
+
+DeepSeek候选6436d61e…a2cbc最终真实Hermes独审已补正：每个index反例有含合法usage的成功基底，独编42/42；相同探针对旧客户端33/42，9失败包括两个截断为0的整数，先前37项中5个index断言因缺usage是假覆盖，原报告已另存superseded。Root独编10与纠正版42、925标准/47成交126订单7排名/GUI/JavaDoc及单次真实51token均通过。当前发布适配器草稿PR并等待实际CI，世界运行桥与总体基线继续施工。

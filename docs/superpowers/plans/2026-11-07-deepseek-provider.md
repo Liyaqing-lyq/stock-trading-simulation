@@ -25,8 +25,16 @@
 
 官方接口于2026-11-07核读：[Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[Models](https://api-docs.deepseek.com/api/list-models/)、[Pricing](https://api-docs.deepseek.com/quick_start/pricing/)。当前模型deepseek-flash和deepseek-v4-pro；max_tokens是输出上限，JSON模式空白仍须拒绝。价格会变，运行记录保存实际核读日期及估算性质。
 
-- [ ] 正式测试RED与生产实现。
-- [ ] 独立核验、旧回归与正式标准。
-- [ ] 有界真实小试及未测状态记录。
+- [x] 正式测试RED与生产实现。
+- [x] 独立核验、旧回归与正式标准。
+- [x] 有界真实小试及未测状态记录。
 - [ ] 文档/草稿PR/实际CI。
 - [ ] 版本化世界运行桥（下一子阶段，不随HTTP适配器自动完成）。
+
+## A 当前实际结果
+
+正式新增DeepSeekClient及23个JUnit，原86生产/902测试保持。测试先缺类RED；Root发现测试夹具未正确引号导致反例可能假通过，纠正为JSON节点生成、合法对照及资源关闭后，实际取得3行为失败（cache类型、index整数截断、测试端点）。生产最小修复后925标准全绿，CSV47成交126订单7排名、GUI实际启动、JavaDoc03:27:17通过。冻结hash6436d61e…a2cbc，Root独编10检查通过。
+
+独审初版把坏cache当null、index反例漏usage，Root明确拒收对应结论；Root私有纠正探针42项在正式候选全过、旧候选9项失败。真实Hermes按合法usage基底最终独立复核同样42/42，旧候选33/42；保留每轮原证据，不将假覆盖计作完成。
+
+2026-11-07 03:30:15上海时间，Root单次key-1/flash连通完成，输入46、输出5、总51（cache hit0/miss46），931毫秒，预期JSON校验正确；128输出上限、15秒总体期限、只一次请求且无重试。固定CREATE_NEW尝试标记防重发；原文和凭据未输出/归档。实际账单未知null，其余key-2..5未调用。世界尚未接模型，connected=false保持真实。
