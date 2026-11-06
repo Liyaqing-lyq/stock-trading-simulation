@@ -182,3 +182,5 @@ Root现拥有全部生产/测试/Maven。B1最终candidate3为DecisionModel2d312
 真实Hermes afc0c5仅私有live-decision-core-independent终审candidate3（exec10133），不得主树/Maven；aeafaa仅私有live-provider-preparation按新正式B2a Plan准备真实模型测试/旧调用client（exec92035），不得主树/Maven。旧写权83657/22858/49068/58461已释放，不可继续沿历史授权写主树。B1尚待最终独审和PR/CI；B2a正式Plan为2026-11-07-scene-decision-budget.md，未授生产。真实keys仅此前一次51token，本轮未调用。总体基线未完成。
 
 B1最终candidate3已由真实Hermes afc0c5独立核87源并重编：原40+补充2+新增费用15，共57项动态纯核断言全过；另11静态检查，Runtime部分仅静态，未冒称其做过动态测试。Root的Runtime配置2对照2拒绝及正常/复用/旧代次真实journal隔离测试独立成立。独审报告将Root“4项Runtime RED”混称，实际是Runtime测试类4测试，其中新增1测试含3入口分支；真实RED为该新增测试，数量以JUnit日志为准。发布前实际五key逐字扫描199个仓库文件通过。当前本地验收齐备，准备AI草稿PR，人工review与CI待远端事实。
+
+真实模型预算纯核代码269e854d88f840f3c7890b5a441ec2333addb3d6已建立草稿[PR27](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/27)，base为codex/world-deepseek-provider；实际[CI42285963075](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42285963075)已completed/success，已附当前会话。本地953/标准GUI/CSV/JavaDoc和独审57通过，B1工程验收完成，仍待人工实质review，未合并。下一按2026-11-07-scene-decision-budget.md继续B2a。Root已拒收私有新测试的无效预算/输出边界/不存在动作超额等夹具，要求修正，不把缺API RED当语义正确。
