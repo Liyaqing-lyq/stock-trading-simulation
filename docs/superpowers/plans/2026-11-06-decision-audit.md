@@ -51,6 +51,8 @@ Codex持有总体合同和验收，真实Hermes先按本合同只读核对及给
 - [x] 独立Hermes最终35断言，旧代次R1已消失。
 - [x] 标准GUI/CSV、JavaDoc17:38:15、三JVM及真实旧7/8新旧程序交叉读写通过。
 - [x] 评分映射、架构/接口及运行记录第21节更新。
-- [ ] 草稿PR发布与实际远端CI，保留人工实质review门槛。
+- [x] 草稿PR18已发布，代码a92ef2b的远端CI成功，人工实质review仍待完成。
 
 M4d保留的持久墙钟和身份拒绝两项在本单完成本地验收。提供方物理起止及真实付费属于未来适配器，后续接M3分红权利与收益纯核。
+
+审计代码a92ef2b9b95460c42e19ee6339c961a9f2cdcb72已建立[草稿PR #18](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/18)，base为codex/world-decision-runtime（PR17）。远端verify run42197537789实际completed/success，已附当前会话，待人工实质review。
