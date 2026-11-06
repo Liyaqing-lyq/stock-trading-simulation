@@ -631,6 +631,41 @@ public final class ManufacturingModel {
     }
 
     /**
+     * 公司分红义务在经营报表中的投影：已宣告面值与仍未付的合同面值。
+     *
+     * <p>两个金额都精确到分且非负，未付不得超过已宣告。{@link #none()} 表示没有分红义务，
+     * 与旧两参报表入口等价。持有人侧减值不进入本记录，公司合同未付面值不因投资者减值而减少。</p>
+     *
+     * @param declaredFace 已到 EX_BOOKED 或 SETTLED 的累计宣告面值
+     * @param unpaidFace   其中尚未支付的合同面值
+     */
+    public record DividendPosition(BigDecimal declaredFace, BigDecimal unpaidFace) {
+
+        /** 校验金额精确 2 位、非负且未付不超过宣告。 */
+        public DividendPosition {
+            declaredFace = CashLedger.money(declaredFace);
+            unpaidFace = CashLedger.money(unpaidFace);
+            if (declaredFace.signum() < 0 || unpaidFace.signum() < 0) {
+                throw new IllegalArgumentException("分红金额不能为负："
+                        + declaredFace.toPlainString() + " / " + unpaidFace.toPlainString());
+            }
+            if (unpaidFace.compareTo(declaredFace) > 0) {
+                throw new IllegalArgumentException("未付分红不得超过已宣告："
+                        + unpaidFace.toPlainString() + " > " + declaredFace.toPlainString());
+            }
+        }
+
+        /**
+         * 没有分红义务。
+         *
+         * @return 0.00 / 0.00
+         */
+        public static DividendPosition none() {
+            return new DividendPosition(ZERO, ZERO);
+        }
+    }
+
+    /**
      * 经营报表与核对结果。
      *
      * @param companyCash           公司经营现金
@@ -1189,7 +1224,27 @@ public final class ManufacturingModel {
      * @throws IllegalArgumentException 账户结构与开局不符
      */
     public static Report report(State state, Map<String, CashAccount> accounts) {
+        return report(state, accounts, DividendPosition.none());
+    }
+
+    /**
+     * 带公司分红义务的经营报表：未付分红计入负债，已宣告面值冲减权益。
+     *
+     * <p>资产、经营费用、利润、现金与物量口径完全沿用原规则，分红不进入费用或利润。
+     * 已宣告面值大于初始权益加利润时如实给出负权益，不夹到 0。</p>
+     *
+     * @param state     制造状态
+     * @param accounts  当前账户表
+     * @param dividends 公司分红义务；null 拒绝
+     * @return 经营报表
+     * @throws IllegalArgumentException 账户结构、分红位置或金额不合法
+     */
+    public static Report report(State state, Map<String, CashAccount> accounts,
+                                DividendPosition dividends) {
         requireState(state);
+        if (dividends == null) {
+            throw new IllegalArgumentException("分红位置不能为空");
+        }
         Opening opening = state.opening();
         requireAccounts(opening, accounts);
         BigDecimal companyCash = accounts.get(opening.companyAccountId()).cash();
@@ -1218,8 +1273,9 @@ public final class ManufacturingModel {
                 .add(state.finishedGoods().amount())
                 .add(receivables)
                 .add(state.equipment().net()));
-        BigDecimal liabilities = CashLedger.money(payables);
-        BigDecimal equity = CashLedger.money(state.initialEquity().add(profit));
+        BigDecimal liabilities = CashLedger.money(payables.add(dividends.unpaidFace()));
+        BigDecimal equity = CashLedger.money(state.initialEquity().add(profit)
+                .subtract(dividends.declaredFace()));
         BigDecimal world = worldCash(accounts);
         boolean balanced = assets.compareTo(liabilities.add(equity)) == 0
                 && world.compareTo(state.initialWorldCash()) == 0;
@@ -1245,7 +1301,22 @@ public final class ManufacturingModel {
      * @throws IllegalArgumentException 账户结构与开局不符
      */
     public static Report validate(State state, Map<String, CashAccount> accounts) {
-        Report report = report(state, accounts);
+        return validate(state, accounts, DividendPosition.none());
+    }
+
+    /**
+     * 带公司分红义务的校验：不平衡或世界现金不守恒时抛出异常。
+     *
+     * @param state     制造状态
+     * @param accounts  当前账户表
+     * @param dividends 公司分红义务；null 拒绝
+     * @return 已通过校验的经营报表
+     * @throws IllegalStateException    资产、负债、权益或世界现金不守恒
+     * @throws IllegalArgumentException 账户结构、分红位置或金额不合法
+     */
+    public static Report validate(State state, Map<String, CashAccount> accounts,
+                                  DividendPosition dividends) {
+        Report report = report(state, accounts, dividends);
         if (!report.balanced()) {
             throw new IllegalStateException("制造账不平衡：资产=" + report.totalAssets()
                     + "，负债=" + report.totalLiabilities()

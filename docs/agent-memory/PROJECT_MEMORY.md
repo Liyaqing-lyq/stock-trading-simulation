@@ -91,3 +91,27 @@ Root以旧D1二进制实际生成治理日志，15帧前缀legal按新D2恢复BU
 最终candidate2冻结78源，BoardModel815c8e7f...a09951e及Runtimeee0817b1...987a92c0，其余76生产源与D1逐字节相等。新47专项中14失败1错误的首稿RED已真实取得并修复，另1旧档能力闸恢复RED已修。最终712标准、52成交133订单7排名CSV、GUI、JavaDoc20:14:36通过。Root13分红+146世界+72审计检查，原编译旧客户端及旧构造、三golden逐字往返通过。真实Hermes最终独立重编74/74及旧档合法/伪造对照通过，已退出释放。当前Root独占源码/Maven，准备草稿PR，仍待人工实质review。D3从制造报表与除息参考接缝开始，随后完整新档案桥，不把纯核误记为真实付款。
 
 董事会分红授权代码eb9d96e2d0d69c63954b9539d5a01e6054a49dad已建立[草稿PR #21](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/21)，base为codex/world-valuation-performance（PR20）。远端verify run42217088050已实际completed/success，已附当前会话，等待人工实质review。D3a财务与除息参考接缝继续按新施工单推进，M3整体运行闭环仍在施工。
+
+## D3a测试先行写权
+
+当前codex/world-dividend-financial-seams base d100a8a。D2草稿PR21代码eb9d96e实际verify42217088050成功并附会话，文档head d100a8a待核CI。正式D3aPlan已写2026-11-06-dividend-financial-seams.md，两个纯核接缝，原712保留。真实Hermes aeafaa测试轮仅拥有新ManufacturingDividendTest/DividendReferencePriceTest及C Maven，55工具1800秒，未授78生产源。Root不可编辑两测试或跑C Maven，仍可docs/private，测试交回核对后再授生产。生产仍D2最终78源，暂无main写入者。
+
+## D3a测试核对及生产裁决
+
+作者29项缺API RED及78源未改证据已交。Root保存两原测试于dividend-financial/root-test-review。两个多方案夹具原先先完成S1除息再回到更早登记时点propose S2，违反D0时间单调。改成同一时序中先提案授权两个方案、同截止分别登记、再依次除息，保持生产规则。Root抽取修订测试的真实底层helper，在D2冻结classes独立编译运行，两方案、四个实际成交及D0清偿/减值均通过，fixture-run.log。
+
+新增成交位于两次除息之间只扣后一次、PROPOSED/AUTHORIZED/CANCELLED不调参考及null D0拒绝三项，共32，testcompile仍仅缺新API。制造新validate三参必须返回Report，与旧签名和正式Plan一致，作者handoff把它写成void属于交接笔误，测试本身已要求Report。null DividendPosition或新prices的D0入参采用明确IllegalArgumentException，精确金额约束沿CashLedger.money，旧行为保持。
+
+现在可正式只授ManufacturingModel、ValuationModel和两新测试及C Maven。原其余76生产源及旧712测试保持。目标744组合与32专项，Runtime/档案/角色不在本单施工。D2文档head d100a8a的verify42217584157亦已实际成功。
+
+## D3a生产执行中
+
+真实Hermes aeafaa exec64131当前独占ManufacturingModel、ValuationModel及两新测试和C Maven，90工具3600秒，implementation-query已明确授写。Root不得编辑四文件或跑Maven直到交回。已见32专项/744组合首绿，作者正在真实变异，源码可能短暂为MUTATION，不可冻结当final。Root只准备未编译CodexDividendFinancialProbe.java，使用原真实世界持仓、D0权利、实际CashLedger各腿与制造报告/除息price纯组合，需交回后冻结编译。D3b只读contract48124已交草案，尚未采纳，存在合并措辞错误、GovernancePayload数目错误、时序now+3过严、取消引用不存在BoardModel.cancel及impair使用seat代替holderowner等问题，须Root正式Plan纠正。D2文档CI42217584157成功。
+
+## D3a Root接回与当前证据
+
+作者exec64131 exited0释放四文件/Maven，Root现在独占。candidate1冻结78源，ManufacturingModel3d134a9a...410e421、Valuation93300cf3...0a332，其余76源与D2相同。作者32/744及两变异4失败/3失败还原。Root独立javac后44组合通过，Python Decimal独立复算2000现金/1000股、200应付→0、权益2000→1800、利润0、投资者NAV保持和15减值转回。私有首轮三外部账户误同owner导致mfg.open拒绝，已改分别owner，保留失败日志，不属产品缺陷。原D1编译客户26+7在新生产classes通过。
+
+标准exec67639已完成744全绿、49成交128订单7排名、GUI及JavaDoc21:02:42。真实Hermes849817 exec10994独审冻结candidate1正在私有javac运行，尚未交最终report，勿省略该结论。下一接审查、修复若有、docs与D3a草稿PR/CI，再D3b。D3b Root裁决稿在dividend-runtime-preparation/root-bridge-plan.md，尚未正式授测试，优先于先前只读建议，明确13字段、最紧t/t+1/t+2/t+3、holderowner减值、单一Price reference含age、报告不复制D0位置、实际公告及保留文档空间；取消需后续单独接线。
+
+真实Hermes849817最终独审从candidate1核78源hash并独立重编，制造17及除息参考26项自写断言合计43/43通过，未发现可复现缺陷，报告dividend-financial-review-candidate-1/handoff.md。Root随后仅移除新测试Fixture的三个未使用分量，所有断言及生产源保持，重新运行clean标准744全绿，最终CSV为37成交、119订单、7排名，JavaDoc21:11:18重新生成。最终日志standard-root-final-1-raw.log及javadoc-root-final-1-raw.log，冻结standard-final-raw。先前49/128及21:02:42为首轮结果，保留原证据。D3a本地验收完成，当前发布草稿PR及等待实际CI。
