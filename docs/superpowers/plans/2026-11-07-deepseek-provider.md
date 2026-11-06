@@ -28,7 +28,7 @@
 - [x] 正式测试RED与生产实现。
 - [x] 独立核验、旧回归与正式标准。
 - [x] 有界真实小试及未测状态记录。
-- [ ] 文档/草稿PR/实际CI。
+- [x] 文档/草稿PR/实际CI。
 - [ ] 版本化世界运行桥（下一子阶段，不随HTTP适配器自动完成）。
 
 ## A 当前实际结果
@@ -38,3 +38,5 @@
 独审初版把坏cache当null、index反例漏usage，Root明确拒收对应结论；Root私有纠正探针42项在正式候选全过、旧候选9项失败。真实Hermes按合法usage基底最终独立复核同样42/42，旧候选33/42；保留每轮原证据，不将假覆盖计作完成。
 
 2026-11-07 03:30:15上海时间，Root单次key-1/flash连通完成，输入46、输出5、总51（cache hit0/miss46），931毫秒，预期JSON校验正确；128输出上限、15秒总体期限、只一次请求且无重试。固定CREATE_NEW尝试标记防重发；原文和凭据未输出/归档。实际账单未知null，其余key-2..5未调用。世界尚未接模型，connected=false保持真实。
+
+有界提供方代码bd07ba0d6ae636c32c968e67b3531b52453b138d已建立草稿[PR26](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/26)，base为codex/world-web-workbench；实际[CI42280670472](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42280670472)已completed/success。A传输阶段验收完成，仍待人工review；下一按2026-11-07-live-decision-core.md实施现有DecisionModel的B1版本化用量/预算纯核，私有替代模型的62项不计正式覆盖。世界运行桥未连接，总体基线继续施工。
