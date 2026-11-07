@@ -2,7 +2,37 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 最新接收（2026-11-07 11:21 M4g.2/M6a candidate3）
+## 最新交接（2026-11-07 M4h.1接收 / M6b接回准备）
+
+媒体纯核candidate4最终已接收：103文件hash与主树一致，MediaModel 2756c7d9…99ed8、Runtime a2d4fe5d…5c23。formal-verify-5实际1246零失败/错误/跳过、CSV41/125/7、Node/真实GUI全绿，JavaDoc12:03:19成功；原始logs/verify与data已保存media-editorial-root/formal-final-5。bbad4c独审c4/handoff-c4.md：199核心0失败0问题、22旧四岗、真实未重编旧12client新续旧读21/104全部通过，首轮四问题已关闭。Root再次old12-*-4全绿，248候选文件与5Key逐字扫描0命中。独审误写C:\c4sums.tmp（hash无秘密），删除被其安全闸门拒绝，Root未碰范围外文件；偏差记录docs05§40，不影响代码证据，不能宣称全写权合规。当前媒体分支准备提交AI草稿PR，未自动合并。
+
+性能历史作者eead7c首稿与修复已结束：handoff-v2.md，两项舍入比较修复，48相关+Root8+Node绿，旧完整1218属前版。Root intake-2实际94源合并编译，保留媒体旧协议修复；8独立边界全绿、冻结旧calculate客户端122输出JSON完全一致（9539442e…e0f0e）。浏览器真实3成交/注资500/提取100，18确认点/5000ms，投资者收益0.133333333333、最大回撤0.141176470588，恢复后当前回撤0；单点/缺估值/非法范围/历史终点/离页及身份清空通过。Root仅在web-review-1调整曲线卡片顺序、表单分组、图名与说明，未改公式；截图browser-history-final.jpg。最终性能candidate1=105文件（含4新测试、Node脚本与verify挂接），exec72563新真实独审只写performance-history-independent，session待日志确认。主树尚未接性能代码，下一步在媒体PR之后另分支按候选差异接回。
+
+媒体运行桥按docs/superpowers/plans/2026-11-07-media-runtime.md，由405ace exec81622在media-runtime-author私有后端实现（新schema13/工时预算/实际工具/恢复）；基准是媒体candidate3，接回时须保留candidate4的来源描述前缀，不得整文件覆盖纯核。Root负责Host/Server/Scenario/Web；不让未来桥代码混进媒体纯核或性能PR。
+
+持续产品Web仍PID51516、18080、belief candidate3，IAB2/tab8 workbenchTab已保留deliverable。临时性能验收browser-1 PID18108已核身份停止；browser-2 PID24332/56044，30分钟有界，固定intake-2 classes + web-review-1静态资源，IAB2/tab9 performanceTab，测试Key与无供应商请求。不得把测试服务当持久产品。0新增真实provider调用、五场景仍关闭；原live-once禁止重跑。Root继续独占主树/Maven/正式验收。
+
+## 当前施工（2026-11-07 11:56，覆盖下方旧状态）
+
+当前codex/world-media-editorial基于85d71ed，未提交。M4h.1已接主树MediaModel/RoleAccess，Root额外修复并行区间错误、ID分隔符碰撞、跨媒体单源被当多源，以及新增枚举污染旧RoleView/决定输入。submit接口强制其他媒体State上下文，来自受信适配器；作者私有旧API不得覆盖主树。旧1–12权限固定七动作，开局与任职排程拒绝媒体岗位。legacy-permissions-red-1三失败→green-1共93绿；真正未重编旧12客户端新续旧读21/104已通过（old12-new-append-2/old12-old-read-2），original禁止续写，client禁止重编。
+
+候选1正式1237绿/JavaDoc已过但已过期。候选2共103文件含跨媒体与兼容修复，formal-verify-3正在运行；formal-verify-2仅新增正例把int误写size导致测试编译失败，已修，保留formal-suite-2-compile-error.log，不记为通过。候选2之后独审另发现继任记者通过submit错误码探知前任稿件，Root已补submit/correction统一无权及新测试，尚待最终正式验证并冻结候选3。真实独审exec30313仍在candidate1，独写media-editorial-independent；run-10实际163checks/0断言失败但2问题（跨媒体同源、继任错误提示），必须续核最终候选，不能将0断言失败当无问题。
+
+性能历史真实Hermes exec91718仍在performance-history-author私有实现，主树未接入。Root冻结provisional-1独验8项7过1失败：有效极小正净值舍入指数为0/回撤为1被新Series构造拒绝，等作者handoff后修；122旧calculate JSON指纹与新实现完全一致。接回Runtime只应用性能方法差异，禁止覆盖主树旧协议修复。作者结束后再续同session，不并发写其目录。
+
+持续网页仍PID51516/runtime-20261107-1120/18080，accepted belief candidate3；五Key遮罩且五场景全关闭，0新增供应商调用。整体基线仍未完成。Root独占主树/Maven，两个Hermes私有目录互不共享。任何clean先验证target/data解析路径及无reparse；不得重跑live-once、修改其他服务或全局memory。
+
+## 当前施工（2026-11-07 11:26）
+
+M4g.2/M6a已发布草稿PR36 https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/36 ，代码85d71ed3e48a5d506833002875df85b9f468bcb7，实际CI42333676886 completed/success；依赖PR35，仍待人工review，不自动合并。当前分支codex/world-media-editorial，base85d71ed。网页仍PID51516/candidate3/18080/IAB2 tab8，固定运行副本，0新增供应商调用。
+
+媒体真实Hermes405ace首稿exec28959已正常退出；Root对handoff最终f5d779cd…76655重新冻结author-final-1独编，正常链1通过、扩展边界13失败，含策略删模板NPE/撤职/遗忘批准/回忆预算/存在性回报泄露。保留run.log及run-expanded.log。现exec83486按media-editorial-fix-task.txt续同session修复冻结Policy/机构、完成期授权、selected可见，私有media-editorial-author单写；主树仍无MediaModel。首稿后置验证越界写系统Temp，不接收只写私有目录的声明；Root没有删除这些文件。修复合同明确只在私有目录构建/保存证据、交接后结束。
+
+M6b按新核准docs/superpowers/plans/2026-11-07-performance-history.md并行私有实施；真实Hermes新上下文exec91718，query performance-history-author-task.txt，日志performance-history-author-hermes.log，session ID待从该启动日志定位。仅performance-history-author镜像内PerformanceModel/Runtime/Host/Server/Web/新增测试可写，RoleAccess/Media只读；与媒体作者不共享写目录，Root接回时只取允许文件。先api.md再源码；不改journal/schema、不改旧Performance返回、400帧明确上限、不重算前缀。该步骤在媒体纯核之后单独PR，不能与本分支媒体源码混提交。
+
+Root独占主树/Maven/各候选冻结与独立验收。不要重跑live-once；不要清理系统Temp、其他服务、G盘checkout、全局memory；任何clean先验证target/data解析绝对路径和非reparse。总体仍缺媒体运行/社交、多公司银行、完整历史与长跑，继续推进。
+
+## 上阶段接收（2026-11-07 11:21 M4g.2/M6a candidate3）
 
 Root已按真实独立日志接收candidate3：Hermes c9a4a7独立重编180哈希一致、69增量/37信念/49行情/旧11、pending/captured/report篡改及真实工具重开全绿，旧candidate1差异对照真实RED；记录belief-runtime-root/independent-acceptance.md与belief-runtime-independent/c3/logs/verify-increment-run-2.log。正式1186/CSV37/119/7/Node/GUI/JavaDoc及旧客户端3/三JVM4仍为最终证据。独审worker44796在结束阶段再次试图处理私有范围外/tmp校验文件，Root仅停止已核验的自身进程树8节点，未删除系统文件；未产出final-addendum，不把Root接收记录署为Hermes。该审查已结束，不再续接旧检查进程。
 
@@ -302,3 +332,5 @@ B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://
 
 回忆纯核代码4809bef4665128349b9296d09d1feade825d38dc已建立草稿[PR33](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/33)，base codex/world-live-web，已附会话。实际[CI42310013886](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42310013886) completed/success。首推遇GitHub Internal Server Error，经ls-remote核对无分支后再次推送成功，未变提交。1099标准及95独审/14Root通过，纯核工程验收完成，仍待人工review。
 下一施工单docs/superpowers/plans/2026-11-07-cognition-runtime.md。准备会话20261107_070330_f270fe初轮60工具到限，续90910报告完成；Root纠正默认模式仍live、角色DTO不得带Policy/score或全局READ-n。新schema11冻结策略、两条全文路径同时裁剪、本人scoped阅读引用、管理员独立审计是下一硬边界。Root独占主树/Maven，作者尚未获得主树写权。
+
+后续schema13兼容准备（2026-11-07 11:30）：media-runtime-root/OldSchema12Client.java仅对当前已验收93源类编译一次，class SHA852f905f79fb7fc9e67d8048398ce42fc2665f9ed3517f8fdcfd22938b9b510f，禁止重编。old12-runtime-classes的Runtime SHA c825024248e47023b878e7e6e4feb1ce8886b61af9aea98c28d3abd31ffed0cf。真实原档old12-original停在15/100（捕获后、下一毫秒发布前，含未决input/Role/audit golden），原件不得续写；old12-control副本已用旧二进制append/read验证21/104和核验阅读学习完全相同。未来须复制original做新续写，再用旧class/旧runtime回读，尚未计schema13通过。Root媒体边界已扩展到16探针（旧最终1通过15失败），run-time.log包括回填过去和过去视图提前泄露选题。

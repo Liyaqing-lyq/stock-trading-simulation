@@ -57,7 +57,7 @@ public final class RoleAccess {
     private RoleAccess() {
     }
 
-    /** 机构四岗；首版只有这四个，不预埋尚无执行实现的任免或公司董事授权。 */
+    /** 机构四岗与媒体采编两岗；媒体岗位由媒体纯核使用，旧运行档案不启用。 */
     public enum Role {
         /** 研究员：写研究，不能动账。 */
         RESEARCHER,
@@ -66,10 +66,14 @@ public final class RoleAccess {
         /** 风控：按授权发出风险暂停，不能越过程序硬限制。 */
         RISK_OFFICER,
         /** 执行交易员：在已授权产品账户内下单与撤单，不能改投资方向。 */
-        EXECUTION_TRADER
+        EXECUTION_TRADER,
+        /** 记者：提出选题并提交组织草稿，不能批准或发布。 */
+        JOURNALIST,
+        /** 编辑：实际读完本次草稿后批准/退回并发布，不能自己写稿。 */
+        EDITOR
     }
 
-    /** 需要判定的动作；与四岗的对应关系见 {@link #authorize}。 */
+    /** 需要判定的动作；与四岗及媒体两岗的对应关系见 {@link #rolePermits}。 */
     public enum Action {
         /** 读取本组织获授权的产品账户。 */
         READ_PRODUCT_ACCOUNT,
@@ -84,7 +88,13 @@ public final class RoleAccess {
         /** 提交订单。 */
         EXECUTE_ORDER,
         /** 撤销订单。 */
-        CANCEL_ORDER
+        CANCEL_ORDER,
+        /** 提出媒体选题并提交组织草稿（记者）。 */
+        WRITE_STORY,
+        /** 审阅组织草稿：批准或退回（编辑）。 */
+        REVIEW_STORY,
+        /** 发布已批准草稿（编辑）。 */
+        PUBLISH_STORY
     }
 
     /** 判定结果；对外只有许可与拒绝两种，拒绝不区分原因以免泄露存在性。 */
@@ -819,6 +829,13 @@ public final class RoleAccess {
                         || action == Action.READ_ORGANIZATION_FILE
                         || action == Action.EXECUTE_ORDER
                         || action == Action.CANCEL_ORDER;
+            case JOURNALIST:
+                return action == Action.READ_ORGANIZATION_FILE
+                        || action == Action.WRITE_STORY;
+            case EDITOR:
+                return action == Action.READ_ORGANIZATION_FILE
+                        || action == Action.REVIEW_STORY
+                        || action == Action.PUBLISH_STORY;
             default:
                 return false;
         }
