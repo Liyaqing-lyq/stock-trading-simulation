@@ -115,6 +115,8 @@ public final class WorldRuntime implements AutoCloseable {
     private final InformationRun.Config informationConfig;
     /** 冻结的决定配置；只有 decision-experiment-v1 档案非空。 */
     private final DecisionModel.Config decisionConfig;
+    /** live 完成槽：构造时自动建立，scripted 为 null；不公开。 */
+    private final LiveCompletionInbox liveInbox;
     /** 有界回调队列：异步线程只 offer，不读写世界状态。 */
     private final java.util.concurrent.ArrayBlockingQueue<DecisionCandidate> decisionQueue;
     /** 进程本地派发/应用门闸；构造后一律关闭，必须显式 beginDecisionSession。 */
@@ -517,6 +519,19 @@ public final class WorldRuntime implements AutoCloseable {
                         BoardModel.Charter charter, RoleRun.Config roles,
                         InformationRun.Config information, DecisionModel.Config decisions)
             throws IOException {
+        this(file, manifest, openings, registry, manufacturing, charter, roles, information,
+                decisions, null);
+    }
+
+    /**
+     * 包内测试接缝：live 档案可注入可钟完成槽；生产构造始终自建。
+     */
+    WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                 OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                 BoardModel.Charter charter, RoleRun.Config roles,
+                 InformationRun.Config information, DecisionModel.Config decisions,
+                 LiveCompletionInbox injectedInbox)
+            throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         boolean liveProfile = decisions != null && decisions.profile() != null;
         if (liveProfile && !manifest.hasLiveDecisions()) {
@@ -610,6 +625,14 @@ public final class WorldRuntime implements AutoCloseable {
         this.roleConfig = roles;
         this.informationConfig = information;
         this.decisionConfig = decisions;
+        this.liveInbox = decisions != null && decisions.live()
+                ? (injectedInbox != null ? injectedInbox
+                        : new LiveCompletionInbox(decisions.limits().maxInFlight()))
+                : null;
+        if (this.liveInbox != null
+                && this.liveInbox.capacity() != decisions.limits().maxInFlight()) {
+            throw new IllegalArgumentException("完成槽容量必须等于 maxInFlight");
+        }
         this.decisionQueue = decisions == null ? null
                 : new java.util.concurrent.ArrayBlockingQueue<>(
                         decisions.limits().queueCapacity());
@@ -2653,6 +2676,9 @@ public final class WorldRuntime implements AutoCloseable {
         if (state.commandContents().containsKey(internalCommand)) {
             return state.commandOutcomes().get(internalCommand);
         }
+        if (liveInbox != null && liveInbox.size() > 0) {
+            throw new IllegalStateException("COMPLETION_SLOTS_ACTIVE");
+        }
         DecisionModel.State raw = run.state();
         DecisionModel.State ready = raw.sessionOpen() ? DecisionModel.recover(raw) : raw;
         DecisionModel.Result begun = DecisionModel.beginSession(ready);
@@ -2863,6 +2889,15 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private String acceptDecisionReply(String commandId, DecisionModel.Reply reply,
                                        ReceiptTiming receipt) throws IOException {
+        return acceptDecisionReply(commandId, reply, receipt, false);
+    }
+
+    /**
+     * 统一回执入口；{@code trustedClaim} 只允许 pump 的 REPLY 使用。
+     */
+    private String acceptDecisionReply(String commandId, DecisionModel.Reply reply,
+                                       ReceiptTiming receipt, boolean trustedClaim)
+            throws IOException {
         requireOpen();
         requireWriter();
         requireNotPaused();
@@ -2920,6 +2955,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (decision.status() != DecisionModel.Status.OPEN) {
             return "REJECTED:" + (decision.status() == DecisionModel.Status.RECORDED
                     ? DecisionModel.REASON_ALREADY_RECORDED : DecisionModel.REASON_ALREADY_EXPIRED);
+        }
+        if (run.state().config().live() && !trustedClaim) {
+            // 未结算的新业务回执必须由 inbox 的及时 claim 驱动；审计/重复路径在更早已返回。
+            throw new IllegalStateException("LIVE_COMPLETION_REQUIRED");
         }
 
         DecisionModel.Result result = DecisionModel.submitReply(run.state(), reply);
@@ -3133,6 +3172,42 @@ public final class WorldRuntime implements AutoCloseable {
     public record DispatchResult(String verdict, String reason, DecisionRun.Call call) {
     }
 
+    /** live 完成登记结果；未知/关闭不接，重复不刷新首次时间。 */
+    public enum CompletionOffer {
+        /** 已登记。 */
+        QUEUED,
+        /** 已有候选或已 claim。 */
+        DUPLICATE,
+        /** 没有该 attempt 的槽。 */
+        UNKNOWN,
+        /** 完成槽已关闭。 */
+        CLOSED
+    }
+
+    /**
+     * 任意线程登记一次完成；只注册不可变回执身份，内部由完成槽采两时钟。
+     *
+     * @param completion 不可变完成候选
+     * @return 稳定登记结果；不读世界、不要求 writer
+     */
+    public CompletionOffer offerLiveDecisionCompletion(LiveCompletionInbox.Completion completion) {
+        Objects.requireNonNull(completion, "完成候选");
+        LiveCompletionInbox inbox = liveInbox;
+        if (inbox == null) {
+            return CompletionOffer.UNKNOWN;
+        }
+        DecisionModel.Reply reply = completion.reply();
+        LiveCompletionInbox.AttemptKey key = new LiveCompletionInbox.AttemptKey(reply.runId(),
+                reply.actionId(), reply.attemptId(), reply.attemptNo(),
+                reply.recoveryGeneration());
+        return switch (inbox.register(key, completion)) {
+            case REGISTERED -> CompletionOffer.QUEUED;
+            case DUPLICATE -> CompletionOffer.DUPLICATE;
+            case UNKNOWN -> CompletionOffer.UNKNOWN;
+            case CLOSED -> CompletionOffer.CLOSED;
+        };
+    }
+
     /**
      * live 派发：先持久确认派发事实，成功后只返回一次可执行 Call。
      *
@@ -3188,6 +3263,9 @@ public final class WorldRuntime implements AutoCloseable {
         if (outstandingDispatches(run, sceneId) >= latestSceneConcurrency(run.state(), sceneId)) {
             return new DispatchResult("REJECTED", "SCENE_CONCURRENCY", null);
         }
+        if (liveInbox.size() >= liveInbox.capacity()) {
+            return new DispatchResult("REJECTED", "COMPLETION_CAPACITY", null);
+        }
         long position = state.position() + 1L;
         DecisionRun.Dispatch fact = new DecisionRun.Dispatch(attempt.attemptId(), actionId,
                 attempt.attemptNo(), attempt.recoveryGeneration(), planDigest(decision.plan()),
@@ -3206,12 +3284,19 @@ public final class WorldRuntime implements AutoCloseable {
         List<WorldEvent> events = List.of(new WorldEvent("dec-dispatch:" + commandId,
                 "DECISION_DISPATCH_V1", mapper.writeValueAsString(fact)));
         commitAndApply(internalCommand, content, outcome, events, world);
-        decisionInFlight.put(attempt.attemptId(),
-                new DispatchMark(System.nanoTime(), System.currentTimeMillis()));
-        return new DispatchResult("DISPATCHED", "", new DecisionRun.Call(state.runId(),
-                decision.actionId(), attempt.attemptId(), attempt.attemptNo(),
-                attempt.recoveryGeneration(), decision.wakeReason(), decision.allowedTools(),
-                decision.inputText(), decision.plan()));
+        DecisionRun.Call call = new DecisionRun.Call(state.runId(), decision.actionId(),
+                attempt.attemptId(), attempt.attemptNo(), attempt.recoveryGeneration(),
+                decision.wakeReason(), decision.allowedTools(), decision.inputText(),
+                decision.plan());
+        DispatchMark mark = new DispatchMark(liveInbox.nowNanos(), liveInbox.nowEpochMillis());
+        LiveCompletionInbox.OpenResult opened = liveInbox.open(
+                LiveCompletionInbox.AttemptKey.of(call), mark.nanos(), mark.epochMillis(),
+                decisionConfig.limits().wallTimeoutMillis());
+        if (opened != LiveCompletionInbox.OpenResult.OPENED) {
+            throw new IllegalStateException("完成槽建立失败：" + opened);
+        }
+        decisionInFlight.put(attempt.attemptId(), mark);
+        return new DispatchResult("DISPATCHED", "", call);
     }
 
     /**
@@ -3361,6 +3446,11 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public String offerDecisionCallback(DecisionModel.Reply reply) {
         Objects.requireNonNull(reply, "回执");
+        if (liveInbox != null) {
+            // live：只登记不可变完成，不读可变世界；时间由完成槽在 gate 内采。
+            return offerLiveDecisionCompletion(LiveCompletionInbox.Completion.business(reply))
+                    .name();
+        }
         java.util.concurrent.ArrayBlockingQueue<DecisionCandidate> queue = decisionQueue;
         if (queue == null) {
             throw new IllegalStateException("当前运行未启用决定模块");
@@ -3369,7 +3459,7 @@ public final class WorldRuntime implements AutoCloseable {
                 ? "QUEUED" : "QUEUE_FULL";
     }
 
-    /** @return 队列当前长度（管理端审计用） */
+    /** @return 旧scripted队列长度；live使用独立完成槽，此值不代表其待处理或在途数量 */
     public synchronized int queuedDecisionCallbacks() {
         return decisionQueue == null ? 0 : decisionQueue.size();
     }
@@ -3411,6 +3501,10 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public String offerDecisionFailure(DecisionFailure failure) {
         Objects.requireNonNull(failure, "失败候选");
+        if (liveInbox != null) {
+            throw new IllegalStateException(
+                    "LIVE_COMPLETION_REQUIRED: live 失败必须走 offerLiveDecisionCompletion");
+        }
         java.util.concurrent.ArrayBlockingQueue<DecisionCandidate> queue = decisionQueue;
         if (queue == null) {
             throw new IllegalStateException("当前运行未启用决定模块");
@@ -3433,6 +3527,9 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized String failDecisionAttempt(String actionId, int attemptNo, String attemptId,
                                                    long recoveryGeneration, String reason)
             throws IOException {
+        if (decisionConfig != null && decisionConfig.live()) {
+            throw new IllegalStateException("LIVE_COMPLETION_REQUIRED");
+        }
         requireOpen();
         requireWriter();
         requireDecisionsEnabled();
@@ -3481,18 +3578,183 @@ public final class WorldRuntime implements AutoCloseable {
         return outcome;
     }
 
+    /** 一次 pump 的计数：total 为已处理项，timeouts 为其中 TIMEOUT 数。 */
+    private record PumpResult(int total, int timeouts) {
+    }
+
     /**
-     * 由世界写入线程应用已入队回执：先取候选（peek）、持久成功后才移除。
-     * 暂停或提交失败时候选保留，不静默丢弃，也不重复调用提供方。
+     * live 唯一 pump：在 writer 内取 claim、按种子公平排序、逐条结算。
      *
-     * @return 实际应用的条数
-     * @throws IOException 持久提交失败；原候选留在队列并保持运行暂停
+     * <p>drain 与 expire 都调用它；前者返回已处理总数，后者只返回其中 TIMEOUT 数。
+     * 锁序固定为「世界监视器 → inbox 小锁」；inbox 内不做 journal/解析/业务。</p>
+     */
+    private PumpResult pumpLiveCompletions() throws IOException {
+        if (paused) {
+            for (LiveCompletionInbox.Claim claim : liveInbox.claimDue(liveInbox.capacity())) {
+                liveInbox.retry(claim);
+            }
+            return new PumpResult(0, 0);
+        }
+        List<LiveCompletionInbox.Claim> claims =
+                new ArrayList<>(liveInbox.claimDue(liveInbox.capacity()));
+        claims.sort(Comparator
+                .comparing((LiveCompletionInbox.Claim claim) -> WorldScheduler.fairOrder(seed,
+                        claim.key().actionId()))
+                .thenComparing(claim -> claim.key().attemptId()));
+        int total = 0;
+        int timeouts = 0;
+        for (int index = 0; index < claims.size(); index++) {
+            LiveCompletionInbox.Claim claim = claims.get(index);
+            try {
+                applyLiveClaim(claim);
+                liveInbox.settle(claim);
+                total++;
+                if (claim.kind() == LiveCompletionInbox.Kind.TIMEOUT) {
+                    timeouts++;
+                }
+            } catch (IOException | RuntimeException failure) {
+                // 失败时本次已 claim 的所有未处理项都必须可重试；不能只 retry 当前项，
+                // 否则其余项永久停在 CLAIMED，重启前不可再被 claim。
+                for (int rest = index; rest < claims.size(); rest++) {
+                    liveInbox.retry(claims.get(rest));
+                }
+                throw failure;
+            }
+        }
+        return new PumpResult(total, timeouts);
+    }
+
+    /** 按 claim 类型结算一次；每类都只走既有唯一日志路径。 */
+    private void applyLiveClaim(LiveCompletionInbox.Claim claim) throws IOException {
+        DecisionRun run = requireDecisions();
+        DecisionModel.Attempt attempt = attemptOf(run.state(), claim.key().actionId(),
+                claim.key().attemptId());
+        if (attempt == null) {
+            return; // 历史已不存在：只释放槽
+        }
+        ReceiptTiming receipt = new ReceiptTiming(claim.arrivalEpochMillis(),
+                claim.arrivalNanos());
+        if (claim.kind() == LiveCompletionInbox.Kind.TIMEOUT) {
+            if (!attempt.settledDone()) {
+                commitTimeout(claim.key().actionId(), attempt);
+            }
+            return;
+        }
+        if (claim.kind() == LiveCompletionInbox.Kind.LATE) {
+            if (!attempt.settledDone()) {
+                throw new IOException("迟到回执缺少已结算尝试：" + claim.key().attemptId());
+            }
+            // 已结算尝试：只会得到 DUPLICATE 或 REJECTED:IDENTITY_REUSE 审计，不会下单。
+            acceptDecisionReply("live-late:" + claim.key().attemptId(),
+                    claim.candidate().reply(), receipt);
+            return;
+        }
+        if (claim.candidate().businessReply()) {
+            acceptDecisionReply("live-reply:" + claim.key().attemptId(),
+                    claim.candidate().reply(), receipt, true);
+        } else {
+            commitProviderFailure(claim);
+        }
+    }
+
+    /** 单 attempt 超时：复用既有 DECISION_TIMEOUT_V1 持久路径与安全 JSON。 */
+    private void commitTimeout(String actionId, DecisionModel.Attempt attempt) throws IOException {
+        DecisionRun run = requireDecisions();
+        DecisionModel.Result result = DecisionModel.failAttempt(run.state(), actionId,
+                attempt.attemptNo(), attempt.attemptId(), attempt.recoveryGeneration(), "TIMEOUT");
+        if (result.verdict() != DecisionModel.Verdict.ACCEPTED) {
+            throw new IOException("超时无法结算：" + result.reason());
+        }
+        DecisionRun candidate = run.withState(result.state());
+        String content = decisionConfig.live()
+                ? liveFailureContent(actionId, attempt.attemptNo(), attempt.attemptId(),
+                        attempt.recoveryGeneration(), "TIMEOUT")
+                : legacyFailureContent(actionId, attempt.attemptId(), "TIMEOUT");
+        WorldState world = next(state.timeMillis(), state.lastPhase(), state.accounts(),
+                state.pending(), state.delivered(), state.usedTaskIds(), state.commandContents(),
+                state.commandOutcomes(), state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), state.information(),
+                state.trading(), candidate);
+        AuditTiming marks = auditTiming(attempt.attemptId(), null, System.nanoTime(),
+                System.currentTimeMillis());
+        DecisionAudit audit = decisionAudit(run.state().runId(), actionId, attempt.attemptId(),
+                attempt.attemptNo(), attempt.recoveryGeneration(), "TIMEOUT", "TIMEOUT",
+                world.position(), marks, "", "", null, "");
+        if (audit.position() != world.position()) {
+            throw new IllegalStateException("审计位置与提交位置不一致");
+        }
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("dec-timeout:" + attempt.attemptId(),
+                "DECISION_TIMEOUT_V1", content));
+        events.add(auditEvent(audit));
+        commitAndApply("dec-timeout:" + actionId + ":" + attempt.attemptId(), content,
+                "TIMEOUT", events, world);
+        decisionInFlight.remove(attempt.attemptId());
+    }
+
+    /** 提供方已响应但正文不可用：已知 usage 的技术失败，独立来源事件，不伪装 WAIT。 */
+    private void commitProviderFailure(LiveCompletionInbox.Claim claim) throws IOException {
+        DecisionRun run = requireDecisions();
+        DecisionModel.Reply reply = claim.candidate().reply();
+        String code = claim.candidate().failureCode();
+        DecisionModel.Result rejected = DecisionModel.rejectReply(run.state(), reply, code);
+        if (rejected.verdict() != DecisionModel.Verdict.ACCEPTED
+                && rejected.verdict() != DecisionModel.Verdict.DUPLICATE) {
+            throw new IOException("提供方技术失败无法记录：" + rejected.reason());
+        }
+        DecisionRun candidate = run.withState(rejected.state());
+        String content = providerFailureContent(reply, code);
+        String outcome = "TECHNICAL_FAILED:" + code;
+        String internal = "dec-provider-failed:" + reply.attemptId();
+        WorldState world = decisionWorld(candidate, internal, content, outcome);
+        DecisionModel.Attempt settled = attemptOf(rejected.state(), reply.actionId(),
+                reply.attemptId());
+        if (settled == null) {
+            throw new IllegalStateException("提供方失败缺少对应尝试：" + reply.attemptId());
+        }
+        AuditTiming marks = auditTiming(reply.attemptId(),
+                new ReceiptTiming(claim.arrivalEpochMillis(), claim.arrivalNanos()),
+                System.nanoTime(), System.currentTimeMillis());
+        DecisionAudit audit = replyAudit(run, rejected.decision(), settled, outcome,
+                world.position(), marks);
+        if (audit.position() != world.position()) {
+            throw new IllegalStateException("审计位置与提交位置不一致");
+        }
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent(internal, "DECISION_PROVIDER_FAILED_V1", content));
+        events.add(auditEvent(audit));
+        commitAndApply(internal, content, outcome, events, world);
+        decisionInFlight.remove(reply.attemptId());
+    }
+
+    /** 规范 JSON：{reply, failureCode}；用于命令原文与领域事件 payload。 */
+    private String providerFailureContent(DecisionModel.Reply reply, String failureCode)
+            throws IOException {
+        com.fasterxml.jackson.databind.node.ObjectNode node = mapper.createObjectNode();
+        node.set("reply", mapper.valueToTree(reply));
+        node.put("failureCode", failureCode);
+        return mapper.writeValueAsString(node);
+    }
+
+    /** 提供方失败事件原文。 */
+    private record ProviderFailureContent(DecisionModel.Reply reply, String failureCode) {
+    }
+
+    /**
+     * 由世界写入线程结算完成候选，持久成功后才移除；暂停或提交失败保留候选。
+     * live 同时处理及时回执、超时和迟到审计，旧 scripted 处理其有界队列。
+     *
+     * @return 本次处理的候选总数（live 包含超时与迟到审计）
+     * @throws IOException 持久提交失败；候选保留且运行暂停
      */
     public synchronized int drainDecisionCallbacks() throws IOException {
         requireOpen();
         requireWriter();
         requireDecisionsEnabled();
         requireDecisionGate();
+        if (liveInbox != null) {
+            return pumpLiveCompletions().total();
+        }
         if (paused || decisionQueue == null) {
             return 0;
         }
@@ -3534,6 +3796,9 @@ public final class WorldRuntime implements AutoCloseable {
         requireWriter();
         requireDecisionsEnabled();
         requireDecisionGate();
+        if (liveInbox != null) {
+            return pumpLiveCompletions().timeouts();
+        }
         if (paused) {
             return 0;
         }
@@ -4085,7 +4350,8 @@ public final class WorldRuntime implements AutoCloseable {
     private static final List<String> MUTATING_DECISION_EVENTS = List.of(
             "DECISION_SESSION_OPEN_V1", "DECISION_OPENED_V1", "DECISION_REPLIED_V1",
             "DECISION_ACTION_SCHEDULED_V1", "DECISION_FAILED_V1", "DECISION_TIMEOUT_V1",
-            "DECISION_STALE_ARCHIVED_V1", "DECISION_DISPATCH_V1");
+            "DECISION_STALE_ARCHIVED_V1", "DECISION_DISPATCH_V1",
+            "DECISION_PROVIDER_FAILED_V1");
 
     /**
      * schema10 逐批决定转换审计：从 previous 与原命令/唯一决定领域事件重建期望候选，
@@ -4125,7 +4391,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         int expectedAudits = mutating.isEmpty() || List.of("DECISION_REPLIED_V1",
                 "DECISION_ACTION_SCHEDULED_V1", "DECISION_FAILED_V1", "DECISION_TIMEOUT_V1",
-                "DECISION_STALE_ARCHIVED_V1").contains(mutating.get(0).type()) ? 1 : 0;
+                "DECISION_STALE_ARCHIVED_V1", "DECISION_PROVIDER_FAILED_V1")
+                .contains(mutating.get(0).type()) ? 1 : 0;
         if (auditCount != expectedAudits) {
             throw new IOException("决定批次的审计数量与操作不一致");
         }
@@ -4199,6 +4466,8 @@ public final class WorldRuntime implements AutoCloseable {
             case "DECISION_TIMEOUT_V1" -> expectedFailure(previous, commit, event, true);
             case "DECISION_STALE_ARCHIVED_V1" -> expectedArchive(previous, commit, event);
             case "DECISION_DISPATCH_V1" -> expectedDispatch(previous, commit, event);
+            case "DECISION_PROVIDER_FAILED_V1" ->
+                    expectedProviderFailure(previous, commit, event);
             default -> throw new IOException("未知决定领域事件：" + event.type());
         };
     }
@@ -4487,6 +4756,59 @@ public final class WorldRuntime implements AutoCloseable {
                 outcome);
     }
 
+    /** 提供方失败批次：从原命令与事件重建 rejectReply，校验身份/usage/结果。 */
+    private DecisionBatch expectedProviderFailure(WorldState previous, WorldCommit commit,
+                                                  WorldEvent event) throws IOException {
+        if (!commit.commandId().startsWith("dec-provider-failed:")) {
+            throw new IOException("提供方失败批次命令前缀不符：" + commit.commandId());
+        }
+        if (!decisionConfig.live()) {
+            throw new IOException("旧档案不得出现提供方失败批次");
+        }
+        ProviderFailureContent parsed;
+        try {
+            parsed = decisionMapper.readValue(commit.commandContent(),
+                    ProviderFailureContent.class);
+        } catch (IOException invalid) {
+            throw new IOException("提供方失败原文不合法", invalid);
+        }
+        if (!providerFailureContent(parsed.reply(), parsed.failureCode())
+                .equals(commit.commandContent())) {
+            throw new IOException("提供方失败原文不是规定形状");
+        }
+        if (!commit.commandContent().equals(event.payload())) {
+            throw new IOException("提供方失败事件原文与命令不一致");
+        }
+        DecisionRun run = previous.decisions();
+        DecisionModel.Reply reply = parsed.reply();
+        DecisionModel.Decision decision = DecisionModel.decision(run.state(),
+                reply.actionId()).orElse(null);
+        if (decision == null || decision.status() != DecisionModel.Status.OPEN) {
+            throw new IOException("提供方失败缺少可结算决定：" + reply.actionId());
+        }
+        DecisionModel.Attempt attempt = attemptOf(run.state(), reply.actionId(),
+                reply.attemptId());
+        if (attempt == null || attempt.attemptNo() != reply.attemptNo()
+                || attempt.recoveryGeneration() != reply.recoveryGeneration()
+                || attempt.settledDone()) {
+            throw new IOException("提供方失败身份与当前尝试不一致");
+        }
+        if (run.dispatch(reply.attemptId()) == null) {
+            throw new IOException("提供方失败缺少持久派发事实：" + reply.attemptId());
+        }
+        DecisionModel.Result rejected = DecisionModel.rejectReply(run.state(), reply,
+                parsed.failureCode());
+        if (rejected.verdict() != DecisionModel.Verdict.ACCEPTED) {
+            throw new IOException("提供方失败无法由原命令重建：" + rejected.reason());
+        }
+        String outcome = "TECHNICAL_FAILED:" + parsed.failureCode();
+        if (!outcome.equals(commit.result())) {
+            throw new IOException("提供方失败回报与重建不一致");
+        }
+        return batchWithCommand(previous, run.withState(rejected.state()), commit.commandId(),
+                commit.commandContent(), outcome, true);
+    }
+
     private DecisionBatch expectedArchive(WorldState previous, WorldCommit commit,
                                           WorldEvent event) throws IOException {
         DecisionModel.Reply reply;
@@ -4664,6 +4986,9 @@ public final class WorldRuntime implements AutoCloseable {
             return;
         }
         closed = true;
+        if (liveInbox != null) {
+            liveInbox.close();
+        }
         try {
             journal.close();
         } catch (IOException ignored) {

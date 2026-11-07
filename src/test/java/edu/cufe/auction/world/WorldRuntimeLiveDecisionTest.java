@@ -279,7 +279,7 @@ class WorldRuntimeLiveDecisionTest {
             assertEquals(position, rt.snapshot().position());
 
             DecisionRun.Call call = first.call();
-            assertEquals("RECORDED", rt.acceptDecisionReply("r-1",
+            assertEquals("RECORDED", completeReply(rt,
                     reply(call, "{\"tool\":\"role.wait\"}", DecisionModel.Usage.unknownCost(1, 20, 5))));
             WorldRuntime.DispatchResult settled = rt.dispatchLiveDecision("cmd-4", "a-1");
             assertEquals("EMPTY", settled.verdict(), "已终态动作不得再派发");
@@ -328,16 +328,16 @@ class WorldRuntimeLiveDecisionTest {
             assertEquals(DecisionModel.Status.OPEN, decision(rt, "a-1").status());
             assertFalse(decision(rt, "a-1").lastAttempt().settledDone());
 
-            String failed = rt.failDecisionAttempt("a-1", attempt.attemptNo(), attempt.attemptId(),
-                    attempt.recoveryGeneration(), "PROVIDER_TIMEOUT");
-            assertTrue(failed.startsWith("REJECTED:"), "未派发失败必须拒绝：" + failed);
+            assertThrows(IllegalStateException.class, () -> rt.failDecisionAttempt("a-1",
+                    attempt.attemptNo(), attempt.attemptId(), attempt.recoveryGeneration(),
+                    "PROVIDER_TIMEOUT"));
             assertEquals(position, rt.snapshot().position());
             assertEquals(0, rt.expireDecisionTimeouts(), "未派发尝试不进入墙钟超时");
             assertEquals(position, rt.snapshot().position());
 
             WorldRuntime.DispatchResult dispatched = rt.dispatchLiveDecision("cmd-1", "a-1");
             assertEquals("DISPATCHED", dispatched.verdict());
-            assertEquals("RECORDED", rt.acceptDecisionReply("r-2", reply(dispatched.call(),
+            assertEquals("RECORDED", completeReply(rt, reply(dispatched.call(),
                     "{\"tool\":\"role.wait\"}", DecisionModel.Usage.unknownCost(1, 20, 5))),
                     "派发之后同一回执必须可结算");
         }
@@ -392,7 +392,7 @@ class WorldRuntimeLiveDecisionTest {
             assertEquals(position, rt.snapshot().position(), "拒绝不得写盘");
             assertEquals(2, rt.outstandingLiveDispatches());
 
-            assertEquals("RECORDED", rt.acceptDecisionReply("r-1", reply(firstDispatch.call(),
+            assertEquals("RECORDED", completeReply(rt, reply(firstDispatch.call(),
                     "{\"tool\":\"role.wait\"}", DecisionModel.Usage.unknownCost(1, 20, 5))));
             assertEquals(1, rt.outstandingLiveDispatches());
             assertEquals("DISPATCHED", rt.dispatchLiveDecision("d-4", "c-1").verdict());
@@ -421,7 +421,7 @@ class WorldRuntimeLiveDecisionTest {
             assertEquals("REJECTED", rt.dispatchLiveDecision("d-c", "c-1").verdict(),
                     "降 cap 后新派发仍须受未结算在途限制");
 
-            assertEquals("RECORDED", rt.acceptDecisionReply("r-a", reply(researchA.call(),
+            assertEquals("RECORDED", completeReply(rt, reply(researchA.call(),
                     "{\"tool\":\"role.wait\"}", DecisionModel.Usage.unknownCost(1, 20, 5))));
             assertEquals("DISPATCHED", rt.dispatchLiveDecision("d-c2", "c-1").verdict());
         }
@@ -440,7 +440,7 @@ class WorldRuntimeLiveDecisionTest {
             long reserved = decision(rt, "a-1").lastAttempt().reserved().inputTokens();
             DecisionModel.Usage overrun = DecisionModel.Usage.unknownCost(1, reserved + 1, 5);
             assertEquals("TECHNICAL_FAILED:" + DecisionModel.REASON_USAGE_EXCEEDS_RESERVATION,
-                    rt.acceptDecisionReply("r-a", reply(dispatched.call(),
+                    completeReply(rt, reply(dispatched.call(),
                             "{\"tool\":\"role.wait\"}", overrun)));
             assertTrue(DecisionModel.liveBudgetBlocked(
                     rt.snapshot().decisions().orElseThrow().state()));
@@ -552,7 +552,7 @@ class WorldRuntimeLiveDecisionTest {
                     route("trading", 1, 2))));
             DecisionRun.Call call = rt.dispatchLiveDecision("p", "dto").call();
             assertEquals("TECHNICAL_FAILED:TOOL_ARGS_INVALID",
-                    rt.acceptDecisionReply("r", reply(call, body, usage)));
+                    completeReply(rt, reply(call, body, usage)));
             assertEquals(usage, decision(rt, "dto").attempts().get(0).declaredUsage());
             assertEquals(2, decision(rt, "dto").attempts().size());
             assertNull(rt.snapshot().decisions().orElseThrow().actionRef("dto"));
@@ -570,23 +570,26 @@ class WorldRuntimeLiveDecisionTest {
         int caseNumber = 0;
         for (String action : List.of("normal-failure", "quoted\"action\n")) {
             Path file = tempDir.resolve("failure-" + (++caseNumber) + ".journal");
-            DecisionRun.Call call;
             String reason = "provider\"failure\n";
+            // 原B2b二进制真实生成的schema10日志，保留旧任意reason的读取兼容性。
+            try (var compressed = getClass().getResourceAsStream(
+                    "/live-legacy/failure-" + caseNumber + ".journal.gz")) {
+                assertNotNull(compressed);
+                try (var input = new java.util.zip.GZIPInputStream(compressed)) {
+                    Files.copy(input, file);
+                }
+            }
+            DecisionModel.Attempt original;
             try (WorldRuntime rt = open(file)) {
-                rt.beginDecisionSession("s");
-                rt.openDecisions("o", List.of(new DecisionRun.Request(ALICE, action, WAKE,
-                        route("research", 1, 2))));
-                call = rt.dispatchLiveDecision("p", action).call();
-                assertEquals("TECHNICAL_FAILED:" + reason, rt.failDecisionAttempt(action,
-                        call.attemptNo(), call.attemptId(), call.recoveryGeneration(), reason));
+                original = decision(rt, action).attempts().get(0);
             }
             List<WorldCommit> history = commits(file);
             WorldCommit failure = history.get(history.size() - 1);
             JsonNode content = json.readTree(failure.commandContent());
             assertEquals(action, content.path("actionId").asText());
-            assertEquals(call.attemptId(), content.path("attemptId").asText());
-            assertEquals(call.attemptNo(), content.path("attemptNo").asInt());
-            assertEquals(call.recoveryGeneration(), content.path("recoveryGeneration").asLong());
+            assertEquals(original.attemptId(), content.path("attemptId").asText());
+            assertEquals(original.attemptNo(), content.path("attemptNo").asInt());
+            assertEquals(original.recoveryGeneration(), content.path("recoveryGeneration").asLong());
             assertEquals(reason, content.path("reason").asText());
             try (WorldRuntime rt = open(file)) {
                 assertEquals(DecisionModel.REASON_UNKNOWN_USAGE + ":" + reason,
@@ -601,7 +604,7 @@ class WorldRuntimeLiveDecisionTest {
                         }
                         try {
                             ObjectNode bad = (ObjectNode) json.readTree(commit.path("commandContent").asText());
-                            bad.put("attemptNo", call.attemptNo() + 1);
+                            bad.put("attemptNo", original.attemptNo() + 1);
                             String text = json.writeValueAsString(bad);
                             commit.put("commandContent", text);
                             ((ObjectNode) event).put("payload", text);
@@ -628,7 +631,7 @@ class WorldRuntimeLiveDecisionTest {
             rt.openDecisions("o", List.of(new DecisionRun.Request(ALICE, "a", WAKE,
                     route("research", 1, 2))));
             DecisionRun.Call call = rt.dispatchLiveDecision("p", "a").call();
-            assertEquals("RECORDED", rt.acceptDecisionReply("wait", reply(call,
+            assertEquals("RECORDED", completeReply(rt, reply(call,
                     "{\"tool\":\"role.wait\"}", DecisionModel.Usage.unknownCost(1, 20, 5))));
             assertEquals("REJECTED:IDENTITY_REUSE", rt.acceptDecisionReply("q-wait-again",
                     reply(call, "{\"tool\":\"role.wait\"}", DecisionModel.Usage.unknownCost(1, 21, 5))));
@@ -785,9 +788,9 @@ class WorldRuntimeLiveDecisionTest {
         return liveConfig(2, 3, 60_000L);
     }
 
-    /** 审计夹具使用 5ms 墙钟，保证超时事件可真实产生。 */
+    /** 审计夹具为合法回执留足1秒；末尾仍真实等待超时。 */
     private static DecisionModel.Config auditConfig() {
-        return liveConfig(2, 3, 5L);
+        return liveConfig(2, 3, 1_000L);
     }
 
     private static DecisionModel.Config liveConfig(int maxInFlight, int maxAttempts,
@@ -860,11 +863,20 @@ class WorldRuntimeLiveDecisionTest {
                 call.attemptNo(), call.recoveryGeneration(), body, usage, "provider:test");
     }
 
+    /** 只迁移live交付方式；回报取持久命令结果，原业务/审计断言保持。 */
+    private static String completeReply(WorldRuntime rt, DecisionModel.Reply reply) throws IOException {
+        assertEquals(WorldRuntime.CompletionOffer.QUEUED,
+                rt.offerLiveDecisionCompletion(LiveCompletionInbox.Completion.business(reply)));
+        assertEquals(1, rt.drainDecisionCallbacks());
+        return rt.decisionAudits().stream().filter(a -> a.attemptId().equals(reply.attemptId()))
+                .reduce((a, b) -> b).orElseThrow().outcome();
+    }
+
     private static void settleWait(WorldRuntime rt, String actionId) throws IOException {
         WorldRuntime.DispatchResult dispatched = rt.dispatchLiveDecision("settle-" + actionId,
                 actionId);
         assertEquals("DISPATCHED", dispatched.verdict(), dispatched.reason());
-        assertEquals("RECORDED", rt.acceptDecisionReply("settle-reply-" + actionId,
+        assertEquals("RECORDED", completeReply(rt,
                 reply(dispatched.call(), "{\"tool\":\"role.wait\"}",
                         DecisionModel.Usage.unknownCost(1, 20, 5))));
     }
@@ -1176,13 +1188,13 @@ class WorldRuntimeLiveDecisionTest {
                 putSnapshot(commit, snapshot);
             }
             case "failure-reason" -> {
-                JsonNode event = decisionEvent(commit, "DECISION_FAILED_V1");
+                JsonNode event = decisionEvent(commit, "DECISION_PROVIDER_FAILED_V1");
                 if (event == null) {
                     return;
                 }
                 try {
                     ObjectNode payload = (ObjectNode) json.readTree(event.path("payload").asText());
-                    payload.put("reason", "SCRIPT_MISSING");
+                    payload.put("failureCode", "SCRIPT_MISSING");
                     ((ObjectNode) event).put("payload", json.writeValueAsString(payload));
                 } catch (IOException failure) {
                     throw new IllegalStateException(failure);
@@ -1284,7 +1296,7 @@ class WorldRuntimeLiveDecisionTest {
 
             WorldRuntime.DispatchResult wait = rt.dispatchLiveDecision("p-wait", "a-wait");
             assertEquals("DISPATCHED", wait.verdict());
-            assertEquals("RECORDED", rt.acceptDecisionReply("q-wait", reply(wait.call(),
+            assertEquals("RECORDED", completeReply(rt, reply(wait.call(),
                     "{\"tool\":\"role.wait\"}", DecisionModel.Usage.unknownCost(1, 20, 5))));
             assertEquals("REJECTED:IDENTITY_REUSE", rt.acceptDecisionReply("q-wait-again",
                     reply(wait.call(), "{\"tool\":\"role.wait\"}",
@@ -1292,22 +1304,26 @@ class WorldRuntimeLiveDecisionTest {
 
             WorldRuntime.DispatchResult intent = rt.dispatchLiveDecision("p-intent", "b-intent");
             assertEquals("DISPATCHED", intent.verdict());
-            assertEquals("RECORDED", rt.acceptDecisionReply("q-intent", reply(intent.call(),
+            assertEquals("RECORDED", completeReply(rt, reply(intent.call(),
                     "{\"tool\":\"role.target.set\",\"args\":" + TARGET_SET_ARGS + "}",
                     DecisionModel.Usage.unknownCost(1, 40, 20))));
 
             WorldRuntime.DispatchResult fail = rt.dispatchLiveDecision("p-fail", "c-fail");
             assertEquals("DISPATCHED", fail.verdict());
-            assertEquals("TECHNICAL_FAILED:PROVIDER_TIMEOUT", rt.failDecisionAttempt("c-fail",
-                    fail.call().attemptNo(), fail.call().attemptId(),
-                    fail.call().recoveryGeneration(), "PROVIDER_TIMEOUT"));
+            assertEquals(WorldRuntime.CompletionOffer.QUEUED,
+                    rt.offerLiveDecisionCompletion(LiveCompletionInbox.Completion.failure(
+                            "PROVIDER_TIMEOUT", reply(fail.call(), "", null))));
+            assertEquals(1, rt.drainDecisionCallbacks());
+            assertEquals("TECHNICAL_FAILED:PROVIDER_TIMEOUT", rt.decisionAudits().stream()
+                    .filter(a -> a.attemptId().equals(fail.call().attemptId()))
+                    .reduce((a, b) -> b).orElseThrow().outcome());
 
             rt.scheduleTransfer("t-1", "task-1", 100_000L, PRODUCT, ACC_FUND, ACC_INV,
                     new BigDecimal("1.00"), 0L);
 
             WorldRuntime.DispatchResult late = rt.dispatchLiveDecision("p-late", "d-late");
             assertEquals("DISPATCHED", late.verdict());
-            Thread.sleep(30L);
+            Thread.sleep(1_100L);
             assertEquals(1, rt.expireDecisionTimeouts(), "墙钟超时必须结算一次");
         }
         // 第二代：begin 保守结算旧代次，再归档一条旧回执。
