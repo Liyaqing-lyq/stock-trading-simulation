@@ -20,7 +20,7 @@
 - 首轮精度 1 模拟毫秒，固定四阶段；新消息最早下一时间步。公平顺序来自运行种子并可记录。
 - 用户可见首版须含所启用公司的董事会、独立四岗、遗忘/偏信/习惯和真实图表来源；基础模块通过不代表首版完成。
 - 每阶段：专项测试 + `bash scripts/verify.sh --with-gui` + 评分映射 + 真实记录；代码通过 PR、`[AI-Generated]`、至少一名人工实质 review 后才能合入。
-- 保留启动时所有未提交改动。草稿依赖链 `codex/world-implementation` → `codex/world-securities-ledger` → `codex/world-matching` → `codex/world-exchange` → `codex/world-manufacturing` → `codex/world-governance` → `codex/world-role-information` → `codex/world-role-reading` → `codex/world-role-trading` → `codex/world-role-trading-runtime` → `codex/world-decisions` → `codex/world-decision-runtime` → `codex/world-decision-audit` → `codex/world-dividend-core` → `codex/world-valuation-performance` → `codex/world-dividend-authorization` → 当前 `codex/world-dividend-financial-seams`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
+- 保留启动时所有未提交改动。草稿依赖链 `codex/world-implementation` → `codex/world-securities-ledger` → `codex/world-matching` → `codex/world-exchange` → `codex/world-manufacturing` → `codex/world-governance` → `codex/world-role-information` → `codex/world-role-reading` → `codex/world-role-trading` → `codex/world-role-trading-runtime` → `codex/world-decisions` → `codex/world-decision-runtime` → `codex/world-decision-audit` → `codex/world-dividend-core` → `codex/world-valuation-performance` → `codex/world-dividend-authorization` → `codex/world-dividend-financial-seams` → 当前 `codex/world-dividend-runtime`，最初起点 `bd0d3aa`。不擅自合入主分支，不提交配置秘密，不调用无上限真实模型实验。
 
 ## Review Focus
 
@@ -43,10 +43,10 @@
 | M0 现状核验/加固 | 课程全套实跑；静态风险；必要回归修复 | 无 | V06/V15 的课程部分 | 本地已验收，待 PR 人工 review |
 | M1 世界运行基础 | 模拟时序/阶段、运行清单、唯一提交、幂等事件日志、恢复与分支边界 | M0 | V10/V11/V12 | 现金运行子集本地验收；完整世界/实验分支仍待实施 |
 | M2 身份/开局/交易账 | 人物/组织/账户/任职；开局股份与现金清单；托管映射；版本化规则；T+1 批次/自成交 | M1 | V01/V02/V05/V06/V14 | M2.1–2.4b可靠交易核本地验收；任职/人物投影及schema7角色交易网关本地验收，银行托管待实施 |
-| M3 公司经营竖切 | 制造公司、外部客户/供应商、合同履约、现金与报表、董事会、现金分红、表现核算 | M2 | V04/V15/V16/V17 | 制造及治理桥已验收；分红D0权利、D1估值/TWR、D2授权及草稿PR19–21实际CI通过。D3a财务/参考接缝744标准及43独审通过，发布草稿PR中，均待人工review。D3b实际分红与D3c资本流接续 |
+| M3 公司经营竖切 | 制造公司、外部客户/供应商、合同履约、现金与报表、董事会、现金分红、表现核算 | M2 | V04/V15/V16/V17 | 制造及治理桥、D0/D1/D2/D3a草稿PR19–22实际CI通过，744标准，均待人工review。D3b最终816标准、212独立检查及真实Hermes31+6独审通过，草稿PR23及实际CI42253286290通过。D3c契约已固定，取消/重新公告接续 |
 | M4 角色与信息竖切 | 独立四岗机构、两类媒体、普通投资者；阅读/传播/权限、六层记忆与偏信/习惯、模型屏障与预算 | M1/M2/M3 | V07/V08/V09/V10/V13/V14 | schema6阅读桥及PR13 CI通过；M4c纯核23专项/组合385标准及PR14 CI通过；schema7运行桥38专项/组合423标准及GUI/CSV、61正常入口、三JVM、旧6兼容与最终hash独审通过，PR15 CI通过；M4d纯核58专项/481标准与最终hash独审及PR16 CI通过，schema8桥55+runner12专项与549标准本地通过，三JVM/旧7兼容通过，最终独审42断言及GUI/CSV/JavaDoc通过，PR17代码CI通过，M4e573项审计补项及PR18代码CI通过，待人工review |
 | M5 差异公司与银行 | 工程回款、银行完整实验规则、直接/组合敞口迁移、其余十类公司及八类媒体逐项配置 | M3/M4 | V01/V02/V03/V13/V16 | 待细化 |
-| M6 真实观察工作台 | 先接增量观察；白色市场/股票/公司/账户/人物机构/新闻/世界页面；同快照、权限裁剪、图表与历史回放 | M1 起增量，完整依赖 M2–M5 | V12/V14/V15 | 离线审计页私有原型与数据边界已查，浏览器实点待验；完整工作台与Web主界面选择仍保留 |
+| M6 真实观察工作台 | 先接增量观察；白色市场/股票/公司/账户/人物机构/新闻/世界页面；同快照、权限裁剪、图表与历史回放 | M1 起增量，完整依赖 M2–M5 | V12/V14/V15 | 离线审计页私有原型与数据边界已查，浏览器实点待验；用户已确定最终Web主界面及上帝五key配置，完整工作台待实施 |
 | M7 行为/压力与交付 | 无 LLM 故障夹具、固定预算小试、多次独立实验、失败率/分布、课程报告/JavaDoc/PR 人工评审 | 所有启用能力 | V17/V18 及全矩阵回归 | 待细化 |
 
 阶段覆盖的是责任，不表示整条 Vxx 已通过。多公司、银行、媒体、认知目标保留；今晚按依赖推进，不用虚构数据或跳过检查换取页面数量。
@@ -55,10 +55,10 @@
 
 ### 当前接续
 
-- 当前分支codex/world-dividend-financial-seams，基线d100a8a。D2草稿PR21代码及文档CI均已成功，原712项通过。
-- 当前施工单为[D3a分红财务与除息参考](2026-11-06-dividend-financial-seams.md)。32专项、744标准及43独审通过，Root已接回源码与Maven并准备草稿PR。实际账务复算、旧编译客户端及三进程制造兼容证据见docs/05第25节。
-- 后续依次为D3b唯一日志中的实际授权、公告、登记、除息及足额付款，再接D3c资本流与运行表现。M4认知/媒体、M5公司/银行、M6工作台及M7实验仍保留在范围内。
-- M6离线审计页由用户稍后手动查看，尚待显示反馈。所有草稿PR继续等待人工实质review。
+- 当前分支codex/world-dividend-runtime，基线490f20c。D3a草稿PR22及两次CI成功，D3b最终candidate5本地已验收。816标准、46成交/121订单/7排名、GUI与JavaDoc2026-11-07 00:20:41，Root212独立检查及真实Hermes31+6复核通过，见docs/05§26；D3b草稿PR23（a133bbd）已创建，base为现存累计分支codex/world-role-trading，CI42253286290实际成功。
+- [D3c实际资本流及确认历史表现](2026-11-06-capital-flow-performance.md)已固定契约，前置D3b实际CI。每个确认帧都采样以保留最大回撤，尚未授生产。取消/重新公告、认知媒体、差异公司/银行和长时实验继续推进。
+- 用户于2026-11-07明确最终交付为Web，并授权使用指定文件中的五个key按不同场景配置。已核5个互异值，未调用；[Web与五key配置接续单](2026-11-07-web-key-configuration.md)固定入口、秘密边界和验收。JavaFX保留课程验证，Web为最终观察与控制入口。
+- M6原离线审计页由用户稍后手动查看，尚待显示反馈。PR6–22已由人工账号合并至各自累计基线，最新累计分支为codex/world-role-trading（de20df0），main尚未汇总全部阶段。新PR23保持草稿等待人工review。总体基线未完成，不把单阶段验收替代最终交付。
 
 以下保留各阶段任务与原始执行记录。
 

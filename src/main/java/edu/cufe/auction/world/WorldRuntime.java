@@ -67,6 +67,9 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_ROLE_TRADING = 7;
     /** 含决定屏障与尝试子集状态的世界状态版本（M4d）。 */
     private static final int STATE_SCHEMA_DECISIONS = 8;
+
+    /** 分红世界桥：在决定档案之上增加唯一 D0 状态。 */
+    private static final int STATE_SCHEMA_DIVIDEND = 9;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -182,7 +185,26 @@ public final class WorldRuntime implements AutoCloseable {
                            Optional<RoleTradingRun> trading,
                            Optional<DecisionRun> decisions,
                            List<PendingTask> pending, List<Notice> delivered,
-                           Set<String> usedTaskIds) {
+                           Set<String> usedTaskIds,
+                           Optional<DividendModel.State> dividends) {
+        /** 旧 15 参构造：保持源码兼容，分红状态为空。 */
+        public Snapshot(long position, long timeMillis, String lastPhase,
+                        Map<String, CashLedger.CashAccount> accounts,
+                        Optional<SecuritiesLedger.State> securities,
+                        Optional<WorldExchange.State> exchange,
+                        Optional<ManufacturingRun> manufacturing,
+                        Optional<BoardRun> governance,
+                        Optional<RoleRun> roles,
+                        Optional<InformationRun> information,
+                        Optional<RoleTradingRun> trading,
+                        Optional<DecisionRun> decisions,
+                        List<PendingTask> pending, List<Notice> delivered,
+                        Set<String> usedTaskIds) {
+            this(position, timeMillis, lastPhase, accounts, securities, exchange, manufacturing,
+                    governance, roles, information, trading, decisions, pending, delivered,
+                    usedTaskIds, Optional.empty());
+        }
+
         /** 防御性冻结所有集合。 */
         public Snapshot {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -194,6 +216,7 @@ public final class WorldRuntime implements AutoCloseable {
             information = Objects.requireNonNull(information, "information");
             trading = Objects.requireNonNull(trading, "trading");
             decisions = Objects.requireNonNull(decisions, "decisions");
+            dividends = Objects.requireNonNull(dividends, "dividends");
             pending = List.copyOf(pending);
             delivered = List.copyOf(delivered);
             usedTaskIds = Collections.unmodifiableSet(new LinkedHashSet<>(usedTaskIds));
@@ -341,7 +364,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               RoleTradingRun trading,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              DecisionRun decisions) {
+                              DecisionRun decisions,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              DividendModel.State dividends) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -539,6 +564,17 @@ public final class WorldRuntime implements AutoCloseable {
                 || !manifest.hasManufacturing() || !manifest.hasMatching())) {
             throw new IllegalArgumentException("任职与资料阅读档案必须建立在完整公司治理档案之上："
                     + manifest.rulesVersion());
+        }
+        if (manifest.hasDividend()) {
+            if (charter == null || information == null) {
+                throw new IllegalArgumentException("分红档案必须有董事会章程与资料阅读配置");
+            }
+            String chairPerson = chairPersonOf(charter);
+            if (!information.readers().contains(chairPerson)) {
+                throw new IllegalArgumentException("分红档案的章程主席必须是资料读者（公告发布者）："
+                        + chairPerson);
+            }
+            requireNoSelfFloat(registry, charter, openings);
         }
         this.registry = registry;
         this.manufacturingConfig = manufacturing;
@@ -1623,6 +1659,9 @@ public final class WorldRuntime implements AutoCloseable {
                                                        List<String> internalSourceIds)
             throws IOException {
         requireRoleReadingEnabled();
+        if (manifest.hasDividend() && docId != null && docId.startsWith("dividend-public:")) {
+            throw new IllegalArgumentException("分红公告空间由授权批保留，普通发表不得占用：" + docId);
+        }
         Objects.requireNonNull(audience, "受众");
         PublishPayload payload = new PublishPayload(commandId, docId, publisherPartyId,
                 audience.kind().name(), audience.partyId() == null ? "" : audience.partyId(),
@@ -1657,6 +1696,9 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         requireRoleReadingEnabled();
         requireText(docId, "资料标识");
+        if (manifest.hasDividend() && docId.startsWith("dividend-public:")) {
+            throw new IllegalArgumentException("分红公告空间由授权批保留，普通版本入口不得占用：" + docId);
+        }
         PublishPayload payload = new PublishPayload(commandId, docId, "", "", "",
                 title, body, publicSourceDescription, readDurationMillis,
                 internalSourceIds == null ? List.of() : List.copyOf(internalSourceIds));
@@ -1901,6 +1943,13 @@ public final class WorldRuntime implements AutoCloseable {
                     case PendingTask.ROLE_TRADING_EXPIRE_V1 -> completeRoleExpire(next);
                     case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> completeAppointmentEnd(next);
                     case PendingTask.ROLE_TRADING_HALT_RELEASE_V1 -> completeHaltRelease(next);
+                    case PendingTask.DIVIDEND_MEETING_V1,
+                         PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1,
+                         PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1,
+                         PendingTask.DIVIDEND_REGISTER_V1,
+                         PendingTask.DIVIDEND_BOOK_EX_V1,
+                         PendingTask.DIVIDEND_SETTLE_V1,
+                         PendingTask.DIVIDEND_IMPAIR_V1 -> completeDividend(next);
                     default -> throw new IllegalStateException("未启用的任务种类：" + next.kind());
                 }
             }
@@ -1944,7 +1993,8 @@ public final class WorldRuntime implements AutoCloseable {
                 Optional.ofNullable(state.governance()), Optional.ofNullable(state.roles()),
                 Optional.ofNullable(state.information()), Optional.ofNullable(state.trading()),
                 Optional.ofNullable(state.decisions()),
-                state.pending(), state.delivered(), state.usedTaskIds());
+                state.pending(), state.delivered(), state.usedTaskIds(),
+                Optional.ofNullable(state.dividends()));
     }
 
     /**
@@ -2214,10 +2264,17 @@ public final class WorldRuntime implements AutoCloseable {
                     bestAsk = order.limitPrice();
                 }
             }
+            ValuationModel.Price reference = null;
+            if (manifest.hasDividend()) {
+                reference = ValuationModel.priceOf(ValuationModel.prices(state.position(),
+                        state.timeMillis(), state.exchange(), registry, List.of(symbol),
+                        state.dividends()), symbol);
+            }
             market.add(new RoleView.Market(symbol,
                     lastTrade == null ? null : lastTrade.price(),
                     lastTrade == null ? 0L : lastTrade.quantity(),
-                    lastTrade == null ? -1L : lastTrade.timeMillis(), bestBid, bestAsk));
+                    lastTrade == null ? -1L : lastTrade.timeMillis(), bestBid, bestAsk,
+                    reference));
         }
         return market;
     }
@@ -4350,6 +4407,7 @@ public final class WorldRuntime implements AutoCloseable {
         for (ManufacturingModel.ExpenseBill bill : ledger.expenseBills().values()) {
             payable = payable.add(bill.outstanding());
         }
+        payable = payable.add(dividendPositionOf(state.dividends()).unpaidFace());
         BigDecimal companyCash = accounts.get(ledger.opening().companyAccountId()).cash();
         BigDecimal solvency = payable.signum() == 0 ? new BigDecimal("100.00")
                 : companyCash.divide(payable, 8, java.math.RoundingMode.HALF_UP)
@@ -4485,8 +4543,10 @@ public final class WorldRuntime implements AutoCloseable {
             outcome = BoardModel.freezeMaterials(run.board(), task.dueTimeMillis(), meetingId);
             if (outcome.accepted()) {
                 BoardModel.Meeting opened = outcome.state().meeting(meetingId);
-                if (opened.topic() == BoardModel.Topic.BUDGET
-                        && !opened.proposedLines().isEmpty()) {
+                boolean hasProposal = opened.topic() == BoardModel.Topic.BUDGET
+                        ? !opened.proposedLines().isEmpty()
+                        : opened.dividendProposal() != null;
+                if (opened.topic() != BoardModel.Topic.OPERATING_REVIEW && hasProposal) {
                     outcome = BoardModel.startVoting(outcome.state(), task.dueTimeMillis(),
                             meetingId);
                 }
@@ -4494,7 +4554,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         List<ManufacturingChild> children = new ArrayList<>();
         BoardModel.Meeting current = outcome.state().meeting(meetingId);
-        if (current != null && current.topic() == BoardModel.Topic.BUDGET
+        if (current != null && current.topic() != BoardModel.Topic.OPERATING_REVIEW
                 && (current.status() == BoardModel.MeetingStatus.MATERIALS_FROZEN
                 || current.status() == BoardModel.MeetingStatus.VOTING)) {
             children.add(new ManufacturingChild(PendingTask.BOARD_CLOSE_V1,
@@ -5501,7 +5561,8 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("制造子集账户绑定与开局配置不一致");
         }
         try {
-            ManufacturingModel.validate(run.ledger(), candidate.accounts());
+            ManufacturingModel.validate(run.ledger(), candidate.accounts(),
+                    dividendPositionOf(candidate.dividends()));
         } catch (RuntimeException invalid) {
             throw new IOException("制造账不平衡：" + invalid.getMessage(), invalid);
         }
@@ -6294,15 +6355,831 @@ public final class WorldRuntime implements AutoCloseable {
         return previous;
     }
 
+    /** 分红候选期望：只由 previous + 原待办纯重算得到，不读候选终态。 */
+    private record DividendExpectation(BoardRun governance, DividendModel.State dividends,
+                                       Map<String, CashLedger.CashAccount> accounts,
+                                       boolean accepted, String reason) {
+    }
+
+    /**
+     * 分红批次双向重算：提交前与恢复时同一套校验。
+     *
+     * <p>从 previous 与真实原待办重算 D0、董事会、现金与报告，再与候选对比；
+     * 没有分红动作的批次不得改变 D0。禁止把运行状态替换成 previous 或递归重跑日志。</p>
+     */
+    private void validateDividendBatch(WorldCommit commit, WorldState candidate, WorldState previous)
+            throws IOException {
+        if (!manifest.hasDividend()) {
+            if (candidate.dividends() != null) {
+                throw new IOException("旧档案不得包含分红状态");
+            }
+            for (WorldEvent event : commit.events()) {
+                if (isDividendEventType(event.type())) {
+                    throw new IOException("旧档案不得携带分红事件：" + event.type());
+                }
+            }
+            for (PendingTask task : candidate.pending()) {
+                if (isDividendKind(task.kind())) {
+                    throw new IOException("旧档案不得排程分红任务：" + task.kind());
+                }
+            }
+            return;
+        }
+        if (candidate.dividends() == null) {
+            throw new IOException("分红档案缺少 D0 状态");
+        }
+        for (PendingTask task : candidate.pending()) {
+            if (isDividendKind(task.kind())) {
+                requireStrictDividendPayload(task);
+            }
+        }
+        if (previous == null) {
+            if (!DividendModel.empty().equals(candidate.dividends())) {
+                throw new IOException("开局批次的 D0 状态必须为空");
+            }
+            return;
+        }
+        PendingTask consumed = null;
+        for (WorldEvent event : commit.events()) {
+            if (!"TASK_COMPLETED_V1".equals(event.type())
+                    || !event.eventId().startsWith("task-completed:")) {
+                continue;
+            }
+            String taskId = event.eventId().substring("task-completed:".length());
+            PendingTask task = pendingOf(previous, taskId);
+            if (task == null) {
+                throw new IOException("批次消费了未排程任务：" + taskId);
+            }
+            if (!isDividendKind(task.kind()) && !isDividendGovernanceTask(previous, task)) {
+                continue;
+            }
+            if (!event.payload().equals(task.payload())) {
+                throw new IOException("分红完成事件与原任务参数不一致：" + taskId);
+            }
+            if (consumed != null) {
+                throw new IOException("同一批次消费了多个分红任务：" + taskId);
+            }
+            consumed = task;
+        }
+        if (consumed == null) {
+            if (!Objects.equals(candidate.dividends(), previous.dividends())) {
+                throw new IOException("无分红动作的批次改变了 D0 状态");
+            }
+            for (WorldEvent event : commit.events()) {
+                if (isDividendEventType(event.type())) {
+                    throw new IOException("无分红动作的批次不得携带分红事件：" + event.type());
+                }
+            }
+            if (!dividendMeetings(previous).equals(dividendMeetings(candidate))) {
+                throw new IOException("无分红治理动作的批次修改了已确认分红会议");
+            }
+            validateDividendSchedule(commit, candidate, previous);
+            validateDividendPublication(commit, candidate, previous);
+            return;
+        }
+        if (isDividendKind(consumed.kind())) requireStrictDividendPayload(consumed);
+        if (candidate.timeMillis() != consumed.dueTimeMillis()
+                || !candidate.lastPhase().equals(consumed.phase().name())
+                || !commit.commandContent().equals(consumed.payload())) {
+            throw new IOException("分红批次时刻、阶段或原命令内容不一致：" + consumed.taskId());
+        }
+        DividendExpectation expected = recomputeDividend(previous, consumed, commit.position());
+        if (!Objects.equals(candidate.dividends(), expected.dividends())) {
+            throw new IOException("分红批次 D0 状态与重算不一致：" + consumed.taskId());
+        }
+        if (!Objects.equals(candidate.accounts(), expected.accounts())) {
+            throw new IOException("分红批次现金与重算不一致：" + consumed.taskId());
+        }
+        if (!Objects.equals(candidate.governance(), expected.governance())) {
+            throw new IOException("分红批次董事会状态与重算不一致：" + consumed.taskId());
+        }
+        if (!Objects.equals(candidate.securities(), previous.securities())
+                || !Objects.equals(candidate.exchange(), previous.exchange())
+                || !Objects.equals(candidate.manufacturing(), previous.manufacturing())
+                || !Objects.equals(candidate.roles(), previous.roles())
+                || !Objects.equals(candidate.information(), previous.information())
+                || !Objects.equals(candidate.trading(), previous.trading())
+                || !Objects.equals(candidate.decisions(), previous.decisions())
+                || !Objects.equals(candidate.delivered(), previous.delivered())
+                || !Objects.equals(candidate.commandContents(), previous.commandContents())
+                || !Objects.equals(candidate.commandOutcomes(), previous.commandOutcomes())) {
+            throw new IOException("分红批次改动了无关子集：" + consumed.taskId());
+        }
+        List<WorldEvent> expectedEvents = new ArrayList<>();
+        expectedEvents.add(new WorldEvent("task-completed:" + consumed.taskId(),
+                "TASK_COMPLETED_V1", consumed.payload()));
+        expectedEvents.addAll(validateDividendPending(commit, previous, candidate, consumed, expected));
+        boolean pays = expected.accepted() && PendingTask.DIVIDEND_SETTLE_V1.equals(consumed.kind());
+        if (pays) {
+            DividendCashProof proof = expectedCashProof(previous, consumed);
+            expectedEvents.add(new WorldEvent("dividend-cash:" + proof.schemeId(),
+                    "DIVIDEND_CASH_PAYMENT_V1", mapper.writeValueAsString(proof)));
+        }
+        String expectedCommand;
+        String expectedResult;
+        if (PendingTask.DIVIDEND_MEETING_V1.equals(consumed.kind())
+                || isDividendGovernanceTask(previous, consumed)) {
+            BoardRun.Report report = expected.governance().reports().get(consumed.taskId());
+            expectedEvents.add(new WorldEvent("governance-report:" + consumed.taskId(),
+                    "GOVERNANCE_REPORT_V1", mapper.writeValueAsString(report)));
+            expectedCommand = "task:" + consumed.taskId();
+            expectedResult = expected.reason();
+        } else {
+            DividendReport report = expectedDividendReport(previous, consumed, expected, commit.position());
+            expectedEvents.add(new WorldEvent("dividend-report:" + consumed.taskId(),
+                    "DIVIDEND_REPORT_V1", writeDividendReport(report)));
+            boolean authorizes = expected.accepted()
+                    && PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(consumed.kind());
+            expectedCommand = authorizes ? report.commandId() : "div-batch:" + consumed.taskId();
+            expectedResult = expected.accepted() ? "ACCEPTED" : "REJECTED";
+            if (authorizes) expectedResult = "AUTHORIZED";
+        }
+        List<WorldEvent> actualEvents = commit.events().stream()
+                .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
+        if (!expectedEvents.equals(actualEvents) || !expectedCommand.equals(commit.commandId())
+                || !expectedResult.equals(commit.result())) {
+            throw new IOException("分红批次的完整事件、身份或回报与重算不一致：" + consumed.taskId());
+        }
+        if (expected.accepted()
+                && (PendingTask.DIVIDEND_REGISTER_V1.equals(consumed.kind())
+                || PendingTask.DIVIDEND_BOOK_EX_V1.equals(consumed.kind()))) {
+            DividendActionPayload payload = mapper.readValue(consumed.payload(),
+                    DividendActionPayload.class);
+            if (findDocument(candidate, "dividend-public:" + payload.schemeId()) == null) {
+                throw new IOException("登记/除息前必须已实际发表分红公告："
+                        + payload.schemeId());
+            }
+        }
+        validateDividendPublication(commit, candidate, previous);
+    }
+
+    /** 只由 previous 与原待办重算分红动作。 */
+    private DividendExpectation recomputeDividend(WorldState previous, PendingTask task, long position)
+            throws IOException {
+        DividendModel.State d0 = previous.dividends();
+        BoardRun run = previous.governance();
+        Map<String, CashLedger.CashAccount> accounts = previous.accounts();
+        if (isDividendGovernanceTask(previous, task)) {
+            String meetingId;
+            String commandId;
+            BoardModel.Outcome outcome;
+            long now = task.dueTimeMillis();
+            if (PendingTask.BOARD_OPEN_V1.equals(task.kind()) || PendingTask.BOARD_CLOSE_V1.equals(task.kind())) {
+                ManufacturingChildPayload payload = decisionMapper.readValue(task.payload(), ManufacturingChildPayload.class);
+                meetingId = payload.businessId();
+                commandId = SYSTEM_COMMAND_PREFIX + (PendingTask.BOARD_OPEN_V1.equals(task.kind())
+                        ? "board-open:" : "board-close:") + meetingId;
+                if (PendingTask.BOARD_OPEN_V1.equals(task.kind())) {
+                    outcome = BoardModel.freezeMaterials(run.board(), now, meetingId);
+                    if (outcome.accepted() && outcome.state().meeting(meetingId).dividendProposal() != null) {
+                        outcome = BoardModel.startVoting(outcome.state(), now, meetingId);
+                    }
+                } else {
+                    outcome = BoardModel.closeVoting(run.board(), now, meetingId);
+                }
+            } else {
+                GovernancePayload payload = decisionMapper.readValue(task.payload(), GovernancePayload.class);
+                meetingId = payload.meetingId();
+                commandId = payload.commandId();
+                if (PendingTask.GOVERNANCE_VOTE_V1.equals(task.kind())) {
+                    outcome = BoardModel.castVote(run.board(), now, meetingId, payload.seatId(),
+                            BoardModel.Vote.valueOf(payload.vote()));
+                } else {
+                    BoardModel.Meeting meeting = run.board().meeting(meetingId);
+                    if (!meeting.attendeeSeatIds().contains(payload.seatId())
+                            || meeting.recusedSeatIds().contains(payload.seatId())) {
+                        outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT, run.board());
+                    } else {
+                        outcome = BoardModel.addMaterial(run.board(), now, meetingId,
+                                new BoardModel.MaterialRef(payload.materialId(), payload.sourceRef(), payload.version(), now));
+                    }
+                }
+            }
+            BoardRun governance = run.withBoard(outcome.state()).withReport(new BoardRun.Report(task.taskId(),
+                    commandId, task.kind(), meetingId, outcome.accepted(), outcome.reason(), now, position));
+            return new DividendExpectation(governance, d0, accounts, outcome.accepted(), outcome.reason());
+        }
+        if (PendingTask.DIVIDEND_MEETING_V1.equals(task.kind())) {
+            DividendMeetingPayload payload = mapper.readValue(task.payload(),
+                    DividendMeetingPayload.class);
+            BoardModel.Outcome outcome = BoardModel.convene(run.board(), task.dueTimeMillis(),
+                    new BoardModel.MeetingRequest(payload.meetingId(),
+                            BoardModel.Topic.DIVIDEND_AUTHORIZATION, payload.chairSeatId(),
+                            payload.materialDeadline(), payload.opensAt(), payload.closesAt(),
+                            payload.attendeeSeatIds(), payload.recusedSeatIds()));
+            BoardRun governance = outcome.accepted()
+                    ? run.withBoard(outcome.state()) : run;
+            governance = governance.withReport(new BoardRun.Report(task.taskId(), payload.commandId(),
+                    task.kind(), payload.meetingId(), outcome.accepted(), outcome.reason(),
+                    task.dueTimeMillis(), position));
+            return new DividendExpectation(governance, d0, accounts, outcome.accepted(),
+                    outcome.reason());
+        }
+        DividendActionPayload payload = mapper.readValue(task.payload(),
+                DividendActionPayload.class);
+        if (PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1.equals(task.kind())) {
+            String binding = schemeBindingProblem(payload.request());
+            if (binding != null) {
+                return new DividendExpectation(run, d0, accounts, false, binding);
+            }
+            BoardModel.Outcome board = BoardModel.proposeDividendAuthorization(run.board(),
+                    task.dueTimeMillis(), payload.meetingId(), payload.seatId(),
+                    payload.relatedSeatIds(), payload.request());
+            if (!board.accepted()) {
+                return new DividendExpectation(run, d0, accounts, false, board.reason());
+            }
+            DividendModel.Result proposed = proposeOrReuse(d0,
+                    new DividendModel.Event("div-propose:" + payload.schemeId(), position,
+                            task.dueTimeMillis()), payload.request());
+            if (!proposed.accepted()) {
+                return new DividendExpectation(run, d0, accounts, false, proposed.reason());
+            }
+            return new DividendExpectation(run.withBoard(board.state()), proposed.state(), accounts,
+                    true, board.reason());
+        }
+        if (PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(task.kind())) {
+            if (payload.seatId() == null || !payload.seatId().equals(charter.chairSeatId())) {
+                return new DividendExpectation(run, d0, accounts, false, REASON_NOT_AUTHORIZED);
+            }
+            BoardModel.Meeting target = run.board().meeting(payload.meetingId());
+            if (target == null || task.dueTimeMillis() <= target.closesAt()) {
+                return new DividendExpectation(run, d0, accounts, false, BoardModel.REASON_NOT_DUE);
+            }
+            BoardModel.Outcome board = BoardModel.executeAdoptedDividendResolution(run.board(),
+                    task.dueTimeMillis(), payload.meetingId());
+            if (!board.accepted()) {
+                return new DividendExpectation(run, d0, accounts, false, board.reason());
+            }
+            DividendModel.SchemeRequest request = board.state().meeting(payload.meetingId())
+                    .dividendProposal().request();
+            long afterIssue;
+            try {
+                afterIssue = Math.addExact(task.dueTimeMillis(), 1L);
+            } catch (ArithmeticException overflow) {
+                return new DividendExpectation(run, d0, accounts, false,
+                        BoardModel.REASON_INVALID_TIMELINE);
+            }
+            if (afterIssue >= request.recordAtMillis()) {
+                return new DividendExpectation(run, d0, accounts, false,
+                        BoardModel.REASON_INVALID_TIMELINE);
+            }
+            DividendModel.Result authorized = DividendModel.authorize(d0,
+                    new DividendModel.Event("div-authorize:" + request.schemeId(), position,
+                            task.dueTimeMillis()), request.schemeId(),
+                    board.state().meeting(payload.meetingId()).dividendResolution()
+                            .authorizationRef());
+            if (!authorized.accepted()) {
+                return new DividendExpectation(run, d0, accounts, false, authorized.reason());
+            }
+            return new DividendExpectation(run.withBoard(board.state()), authorized.state(),
+                    accounts, true, "AUTHORIZED");
+        }
+        if (PendingTask.DIVIDEND_REGISTER_V1.equals(task.kind())) {
+            DividendModel.Result registered = DividendModel.register(d0,
+                    new DividendModel.Event("div-record:" + payload.schemeId(), position,
+                            task.dueTimeMillis()), payload.schemeId(), previous.securities());
+            return new DividendExpectation(run, registered.state(), accounts,
+                    registered.accepted(), registered.reason());
+        }
+        if (PendingTask.DIVIDEND_BOOK_EX_V1.equals(task.kind())) {
+            DividendModel.Result booked = DividendModel.bookEx(d0,
+                    new DividendModel.Event("div-ex:" + payload.schemeId(), position,
+                            task.dueTimeMillis()), payload.schemeId());
+            return new DividendExpectation(run, booked.state(), accounts, booked.accepted(),
+                    booked.reason());
+        }
+        if (PendingTask.DIVIDEND_SETTLE_V1.equals(task.kind())) {
+            String schemeId = payload.schemeId();
+            DividendModel.Scheme scheme = DividendModel.scheme(d0, schemeId);
+            if (scheme == null) {
+                return new DividendExpectation(run, d0, accounts, false, "UNKNOWN_SCHEME");
+            }
+            if (payload.seatId() == null || !payload.seatId().equals(scheme.issuerOwnerId())) {
+                return new DividendExpectation(run, d0, accounts, false, REASON_NOT_AUTHORIZED);
+            }
+            if (scheme.phase() != DividendModel.Phase.EX_BOOKED) {
+                return new DividendExpectation(run, d0, accounts, false, "INVALID_STATE");
+            }
+            Map<String, BigDecimal> perClaim = new TreeMap<>();
+            BigDecimal total = new BigDecimal("0.00");
+            for (DividendModel.Claim claim : DividendModel.claims(d0, schemeId)) {
+                BigDecimal amount = DividendModel.faceUnpaid(claim);
+                perClaim.put(claim.claimId(), amount);
+                total = total.add(amount);
+            }
+            if (total.signum() <= 0) {
+                return new DividendExpectation(run, d0, accounts, false, "NO_ENTITLEMENT");
+            }
+            BigDecimal free = WorldExchange.freeCash(previous.exchange(), accounts,
+                    scheme.companyAccountId());
+            if (free.compareTo(total) < 0) {
+                return new DividendExpectation(run, d0, accounts, false, "INSUFFICIENT_CASH");
+            }
+            Map<String, CashLedger.CashAccount> moved = accounts;
+            for (DividendModel.Claim claim : DividendModel.claims(d0, schemeId)) {
+                CashLedger.TransferOutcome leg = CashLedger.computeTransfer(moved,
+                        scheme.issuerOwnerId(), scheme.companyAccountId(), claim.accountId(),
+                        DividendModel.faceUnpaid(claim));
+                if (!leg.accepted()) {
+                    return new DividendExpectation(run, d0, accounts, false, leg.reason());
+                }
+                moved = leg.accounts();
+            }
+            String cashEventId = "dividend-cash:" + schemeId;
+            DividendModel.Result settled = DividendModel.settle(d0,
+                    new DividendModel.Event(cashEventId, position, task.dueTimeMillis()),
+                    schemeId, cashEventId, total, perClaim);
+            if (!settled.accepted()) {
+                return new DividendExpectation(run, d0, accounts, false, settled.reason());
+            }
+            return new DividendExpectation(run, settled.state(), moved, true, "PAID");
+        }
+        if (PendingTask.DIVIDEND_IMPAIR_V1.equals(task.kind())) {
+            DividendModel.Claim claim = DividendModel.claim(d0, payload.claimId());
+            if (claim == null) {
+                return new DividendExpectation(run, d0, accounts, false, "UNKNOWN_CLAIM");
+            }
+            CashLedger.CashAccount account = accounts.get(claim.accountId());
+            if (account == null || !account.ownerId().equals(payload.seatId())) {
+                return new DividendExpectation(run, d0, accounts, false, REASON_NOT_AUTHORIZED);
+            }
+            DividendModel.Result impaired = DividendModel.impair(d0,
+                    new DividendModel.Event("div-impair:" + task.taskId(), position,
+                            task.dueTimeMillis()), payload.claimId(), payload.amount(),
+                    payload.evidenceRef());
+            return new DividendExpectation(run, impaired.state(), accounts, impaired.accepted(),
+                    impaired.reason());
+        }
+        throw new IOException("未知分红任务种类：" + task.kind());
+    }
+
+    /** 方案必须绑定唯一制造公司、章程组织与登记发行关系；返回 null 表示合法。 */
+    private String schemeBindingProblem(DividendModel.SchemeRequest request) {
+        if (request == null) {
+            return "MISSING_REQUEST";
+        }
+        if (manufacturingConfig == null || charter == null || registry == null) {
+            return "MISSING_COMPANY_CONFIG";
+        }
+        if (!manufacturingConfig.symbol().equals(request.symbol())) {
+            return "SYMBOL_NOT_COMPANY_SECURITY";
+        }
+        OpeningRegistry.Security security = registry.security(request.symbol());
+        if (security == null || !charter.companyPartyId().equals(
+                security.issuerOrganizationId())) {
+            return "ISSUER_ORGANIZATION_MISMATCH";
+        }
+        OpeningRegistry.PropertyOwner issuer = registry.owner(request.issuerOwnerId());
+        if (issuer == null || issuer.kind() != OpeningRegistry.OwnerKind.ORGANIZATION
+                || !charter.companyPartyId().equals(issuer.partyId())) {
+            return "ISSUER_OWNER_MISMATCH";
+        }
+        if (!manufacturingConfig.accounting().companyAccountId()
+                .equals(request.companyAccountId())) {
+            return "COMPANY_ACCOUNT_MISMATCH";
+        }
+        return null;
+    }
+
+    /** 现金证据必须与真实逐腿付款完全一致。 */
+    private DividendCashProof expectedCashProof(WorldState previous, PendingTask task)
+            throws IOException {
+        DividendActionPayload payload = mapper.readValue(task.payload(),
+                DividendActionPayload.class);
+        DividendModel.State d0 = previous.dividends();
+        DividendModel.Scheme scheme = DividendModel.scheme(d0, payload.schemeId());
+        List<DividendCashLeg> legs = new ArrayList<>();
+        BigDecimal total = new BigDecimal("0.00");
+        for (DividendModel.Claim claim : DividendModel.claims(d0, payload.schemeId())) {
+            BigDecimal amount = DividendModel.faceUnpaid(claim);
+            legs.add(new DividendCashLeg(claim.claimId(), claim.accountId(), amount));
+            total = total.add(amount);
+        }
+        return new DividendCashProof(payload.schemeId(), scheme.companyAccountId(), total, legs);
+    }
+
+    /** 待办集合与子任务排程事件必须与重算完全一致。 */
+    private List<WorldEvent> validateDividendPending(WorldCommit commit, WorldState previous, WorldState candidate,
+                                         PendingTask consumed, DividendExpectation expected)
+            throws IOException {
+        List<PendingTask> expectedPending = new ArrayList<>(previous.pending());
+        expectedPending.remove(consumed);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        used.add(consumed.taskId());
+        List<WorldEvent> childEvents = new ArrayList<>();
+        if (PendingTask.DIVIDEND_MEETING_V1.equals(consumed.kind()) && expected.accepted()) {
+            DividendMeetingPayload payload = decisionMapper.readValue(consumed.payload(), DividendMeetingPayload.class);
+            String childId = freeInternalTaskId("board-open:", payload.meetingId(), used);
+            PendingTask child = new PendingTask(childId, payload.opensAt(), WorldScheduler.Phase.RULES,
+                    PendingTask.BOARD_OPEN_V1, mapper.writeValueAsString(new ManufacturingChildPayload(
+                            payload.commandId(), payload.meetingId(), -1L)));
+            expectedPending.add(child);
+            used.add(childId);
+            childEvents.add(new WorldEvent("task-scheduled:" + childId, "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(child)));
+        }
+        if (PendingTask.BOARD_OPEN_V1.equals(consumed.kind())) {
+            BoardRun.Report report = expected.governance().reports().get(consumed.taskId());
+            BoardModel.Meeting meeting = expected.governance().board().meeting(report.meetingId());
+            if (meeting.status() == BoardModel.MeetingStatus.MATERIALS_FROZEN
+                    || meeting.status() == BoardModel.MeetingStatus.VOTING) {
+                String childId = freeInternalTaskId("board-close:", meeting.meetingId(), used);
+                PendingTask child = new PendingTask(childId, meeting.closesAt(), WorldScheduler.Phase.COMPLETION,
+                        PendingTask.BOARD_CLOSE_V1, mapper.writeValueAsString(new ManufacturingChildPayload(
+                        report.commandId(), meeting.meetingId(), -1L)));
+                expectedPending.add(child);
+                used.add(childId);
+                childEvents.add(new WorldEvent("task-scheduled:" + childId, "TASK_SCHEDULED_V1",
+                        mapper.writeValueAsString(child)));
+            }
+        }
+        if (PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(consumed.kind())
+                && expected.accepted()) {
+            DividendActionPayload payload = mapper.readValue(consumed.payload(),
+                    DividendActionPayload.class);
+            BoardModel.Meeting meeting = expected.governance().board()
+                    .meeting(payload.meetingId());
+            scheduleDividendChildren(expectedPending, used, childEvents,
+                    meeting.dividendProposal().request(), consumed.dueTimeMillis());
+        }
+        if (!candidate.pending().equals(expectedPending)) {
+            throw new IOException("分红批次待办集合与重算不一致：" + consumed.taskId());
+        }
+        if (!candidate.usedTaskIds().equals(used)) {
+            throw new IOException("分红批次已用任务集合与重算不一致：" + consumed.taskId());
+        }
+        List<WorldEvent> actualScheduled = new ArrayList<>();
+        for (WorldEvent event : commit.events()) {
+            if ("TASK_SCHEDULED_V1".equals(event.type())) {
+                actualScheduled.add(event);
+            }
+        }
+        if (!actualScheduled.equals(childEvents)) {
+            throw new IOException("分红子任务排程事件与重算不一致：" + consumed.taskId());
+        }
+        return childEvents;
+    }
+
+    private DividendReport expectedDividendReport(WorldState previous, PendingTask task,
+                                                    DividendExpectation expected, long position)
+            throws IOException {
+        DividendActionPayload payload = decisionMapper.readValue(task.payload(), DividendActionPayload.class);
+        String schemeId = payload.schemeId();
+        if (PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(task.kind())) {
+            schemeId = "";
+            BoardModel.Meeting meeting = previous.governance().board().meeting(payload.meetingId());
+            if (charter.chairSeatId().equals(payload.seatId()) && meeting != null
+                    && task.dueTimeMillis() > meeting.closesAt()) {
+                BoardModel.Outcome execution = BoardModel.executeAdoptedDividendResolution(
+                        previous.governance().board(), task.dueTimeMillis(), payload.meetingId());
+                if (execution.accepted()) schemeId = meeting.dividendProposal().request().schemeId();
+            }
+        } else if (PendingTask.DIVIDEND_IMPAIR_V1.equals(task.kind())) {
+            DividendModel.Claim claim = DividendModel.claim(previous.dividends(), payload.claimId());
+            schemeId = claim == null ? "" : claim.schemeId();
+        }
+        return new DividendReport(task.taskId(), payload.commandId(), task.kind(), payload.meetingId(),
+                schemeId, position, task.dueTimeMillis(), expected.accepted(), expected.reason());
+    }
+
+    /** 公告内容、作者与时刻必须与真实授权方案和主席一致。 */
+    private void validateDividendPublication(WorldCommit commit, WorldState candidate,
+                                             WorldState previous) throws IOException {
+        for (InformationModel.Document old : documentsOf(previous)) {
+            if (old.docId().startsWith("dividend-public:")
+                    && !old.equals(findDocument(candidate, old.docId()))) {
+                throw new IOException("已确认分红公告被修改或删除：" + old.docId());
+            }
+        }
+        for (InformationModel.Document document : documentsOf(candidate)) {
+            if (!document.docId().startsWith("dividend-public:")) continue;
+            String schemeId = document.docId().substring("dividend-public:".length());
+            DividendModel.Scheme scheme = DividendModel.scheme(candidate.dividends(), schemeId);
+            if (scheme == null) throw new IOException("公告引用未知方案：" + document.docId());
+            long publishedAt = dividendPublicationAt(candidate.dividends(), schemeId);
+            PublishPayload payload = announcementPayload(schemeId, new DividendModel.SchemeRequest(
+                    schemeId, scheme.symbol(), scheme.issuerOwnerId(), scheme.companyAccountId(),
+                    scheme.perShare(), scheme.recordAtMillis(), scheme.exAtMillis(), scheme.payAtMillis()),
+                    chairPerson());
+            InformationModel.Document expected = new InformationModel.Document(payload.docId(),
+                    payload.publisherPartyId(), audienceOf(payload), List.of(new InformationModel.DocumentVersion(
+                    1L, payload.title(), payload.body(), payload.publicSourceDescription(), publishedAt,
+                    payload.readDurationMillis(), payload.internalSourceIds())));
+            if (!document.equals(expected)) {
+                throw new IOException("分红公告完整版本与真实授权不一致：" + document.docId());
+            }
+            if (findDocument(previous, document.docId()) == null) {
+                PendingTask publication = null;
+                for (String taskId : completedTaskIds(commit)) {
+                    PendingTask task = pendingOf(previous, taskId);
+                    if (task != null && PendingTask.INFORMATION_PUBLISH_V1.equals(task.kind())
+                            && task.payload().equals(mapper.writeValueAsString(payload))
+                            && task.dueTimeMillis() == publishedAt) {
+                        if (publication != null) throw new IOException("同批存在重复分红公告任务");
+                        publication = task;
+                    }
+                }
+                if (publication == null) throw new IOException("新增分红公告缺少原授权发表任务");
+                validateDividendPublicationBatch(commit, candidate, previous, publication, payload);
+            }
+        }
+        for (String taskId : completedTaskIds(commit)) {
+            PendingTask task = pendingOf(previous, taskId);
+            if (task == null || !PendingTask.INFORMATION_PUBLISH_V1.equals(task.kind())) continue;
+            PublishPayload payload = decisionMapper.readValue(task.payload(), PublishPayload.class);
+            if (payload.docId().startsWith("dividend-public:")
+                    && findDocument(candidate, payload.docId()) == null) {
+                throw new IOException("分红公告发表批次缺少实际文档：" + payload.docId());
+            }
+        }
+    }
+
+    private long dividendPublicationAt(DividendModel.State dividends, String schemeId) throws IOException {
+        for (DividendModel.Receipt receipt : dividends.receipts().values()) {
+            if ("AUTHORIZE".equals(receipt.action())
+                    && schemeId.equals(decisionMapper.readTree(receipt.requestJson()).path("schemeId").asText())) {
+                try {
+                    return Math.addExact(receipt.atMillis(), 1L);
+                } catch (ArithmeticException overflow) {
+                    throw new IOException("分红公告时刻溢出", overflow);
+                }
+            }
+        }
+        throw new IOException("分红公告缺少真实授权：" + schemeId);
+    }
+
+    private void validateDividendPublicationBatch(WorldCommit commit, WorldState candidate, WorldState previous,
+                                                   PendingTask task, PublishPayload payload) throws IOException {
+        InformationModel.State published = InformationModel.publish(previous.information().information(),
+                payload.docId(), payload.publisherPartyId(), audienceOf(payload), draftOf(payload, task.dueTimeMillis()));
+        InformationRun.Report report = new InformationRun.Report(task.taskId(), payload.commandId(), task.kind(),
+                true, "OK", payload.docId(), "", task.dueTimeMillis(), commit.position());
+        InformationRun information = previous.information().withInformation(published).withReport(report);
+        List<PendingTask> pending = new ArrayList<>(previous.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        used.add(task.taskId());
+        WorldState expected = new WorldState(previous.schemaVersion(), previous.runId(), commit.position(),
+                task.dueTimeMillis(), task.phase().name(), previous.accounts(), pending, previous.delivered(),
+                used, previous.commandContents(), previous.commandOutcomes(), previous.securities(),
+                previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
+                information, previous.trading(), previous.decisions(), previous.dividends());
+        List<WorldEvent> events = List.of(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()), new WorldEvent("information-report:" + task.taskId(), "INFORMATION_REPORT_V1",
+                mapper.writeValueAsString(report)));
+        List<WorldEvent> actual = commit.events().stream()
+                .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
+        if (!expected.equals(candidate) || !events.equals(actual)
+                || !commit.commandId().equals("task:" + task.taskId())
+                || !commit.commandContent().equals(task.payload()) || !"OK".equals(commit.result())) {
+            throw new IOException("分红公告批次无法由原发表任务重算：" + task.taskId());
+        }
+    }
+
+    private PendingTask pendingOf(WorldState state, String taskId) {
+        for (PendingTask task : state.pending()) {
+            if (task.taskId().equals(taskId)) {
+                return task;
+            }
+        }
+        return null;
+    }
+
+    private static List<String> completedTaskIds(WorldCommit commit) {
+        List<String> ids = new ArrayList<>();
+        for (WorldEvent event : commit.events()) {
+            if ("TASK_COMPLETED_V1".equals(event.type())
+                    && event.eventId().startsWith("task-completed:")) {
+                ids.add(event.eventId().substring("task-completed:".length()));
+            }
+        }
+        return ids;
+    }
+
+    private static InformationModel.Document findDocument(WorldState state, String docId) {
+        for (InformationModel.Document document : documentsOf(state)) {
+            if (document.docId().equals(docId)) {
+                return document;
+            }
+        }
+        return null;
+    }
+
+    private Map<String, BoardModel.Meeting> dividendMeetings(WorldState world) {
+        Map<String, BoardModel.Meeting> meetings = new TreeMap<>();
+        for (BoardModel.Meeting meeting : world.governance().board().meetings().values()) {
+            if (meeting.topic() == BoardModel.Topic.DIVIDEND_AUTHORIZATION) {
+                meetings.put(meeting.meetingId(), meeting);
+            }
+        }
+        return meetings;
+    }
+
+    private boolean isDividendGovernanceTask(WorldState world, PendingTask task) throws IOException {
+        String meetingId;
+        switch (task.kind()) {
+            case PendingTask.GOVERNANCE_MATERIAL_V1, PendingTask.GOVERNANCE_VOTE_V1 ->
+                    meetingId = decisionMapper.readValue(task.payload(), GovernancePayload.class).meetingId();
+            case PendingTask.BOARD_OPEN_V1, PendingTask.BOARD_CLOSE_V1 ->
+                    meetingId = decisionMapper.readValue(task.payload(), ManufacturingChildPayload.class).businessId();
+            default -> { return false; }
+        }
+        BoardModel.Meeting meeting = world.governance().board().meeting(meetingId);
+        return meeting != null && meeting.topic() == BoardModel.Topic.DIVIDEND_AUTHORIZATION;
+    }
+
+    private boolean isProtectedDividendTask(WorldState world, PendingTask task) throws IOException {
+        if (isDividendKind(task.kind()) || isDividendGovernanceTask(world, task)) return true;
+        if (PendingTask.INFORMATION_PUBLISH_V1.equals(task.kind())
+                || PendingTask.INFORMATION_PUBLISH_VERSION_V1.equals(task.kind())) {
+            return decisionMapper.readTree(task.payload()).path("docId").asText().startsWith("dividend-public:");
+        }
+        return false;
+    }
+
+    /** 普通批次只能通过准确外部排程新增分红任务，不能暗改已确认待办。 */
+    private void validateDividendSchedule(WorldCommit commit, WorldState candidate, WorldState previous)
+            throws IOException {
+        List<String> completed = completedTaskIds(commit);
+        for (PendingTask old : previous.pending()) {
+            if (!isProtectedDividendTask(previous, old)) continue;
+            PendingTask retained = pendingOf(candidate, old.taskId());
+            if (retained != null && !retained.equals(old)) {
+                throw new IOException("已确认分红待办被改写：" + old.taskId());
+            }
+            if (retained == null && !completed.contains(old.taskId())) {
+                throw new IOException("已确认分红待办未完成却被删除：" + old.taskId());
+            }
+        }
+        PendingTask added = null;
+        for (PendingTask task : candidate.pending()) {
+            if (pendingOf(previous, task.taskId()) == null && isProtectedDividendTask(candidate, task)) {
+                if (added != null) throw new IOException("外部分红排程批次只能新增一个任务");
+                added = task;
+            }
+        }
+        if (added == null) return;
+        String commandId;
+        switch (added.kind()) {
+            case PendingTask.DIVIDEND_MEETING_V1 ->
+                    commandId = decisionMapper.readValue(added.payload(), DividendMeetingPayload.class).commandId();
+            case PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1, PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1,
+                    PendingTask.DIVIDEND_SETTLE_V1, PendingTask.DIVIDEND_IMPAIR_V1 ->
+                    commandId = decisionMapper.readValue(added.payload(), DividendActionPayload.class).commandId();
+            case PendingTask.GOVERNANCE_MATERIAL_V1, PendingTask.GOVERNANCE_VOTE_V1 ->
+                    commandId = decisionMapper.readValue(added.payload(), GovernancePayload.class).commandId();
+            default -> throw new IOException("分红内部任务缺少真实来源：" + added.taskId());
+        }
+        if (added.dueTimeMillis() <= previous.timeMillis() || previous.usedTaskIds().contains(added.taskId())
+                || previous.commandContents().containsKey(commandId)) {
+            throw new IOException("分红排程复用了已确认身份或过期时刻");
+        }
+        List<PendingTask> pending = new ArrayList<>(previous.pending());
+        pending.add(added);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        used.add(added.taskId());
+        Map<String, String> contents = new TreeMap<>(previous.commandContents());
+        contents.put(commandId, added.payload());
+        Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+        String result = "SCHEDULED:" + added.taskId();
+        outcomes.put(commandId, result);
+        WorldState expected = new WorldState(previous.schemaVersion(), previous.runId(), commit.position(),
+                previous.timeMillis(), previous.lastPhase(), previous.accounts(), pending, previous.delivered(),
+                used, contents, outcomes, previous.securities(), previous.exchange(), previous.manufacturing(),
+                previous.governance(), previous.roles(), previous.information(), previous.trading(),
+                previous.decisions(), previous.dividends());
+        List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + added.taskId(), "TASK_SCHEDULED_V1",
+                mapper.writeValueAsString(added)));
+        List<WorldEvent> actual = commit.events().stream()
+                .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
+        if (!expected.equals(candidate) || !events.equals(actual) || !commit.commandId().equals("cmd:" + commandId)
+                || !commit.commandContent().equals(added.payload()) || !commit.result().equals(result)) {
+            throw new IOException("分红外部排程与原任务、命令和快照不一致：" + added.taskId());
+        }
+    }
+
+    private static boolean isDividendKind(String kind) {
+        return kind.startsWith("DIVIDEND_") || kind.startsWith("GOVERNANCE_DIVIDEND_");
+    }
+
+    /** 分红专用事件类型。 */
+    private static boolean isDividendEventType(String type) {
+        return "DIVIDEND_REPORT_V1".equals(type) || "DIVIDEND_CASH_PAYMENT_V1".equals(type);
+    }
+
+    /** 严格解析分红任务 payload：未知字段、尾随、重复键、浮点整数与空必填都拒绝。 */
+    private void requireStrictDividendPayload(PendingTask task) throws IOException {
+        try {
+            if (PendingTask.DIVIDEND_MEETING_V1.equals(task.kind())) {
+                DividendMeetingPayload payload = decisionMapper.readValue(task.payload(),
+                        DividendMeetingPayload.class);
+                requireText(payload.commandId(), "命令标识");
+                requireText(payload.meetingId(), "会议标识");
+                requireText(payload.chairSeatId(), "召集席位");
+            } else {
+                DividendActionPayload payload = decisionMapper.readValue(task.payload(),
+                        DividendActionPayload.class);
+                requireText(payload.commandId(), "命令标识");
+                String kind = task.kind();
+                if (PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1.equals(kind)) {
+                    requireText(payload.meetingId(), "会议标识");
+                    requireText(payload.seatId(), "提案席位");
+                    Objects.requireNonNull(payload.request(), "方案请求");
+                    requireText(payload.request().schemeId(), "方案标识");
+                } else if (PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(kind)) {
+                    requireText(payload.meetingId(), "会议标识");
+                    requireText(payload.seatId(), "主席席位");
+                } else if (PendingTask.DIVIDEND_REGISTER_V1.equals(kind)
+                        || PendingTask.DIVIDEND_BOOK_EX_V1.equals(kind)) {
+                    requireText(payload.schemeId(), "方案标识");
+                } else if (PendingTask.DIVIDEND_SETTLE_V1.equals(kind)) {
+                    requireText(payload.schemeId(), "方案标识");
+                    requireText(payload.seatId(), "公司财产主体");
+                } else if (PendingTask.DIVIDEND_IMPAIR_V1.equals(kind)) {
+                    requireText(payload.claimId(), "债权标识");
+                    requireText(payload.evidenceRef(), "证据引用");
+                    Objects.requireNonNull(payload.amount(), "减值金额");
+                }
+            }
+        } catch (IllegalArgumentException | IOException invalid) {
+            throw new IOException("分红任务 payload 不合法：" + task.taskId(), invalid);
+        }
+    }
+
+    private static List<InformationModel.Document> documentsOf(WorldState state) {
+        return state.information() == null
+                ? List.of() : state.information().information().documents();
+    }
+
+    /** 受理提案：同经济且仍是 PROPOSED 时复用原状态，不产生第二个 D0 事件。 */
+    private static DividendModel.Result proposeOrReuse(DividendModel.State dividends,
+                                                       DividendModel.Event event,
+                                                       DividendModel.SchemeRequest request) {
+        DividendModel.Scheme existing = DividendModel.scheme(dividends, request.schemeId());
+        if (existing != null && existing.phase() == DividendModel.Phase.PROPOSED
+                && existing.symbol().equals(request.symbol())
+                && existing.issuerOwnerId().equals(request.issuerOwnerId())
+                && existing.companyAccountId().equals(request.companyAccountId())
+                && existing.perShare().compareTo(request.perShare()) == 0
+                && existing.recordAtMillis() == request.recordAtMillis()
+                && existing.exAtMillis() == request.exAtMillis()
+                && existing.payAtMillis() == request.payAtMillis()) {
+            return new DividendModel.Result(true, DividendModel.REASON_OK, event.eventId(),
+                    event.position(), dividends);
+        }
+        return DividendModel.propose(dividends, event, request);
+    }
+
+    /** 恢复复核：分红报告必须绑定真实已排程任务，失败付款不得与同批现金腿共存。 */
+    private void validateDividendReports(WorldCommit commit, WorldState previous) throws IOException {
+        if (previous == null) {
+            return;
+        }
+        boolean hasCashPayment = false;
+        for (WorldEvent event : commit.events()) {
+            if ("DIVIDEND_CASH_PAYMENT_V1".equals(event.type())) {
+                hasCashPayment = true;
+            }
+        }
+        for (WorldEvent event : commit.events()) {
+            if (!"DIVIDEND_REPORT_V1".equals(event.type())) {
+                continue;
+            }
+            DividendReport report;
+            try {
+                report = readDividendReport(event.payload());
+            } catch (RuntimeException invalid) {
+                throw new IOException("批次 " + commit.position() + " 的分红报告不合法", invalid);
+            }
+            boolean scheduled = previous.usedTaskIds().contains(report.taskId());
+            for (WorldEvent other : commit.events()) {
+                if ("TASK_COMPLETED_V1".equals(other.type())
+                        && other.eventId().equals("task-completed:" + report.taskId())) {
+                    scheduled = true;
+                }
+            }
+            if (!scheduled) {
+                throw new IOException("分红报告引用了未排程任务：" + report.taskId());
+            }
+            if (!report.accepted() && "DIVIDEND_SETTLE_V1".equals(report.kind())
+                    && hasCashPayment) {
+                throw new IOException("失败付款报告与同批真实现金腿矛盾：" + report.taskId());
+            }
+        }
+    }
+
     /**
      * 恢复期逐批核对审计事件：位置、完整尝试身份、类别、正文摘要与声明必须与同批已确认
      * 尝试或拒绝归档形成真实关系。合法摘要不能替代语义。
      *
      * @param commit   已确认批次
      * @param snapshot 该批次的状态快照
+     * @param previous 上一确认批次
      * @throws IOException 审计与已确认状态不一致
      */
     private void validateAudits(WorldCommit commit, WorldState snapshot, WorldState previous) throws IOException {
+        validateDividendReports(commit, previous);
+        validateDividendBatch(commit, snapshot, previous);
         for (WorldEvent event : commit.events()) {
             if (!DECISION_AUDIT_V1.equals(event.type())) {
                 continue;
@@ -6648,6 +7525,16 @@ public final class WorldRuntime implements AutoCloseable {
      * 这一口径对所有后续经营付款同样适用。旧档案仍按原余额口径，保持原行为。</p>
      */
     private CashLedger.TransferOutcome transferOutcome(TransferPayload payload) {
+        if (manifest.hasDividend()) {
+            CashLedger.CashAccount fromAccount = state.accounts().get(payload.fromId());
+            CashLedger.CashAccount toAccount = state.accounts().get(payload.toId());
+            if (fromAccount != null && toAccount != null
+                    && !fromAccount.ownerId().equals(toAccount.ownerId())) {
+                // 新档案不允许无分类的跨 owner 资本流，避免后续表现历史被悄悄注水
+                return new CashLedger.TransferOutcome(false, "TRANSFER_UNCLASSIFIED",
+                        state.accounts());
+            }
+        }
         if (manufacturingConfig != null) {
             String company = manufacturingConfig.accounting().companyAccountId();
             if (company.equals(payload.fromId()) || company.equals(payload.toId())) {
@@ -6817,6 +7704,15 @@ public final class WorldRuntime implements AutoCloseable {
         }
         for (OpeningRegistry.ShareAllocation allocation : registry.allocations()) {
             if (accounting.companyOwnerId().equals(ownerOfAccount.get(allocation.accountId()))) {
+                boolean treasuryOfOwnStock = manifest.hasDividend()
+                        && allocation.classification() == OpeningRegistry.ShareClass.TREASURY
+                        && registry.security(allocation.symbol()) != null
+                        && charter != null
+                        && charter.companyPartyId().equals(
+                                registry.security(allocation.symbol()).issuerOrganizationId());
+                if (treasuryOfOwnStock) {
+                    continue;
+                }
                 throw new IllegalArgumentException("公司持股/库存股是未建模资产，制造档案拒绝开局："
                         + allocation.accountId() + " 持有 " + allocation.symbol());
             }
@@ -6941,7 +7837,8 @@ public final class WorldRuntime implements AutoCloseable {
                 Map.of(), Map.of(),
                 manifest.hasSecurities() ? SecuritiesLedger.opening(registry) : null,
                 manifest.hasMatching() ? WorldExchange.opening() : null,
-                manufacturing, governance, roles, information, trading, decisions);
+                manufacturing, governance, roles, information, trading, decisions,
+                manifest.hasDividend() ? DividendModel.empty() : null);
     }
 
     /**
@@ -6963,6 +7860,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasDividend()) {
+            return STATE_SCHEMA_DIVIDEND;
+        }
         if (manifest.hasDecisions()) {
             return STATE_SCHEMA_DECISIONS;
         }
@@ -7072,10 +7972,768 @@ public final class WorldRuntime implements AutoCloseable {
                             InformationRun information,
                             RoleTradingRun trading,
                             DecisionRun decisions) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, trading, decisions, state.dividends());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading,
+                            DecisionRun decisions,
+                            DividendModel.State dividends) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                roles, information, trading, decisions);
+                roles, information, trading, decisions, dividends);
+    }
+
+    // ==================================================================
+    // M3d D3b 现金分红世界桥
+    // ==================================================================
+
+    /** 分红管理审计报告；不是角色消息，也不含任何 D0 位置副本。 */
+    public record DividendReport(String taskId, String commandId, String kind, String meetingId,
+                                 String schemeId, long position, long atMillis, boolean accepted,
+                                 String reason) {
+
+        /** 校验标识与位置。 */
+        public DividendReport {
+            if (taskId == null || taskId.isBlank() || commandId == null || commandId.isBlank()
+                    || kind == null || kind.isBlank() || reason == null || reason.isBlank()) {
+                throw new IllegalArgumentException("分红报告字段不能为空");
+            }
+            if (position <= 0 || atMillis < 0) {
+                throw new IllegalArgumentException("分红报告位置或时点非法");
+            }
+            meetingId = meetingId == null ? "" : meetingId;
+            schemeId = schemeId == null ? "" : schemeId;
+        }
+    }
+
+    /** 分红会议排程参数。 */
+    private record DividendMeetingPayload(String commandId, String meetingId, String chairSeatId,
+                                          long materialDeadline, long opensAt, long closesAt,
+                                          List<String> attendeeSeatIds,
+                                          List<String> recusedSeatIds) {
+    }
+
+    /** 现金腿：一条真实付款。 */
+    private record DividendCashLeg(String claimId, String accountId, BigDecimal amount) {
+        private DividendCashLeg {
+            if (claimId == null || claimId.isBlank() || accountId == null || accountId.isBlank()) {
+                throw new IllegalArgumentException("现金腿标识不能为空");
+            }
+            Objects.requireNonNull(amount, "现金腿金额");
+        }
+    }
+
+    /** 结清批的真实现金证据：方案、公司账户、合计与逐腿明细。 */
+    private record DividendCashProof(String schemeId, String companyAccountId, BigDecimal total,
+                                    List<DividendCashLeg> legs) {
+        private DividendCashProof {
+            if (schemeId == null || schemeId.isBlank() || companyAccountId == null
+                    || companyAccountId.isBlank()) {
+                throw new IllegalArgumentException("现金证据标识不能为空");
+            }
+            Objects.requireNonNull(total, "合计");
+            legs = List.copyOf(Objects.requireNonNull(legs, "现金腿"));
+        }
+    }
+
+    /** 分红任务参数：按 kind 只使用其中一部分字段。 */
+    private record DividendActionPayload(String commandId, String meetingId, String seatId,
+                                         String schemeId, String claimId, BigDecimal amount,
+                                         String evidenceRef, List<String> relatedSeatIds,
+                                         DividendModel.SchemeRequest request) {
+    }
+
+    /**
+     * 排程董事会会议（带议题）：预算沿用旧语义，分红议题只在新档案可用。
+     *
+     * @param commandId        命令标识
+     * @param taskId           任务标识
+     * @param dueTimeMillis    召集到期毫秒
+     * @param chairSeatId      主席席位
+     * @param meetingId        会议标识
+     * @param materialDeadline 材料截止
+     * @param opensAt          开会时刻
+     * @param closesAt         表决截止
+     * @param attendeeSeatIds  到会席位
+     * @param recusedSeatIds   回避席位
+     * @param topic            议题
+     * @return 规范化回报
+     * @throws IOException 持久提交失败
+     */
+    public synchronized String scheduleBoardMeeting(String commandId, String taskId,
+                                                    long dueTimeMillis, String chairSeatId,
+                                                    String meetingId, long materialDeadline,
+                                                    long opensAt, long closesAt,
+                                                    List<String> attendeeSeatIds,
+                                                    List<String> recusedSeatIds,
+                                                    BoardModel.Topic topic) throws IOException {
+        if (topic == BoardModel.Topic.BUDGET) {
+            return scheduleBoardMeeting(commandId, taskId, dueTimeMillis, chairSeatId, meetingId,
+                    materialDeadline, opensAt, closesAt, attendeeSeatIds, recusedSeatIds);
+        }
+        requireDividend();
+        Objects.requireNonNull(topic, "议题");
+        if (topic != BoardModel.Topic.DIVIDEND_AUTHORIZATION) {
+            throw new IllegalArgumentException("新重载只支持预算与分红议题：" + topic);
+        }
+        return scheduleDividendMeeting(commandId, taskId, dueTimeMillis, chairSeatId, meetingId,
+                materialDeadline, opensAt, closesAt, attendeeSeatIds, recusedSeatIds);
+    }
+
+    /** 分红会议召集：复用旧时序/席位校验，但议题固定为分红授权。 */
+    private String scheduleDividendMeeting(String commandId, String taskId, long dueTimeMillis,
+                                           String chairSeatId, String meetingId,
+                                           long materialDeadline, long opensAt, long closesAt,
+                                           List<String> attendeeSeatIds,
+                                           List<String> recusedSeatIds) throws IOException {
+        requireGovernanceEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(chairSeatId, "召集席位");
+        requireText(meetingId, "会议标识");
+        if (!charter.chairSeatId().equals(chairSeatId)) {
+            throw new IllegalArgumentException("只有章程主席可以召集会议：" + chairSeatId);
+        }
+        List<String> attendees = List.copyOf(Objects.requireNonNull(attendeeSeatIds, "到会席位"));
+        List<String> recused = List.copyOf(Objects.requireNonNull(recusedSeatIds, "回避席位"));
+        for (String seat : attendees) {
+            if (!charter.hasSeat(seat)) {
+                throw new IllegalArgumentException("到会席位不在章程中：" + seat);
+            }
+        }
+        for (String seat : recused) {
+            if (!attendees.contains(seat)) {
+                throw new IllegalArgumentException("回避席位必须是到会席位子集：" + seat);
+            }
+        }
+        if (materialDeadline < dueTimeMillis) {
+            throw new IllegalArgumentException("材料截止不得早于召集到期：" + materialDeadline);
+        }
+        requireMinGap(materialDeadline, opensAt, "材料截止", "开会");
+        requireMinGap(opensAt, closesAt, "开会", "表决截止");
+        DividendMeetingPayload payload = new DividendMeetingPayload(commandId, meetingId,
+                chairSeatId, materialDeadline, opensAt, closesAt, attendees, recused);
+        String content = mapper.writeValueAsString(payload);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            requireSameSchedule(commandId, taskId, dueTimeMillis,
+                    WorldScheduler.Phase.COMPLETION, PendingTask.DIVIDEND_MEETING_V1, content);
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
+                PendingTask.DIVIDEND_MEETING_V1, content);
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /**
+     * 排程分红提案：受理董事会提案并在同批形成 D0 PROPOSED。
+     *
+     * @param commandId      命令标识
+     * @param taskId         任务标识
+     * @param dueTimeMillis  到期毫秒
+     * @param seatId         提案席位
+     * @param meetingId      会议标识
+     * @param relatedSeatIds 关联席位
+     * @param request        原始方案请求
+     * @return 规范化回报
+     * @throws IOException 持久提交失败
+     */
+    public synchronized String scheduleDividendProposal(String commandId, String taskId,
+                                                        long dueTimeMillis, String seatId,
+                                                        String meetingId,
+                                                        List<String> relatedSeatIds,
+                                                        DividendModel.SchemeRequest request)
+            throws IOException {
+        requireDividend();
+        Objects.requireNonNull(request, "方案请求");
+        DividendActionPayload payload = new DividendActionPayload(commandId, meetingId, seatId,
+                request.schemeId(), "", null, "", relatedSeatIds, request);
+        return scheduleDividendTask(commandId, taskId, dueTimeMillis,
+                WorldScheduler.Phase.COMPLETION, PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1, payload);
+    }
+
+    /**
+     * 排程分红授权实施：实施董事会决议、授权 D0 并排后续公告/登记/除息/付款。
+     *
+     * @param commandId     命令标识
+     * @param taskId        任务标识
+     * @param dueTimeMillis 到期毫秒
+     * @param seatId        主席席位
+     * @param meetingId     会议标识
+     * @return 规范化回报
+     * @throws IOException 持久提交失败
+     */
+    public synchronized String scheduleDividendAuthorization(String commandId, String taskId,
+                                                             long dueTimeMillis, String seatId,
+                                                             String meetingId) throws IOException {
+        requireDividend();
+        DividendActionPayload payload = new DividendActionPayload(commandId, meetingId, seatId,
+                "", "", null, "", List.of(), null);
+        return scheduleDividendTask(commandId, taskId, dueTimeMillis,
+                WorldScheduler.Phase.COMPLETION, PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1, payload);
+    }
+
+    /**
+     * 排程整批分红付款（显式重试入口）。
+     *
+     * @param commandId     命令标识
+     * @param taskId        任务标识
+     * @param dueTimeMillis 到期毫秒
+     * @param actorOwnerId  公司财产主体
+     * @param schemeId      方案标识
+     * @return 规范化回报
+     * @throws IOException 持久提交失败
+     */
+    public synchronized String scheduleDividendSettlement(String commandId, String taskId,
+                                                          long dueTimeMillis, String actorOwnerId,
+                                                          String schemeId) throws IOException {
+        requireDividend();
+        DividendActionPayload payload = new DividendActionPayload(commandId, "", actorOwnerId,
+                schemeId, "", null, "", List.of(), null);
+        return scheduleDividendTask(commandId, taskId, dueTimeMillis,
+                WorldScheduler.Phase.COMPLETION, PendingTask.DIVIDEND_SETTLE_V1, payload);
+    }
+
+    /**
+     * 排程持有人减值。
+     *
+     * @param commandId     命令标识
+     * @param taskId        任务标识
+     * @param dueTimeMillis 到期毫秒
+     * @param actorOwnerId  claim 账户 owner
+     * @param claimId       债权标识
+     * @param amount        减值金额
+     * @param evidenceRef   证据引用
+     * @return 规范化回报
+     * @throws IOException 持久提交失败
+     */
+    public synchronized String scheduleDividendImpairment(String commandId, String taskId,
+                                                          long dueTimeMillis, String actorOwnerId,
+                                                          String claimId, BigDecimal amount,
+                                                          String evidenceRef) throws IOException {
+        requireDividend();
+        DividendActionPayload payload = new DividendActionPayload(commandId, "", actorOwnerId,
+                "", claimId, amount, evidenceRef, List.of(), null);
+        return scheduleDividendTask(commandId, taskId, dueTimeMillis,
+                WorldScheduler.Phase.COMPLETION, PendingTask.DIVIDEND_IMPAIR_V1, payload);
+    }
+
+    /**
+     * 管理端分红报告，按确认顺序不可变。
+     *
+     * @return 报告列表
+     */
+    public synchronized List<DividendReport> dividendReports() {
+        requireDividend();
+        List<DividendReport> reports = new ArrayList<>();
+        for (WorldCommit commit : journal.commits()) {
+            for (WorldEvent event : commit.events()) {
+                if ("DIVIDEND_REPORT_V1".equals(event.type())) {
+                    reports.add(readDividendReport(event.payload()));
+                }
+            }
+        }
+        return List.copyOf(reports);
+    }
+
+    /**
+     * 同截止估值：现金、证券、D0 债权与除息参考来自同一确认快照。
+     *
+     * @param ownerId 财产主体
+     * @return 估值
+     */
+    public synchronized ValuationModel.Value valuation(String ownerId) {
+        requireDividend();
+        List<String> symbols = new ArrayList<>();
+        if (state.securities() != null) {
+            for (SecuritiesLedger.Lot lot : state.securities().lots()) {
+                if (!symbols.contains(lot.symbol())) {
+                    symbols.add(lot.symbol());
+                }
+            }
+        }
+        for (DividendModel.Scheme scheme : state.dividends().schemes().values()) {
+            if (!symbols.contains(scheme.symbol())) {
+                symbols.add(scheme.symbol());
+            }
+        }
+        ValuationModel.PriceBook book = ValuationModel.prices(state.position(),
+                state.timeMillis(), state.exchange(), registry, symbols, state.dividends());
+        return ValuationModel.value(ownerId, state.position(), state.timeMillis(), registry,
+                state.accounts(), state.securities(), state.dividends(), book);
+    }
+
+    private void requireDividend() {
+        if (!manifest.hasDividend()) {
+            throw new IllegalArgumentException("当前规则档案未启用分红世界桥：" + manifest.rulesVersion());
+        }
+    }
+
+    private String scheduleDividendTask(String commandId, String taskId, long dueTimeMillis,
+                                        WorldScheduler.Phase phase, String kind,
+                                        DividendActionPayload payload) throws IOException {
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        String content = mapper.writeValueAsString(payload);
+        if (state.commandContents().containsKey(commandId)) {
+            if (!content.equals(state.commandContents().get(commandId))) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            requireSameSchedule(commandId, taskId, dueTimeMillis, phase, kind, content);
+            return state.commandOutcomes().get(commandId);
+        }
+        requireSchedulable(dueTimeMillis, taskId);
+        PendingTask task = new PendingTask(taskId, dueTimeMillis, phase, kind, content);
+        if (phase != WorldScheduler.Phase.COMPLETION) {
+            throw new IllegalArgumentException("分红外部入口只排完成阶段任务：" + phase);
+        }
+        return scheduleCompletionTask(task, commandId, content);
+    }
+
+    /** 主席席位绑定的人物（公告发布者）。 */
+    private String chairPerson() {
+        return chairPersonOf(charter);
+    }
+
+    private static String chairPersonOf(BoardModel.Charter charter) {
+        for (BoardModel.Seat seat : charter.seats()) {
+            if (seat.seatId().equals(charter.chairSeatId())) {
+                return seat.partyId();
+            }
+        }
+        throw new IllegalStateException("章程缺少主席席位：" + charter.chairSeatId());
+    }
+
+    /** 新档案开局拒绝发行人自持本股非库存股。 */
+    private static void requireNoSelfFloat(OpeningRegistry registry, BoardModel.Charter charter,
+                                           List<OpeningAccount> openings) {
+        Set<String> companyAccounts = new HashSet<>();
+        for (OpeningRegistry.PropertyOwner owner : registry.owners()) {
+            if (owner.kind() == OpeningRegistry.OwnerKind.ORGANIZATION
+                    && charter.companyPartyId().equals(owner.partyId())) {
+                for (OpeningAccount opening : openings) {
+                    if (opening.ownerId().equals(owner.ownerId())) {
+                        companyAccounts.add(opening.accountId());
+                    }
+                }
+            }
+        }
+        for (OpeningRegistry.ShareAllocation allocation : registry.allocations()) {
+            if (!companyAccounts.contains(allocation.accountId())) {
+                continue;
+            }
+            OpeningRegistry.Security security = registry.security(allocation.symbol());
+            if (security == null
+                    || !charter.companyPartyId().equals(security.issuerOrganizationId())) {
+                continue;
+            }
+            if (allocation.classification() != OpeningRegistry.ShareClass.TREASURY) {
+                throw new IllegalArgumentException("发行人不得自持本股非库存股："
+                        + allocation.symbol());
+            }
+        }
+    }
+
+    /** 由同一确认快照的 D0 派生制造报表所需的分红位置。 */
+    private static ManufacturingModel.DividendPosition dividendPositionOf(
+            DividendModel.State dividends) {
+        if (dividends == null) {
+            return ManufacturingModel.DividendPosition.none();
+        }
+        BigDecimal declared = new BigDecimal("0.00");
+        BigDecimal unpaid = new BigDecimal("0.00");
+        for (DividendModel.Scheme scheme : dividends.schemes().values()) {
+            if (scheme.phase() != DividendModel.Phase.EX_BOOKED
+                    && scheme.phase() != DividendModel.Phase.SETTLED) {
+                continue;
+            }
+            for (DividendModel.Claim claim : DividendModel.claims(dividends, scheme.schemeId())) {
+                declared = declared.add(claim.face());
+                unpaid = unpaid.add(DividendModel.faceUnpaid(claim));
+            }
+        }
+        return new ManufacturingModel.DividendPosition(declared, unpaid);
+    }
+
+    private void completeDividend(PendingTask task) throws IOException {
+        if (PendingTask.DIVIDEND_MEETING_V1.equals(task.kind())) {
+            completeDividendMeeting(task);
+            return;
+        }
+        DividendActionPayload payload = mapper.readValue(task.payload(),
+                DividendActionPayload.class);
+        switch (task.kind()) {
+            case PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1 -> completeDividendProposal(task, payload);
+            case PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1 -> completeDividendAuthorize(task, payload);
+            case PendingTask.DIVIDEND_REGISTER_V1 -> completeDividendRecord(task, payload);
+            case PendingTask.DIVIDEND_BOOK_EX_V1 -> completeDividendEx(task, payload);
+            case PendingTask.DIVIDEND_SETTLE_V1 -> completeDividendPay(task, payload);
+            case PendingTask.DIVIDEND_IMPAIR_V1 -> completeDividendImpair(task, payload);
+            default -> throw new IllegalStateException("未启用的分红任务：" + task.kind());
+        }
+    }
+
+    private void completeDividendMeeting(PendingTask task) throws IOException {
+        DividendMeetingPayload payload = mapper.readValue(task.payload(),
+                DividendMeetingPayload.class);
+        BoardRun run = requireGovernanceRun();
+        BoardModel.Outcome outcome = BoardModel.convene(run.board(), task.dueTimeMillis(),
+                new BoardModel.MeetingRequest(payload.meetingId(),
+                        BoardModel.Topic.DIVIDEND_AUTHORIZATION, payload.chairSeatId(),
+                        payload.materialDeadline(), payload.opensAt(), payload.closesAt(),
+                        payload.attendeeSeatIds(), payload.recusedSeatIds()));
+        List<ManufacturingChild> children = new ArrayList<>();
+        if (outcome.accepted()) {
+            children.add(new ManufacturingChild(PendingTask.BOARD_OPEN_V1,
+                    WorldScheduler.Phase.RULES, "board-open:", payload.opensAt(),
+                    payload.meetingId(), -1L));
+        }
+        finishGovernanceTask(task, payload.commandId(), outcome, payload.meetingId(),
+                run.withBoard(outcome.state()), children);
+    }
+
+    private void completeDividendProposal(PendingTask task, DividendActionPayload payload)
+            throws IOException {
+        BoardRun run = state.governance();
+        String binding = schemeBindingProblem(payload.request());
+        if (binding != null) {
+            finishDividend(task, payload.commandId(), payload.meetingId(), payload.schemeId(),
+                    false, binding, List.of(), state.dividends(), run);
+            return;
+        }
+        BoardModel.Outcome board = BoardModel.proposeDividendAuthorization(run.board(),
+                task.dueTimeMillis(), payload.meetingId(), payload.seatId(),
+                payload.relatedSeatIds(), payload.request());
+        if (!board.accepted()) {
+            finishDividend(task, payload.commandId(), payload.meetingId(), payload.schemeId(),
+                    false, board.reason(), List.of(), state.dividends(), run);
+            return;
+        }
+        DividendModel.Result d0 = proposeOrReuse(state.dividends(),
+                new DividendModel.Event("div-propose:" + payload.schemeId(), state.position() + 1,
+                        task.dueTimeMillis()), payload.request());
+        boolean accepted = d0.accepted();
+        String reason = accepted ? board.reason() : d0.reason();
+        DividendModel.State dividends = accepted ? d0.state() : state.dividends();
+        BoardRun updated = accepted
+                ? new BoardRun(board.state(), run.reports(), run.periodEvidence()) : run;
+        finishDividend(task, payload.commandId(), payload.meetingId(), payload.schemeId(),
+                accepted, reason, List.of(), dividends, updated);
+    }
+
+    private void completeDividendAuthorize(PendingTask task, DividendActionPayload payload)
+            throws IOException {
+        BoardRun run = state.governance();
+        if (payload.seatId() == null || !payload.seatId().equals(charter.chairSeatId())) {
+            finishDividend(task, payload.commandId(), payload.meetingId(), "", false,
+                    REASON_NOT_AUTHORIZED, List.of(), state.dividends(), run);
+            return;
+        }
+        BoardModel.Meeting target = run.board().meeting(payload.meetingId());
+        if (target == null || task.dueTimeMillis() <= target.closesAt()) {
+            finishDividend(task, payload.commandId(), payload.meetingId(), "", false,
+                    BoardModel.REASON_NOT_DUE, List.of(), state.dividends(), run);
+            return;
+        }
+        BoardModel.Outcome board = BoardModel.executeAdoptedDividendResolution(run.board(),
+                task.dueTimeMillis(), payload.meetingId());
+        if (!board.accepted()) {
+            finishDividend(task, payload.commandId(), payload.meetingId(), "", false,
+                    board.reason(), List.of(), state.dividends(), run);
+            return;
+        }
+        BoardModel.Meeting meeting = board.state().meeting(payload.meetingId());
+        DividendModel.SchemeRequest request = meeting.dividendProposal().request();
+        long afterIssue;
+        try {
+            afterIssue = Math.addExact(task.dueTimeMillis(), 1L);
+        } catch (ArithmeticException overflow) {
+            finishDividend(task, payload.commandId(), payload.meetingId(), request.schemeId(),
+                    false, BoardModel.REASON_INVALID_TIMELINE, List.of(), state.dividends(), run);
+            return;
+        }
+        if (afterIssue >= request.recordAtMillis()) {
+            finishDividend(task, payload.commandId(), payload.meetingId(), request.schemeId(),
+                    false, BoardModel.REASON_INVALID_TIMELINE, List.of(), state.dividends(),
+                    run);
+            return;
+        }
+        String schemeId = request.schemeId();
+        DividendModel.Result d0 = DividendModel.authorize(state.dividends(),
+                new DividendModel.Event("div-authorize:" + schemeId, state.position() + 1,
+                        task.dueTimeMillis()), schemeId,
+                meeting.dividendResolution().authorizationRef());
+        if (!d0.accepted()) {
+            finishDividend(task, payload.commandId(), payload.meetingId(), schemeId, false,
+                    d0.reason(), List.of(), state.dividends(), run);
+            return;
+        }
+        BoardRun updated = new BoardRun(board.state(), run.reports(), run.periodEvidence());
+        List<DividendReport> reports = new ArrayList<>();
+        reports.add(new DividendReport(task.taskId(), payload.commandId(),
+                task.kind(), payload.meetingId(), schemeId, state.position() + 1,
+                task.dueTimeMillis(), true, "AUTHORIZED"));
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        List<WorldEvent> events = new ArrayList<>();
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        pending.remove(task);
+        used.add(task.taskId());
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        scheduleDividendChildren(pending, used, events, request, task.dueTimeMillis());
+        for (DividendReport report : reports) {
+            events.add(new WorldEvent("dividend-report:" + report.taskId(),
+                    "DIVIDEND_REPORT_V1", writeDividendReport(report)));
+        }
+        WorldState candidate = next(task.dueTimeMillis(), WorldScheduler.Phase.COMPLETION.name(),
+                state.accounts(), pending, state.delivered(), used, state.commandContents(),
+                state.commandOutcomes(), state.securities(), state.exchange(),
+                state.manufacturing(), updated, state.roles(), state.information(),
+                state.trading(), state.decisions(), d0.state());
+        commitAndApply(payload.commandId(), task.payload(), "AUTHORIZED", events, candidate);
+    }
+
+    private void scheduleDividendChildren(List<PendingTask> pending, Set<String> used,
+                                          List<WorldEvent> events,
+                                          DividendModel.SchemeRequest request, long now)
+            throws IOException {
+        String schemeId = request.schemeId();
+        String chair = chairPerson();
+        scheduleChild(pending, used, events, "div-publish:" + schemeId, now + 1L,
+                WorldScheduler.Phase.COMPLETION, PendingTask.INFORMATION_PUBLISH_V1,
+                mapper.writeValueAsString(announcementPayload(schemeId, request, chair)));
+        scheduleChild(pending, used, events, "div-record:" + schemeId, request.recordAtMillis(),
+                WorldScheduler.Phase.RULES, PendingTask.DIVIDEND_REGISTER_V1,
+                mapper.writeValueAsString(new DividendActionPayload("div-record:" + schemeId,
+                        "", "", schemeId, "", null, "", List.of(), request)));
+        scheduleChild(pending, used, events, "div-ex:" + schemeId, request.exAtMillis(),
+                WorldScheduler.Phase.RULES, PendingTask.DIVIDEND_BOOK_EX_V1,
+                mapper.writeValueAsString(new DividendActionPayload("div-ex:" + schemeId,
+                        "", "", schemeId, "", null, "", List.of(), request)));
+        scheduleChild(pending, used, events, "div-pay:" + schemeId, request.payAtMillis(),
+                WorldScheduler.Phase.COMPLETION, PendingTask.DIVIDEND_SETTLE_V1,
+                mapper.writeValueAsString(new DividendActionPayload("div-pay:" + schemeId,
+                        "", request.issuerOwnerId(), schemeId, "", null, "", List.of(), request)));
+    }
+
+    private PublishPayload announcementPayload(String schemeId, DividendModel.SchemeRequest request,
+                                               String chairPerson) {
+        String docId = "dividend-public:" + schemeId;
+        String body = "公司董事会公告：标的 " + request.symbol()
+                + "，方案 " + schemeId + "，每股 " + request.perShare().toPlainString()
+                + "，登记 " + request.recordAtMillis() + "，除息 " + request.exAtMillis()
+                + "，支付 " + request.payAtMillis() + "。";
+        return new PublishPayload("div-publish:" + schemeId, docId, chairPerson, "PUBLIC", "",
+                "现金分红公告 " + schemeId, body, "公司董事会", 60_000L, List.of());
+    }
+
+    private void scheduleChild(List<PendingTask> pending, Set<String> used, List<WorldEvent> events,
+                               String stem, long due, WorldScheduler.Phase phase, String kind,
+                               String payload) throws IOException {
+        String taskId = freeInternalTaskId(stem, "", used);
+        PendingTask task = new PendingTask(taskId, due, phase, kind, payload);
+        pending.add(task);
+        used.add(taskId);
+        events.add(new WorldEvent("task-scheduled:" + taskId, "TASK_SCHEDULED_V1",
+                mapper.writeValueAsString(task)));
+    }
+
+    private void completeDividendRecord(PendingTask task, DividendActionPayload payload)
+            throws IOException {
+        DividendModel.Result d0 = DividendModel.register(state.dividends(),
+                new DividendModel.Event("div-record:" + payload.schemeId(), state.position() + 1,
+                        task.dueTimeMillis()), payload.schemeId(), state.securities());
+        finishDividend(task, "div-record:" + payload.schemeId(), "", payload.schemeId(),
+                d0.accepted(), d0.reason(), List.of(), d0.state(), state.governance());
+    }
+
+    private void completeDividendEx(PendingTask task, DividendActionPayload payload)
+            throws IOException {
+        DividendModel.Result d0 = DividendModel.bookEx(state.dividends(),
+                new DividendModel.Event("div-ex:" + payload.schemeId(), state.position() + 1,
+                        task.dueTimeMillis()), payload.schemeId());
+        finishDividend(task, "div-ex:" + payload.schemeId(), "", payload.schemeId(),
+                d0.accepted(), d0.reason(), List.of(), d0.state(), state.governance());
+    }
+
+    private void completeDividendPay(PendingTask task, DividendActionPayload payload)
+            throws IOException {
+        DividendModel.State d0 = state.dividends();
+        String schemeId = payload.schemeId();
+        DividendModel.Scheme scheme = DividendModel.scheme(d0, schemeId);
+        if (scheme == null) {
+            finishDividend(task, payload.commandId(), "", schemeId, false,
+                    "UNKNOWN_SCHEME", List.of(), d0, state.governance());
+            return;
+        }
+        if (payload.seatId() == null || !payload.seatId().equals(scheme.issuerOwnerId())) {
+            finishDividend(task, payload.commandId(), "", schemeId, false,
+                    REASON_NOT_AUTHORIZED, List.of(), d0, state.governance());
+            return;
+        }
+        if (scheme.phase() != DividendModel.Phase.EX_BOOKED) {
+            finishDividend(task, payload.commandId(), "", schemeId, false,
+                    "INVALID_STATE", List.of(), d0, state.governance());
+            return;
+        }
+        Map<String, BigDecimal> perClaim = new TreeMap<>();
+        BigDecimal total = new BigDecimal("0.00");
+        for (DividendModel.Claim claim : DividendModel.claims(d0, schemeId)) {
+            BigDecimal amount = DividendModel.faceUnpaid(claim);
+            perClaim.put(claim.claimId(), amount);
+            total = total.add(amount);
+        }
+        if (total.signum() <= 0) {
+            finishDividend(task, payload.commandId(), "", schemeId, false,
+                    "NO_ENTITLEMENT", List.of(), d0, state.governance());
+            return;
+        }
+        BigDecimal free = WorldExchange.freeCash(state.exchange(), state.accounts(),
+                scheme.companyAccountId());
+        if (free.compareTo(total) < 0) {
+            finishDividend(task, payload.commandId(), "", schemeId, false,
+                    "INSUFFICIENT_CASH", List.of(), d0, state.governance());
+            return;
+        }
+        Map<String, CashLedger.CashAccount> accounts = state.accounts();
+        List<DividendCashLeg> legs = new ArrayList<>();
+        for (DividendModel.Claim claim : DividendModel.claims(d0, schemeId)) {
+            BigDecimal amount = DividendModel.faceUnpaid(claim);
+            CashLedger.TransferOutcome leg = CashLedger.computeTransfer(accounts,
+                    scheme.issuerOwnerId(), scheme.companyAccountId(), claim.accountId(), amount);
+            if (!leg.accepted()) {
+                finishDividend(task, payload.commandId(), "", schemeId, false, leg.reason(),
+                        List.of(), d0, state.governance());
+                return;
+            }
+            accounts = leg.accounts();
+            legs.add(new DividendCashLeg(claim.claimId(), claim.accountId(), amount));
+        }
+        String cashEventId = "dividend-cash:" + schemeId;
+        DividendModel.Result settled = DividendModel.settle(d0,
+                new DividendModel.Event(cashEventId, state.position() + 1, task.dueTimeMillis()),
+                schemeId, cashEventId, total, perClaim);
+        if (!settled.accepted()) {
+            finishDividend(task, payload.commandId(), "", schemeId, false, settled.reason(),
+                    List.of(), d0, state.governance());
+            return;
+        }
+        DividendCashProof proof = new DividendCashProof(schemeId, scheme.companyAccountId(),
+                total, legs);
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent(cashEventId, "DIVIDEND_CASH_PAYMENT_V1",
+                mapper.writeValueAsString(proof)));
+        finishPaidDividend(task, schemeId, payload.commandId(), accounts, settled.state(), events);
+    }
+
+    private void finishPaidDividend(PendingTask task, String schemeId, String commandId,
+                                    Map<String, CashLedger.CashAccount> accounts,
+                                    DividendModel.State dividends, List<WorldEvent> events)
+            throws IOException {
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> all = new ArrayList<>();
+        all.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        all.addAll(events);
+        DividendReport report = new DividendReport(task.taskId(), commandId,
+                "DIVIDEND_SETTLE_V1", "", schemeId, state.position() + 1, task.dueTimeMillis(),
+                true, "PAID");
+        all.add(new WorldEvent("dividend-report:" + task.taskId(), "DIVIDEND_REPORT_V1",
+                writeDividendReport(report)));
+        Map<String, String> contents = state.commandContents();
+        Map<String, String> outcomes = state.commandOutcomes();
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
+                state.delivered(), used, contents, outcomes, state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), state.information(),
+                state.trading(), state.decisions(), dividends);
+        commitAndApply("div-batch:" + task.taskId(), task.payload(), "ACCEPTED", all, candidate);
+    }
+
+    private void completeDividendImpair(PendingTask task, DividendActionPayload payload)
+            throws IOException {
+        DividendModel.State d0 = state.dividends();
+        DividendModel.Claim claim = DividendModel.claim(d0, payload.claimId());
+        if (claim == null) {
+            finishDividend(task, payload.commandId(), "", "", false, "UNKNOWN_CLAIM", List.of(),
+                    d0, state.governance());
+            return;
+        }
+        CashLedger.CashAccount account = state.accounts().get(claim.accountId());
+        if (account == null || !account.ownerId().equals(payload.seatId())) {
+            finishDividend(task, payload.commandId(), "", claim.schemeId(), false,
+                    REASON_NOT_AUTHORIZED, List.of(), d0, state.governance());
+            return;
+        }
+        DividendModel.Result impaired = DividendModel.impair(d0,
+                new DividendModel.Event("div-impair:" + task.taskId(), state.position() + 1,
+                        task.dueTimeMillis()), payload.claimId(), payload.amount(),
+                payload.evidenceRef());
+        finishDividend(task, payload.commandId(), "", claim.schemeId(), impaired.accepted(),
+                impaired.reason(), List.of(), impaired.state(), state.governance());
+    }
+
+    private void finishDividend(PendingTask task, String commandId, String meetingId,
+                                String schemeId, boolean accepted, String reason,
+                                List<WorldEvent> effects, DividendModel.State dividends,
+                                BoardRun governance) throws IOException {
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.addAll(effects);
+        DividendReport report = new DividendReport(task.taskId(), commandId, task.kind(),
+                meetingId, schemeId, state.position() + 1, task.dueTimeMillis(), accepted, reason);
+        events.add(new WorldEvent("dividend-report:" + task.taskId(), "DIVIDEND_REPORT_V1",
+                writeDividendReport(report)));
+        Map<String, String> contents = state.commandContents();
+        Map<String, String> outcomes = state.commandOutcomes();
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
+                pending, state.delivered(), used, contents, outcomes, state.securities(),
+                state.exchange(), state.manufacturing(), governance, state.roles(),
+                state.information(), state.trading(), state.decisions(), dividends);
+        commitAndApply("div-batch:" + task.taskId(), task.payload(),
+                accepted ? "ACCEPTED" : "REJECTED", events, candidate);
+    }
+
+    private String writeDividendReport(DividendReport report) throws IOException {
+        return mapper.writeValueAsString(report);
+    }
+
+    private DividendReport readDividendReport(String json) {
+        try {
+            return mapper.readValue(json, DividendReport.class);
+        } catch (IOException failure) {
+            throw new IllegalStateException("分红报告无法解析", failure);
+        }
     }
 
     // ==================================================================

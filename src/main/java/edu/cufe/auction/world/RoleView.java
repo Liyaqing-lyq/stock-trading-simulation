@@ -148,9 +148,28 @@ public record RoleView(long timeMillis, String personPartyId,
      * @param lastTradeAtMillis  最近成交时刻；无成交为 -1
      * @param bestBid            买一价；无挂单为空
      * @param bestAsk            卖一价；无挂单为空
+     * @param reference          同截止除息参考价；旧档案为 null 且不落 JSON
      */
     public record Market(String symbol, BigDecimal lastPrice, long lastTradeQuantity,
-                         long lastTradeAtMillis, BigDecimal bestBid, BigDecimal bestAsk) {
+                         long lastTradeAtMillis, BigDecimal bestBid, BigDecimal bestAsk,
+                         @com.fasterxml.jackson.annotation.JsonInclude(
+                                 com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                         ValuationModel.Price reference) {
+
+        /**
+         * 旧 6 参构造：保持源码兼容，除息参考为空。
+         *
+         * @param symbol            证券代码
+         * @param lastPrice         最近成交价
+         * @param lastTradeQuantity 最近成交数量
+         * @param lastTradeAtMillis 最近成交时刻
+         * @param bestBid           买一价
+         * @param bestAsk           卖一价
+         */
+        public Market(String symbol, BigDecimal lastPrice, long lastTradeQuantity,
+                      long lastTradeAtMillis, BigDecimal bestBid, BigDecimal bestAsk) {
+            this(symbol, lastPrice, lastTradeQuantity, lastTradeAtMillis, bestBid, bestAsk, null);
+        }
     }
 
     /**
