@@ -225,6 +225,43 @@ public final class WorldWebScenario {
                 Map.of("profile", COGNITION_PROFILE), RunManifest.LIVE_DECISIONS_V1);
     }
 
+    /**
+     * 打开独立判断与学习实验档案；不迁移旧世界，不自动发出模型请求。
+     *
+     * @param journal 独立日志
+     * @return 运行与真实标识
+     * @throws Exception 初始化或恢复失败
+     */
+    public static WorldWebHost.Opened openBelief(Path journal) throws Exception {
+        RunManifest manifest = beliefManifest();
+        InformationRun.Config info = new InformationRun.Config(information().readers(),
+                COGNITION_POLICY, new edu.cufe.auction.world.BeliefModel.Policy(
+                        200, 8, 30L * 86_400_000L, 20, 200, 3, 30L * 86_400_000L));
+        WorldRuntime runtime = new WorldRuntime(journal, manifest, openings(), registry(),
+                new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
+                        "SUP", "CUS", "OPS"), SYMBOL), charter(), roles(), info, beliefConfig());
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
+    private static DecisionModel.Config beliefConfig() {
+        DecisionModel.Config base = liveConfig();
+        Map<String, Long> actions = new TreeMap<>(base.actionMillisByTool());
+        for (String tool : List.of(RoleTradingView.TOOL_BELIEF_ASSERT,
+                RoleTradingView.TOOL_FORECAST_PUBLISH, RoleTradingView.TOOL_COMPANY_REPORT_ORDERS)) {
+            actions.put(tool, 2_000L);
+        }
+        return new DecisionModel.Config(base.providerKind(), base.providerId(), base.pricingVersion(),
+                base.thinkMillisByWake(), actions, base.limits(), base.budget(), base.profile());
+    }
+
+    /** @return 独立schema12判断实验档案，参数未经现实行为校准 */
+    public static RunManifest beliefManifest() {
+        Map<String, Integer> modules = new TreeMap<>(cognitionManifest().moduleVersions());
+        modules.put("belief", 1);
+        return new RunManifest("web-belief", 11L, "cognition-belief-experiment-v1", modules,
+                Map.of("profile", "web-cognition-belief-v1"), RunManifest.LIVE_DECISIONS_V1);
+    }
+
     /** 回忆档案的资料配置：同一批登记读者 + 冻结实验参数。 */
     private static InformationRun.Config cognitionInformation() {
         return new InformationRun.Config(information().readers(), COGNITION_POLICY);

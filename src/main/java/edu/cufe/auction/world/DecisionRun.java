@@ -55,6 +55,9 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
     /** 工具合同版本；输入摘要把它与规范化输入一起冻结。 */
     public static final String TOOL_CONTRACT_VERSION = "role-decision-tools-v1";
 
+    /** 信念档案的工具合同版本（新增三个认知工具）。 */
+    public static final String TOOL_CONTRACT_VERSION_V2 = "role-decision-tools-v2";
+
     /** 决定动作内部命令前缀。 */
     private static final String PREFIX_COMMAND = "dec";
 
@@ -286,10 +289,30 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
     public static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
                                    List<PendingAction> pending, List<String> tools,
                                    DecisionModel.Config config) {
+        return inputText(view, wakeReason, cutoffTimeMillis, pending, tools, config,
+                TOOL_CONTRACT_VERSION);
+    }
+
+    /**
+     * 显式工具合同版本的输入：信念档案使用 v2，旧档案仍 v1（逐字不变）。
+     *
+     * @param view                本次观察视图
+     * @param wakeReason          唤醒原因
+     * @param cutoffTimeMillis    观察截止时点
+     * @param pending             本人尚未完成的业务动作
+     * @param tools               允许返回的工具
+     * @param config              冻结配置
+     * @param toolContractVersion 工具合同版本
+     * @return 规范 JSON 正文
+     */
+    public static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
+                                   List<PendingAction> pending, List<String> tools,
+                                   DecisionModel.Config config, String toolContractVersion) {
         Objects.requireNonNull(view, "观察视图");
         Objects.requireNonNull(config, "冻结配置");
+        Objects.requireNonNull(toolContractVersion, "工具合同版本");
         ObjectNode root = MAPPER.createObjectNode();
-        root.put("toolContractVersion", TOOL_CONTRACT_VERSION);
+        root.put("toolContractVersion", toolContractVersion);
         root.put("person", view.personPartyId());
         root.put("wakeReason", wakeReason);
         root.put("observedAt", cutoffTimeMillis);
@@ -375,6 +398,77 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("version", reading.ref().version());
             node.put("index", reading.ref().index());
             node.put("dueAt", reading.dueAt());
+        }
+
+        RoleView.Cognition cognition = view.profile().cognition();
+        if (cognition != null) {
+            ObjectNode node = root.putObject("cognition");
+            ArrayNode beliefs = node.putArray("beliefs");
+            for (RoleView.BeliefCard card : cognition.beliefs()) {
+                ObjectNode item = beliefs.addObject();
+                item.put("beliefId", card.beliefId());
+                item.put("companyId", card.companyId());
+                item.put("metric", card.metric());
+                item.put("comparator", card.comparator().name());
+                item.put("threshold", card.threshold());
+                item.put("formedAt", card.formedAtMillis());
+                item.put("targetAsOf", card.targetAsOfMillis());
+                item.put("status", card.status());
+                item.put("confidenceBand", card.confidenceBand());
+                item.put("rationale", card.rationale());
+                ArrayNode refs = item.putArray("evidence");
+                for (RoleView.ReadingRef ref : card.evidence()) {
+                    ObjectNode entry = refs.addObject();
+                    entry.put("docId", ref.docId());
+                    entry.put("version", ref.version());
+                    entry.put("index", ref.index());
+                }
+                item.put("adoptedClaimId", card.adoptedClaimId());
+                item.put("sourcePartyId", card.sourcePartyId());
+                item.put("verificationPublisher", card.verificationPublisherPartyId());
+                item.put("evaluatedAt", card.evaluatedAtMillis());
+                item.put("factValue", card.factValue());
+                item.put("evaluatedFactId", card.evaluatedFactId());
+            }
+            ArrayNode sources = node.putArray("sourceReliability");
+            for (RoleView.SourceBand band : cognition.sources()) {
+                ObjectNode item = sources.addObject();
+                item.put("sourcePartyId", band.sourcePartyId());
+                item.put("band", band.competenceBand());
+            }
+            ArrayNode habits = node.putArray("habits");
+            for (RoleView.HabitCard habit : cognition.habits()) {
+                ObjectNode item = habits.addObject();
+                item.put("kind", habit.kind().name());
+                item.put("level", habit.level());
+                item.put("updatedAt", habit.updatedAtMillis());
+            }
+            ArrayNode claims = node.putArray("claims");
+            for (RoleView.VisibleClaim claim : cognition.claims()) {
+                ObjectNode item = claims.addObject();
+                item.put("claimId", claim.claimId());
+                item.put("kind", claim.kind());
+                item.put("docId", claim.docId());
+                item.put("version", claim.version());
+                item.put("companyId", claim.companyId());
+                item.put("metric", claim.metric());
+                if (claim.comparator() != null) {
+                    item.put("comparator", claim.comparator().name());
+                }
+                if (claim.threshold() >= 0) {
+                    item.put("threshold", claim.threshold());
+                }
+                if (claim.targetAsOfMillis() >= 0) {
+                    item.put("targetAsOf", claim.targetAsOfMillis());
+                }
+                item.put("authorPartyId", claim.authorPartyId());
+                if (claim.value() >= 0) {
+                    item.put("value", claim.value());
+                }
+                if (claim.asOfMillis() >= 0) {
+                    item.put("asOf", claim.asOfMillis());
+                }
+            }
         }
 
         ArrayNode research = root.putArray("research");
@@ -617,6 +711,21 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                     new String[]{"quantity", "long"}, new String[]{"limitPrice", "decimal"});
             case RoleTradingView.TOOL_CHILD_CANCEL -> List.of(
                     new String[]{"parentId", "string"}, new String[]{"childId", "string"});
+            case RoleTradingView.TOOL_BELIEF_ASSERT -> List.of(
+                    new String[]{"beliefId", "string"}, new String[]{"companyId", "string"},
+                    new String[]{"comparator", "string"}, new String[]{"threshold", "long"},
+                    new String[]{"targetAsOfMillis", "long"},
+                    new String[]{"adoptedClaimId", "string|null"},
+                    new String[]{"evidence", "array"}, new String[]{"rationale", "string|null"});
+            case RoleTradingView.TOOL_FORECAST_PUBLISH -> List.of(
+                    new String[]{"claimId", "string"}, new String[]{"docId", "string"},
+                    new String[]{"title", "string"}, new String[]{"body", "string"},
+                    new String[]{"publicSourceDescription", "string"},
+                    new String[]{"readDurationMillis", "long"}, new String[]{"companyId", "string"},
+                    new String[]{"comparator", "string"}, new String[]{"threshold", "long"},
+                    new String[]{"targetAsOfMillis", "long"});
+            case RoleTradingView.TOOL_COMPANY_REPORT_ORDERS -> List.of(
+                    new String[]{"companyId", "string"}, new String[]{"asOfMillis", "long"});
             case DecisionModel.TOOL_WAIT -> List.of();
             default -> List.of();
         };

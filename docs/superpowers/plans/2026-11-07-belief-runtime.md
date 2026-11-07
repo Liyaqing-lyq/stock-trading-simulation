@@ -40,4 +40,4 @@
 
 ## 当前写权
 
-作者f270fe仅 `logs/implementation-20261106-continued/belief-runtime-author/` 私有镜像。可改该镜像中的 RunManifest/InformationRun/WorldRuntime/WorldRoleSession/RoleView/PendingTask/DecisionModel/RoleTradingView，新增BeliefRun及必要专用DTO类和新测试；改动只为上述桥，纯核BeliefModel只读。先保存真实RED再实现；旧测试不得删弱。禁止主树/Maven/target/git/Temp/keys/供应商/窗口/全局memory。可私有javac与JUnit。Root拥有主树/Maven/Web和最终验收。
+作者f270fe仅 `logs/implementation-20261106-continued/belief-runtime-author/` 私有镜像。可改该镜像中的 RunManifest/InformationRun/WorldRuntime/WorldRoleSession/RoleView/PendingTask/DecisionModel/DecisionRun/RoleTradingView，新增BeliefRun及必要专用DTO类和新测试；改动只为上述桥，纯核BeliefModel只读。先保存真实RED再实现；旧测试不得删弱。禁止主树/Maven/target/git/Temp/keys/供应商/窗口/全局memory。可私有javac与JUnit。Root拥有主树/Maven/Web和最终验收。

@@ -40,7 +40,37 @@ public record RoleView(long timeMillis, String personPartyId,
                        List<String> tools,
                        @com.fasterxml.jackson.annotation.JsonInclude(
                                com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-                       RecallMetadata recall) {
+                       RecallMetadata recall,
+                       @com.fasterxml.jackson.annotation.JsonInclude(
+                               com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                       Cognition cognition) {
+
+    /**
+     * 12 参构造：只有回忆摘要，保持 schema11 语义与源码兼容。
+     *
+     * @param timeMillis    派生时刻
+     * @param personPartyId 视图所属人物
+     * @param appointments  本人当前有效任职
+     * @param accounts      可见账户
+     * @param holdings      证券汇总
+     * @param market        公共市场聚合
+     * @param catalog       可见资料目录
+     * @param observations  本人已读经历
+     * @param readings      活动阅读
+     * @param permissions   岗位权限
+     * @param tools         已接入工具
+     * @param recall        回忆摘要
+     */
+    public RoleView(long timeMillis, String personPartyId,
+                    List<Appointment> appointments, List<Account> accounts,
+                    List<Holding> holdings, List<Market> market,
+                    List<InformationModel.CatalogEntry> catalog,
+                    List<Experience> observations,
+                    List<Reading> readings, List<Permission> permissions,
+                    List<String> tools, RecallMetadata recall) {
+        this(timeMillis, personPartyId, appointments, accounts, holdings, market, catalog,
+                observations, readings, permissions, tools, recall, null);
+    }
 
     /**
      * 旧 11 参构造：没有回忆摘要，保持 schema6 语义与源码兼容。
@@ -97,6 +127,106 @@ public record RoleView(long timeMillis, String personPartyId,
                 throw new IllegalArgumentException("最近获取时刻不能为负：" + lastReadAt);
             }
         }
+    }
+
+    /**
+     * 本人认知投影：有界判断、来源 band、习惯等级与本次可回忆版本的可见声明。
+     *
+     * <p>不含 Policy、数值 confidence/competence、内部 sourceIds、全局 READ 编号、他人数据或外部正文。</p>
+     *
+     * @param beliefs 本人判断（有界）
+     * @param sources 相关来源 band
+     * @param habits  两种习惯的已提交等级
+     * @param claims  本次可回忆版本上的公开声明
+     */
+    public record Cognition(List<BeliefCard> beliefs, List<SourceBand> sources,
+                            List<HabitCard> habits, List<VisibleClaim> claims,
+                            boolean truncated) {
+
+        /** 冻结集合。 */
+        public Cognition {
+            beliefs = List.copyOf(beliefs);
+            sources = List.copyOf(sources);
+            habits = List.copyOf(habits);
+            claims = List.copyOf(claims);
+        }
+    }
+
+    /**
+     * 单条判断的本人卡片。
+     *
+     * @param beliefId                     判断标识
+     * @param companyId                    公司
+     * @param metric                       指标
+     * @param comparator                   比较方向
+     * @param threshold                    阈值
+     * @param formedAtMillis               形成时刻
+     * @param targetAsOfMillis             精确目标时点
+     * @param status                       OPEN/HIT/MISS
+     * @param confidenceBand               形成置信 band
+     * @param rationale                    本人自述
+     * @param evidence                     本人 scoped 证据
+     * @param adoptedClaimId               采纳的来源主张；自拟为空
+     * @param sourcePartyId                被采纳作者；自拟为空
+     * @param verificationPublisherPartyId 冻结验证者
+     * @param evaluatedAtMillis            评估时点；未评估为 -1
+     * @param factValue                    当时事实值；未评估为 -1
+     * @param evaluatedFactId              当时事实标识；未评估为空串
+     */
+    public record BeliefCard(String beliefId, String companyId, String metric,
+                             BeliefModel.Comparator comparator, long threshold,
+                             long formedAtMillis, long targetAsOfMillis, String status,
+                             String confidenceBand, String rationale, List<ReadingRef> evidence,
+                             String adoptedClaimId, String sourcePartyId,
+                             String verificationPublisherPartyId, long evaluatedAtMillis,
+                             long factValue, String evaluatedFactId) {
+
+        /** 冻结证据。 */
+        public BeliefCard {
+            evidence = List.copyOf(evidence);
+        }
+    }
+
+    /**
+     * 来源可靠性 band。
+     *
+     * @param sourcePartyId 来源
+     * @param competenceBand LOW/MID/HIGH
+     */
+    public record SourceBand(String sourcePartyId, String competenceBand) {
+    }
+
+    /**
+     * 已提交的习惯等级。
+     *
+     * @param kind            习惯
+     * @param level           0..3
+     * @param updatedAtMillis 上次实际核验导致变化的时点；从未为 -1
+     */
+    public record HabitCard(BeliefModel.HabitKind kind, int level, long updatedAtMillis) {
+    }
+
+    /**
+     * 可见声明：只来自本次可回忆的本人已读版本。
+     *
+     * @param claimId         主张/事实标识
+     * @param kind            SOURCE/FACT
+     * @param docId           文档
+     * @param version         版本
+     * @param companyId       公司
+     * @param metric          指标
+     * @param comparator      比较方向；FACT 为 null
+     * @param threshold       阈值；FACT 为 -1
+     * @param targetAsOfMillis 目标时点；FACT 为 -1
+     * @param authorPartyId   来源作者；FACT 为空串
+     * @param value           事实值；SOURCE 为 -1
+     * @param asOfMillis      事实时点；SOURCE 为 -1
+     */
+    public record VisibleClaim(String claimId, String kind, String docId, long version,
+                               String companyId, String metric,
+                               BeliefModel.Comparator comparator, long threshold,
+                               long targetAsOfMillis, String authorPartyId, long value,
+                               long asOfMillis) {
     }
 
     /** 阅读工具：查目录。 */

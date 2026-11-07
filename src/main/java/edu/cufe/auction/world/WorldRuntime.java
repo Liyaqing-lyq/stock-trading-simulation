@@ -76,6 +76,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 回忆桥：live 决定之上接入已有经历的有界回忆（M4f schema11）。 */
     private static final int STATE_SCHEMA_COGNITION_RECALL = 11;
+
+    /** 信念桥：在回忆档案之上接入主观信念、来源可靠性与慢习惯（M4g.2 schema12）。 */
+    private static final int STATE_SCHEMA_BELIEF = 12;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -389,7 +392,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               DecisionRun decisions,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              DividendModel.State dividends) {
+                              DividendModel.State dividends,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              BeliefRun beliefs) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -604,6 +609,23 @@ public final class WorldRuntime implements AutoCloseable {
             }
         } else if (information != null && information.recallPolicy() != null) {
             throw new IllegalArgumentException("未启用回忆模块的运行不接受回忆参数："
+                    + manifest.rulesVersion());
+        }
+        if (manifest.hasBelief()) {
+            if (!manifest.hasCognitionRecall()) {
+                throw new IllegalArgumentException("信念档案必须同时启用回忆："
+                        + manifest.rulesVersion());
+            }
+            if (information == null || information.beliefPolicy() == null) {
+                throw new IllegalArgumentException("信念档案必须提供冻结的信念参数："
+                        + manifest.rulesVersion());
+            }
+            if (information.recallPolicy() == null) {
+                throw new IllegalArgumentException("信念档案必须提供冻结的回忆参数："
+                        + manifest.rulesVersion());
+            }
+        } else if (information != null && information.beliefPolicy() != null) {
+            throw new IllegalArgumentException("未启用信念模块的运行不接受信念参数："
                     + manifest.rulesVersion());
         }
         if (manifest.hasDecisions() && (!manifest.hasTrading() || !manifest.hasRoles()
@@ -2060,7 +2082,14 @@ public final class WorldRuntime implements AutoCloseable {
                          PendingTask.ROLE_TRADING_HALT_V1,
                          PendingTask.ROLE_TRADING_CANCEL_V1,
                          PendingTask.ROLE_TRADING_CHILD_V1,
-                         PendingTask.ROLE_TRADING_CHILD_CANCEL_V1 -> completeRoleAction(next);
+                         PendingTask.ROLE_TRADING_CHILD_CANCEL_V1,
+                         PendingTask.ROLE_TRADING_BELIEF_V1,
+                         PendingTask.ROLE_TRADING_FORECAST_V1,
+                         PendingTask.ROLE_TRADING_COMPANY_REPORT_V1 -> completeRoleAction(next);
+                    case PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 ->
+                            completeBeliefCapture(next);
+                    case PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1 ->
+                            completeBeliefPublish(next);
                     case PendingTask.ROLE_TRADING_SWEEP_V1 -> completeRoleSweep(next);
                     case PendingTask.ROLE_TRADING_EXPIRE_V1 -> completeRoleExpire(next);
                     case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> completeAppointmentEnd(next);
@@ -2375,10 +2404,104 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         List<RoleView.Permission> permissions = permissionsOf(access, appointments, person, now);
+        RoleView.Cognition cognition = cognitionOf(snap, person, recall, now);
         return new RoleView(now, person, appointments, accounts, holdings, market, catalog,
                 observations, readings, permissions,
                 List.of(RoleView.TOOL_CATALOG, RoleView.TOOL_START_READ, RoleView.TOOL_CITE),
-                recall == null ? null : new RoleView.RecallMetadata(recall.budgetTruncated()));
+                recall == null ? null : new RoleView.RecallMetadata(recall.budgetTruncated()),
+                cognition);
+    }
+
+    /**
+     * 本人认知投影：最多 20 条判断（OPEN 优先、形成时间降序、标识升序）、来源 band、
+     * 已提交习惯等级与本次可回忆版本上的可见声明。
+     */
+    private RoleView.Cognition cognitionOf(WorldState snap, String person,
+                                           CognitionRecall.Result recall, long now) {
+        if (!manifest.hasBelief() || snap.beliefs() == null || informationConfig == null
+                || informationConfig.beliefPolicy() == null) {
+            return null;
+        }
+        BeliefModel.Policy policy = informationConfig.beliefPolicy();
+        BeliefModel.State state = snap.beliefs().beliefs();
+        List<BeliefModel.Belief> mine = new ArrayList<>();
+        for (BeliefModel.Belief belief : state.beliefs()) {
+            if (belief.personPartyId().equals(person)) {
+                mine.add(belief);
+            }
+        }
+        mine.sort((left, right) -> {
+            boolean leftOpen = BeliefModel.effectiveEvaluation(state, left.beliefId()) == null;
+            boolean rightOpen = BeliefModel.effectiveEvaluation(state, right.beliefId()) == null;
+            if (leftOpen != rightOpen) {
+                return leftOpen ? -1 : 1;
+            }
+            int byTime = Long.compare(right.formedAtMillis(), left.formedAtMillis());
+            return byTime != 0 ? byTime : left.beliefId().compareTo(right.beliefId());
+        });
+        List<RoleView.BeliefCard> cards = new ArrayList<>();
+        java.util.Set<String> sources = new TreeSet<>();
+        for (int index = 0; index < Math.min(20, mine.size()); index++) {
+            BeliefModel.Belief belief = mine.get(index);
+            BeliefModel.Evaluation effective = BeliefModel.effectiveEvaluation(state,
+                    belief.beliefId());
+            cards.add(new RoleView.BeliefCard(belief.beliefId(), belief.companyId(),
+                    belief.metric(), belief.comparator(), belief.threshold(),
+                    belief.formedAtMillis(), belief.targetAsOfMillis(),
+                    effective == null ? "OPEN" : effective.verdict().name(),
+                    confidenceBand(belief.confidencePermille()), belief.rationale(),
+                    belief.evidence(), belief.adoptedClaimId(), belief.sourcePartyId(),
+                    belief.verificationPublisherPartyId(),
+                    effective == null ? -1L : effective.maturedAtMillis(),
+                    effective == null ? -1L : effective.factValue(),
+                    effective == null ? "" : effective.factId()));
+            if (belief.sourcePartyId() != null) {
+                sources.add(belief.sourcePartyId());
+            }
+        }
+        List<RoleView.SourceBand> bands = new ArrayList<>();
+        for (String source : sources) {
+            bands.add(new RoleView.SourceBand(source,
+                    confidenceBand(BeliefModel.competencePermille(state, person, source, policy))));
+        }
+        List<RoleView.HabitCard> habits = new ArrayList<>();
+        for (BeliefModel.HabitKind kind : BeliefModel.HabitKind.values()) {
+            long updated = -1L;
+            for (BeliefModel.HabitRevision revision : state.habitRevisions()) {
+                if (revision.personPartyId().equals(person) && revision.kind() == kind
+                        && revision.atMillis() <= now) {
+                    updated = revision.atMillis();
+                }
+            }
+            habits.add(new RoleView.HabitCard(kind,
+                    BeliefModel.habitLevel(state, person, kind, policy, now), updated));
+        }
+        List<RoleView.VisibleClaim> claims = new ArrayList<>();
+        if (recall != null) {
+            for (CognitionRecall.Item item : recall.selected()) {
+                Object claim = snap.beliefs().claimOn(item.observation().docId(),
+                        item.observation().version());
+                if (claim instanceof BeliefModel.SourceClaim source) {
+                    claims.add(new RoleView.VisibleClaim(source.claimId(), "SOURCE",
+                            source.docId(), source.version(), source.companyId(), source.metric(),
+                            source.comparator(), source.threshold(), source.targetAsOfMillis(),
+                            source.authorPartyId(), -1L, -1L));
+                } else if (claim instanceof BeliefModel.FactClaim fact) {
+                    claims.add(new RoleView.VisibleClaim(fact.factId(), "FACT", fact.docId(),
+                            fact.version(), fact.companyId(), fact.metric(), null, -1L, -1L, "",
+                            fact.value(), fact.asOfMillis()));
+                }
+            }
+        }
+        return new RoleView.Cognition(cards, bands, habits, claims, mine.size() > cards.size());
+    }
+
+    /** @param permille 0..1000 @return LOW/MID/HIGH */
+    private static String confidenceBand(int permille) {
+        if (permille < 400) {
+            return "LOW";
+        }
+        return permille < 700 ? "MID" : "HIGH";
     }
 
     /**
@@ -2452,6 +2575,68 @@ public final class WorldRuntime implements AutoCloseable {
                 state.timeMillis(), informationConfig.recallPolicy());
         return Optional.of(new RecallAudit(manifest.runId(), state.position(),
                 state.timeMillis(), personPartyId, informationConfig.recallPolicy(), result));
+    }
+
+    /**
+     * 管理员信念审计：同一确认 cut 上的参数、判断/评估/习惯历史、来源分数、声明与报告。
+     *
+     * <p>只读，不改变状态、不调用提供方；旧档案返回空。</p>
+     *
+     * @param runId              运行标识
+     * @param position           生成该结果时的已确认提交位置
+     * @param timeMillis         生成该结果时的世界时点
+     * @param personPartyId      被查询的登记人物
+     * @param policy             冻结的信念参数
+     * @param state              纯核完整状态（含数值 confidence/competence）
+     * @param sourceClaims       结构化来源主张
+     * @param factClaims         程序事实声明
+     * @param reports            认知动作报告
+     */
+    public record BeliefAudit(String runId, long position, long timeMillis, String personPartyId,
+                              BeliefModel.Policy policy, BeliefModel.State state,
+                              List<BeliefModel.SourceClaim> sourceClaims,
+                              List<BeliefModel.FactClaim> factClaims,
+                              Map<String, BeliefRun.Report> reports) {
+
+        /** 校验字段。 */
+        public BeliefAudit {
+            requireText(runId, "审计运行标识");
+            requireText(personPartyId, "审计人物");
+            Objects.requireNonNull(policy, "审计信念参数");
+            Objects.requireNonNull(state, "审计信念状态");
+            sourceClaims = List.copyOf(sourceClaims);
+            factClaims = List.copyOf(factClaims);
+            reports = Collections.unmodifiableMap(new TreeMap<>(reports));
+            if (position <= 0 || timeMillis < 0) {
+                throw new IllegalArgumentException("审计位置或时点非法：" + position + " / "
+                        + timeMillis);
+            }
+        }
+    }
+
+    /**
+     * 按人物读取同一确认 cut 的信念审计。
+     *
+     * @param personPartyId 已登记人物标识
+     * @return 旧档案为 {@link Optional#empty()}
+     * @throws IllegalArgumentException 人物为空或未登记
+     */
+    public synchronized Optional<BeliefAudit> beliefAudit(String personPartyId) {
+        requireOpen();
+        requireRoleReadingEnabled();
+        requireText(personPartyId, "人物");
+        if (informationConfig == null || informationConfig.beliefPolicy() == null
+                || state.beliefs() == null) {
+            return Optional.empty();
+        }
+        InformationModel.State information = requireInformationRun().information();
+        if (!information.persons().contains(personPartyId)) {
+            throw new IllegalArgumentException("人物不可见");
+        }
+        BeliefRun run = state.beliefs();
+        return Optional.of(new BeliefAudit(manifest.runId(), state.position(), state.timeMillis(),
+                personPartyId, informationConfig.beliefPolicy(), run.beliefs(), run.sourceClaims(),
+                run.factClaims(), run.reports()));
     }
 
     /**
@@ -3015,7 +3200,8 @@ public final class WorldRuntime implements AutoCloseable {
             RoleTradingView view = roleTradingViewAt(state, session);
             List<String> tools = allowedToolsOf(view);
             String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
-                    pendingActionsAt(state, run, request.personPartyId()), tools, decisionConfig);
+                    pendingActionsAt(state, run, request.personPartyId()), tools, decisionConfig,
+                    toolContractVersion());
             if (decisionConfig.live()
                     && informationConfig != null && informationConfig.recallPolicy() != null) {
                 // 新档：先量实际字符/字节，超限在构造 ProviderPlan 之前就明确失败，整批不提交
@@ -3028,7 +3214,7 @@ public final class WorldRuntime implements AutoCloseable {
             DecisionModel.OpenRequest openRequest = new DecisionModel.OpenRequest(
                     model.runId(), request.actionId(), request.personPartyId(),
                     request.wakeReason(), cutoffTime, cutoffPosition, cutoffTime,
-                    DecisionRun.TOOL_CONTRACT_VERSION, tools, input, plan);
+                    toolContractVersion(), tools, input, plan);
             DecisionModel.Result result = DecisionModel.openDecision(model, openRequest,
                     cutoffPosition, cutoffTime);
             switch (result.verdict()) {
@@ -4265,6 +4451,18 @@ public final class WorldRuntime implements AutoCloseable {
                 object.put("personPartyId", binding.personPartyId());
                 body = strict(WorldRoleSession.ChildRef.class, object);
             }
+            case RoleTradingView.TOOL_BELIEF_ASSERT -> {
+                kind = PendingTask.ROLE_TRADING_BELIEF_V1;
+                body = strict(WorldRoleSession.BeliefDraft.class, args);
+            }
+            case RoleTradingView.TOOL_FORECAST_PUBLISH -> {
+                kind = PendingTask.ROLE_TRADING_FORECAST_V1;
+                body = strict(WorldRoleSession.ForecastDraft.class, args);
+            }
+            case RoleTradingView.TOOL_COMPANY_REPORT_ORDERS -> {
+                kind = PendingTask.ROLE_TRADING_COMPANY_REPORT_V1;
+                body = strict(WorldRoleSession.ReportDraft.class, args);
+            }
             default -> throw new IOException("未知业务工具：" + tool);
         }
         long dueMillis = DecisionModel.actionDueMillis(model, recorded.actionId());
@@ -4273,7 +4471,8 @@ public final class WorldRuntime implements AutoCloseable {
         String commandId = DecisionRun.actionCommandId(recorded.actionId());
         RoleActionPayload payload = new RoleActionPayload(commandId, recorded.actionId(),
                 recorded.actionId(), binding.personPartyId(), dueMillis,
-                new TreeMap<>(binding.appointments()), kind, mapper.writeValueAsString(body));
+                new TreeMap<>(binding.appointments()), kind, mapper.writeValueAsString(body),
+                manifest.hasBelief() ? recorded.cutoffPosition() : null);
         return new PlacedAction(recorded.actionId(), tool, kind, taskId, commandId, dueMillis,
                 mapper.writeValueAsString(payload));
     }
@@ -4788,12 +4987,12 @@ public final class WorldRuntime implements AutoCloseable {
             List<String> tools = allowedToolsOf(view);
             String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
                     pendingActionsAt(previous, run, request.personPartyId()), tools,
-                    decisionConfig);
+                    decisionConfig, toolContractVersion());
             DecisionModel.ProviderPlan plan = new DecisionModel.ProviderPlan(request.route(),
                     input.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
             DecisionModel.OpenRequest openRequest = new DecisionModel.OpenRequest(model.runId(),
                     request.actionId(), request.personPartyId(), request.wakeReason(), cutoffTime,
-                    cutoffPosition, cutoffTime, DecisionRun.TOOL_CONTRACT_VERSION, tools, input,
+                    cutoffPosition, cutoffTime, toolContractVersion(), tools, input,
                     plan);
             DecisionModel.Result result = DecisionModel.openDecision(model, openRequest,
                     cutoffPosition, cutoffTime);
@@ -5137,7 +5336,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         String regenerated = DecisionRun.inputText(view, decision.wakeReason(),
                 decision.cutoffTimeMillis(), pendingActionsAt(previous, run,
-                        decision.personPartyId()), tools, decisionConfig);
+                        decision.personPartyId()), tools, decisionConfig, toolContractVersion());
         if (!regenerated.equals(decision.inputText())) {
             throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());
         }
@@ -6361,10 +6560,23 @@ public final class WorldRuntime implements AutoCloseable {
         InformationRun candidateRun = run.withInformation(after).withReport(entry);
         events.add(new WorldEvent("information-report:" + task.taskId(),
                 "INFORMATION_REPORT_V1", mapper.writeValueAsString(entry)));
+        BeliefRun beliefsAfter = state.beliefs();
+        if (manifest.hasBelief() && observation != null
+                && PendingTask.INFORMATION_COMPLETE_READ_V1.equals(task.kind())) {
+            BeliefRun beliefRun = requireBeliefRun();
+            BeliefModel.EvaluationOutcome evaluated = BeliefModel.evaluate(beliefRun.beliefs(),
+                    after, beliefRun.claims(), informationConfig.beliefPolicy(),
+                    observation.personPartyId(), observation.docId(), observation.version(),
+                    state.position() + 1, observation.completedAt());
+            if (evaluated.state() != beliefRun.beliefs()) {
+                beliefsAfter = beliefRun.withBeliefs(evaluated.state());
+            }
+        }
         WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
                 pending, state.delivered(), used, state.commandContents(), state.commandOutcomes(),
                 state.securities(), state.exchange(), state.manufacturing(), state.governance(),
-                state.roles(), candidateRun);
+                state.roles(), candidateRun, state.trading(), state.decisions(),
+                state.dividends(), beliefsAfter);
         commitAndApply("task:" + task.taskId(), task.payload(), reason, events, candidate);
     }
 
@@ -6655,7 +6867,8 @@ public final class WorldRuntime implements AutoCloseable {
                                 List<WorldEvent> domainEvents, WorldState candidate)
             throws IOException {
         try {
-            validate(candidate, candidate.position(), state);
+            validate(candidate, new WorldCommit(1, candidate.position(), manifest.runId(), commandId,
+                    content, result, domainEvents), state);
         } catch (IOException invalid) {
             paused = true;
             throw invalid;
@@ -6693,8 +6906,9 @@ public final class WorldRuntime implements AutoCloseable {
         return best;
     }
 
-    private void validate(WorldState candidate, long expectedPosition, WorldState previous)
+    private void validate(WorldState candidate, WorldCommit commit, WorldState previous)
             throws IOException {
+        long expectedPosition = commit.position();
         if (candidate.schemaVersion() != expectedSchema()) {
             throw new IOException("状态版本不支持：" + candidate.schemaVersion()
                     + "（本次运行需要 " + expectedSchema() + "）");
@@ -6790,6 +7004,406 @@ public final class WorldRuntime implements AutoCloseable {
         validateRoleReading(candidate, previous);
         validateTrading(candidate, previous);
         validateDecisions(candidate, previous);
+        validateBeliefs(candidate, previous, commit);
+    }
+
+    /**
+     * 信念子集：先做结构与引用检查，再按“上一帧 + 本批真实任务”确定性重算并逐字段比较。
+     *
+     * <p>没有对应任务的额外信念增量、被改写的 confidence/verifier/evidence、伪造的捕获值或位置
+     * 都会在恢复期被拒绝；只看“旧历史仍在”不足以证明本批来自真实任务。</p>
+     */
+    private void validateBeliefs(WorldState candidate, WorldState previous, WorldCommit commit)
+            throws IOException {
+        if (!manifest.hasBelief()) {
+            if (candidate.beliefs() != null) {
+                throw new IOException("旧档案不得包含信念子集状态");
+            }
+            return;
+        }
+        if (candidate.beliefs() == null) {
+            throw new IOException("信念档案缺少信念子集状态");
+        }
+        BeliefRun run = candidate.beliefs();
+        InformationModel.State information = candidate.information() == null ? null
+                : candidate.information().information();
+        if (information == null) {
+            throw new IOException("信念档案缺少信息子集");
+        }
+        for (BeliefModel.Belief belief : run.beliefs().beliefs()) {
+            if (!information.persons().contains(belief.personPartyId())) {
+                throw new IOException("判断人物未登记：" + belief.beliefId());
+            }
+            if (belief.formedAtMillis() > candidate.timeMillis()) {
+                throw new IOException("判断形成时点晚于快照：" + belief.beliefId());
+            }
+        }
+        for (BeliefModel.SourceClaim claim : run.sourceClaims()) {
+            InformationModel.Document document = documentOf(information, claim.docId());
+            if (document == null || document.at(claim.version()) == null
+                    || !document.publisherPartyId().equals(claim.authorPartyId())) {
+                throw new IOException("来源主张缺少真实发布版本：" + claim.claimId());
+            }
+        }
+        for (BeliefModel.FactClaim fact : run.factClaims()) {
+            InformationModel.Document document = documentOf(information, fact.docId());
+            if (document == null || document.at(fact.version()) == null
+                    || !document.publisherPartyId().equals(fact.verifierPartyId())) {
+                throw new IOException("事实声明缺少真实发布版本：" + fact.factId());
+            }
+            if (fact.frozenPosition() > candidate.position()) {
+                throw new IOException("事实冻结位置在未来：" + fact.factId());
+            }
+        }
+        for (BeliefRun.CapturedFact captured : run.captured()) {
+            if (captured.capturedPosition() > candidate.position()) {
+                throw new IOException("捕获位置在未来：" + captured.factTaskId());
+            }
+        }
+        if (previous == null) {
+            if (!BeliefRun.empty().equals(run)) {
+                throw new IOException("开局批次不得预置信念状态");
+            }
+            if (candidate.pending().stream().anyMatch(WorldRuntime::isBeliefFactTask)) {
+                throw new IOException("开局不得预置报告内部任务");
+            }
+            return;
+        }
+        BeliefRun expected;
+        PendingTask seen = beliefTaskOf(previous, candidate, commit);
+        String seenKind = seen == null ? "NONE" : seen.kind();
+        try {
+            expected = expectedBeliefs(previous, candidate, commit);
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("信念子集重算被业务规则拒绝：" + invalid.getMessage(), invalid);
+        }
+        if (!expected.equals(run)) {
+            throw new IOException("信念子集与本批任务重算不一致：" + commit.commandId()
+                    + " task=" + seenKind + " events=" + commit.events().stream()
+                            .map(WorldEvent::type).toList()
+                    + " expected[b=" + expected.beliefs().beliefs().size() + ",c="
+                    + expected.sourceClaims().size() + ",f=" + expected.factClaims().size()
+                    + ",cap=" + expected.captured().size() + ",r=" + expected.reports().size()
+                    + "] actual[b=" + run.beliefs().beliefs().size() + ",c="
+                    + run.sourceClaims().size() + ",f=" + run.factClaims().size()
+                    + ",cap=" + run.captured().size() + ",r=" + run.reports().size() + "]");
+        }
+        validateBeliefFactTasks(previous, candidate, commit, seen, expected);
+    }
+
+    /** 捕获与发布只能由已确认原任务派生；漏掉、额外添加或修改后续待办均拒绝。 */
+    private void validateBeliefFactTasks(WorldState previous, WorldState candidate, WorldCommit commit,
+                                         PendingTask completed, BeliefRun expected) throws IOException {
+        Map<String, PendingTask> tasks = new TreeMap<>();
+        for (PendingTask task : previous.pending()) {
+            if (isBeliefFactTask(task)) tasks.put(task.taskId(), task);
+        }
+        PendingTask child = null;
+        if (completed != null) {
+            tasks.remove(completed.taskId());
+            if (completed.kind().equals(PendingTask.ROLE_TRADING_COMPANY_REPORT_V1)) {
+                RoleActionPayload payload = mapper.readValue(completed.payload(), RoleActionPayload.class);
+                WorldRoleSession.ReportDraft draft = mapper.readValue(payload.body(), WorldRoleSession.ReportDraft.class);
+                if (reportRejection(previous, payload, draft, completed.dueTimeMillis()) == null) {
+                    child = reportCaptureTask(previous, completed, payload, draft);
+                }
+            } else if (completed.kind().equals(PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1)
+                    && expected.report(completed.taskId()).accepted()) {
+                FactCaptureBody body = mapper.readValue(completed.payload(), FactCaptureBody.class);
+                child = new PendingTask(body.publishTaskId(), Math.addExact(completed.dueTimeMillis(), 1),
+                        WorldScheduler.Phase.DELIVERY, PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1,
+                        mapper.writeValueAsString(new FactPublishBody(body.captureTaskId())));
+            }
+        }
+        if (child != null) {
+            if (tasks.putIfAbsent(child.taskId(), child) != null
+                    || previous.usedTaskIds().contains(child.taskId())
+                    || !candidate.usedTaskIds().contains(child.taskId())) {
+                throw new IOException("报告后续任务标识冲突");
+            }
+            String id = "task-scheduled:" + child.taskId();
+            String payload = mapper.writeValueAsString(child);
+            if (commit.events().stream().filter(event -> event.type().equals("TASK_SCHEDULED_V1")
+                    && event.eventId().equals(id) && event.payload().equals(payload)).count() != 1) {
+                throw new IOException("报告后续任务缺少同批调度事件");
+            }
+        }
+        Map<String, PendingTask> actual = new TreeMap<>();
+        for (PendingTask task : candidate.pending()) {
+            if (isBeliefFactTask(task)) actual.put(task.taskId(), task);
+        }
+        if (!tasks.equals(actual)) throw new IOException("报告捕获/发布待办与前帧派生不一致");
+    }
+
+    private static boolean isBeliefFactTask(PendingTask task) {
+        return task.kind().equals(PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1)
+                || task.kind().equals(PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1);
+    }
+
+    /**
+     * 由上一帧 + 本批真实任务确定性重算期望信念子集。
+     *
+     * <p>执行期与恢复期共用同一套纯计算：形成用冻结参数/核验者/证据，捕获用上一帧制造台账，
+     * 发布只读已捕获值，阅读完成用本次 closedAt 与上一帧判断重算评估。</p>
+     */
+    private BeliefRun expectedBeliefs(WorldState previous, WorldState candidate, WorldCommit commit)
+            throws IOException {
+        BeliefRun base = previous.beliefs() == null ? BeliefRun.empty() : previous.beliefs();
+        PendingTask task = beliefTaskOf(previous, candidate, commit);
+        if (task == null) {
+            return expectedReadEffect(base, previous, candidate, commit);
+        }
+        long now = task.dueTimeMillis();
+        switch (task.kind()) {
+            case PendingTask.ROLE_TRADING_BELIEF_V1 -> {
+                RoleActionPayload payload = mapper.readValue(task.payload(), RoleActionPayload.class);
+                WorldRoleSession.BeliefDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.BeliefDraft.class);
+                if (payload.observedPosition() == null || !manifest.hasBelief()) {
+                    requireBeliefActionReport(candidate, task, payload, false, "NO_OBSERVATION", draft.beliefId());
+                    return base;
+                }
+                if (charter == null || !draft.companyId().equals(charter.companyPartyId())) {
+                    requireBeliefActionReport(candidate, task, payload, false, "UNKNOWN_COMPANY", draft.beliefId());
+                    return base;
+                }
+                WorldState frame = frameWithin(payload.observedPosition(), previous.position());
+                if (frame == null) {
+                    throw new IOException("观察帧不存在或越过上一帧：" + payload.observedPosition());
+                }
+                if (!observedEvidenceAllows(frame, payload.personPartyId(), draft.evidence())) {
+                    requireBeliefActionReport(candidate, task, payload, false, "STALE_OBSERVATION", draft.beliefId());
+                    return base;
+                }
+                BeliefModel.Outcome formed = BeliefModel.form(base.beliefs(),
+                        previous.information().information(), base.claims(),
+                        informationConfig.beliefPolicy(), informationConfig.recallPolicy(), now,
+                        new BeliefModel.FormRequest(draft.beliefId(), payload.personPartyId(),
+                                draft.companyId(), draft.comparator(), draft.threshold(),
+                                draft.targetAsOfMillis(), chairPersonOf(charter), draft.evidence(),
+                                draft.adoptedClaimId(), draft.rationale()));
+                requireBeliefActionReport(candidate, task, payload, formed.accepted(), formed.reason(), draft.beliefId());
+                return formed.accepted() ? base.withBeliefs(formed.state()) : base;
+            }
+            case PendingTask.ROLE_TRADING_FORECAST_V1 -> {
+                RoleActionPayload payload = mapper.readValue(task.payload(), RoleActionPayload.class);
+                WorldRoleSession.ForecastDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.ForecastDraft.class);
+                if (!manifest.hasBelief() || charter == null
+                        || !draft.companyId().equals(charter.companyPartyId())) {
+                    requireBeliefActionReport(candidate, task, payload, false, "UNKNOWN_COMPANY", draft.claimId());
+                    return base;
+                }
+                try {
+                    InformationModel.State published = InformationModel.publish(
+                            previous.information().information(), draft.docId(), payload.personPartyId(),
+                            InformationModel.Audience.publicAudience(),
+                            new InformationModel.VersionDraft(draft.title(), draft.body(),
+                                    draft.publicSourceDescription(), now, draft.readDurationMillis(), List.of()));
+                    BeliefRun result = base.withSourceClaim(new BeliefModel.SourceClaim(draft.claimId(),
+                            draft.docId(), 1, payload.personPartyId(), draft.companyId(),
+                            BeliefModel.METRIC_ORDERS_CONFIRMED, draft.comparator(), draft.threshold(),
+                            draft.targetAsOfMillis(), chairPersonOf(charter)));
+                    requireBeliefInformation(candidate, published);
+                    requireBeliefActionReport(candidate, task, payload, true, "OK", draft.claimId());
+                    return result;
+                } catch (IllegalArgumentException rejected) {
+                    requireBeliefInformation(candidate, previous.information().information());
+                    requireBeliefActionReport(candidate, task, payload, false, "REJECTED", draft.claimId());
+                    return base;
+                }
+            }
+            case PendingTask.ROLE_TRADING_COMPANY_REPORT_V1 -> {
+                RoleActionPayload payload = mapper.readValue(task.payload(), RoleActionPayload.class);
+                WorldRoleSession.ReportDraft draft = mapper.readValue(payload.body(), WorldRoleSession.ReportDraft.class);
+                String rejection = reportRejection(previous, payload, draft, now);
+                requireBeliefActionReport(candidate, task, payload, rejection == null,
+                        rejection == null ? "SCHEDULED" : rejection, draft.companyId());
+                return base;
+            }
+            case PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 -> {
+                FactCaptureBody body = mapper.readValue(task.payload(), FactCaptureBody.class);
+                String rejection = null;
+                if (charter == null || !body.companyId().equals(charter.companyPartyId())
+                        || !body.publisherPartyId().equals(chairPersonOf(charter))) {
+                    rejection = "NOT_AUTHORIZED";
+                } else if (body.asOfMillis() != now) {
+                    rejection = "ASOF_MISMATCH";
+                }
+                if (rejection != null) {
+                    return base.withReport(reportFor(task, body.publisherPartyId(), body.companyId(),
+                            false, rejection, commit.position()));
+                }
+                long value = previous.manufacturing() == null
+                        || previous.manufacturing().ledger() == null ? 0L
+                        : previous.manufacturing().ledger().contracts().size();
+                BeliefRun withCaptured = base.withCaptured(new BeliefRun.CapturedFact(
+                        body.captureTaskId(), body.publisherPartyId(), body.companyId(),
+                        BeliefModel.METRIC_ORDERS_CONFIRMED, now, commit.position(), value,
+                        "FACT-" + body.captureTaskId(), "belief-orders-" + now));
+                return withCaptured.withReport(reportFor(task, body.publisherPartyId(),
+                        body.companyId(), true, "CAPTURED", commit.position()));
+            }
+            case PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1 -> {
+                FactPublishBody body = mapper.readValue(task.payload(), FactPublishBody.class);
+                BeliefRun.CapturedFact captured = base.captured(body.captureTaskId());
+                if (captured == null) {
+                    return base;
+                }
+                if (charter == null
+                        || !captured.publisherPartyId().equals(chairPersonOf(charter))) {
+                    return base.withReport(reportFor(task, captured.publisherPartyId(),
+                            captured.factId(), false, "NOT_AUTHORIZED", commit.position()));
+                }
+                try {
+                    InformationModel.State information = InformationModel.publish(
+                            previous.information().information(), captured.docId(), captured.publisherPartyId(),
+                            InformationModel.Audience.publicAudience(),
+                            new InformationModel.VersionDraft("订单进展公告",
+                                    "截至模拟时点 " + captured.asOfMillis() + "，公司已确认订单 "
+                                            + captured.value() + " 笔。", "公司公告", now, 1L, List.of()));
+                    BeliefRun published = base.withFactClaim(new BeliefModel.FactClaim(
+                            captured.factId(), captured.docId(), 1, captured.companyId(),
+                            BeliefModel.METRIC_ORDERS_CONFIRMED, captured.asOfMillis(),
+                            captured.value(), captured.publisherPartyId(),
+                            captured.capturedPosition(), null)).withoutCaptured(body.captureTaskId());
+                    requireBeliefInformation(candidate, information);
+                    return published.withReport(reportFor(task, captured.publisherPartyId(),
+                            captured.factId(), true, "PUBLISHED", commit.position()));
+                } catch (IllegalArgumentException rejected) {
+                    requireBeliefInformation(candidate, previous.information().information());
+                    return base.withReport(reportFor(task, captured.publisherPartyId(),
+                            captured.factId(), false, "REJECTED", commit.position()));
+                }
+            }
+            default -> {
+                return base;
+            }
+        }
+    }
+
+    /** 阅读完成批：只有本批真实完成任务且本轮读完核验文档时才重算评估。 */
+    private BeliefRun expectedReadEffect(BeliefRun base, WorldState previous, WorldState candidate,
+                                         WorldCommit commit) throws IOException {
+        if (!manifest.hasBelief() || candidate.information() == null) {
+            return base;
+        }
+        PendingTask completed = completedTask(previous, candidate, commit);
+        if (completed == null || !PendingTask.INFORMATION_COMPLETE_READ_V1.equals(completed.kind())) {
+            return base;
+        }
+        for (WorldEvent event : commit.events()) {
+            if (!"TASK_COMPLETED_V1".equals(event.type())) {
+                continue;
+            }
+            if (!event.eventId().equals("task-completed:" + completed.taskId())) continue;
+            if (!(mapper.readTree(event.payload())
+                    instanceof com.fasterxml.jackson.databind.node.ObjectNode payload)
+                    || !payload.hasNonNull("readId")) {
+                continue;
+            }
+            String readId = payload.path("readId").asText();
+            InformationModel.ClosedReading closed = null;
+            for (InformationModel.ClosedReading reading : candidate.information().information()
+                    .closed()) {
+                if (reading.readId().equals(readId)) {
+                    closed = reading;
+                }
+            }
+            if (closed == null
+                    || closed.reason() != InformationModel.CloseReason.COMPLETED) {
+                continue;
+            }
+            BeliefModel.EvaluationOutcome evaluated = BeliefModel.evaluate(base.beliefs(),
+                    candidate.information().information(), base.claims(),
+                    informationConfig.beliefPolicy(), closed.personPartyId(), closed.docId(),
+                    closed.version(), commit.position(), closed.closedAt());
+            return evaluated.state() == base.beliefs() ? base : base.withBeliefs(evaluated.state());
+        }
+        return base;
+    }
+
+    private BeliefRun.Report reportFor(PendingTask task, String person, String subject,
+                                       boolean accepted, String reason, long position) {
+        return new BeliefRun.Report(task.taskId(), person, "system:" + task.taskId(),
+                task.kind(), accepted, reason, subject, task.dueTimeMillis(), position);
+    }
+
+    /** 文档和结构化声明必须由同一次确定性发布产生。 */
+    private static void requireBeliefInformation(WorldState candidate, InformationModel.State expected)
+            throws IOException {
+        if (!candidate.information().information().equals(expected)) {
+            throw new IOException("信念发布文档与真实请求不一致");
+        }
+    }
+
+    /** 角色收到的成功或拒绝也必须与原动作的重算结果一致。 */
+    private static void requireBeliefActionReport(WorldState candidate, PendingTask task,
+                                                  RoleActionPayload payload, boolean accepted,
+                                                  String reason, String subject) throws IOException {
+        var expected = new RoleTradingRun.Report(task.taskId(), payload.personPartyId(),
+                payload.clientCommandId(), payload.clientTaskId(), task.kind(), accepted, reason,
+                subject, task.dueTimeMillis(), candidate.position());
+        if (!expected.equals(candidate.trading().reports().get(task.taskId()))) {
+            throw new IOException("认知动作回报与原请求重算不一致");
+        }
+    }
+
+    /** 只取上一帧真正存在并由本批完成的任务；审计副本不能自行授权。 */
+    private PendingTask completedTask(WorldState previous, WorldState candidate, WorldCommit commit)
+            throws IOException {
+        if (!commit.commandId().startsWith("task:")) return null;
+        PendingTask task = pendingOf(previous, commit.commandId().substring("task:".length()));
+        if (task == null) return null;
+        long completions = commit.events().stream().filter(event ->
+                event.type().equals("TASK_COMPLETED_V1")
+                        && event.eventId().equals("task-completed:" + task.taskId())
+                        && event.payload().equals(task.payload())).count();
+        if (completions != 1 || !commit.commandContent().equals(task.payload())
+                || candidate.timeMillis() != task.dueTimeMillis()
+                || !candidate.lastPhase().equals(task.phase().name())
+                || pendingOf(candidate, task.taskId()) != null) {
+            throw new IOException("完成任务与上一帧待办不一致：" + task.taskId());
+        }
+        return task;
+    }
+
+    /** 本批认知审计必须与上一帧的原任务完全相同且恰好一次。 */
+    private PendingTask beliefTaskOf(WorldState previous, WorldState candidate, WorldCommit commit)
+            throws IOException {
+        PendingTask task = completedTask(previous, candidate, commit);
+        boolean belief = task != null && switch (task.kind()) {
+            case PendingTask.ROLE_TRADING_BELIEF_V1, PendingTask.ROLE_TRADING_FORECAST_V1,
+                    PendingTask.ROLE_TRADING_COMPANY_REPORT_V1,
+                    PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1,
+                    PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1 -> true;
+            default -> false;
+        };
+        int count = 0;
+        for (WorldEvent event : commit.events()) {
+            if ("BELIEF_TASK_V1".equals(event.type())) {
+                count++;
+                if (!belief || !event.eventId().equals("belief-task:" + task.taskId())
+                        || !mapper.readValue(event.payload(), PendingTask.class).equals(task)) {
+                    throw new IOException("认知审计副本与上一帧原任务不一致");
+                }
+            }
+        }
+        if (count != (belief ? 1 : 0)) throw new IOException("认知任务审计缺失或重复");
+        return belief ? task : null;
+    }
+
+    /** 日志中真实存在且不晚于给定上界的观察帧。 */
+    private WorldState frameWithin(long position, long maxPosition) throws IOException {
+        if (position <= 0 || position > maxPosition) {
+            return null;
+        }
+        for (WorldCommit commit : journal.commits()) {
+            if (commit.position() == position) {
+                return decodeSnapshot(commit);
+            }
+        }
+        return null;
     }
 
     /**
@@ -7791,7 +8405,7 @@ public final class WorldRuntime implements AutoCloseable {
         WorldState previous = null;
         for (WorldCommit commit : commits) {
             WorldState snapshot = decodeSnapshot(commit);
-            validate(snapshot, commit.position(), previous);
+            validate(snapshot, commit, previous);
             validateAudits(commit, snapshot, previous);
             if (previous == null && !expectedInitial.equals(snapshot)) {
                 throw new IOException("开局快照与期望开局状态不一致（必须等于清单绑定的初始资产）");
@@ -8369,7 +8983,8 @@ public final class WorldRuntime implements AutoCloseable {
                 task.dueTimeMillis(), task.phase().name(), previous.accounts(), pending, previous.delivered(),
                 used, previous.commandContents(), previous.commandOutcomes(), previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
-                information, previous.trading(), previous.decisions(), previous.dividends());
+                information, previous.trading(), previous.decisions(), previous.dividends(),
+                previous.beliefs());
         List<WorldEvent> events = List.of(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()), new WorldEvent("information-report:" + task.taskId(), "INFORMATION_REPORT_V1",
                 mapper.writeValueAsString(report)));
@@ -8493,7 +9108,7 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.timeMillis(), previous.lastPhase(), previous.accounts(), pending, previous.delivered(),
                 used, contents, outcomes, previous.securities(), previous.exchange(), previous.manufacturing(),
                 previous.governance(), previous.roles(), previous.information(), previous.trading(),
-                previous.decisions(), previous.dividends());
+                previous.decisions(), previous.dividends(), previous.beliefs());
         List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + added.taskId(), "TASK_SCHEDULED_V1",
                 mapper.writeValueAsString(added)));
         List<WorldEvent> actual = commit.events().stream()
@@ -9295,7 +9910,8 @@ public final class WorldRuntime implements AutoCloseable {
                 manifest.hasSecurities() ? SecuritiesLedger.opening(registry) : null,
                 manifest.hasMatching() ? WorldExchange.opening() : null,
                 manufacturing, governance, roles, information, trading, decisions,
-                manifest.hasDividend() ? DividendModel.empty() : null);
+                manifest.hasDividend() ? DividendModel.empty() : null,
+                manifest.hasBelief() ? BeliefRun.empty() : null);
     }
 
     /**
@@ -9315,8 +9931,80 @@ public final class WorldRuntime implements AutoCloseable {
         return access;
     }
 
+    /** 工具合同版本：信念档案使用 v2，旧档案保持 v1 逐字不变。 */
+    private String toolContractVersion() {
+        return manifest.hasBelief() ? DecisionRun.TOOL_CONTRACT_VERSION_V2
+                : DecisionRun.TOOL_CONTRACT_VERSION;
+    }
+
+    /**
+     * 精确观察帧：只接受日志中真实存在、且不晚于当前确认位置的提交。
+     *
+     * <p>角色认知动作只能用这一帧里已经读完的材料，不能按时间过滤当前状态冒充历史。</p>
+     *
+     * @param position 已确认提交位置
+     * @return 该帧的完整世界状态（只读）
+     * @throws IOException 日志解码失败
+     */
+    private WorldState frameAt(long position) throws IOException {
+        if (position <= 0 || position > state.position()) {
+            throw new IllegalArgumentException("观察位置不存在或尚未确认：" + position);
+        }
+        for (WorldCommit commit : journal.commits()) {
+            if (commit.position() != position) {
+                continue;
+            }
+            WorldState frame = decodeSnapshot(commit);
+            if (frame.position() != position) {
+                throw new IOException("帧位置与提交不一致：" + position);
+            }
+            return frame;
+        }
+        throw new IllegalArgumentException("观察位置不存在：" + position);
+    }
+
+    /** @return 当前信念子集 */
+    private BeliefRun requireBeliefRun() {
+        if (!manifest.hasBelief() || state.beliefs() == null) {
+            throw new IllegalStateException("当前运行未启用信念子集：" + manifest.rulesVersion());
+        }
+        return state.beliefs();
+    }
+
+    /**
+     * 观察期资格：证据必须在该帧的回忆结果中，且属于本人。
+     *
+     * <p>同毫秒稍后提交的阅读不会出现在这一帧里，因此不能用来补旧观察。</p>
+     */
+    private boolean observedEvidenceAllows(WorldState frame, String person,
+                                           List<RoleView.ReadingRef> refs) {
+        if (frame.information() == null || informationConfig == null
+                || informationConfig.recallPolicy() == null || refs == null || refs.isEmpty()) {
+            return false;
+        }
+        InformationModel.State info = frame.information().information();
+        CognitionRecall.Result recall = CognitionRecall.recall(info, person, frame.timeMillis(),
+                informationConfig.recallPolicy());
+        Set<String> selected = new LinkedHashSet<>();
+        for (CognitionRecall.Item item : recall.selected()) {
+            selected.add(item.observation().docId() + '\u0000' + item.observation().version());
+        }
+        for (RoleView.ReadingRef ref : refs) {
+            if (ref == null || !ref.personPartyId().equals(person)) {
+                return false;
+            }
+            if (!selected.contains(ref.docId() + '\u0000' + ref.version())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasBelief()) {
+            return STATE_SCHEMA_BELIEF;
+        }
         if (manifest.hasCognitionRecall()) {
             return STATE_SCHEMA_COGNITION_RECALL;
         }
@@ -9454,10 +10142,30 @@ public final class WorldRuntime implements AutoCloseable {
                             RoleTradingRun trading,
                             DecisionRun decisions,
                             DividendModel.State dividends) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, trading, decisions, dividends, state.beliefs());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading,
+                            DecisionRun decisions,
+                            DividendModel.State dividends,
+                            BeliefRun beliefs) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                roles, information, trading, decisions, dividends);
+                roles, information, trading, decisions, dividends, beliefs);
     }
 
     // ==================================================================
@@ -9850,7 +10558,8 @@ public final class WorldRuntime implements AutoCloseable {
         return new WorldState(previous.schemaVersion(), previous.runId(), position, time, phase,
                 accounts, pending, delivered, used, contents, outcomes, previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
-                previous.information(), previous.trading(), previous.decisions(), previous.dividends());
+                previous.information(), previous.trading(), previous.decisions(),
+                previous.dividends(), previous.beliefs());
     }
 
     private void requireCashBatch(WorldCommit commit, WorldState candidate, WorldState expected,
@@ -10709,11 +11418,22 @@ public final class WorldRuntime implements AutoCloseable {
     private record RoleActionPayload(String commandId, String clientCommandId,
                                     String clientTaskId, String personPartyId,
                                     long dueMillis, Map<String, String> appointments,
-                                    String kind, String body) {
+                                    String kind, String body,
+                                    @JsonInclude(JsonInclude.Include.NON_NULL)
+                                    Long observedPosition) {
     }
 
     /** 阅读取消的本人范围引用。 */
     private record RoleUnreadBody(String docId, long version, long index) {
+    }
+
+    /** 事实捕获参数：稳定发布子任务标识冻结在捕获批。 */
+    private record FactCaptureBody(String captureTaskId, String publisherPartyId,
+                                   String companyId, long asOfMillis, String publishTaskId) {
+    }
+
+    /** 事实发布参数：只引用已捕获事实，不携带数值。 */
+    private record FactPublishBody(String captureTaskId) {
     }
 
     /** 系统扫描：目标 + 版本。 */
@@ -10783,12 +11503,42 @@ public final class WorldRuntime implements AutoCloseable {
         if (personPartyId == null || personPartyId.isBlank()) {
             throw new IllegalArgumentException("角色会话不可用");
         }
-        InformationModel.State information = requireInformationRun().information();
-        if (!information.persons().contains(personPartyId)) {
+        return sessionFor(state, personPartyId,
+                manifest.hasBelief() ? state.position() : null);
+    }
+
+    /**
+     * 在指定已确认帧上打开会话：认知动作只能使用这一帧里已经读完的材料。
+     *
+     * @param personPartyId   人物
+     * @param observedPosition 已确认提交位置
+     * @return 会话
+     * @throws IOException 日志读取失败
+     * @throws IllegalArgumentException 位置不存在、未来或人物不可见
+     */
+    public synchronized WorldRoleSession openRoleSession(String personPartyId, long observedPosition)
+            throws IOException {
+        requireOpen();
+        requireRoleReadingEnabled();
+        requireTradingEnabled();
+        if (personPartyId == null || personPartyId.isBlank()) {
             throw new IllegalArgumentException("角色会话不可用");
         }
-        long now = state.timeMillis();
-        RoleAccess.State access = requireRoleRun().access();
+        WorldState frame = frameAt(observedPosition);
+        return sessionFor(frame, personPartyId, observedPosition);
+    }
+
+    private WorldRoleSession sessionFor(WorldState snap, String personPartyId, Long observedPosition) {
+        InformationModel.State information = snap.information() == null ? null
+                : snap.information().information();
+        if (information == null || !information.persons().contains(personPartyId)) {
+            throw new IllegalArgumentException("角色会话不可用");
+        }
+        long now = snap.timeMillis();
+        RoleAccess.State access = snap.roles() == null ? null : snap.roles().access();
+        if (access == null) {
+            throw new IllegalStateException("快照缺少任职子集");
+        }
         Map<String, String> observed = new LinkedHashMap<>();
         for (RoleAccess.Appointment appointment : access.appointments()) {
             if (!appointment.personPartyId().equals(personPartyId) || !appointment.activeAt(now)) {
@@ -10800,7 +11550,7 @@ public final class WorldRuntime implements AutoCloseable {
                 observed.put(organization, appointment.id());
             }
         }
-        return new WorldRoleSession(this, personPartyId, now, observed);
+        return new WorldRoleSession(this, personPartyId, now, observed, observedPosition);
     }
 
     private static boolean startsLater(RoleAccess.State access, RoleAccess.Appointment candidate,
@@ -10966,7 +11716,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
 
         return new RoleTradingView(session.observedAt(), now, person, profile, appointments,
-                research, targets, children, notices, roleTools(appointments));
+                research, targets, children, notices, roleTools(appointments, manifest.hasBelief()));
     }
 
     /** 使用原观察任职裁剪权限，身份、个人账户及组织账户登记保持同一来源。 */
@@ -10983,7 +11733,8 @@ public final class WorldRuntime implements AutoCloseable {
                 appointments);
     }
 
-    private static List<String> roleTools(List<RoleTradingView.Appointment> appointments) {
+    private static List<String> roleTools(List<RoleTradingView.Appointment> appointments,
+                                          boolean beliefEnabled) {
         boolean researcher = false;
         boolean manager = false;
         boolean risk = false;
@@ -11017,6 +11768,11 @@ public final class WorldRuntime implements AutoCloseable {
         if (trader) {
             tools.add(RoleTradingView.TOOL_CHILD_SUBMIT);
             tools.add(RoleTradingView.TOOL_CHILD_CANCEL);
+        }
+        if (beliefEnabled) {
+            tools.add(RoleTradingView.TOOL_BELIEF_ASSERT);
+            tools.add(RoleTradingView.TOOL_FORECAST_PUBLISH);
+            tools.add(RoleTradingView.TOOL_COMPANY_REPORT_ORDERS);
         }
         return List.copyOf(tools);
     }
@@ -11071,7 +11827,8 @@ public final class WorldRuntime implements AutoCloseable {
         String internalTask = roleTaskId(session.personPartyId(), clientTaskId);
         RoleActionPayload payload = new RoleActionPayload(internalCommand, clientCommandId,
                 clientTaskId, session.personPartyId(), dueMillis,
-                new TreeMap<>(session.appointments()), kind, mapper.writeValueAsString(body));
+                new TreeMap<>(session.appointments()), kind, mapper.writeValueAsString(body),
+                session.observedPosition());
         String content = mapper.writeValueAsString(payload);
         if (state.commandContents().containsKey(internalCommand)) {
             if (!content.equals(state.commandContents().get(internalCommand))) {
@@ -11231,6 +11988,7 @@ public final class WorldRuntime implements AutoCloseable {
         boolean accepted = false;
         String reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
         String subject = "";
+        BeliefRun beliefsAfter = state.beliefs();
 
         switch (task.kind()) {
             case PendingTask.ROLE_TRADING_RESEARCH_V1 -> {
@@ -11478,6 +12236,81 @@ public final class WorldRuntime implements AutoCloseable {
                             "EXCHANGE_ORDER_REPORT_V1", mapper.writeValueAsString(report)));
                 }
             }
+            case PendingTask.ROLE_TRADING_BELIEF_V1 -> {
+                WorldRoleSession.BeliefDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.BeliefDraft.class);
+                subject = draft.beliefId();
+                if (!manifest.hasBelief() || payload.observedPosition() == null) {
+                    reason = "NO_OBSERVATION";
+                    break;
+                }
+                if (charter == null || !draft.companyId().equals(charter.companyPartyId())) {
+                    reason = "UNKNOWN_COMPANY";
+                    break;
+                }
+                WorldState frame = frameAt(payload.observedPosition());
+                if (!observedEvidenceAllows(frame, payload.personPartyId(), draft.evidence())) {
+                    reason = "STALE_OBSERVATION";
+                    break;
+                }
+                BeliefRun runB = requireBeliefRun();
+                BeliefModel.Outcome formed = BeliefModel.form(runB.beliefs(), information,
+                        runB.claims(), informationConfig.beliefPolicy(),
+                        informationConfig.recallPolicy(), now,
+                        new BeliefModel.FormRequest(draft.beliefId(), payload.personPartyId(),
+                                draft.companyId(), draft.comparator(), draft.threshold(),
+                                draft.targetAsOfMillis(), chairPersonOf(charter), draft.evidence(),
+                                draft.adoptedClaimId(), draft.rationale()));
+                accepted = formed.accepted();
+                reason = formed.reason();
+                if (accepted) {
+                    beliefsAfter = runB.withBeliefs(formed.state());
+                }
+            }
+            case PendingTask.ROLE_TRADING_FORECAST_V1 -> {
+                WorldRoleSession.ForecastDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.ForecastDraft.class);
+                subject = draft.claimId();
+                if (!manifest.hasBelief() || charter == null
+                        || !draft.companyId().equals(charter.companyPartyId())) {
+                    reason = "UNKNOWN_COMPANY";
+                    break;
+                }
+                BeliefRun runB = requireBeliefRun();
+                try {
+                    InformationModel.State published = InformationModel.publish(information,
+                            draft.docId(), payload.personPartyId(),
+                            InformationModel.Audience.publicAudience(),
+                            new InformationModel.VersionDraft(draft.title(), draft.body(),
+                                    draft.publicSourceDescription(), now,
+                                    draft.readDurationMillis(), List.of()));
+                    BeliefRun withClaim = runB.withSourceClaim(new BeliefModel.SourceClaim(
+                            draft.claimId(), draft.docId(), 1, payload.personPartyId(),
+                            draft.companyId(), BeliefModel.METRIC_ORDERS_CONFIRMED,
+                            draft.comparator(), draft.threshold(), draft.targetAsOfMillis(),
+                            chairPersonOf(charter)));
+                    informationAfter = published;
+                    beliefsAfter = withClaim;
+                    accepted = true;
+                    reason = "OK";
+                } catch (IllegalArgumentException rejected) {
+                    accepted = false;
+                    reason = "REJECTED";
+                }
+            }
+            case PendingTask.ROLE_TRADING_COMPANY_REPORT_V1 -> {
+                WorldRoleSession.ReportDraft draft = mapper.readValue(payload.body(),
+                        WorldRoleSession.ReportDraft.class);
+                subject = draft.companyId();
+                String rejection = reportRejection(state, payload, draft, now);
+                if (rejection != null) {
+                    reason = rejection;
+                    break;
+                }
+                extra.add(reportCaptureTask(state, task, payload, draft));
+                accepted = true;
+                reason = "SCHEDULED";
+            }
             default -> throw new IllegalStateException("未启用的交易动作：" + task.kind());
         }
 
@@ -11503,15 +12336,210 @@ public final class WorldRuntime implements AutoCloseable {
                 "ROLE_TRADING_REPORT_V1", mapper.writeValueAsString(entry)));
         events.add(0, new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()));
+        if (PendingTask.ROLE_TRADING_BELIEF_V1.equals(task.kind())
+                || PendingTask.ROLE_TRADING_FORECAST_V1.equals(task.kind())
+                || PendingTask.ROLE_TRADING_COMPANY_REPORT_V1.equals(task.kind())) {
+            events.add(new WorldEvent("belief-task:" + task.taskId(), "BELIEF_TASK_V1",
+                    mapper.writeValueAsString(task)));
+        }
         WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
                 state.delivered(), used, state.commandContents(), state.commandOutcomes(), securities,
                 exchange, state.manufacturing(), state.governance(), state.roles(),
                 informationAfter.equals(information) ? state.information()
                         : informationRun.withInformation(informationAfter),
-                runCandidate);
-        if (task.taskId().startsWith("roleT:") && !extra.isEmpty()) {
-        }
+                runCandidate, state.decisions(), state.dividends(), beliefsAfter);
         commitAndApply("task:" + task.taskId(), task.payload(), reason, events, candidate);
+    }
+
+    /**
+     * 在 asOf 的 OBSERVATION 阶段捕获公司已确认合同数量并冻结位置；下一毫秒才发布。
+     */
+    private void completeBeliefCapture(PendingTask task) throws IOException {
+        FactCaptureBody body = mapper.readValue(task.payload(), FactCaptureBody.class);
+        long now = task.dueTimeMillis();
+        BeliefRun run = requireBeliefRun();
+        BeliefRun beliefsAfter = run;
+        boolean accepted;
+        String reason;
+        if (charter == null || !body.companyId().equals(charter.companyPartyId())
+                || !body.publisherPartyId().equals(chairPersonOf(charter))) {
+            accepted = false;
+            reason = "NOT_AUTHORIZED";
+        } else if (body.asOfMillis() != now) {
+            accepted = false;
+            reason = "ASOF_MISMATCH";
+        } else {
+            long value = manufacturingContractCount();
+            String factId = "FACT-" + body.captureTaskId();
+            String docId = "belief-orders-" + now;
+            beliefsAfter = run.withCaptured(new BeliefRun.CapturedFact(body.captureTaskId(),
+                    body.publisherPartyId(), body.companyId(),
+                    BeliefModel.METRIC_ORDERS_CONFIRMED, now, state.position() + 1, value,
+                    factId, docId));
+            accepted = true;
+            reason = "CAPTURED";
+        }
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.add(new WorldEvent("belief-task:" + task.taskId(), "BELIEF_TASK_V1",
+                mapper.writeValueAsString(task)));
+        if (accepted) {
+            PendingTask publish = new PendingTask(body.publishTaskId(), Math.addExact(now, 1L),
+                    WorldScheduler.Phase.DELIVERY,
+                    PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1,
+                    mapper.writeValueAsString(new FactPublishBody(body.captureTaskId())));
+            pending.add(publish);
+            used.add(publish.taskId());
+            events.add(new WorldEvent("task-scheduled:" + publish.taskId(), "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(publish)));
+        }
+        BeliefRun.Report report = new BeliefRun.Report(task.taskId(), body.publisherPartyId(),
+                "system:" + task.taskId(), task.kind(), accepted, reason, body.companyId(), now,
+                state.position() + 1);
+        beliefsAfter = beliefsAfter.withReport(report);
+        events.add(new WorldEvent("belief-report:" + task.taskId(), "BELIEF_REPORT_V1",
+                mapper.writeValueAsString(report)));
+        WorldState candidate = next(now, task.phase().name(), state.accounts(), pending,
+                state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), state.manufacturing(), state.governance(),
+                state.roles(), state.information(), state.trading(), state.decisions(),
+                state.dividends(), beliefsAfter);
+        commitAndApply("task:" + task.taskId(), task.payload(), reason, events, candidate);
+    }
+
+    /** 下一毫秒的 DELIVERY：只发布已冻结捕获值，不再回读当前台账。 */
+    private void completeBeliefPublish(PendingTask task) throws IOException {
+        FactPublishBody body = mapper.readValue(task.payload(), FactPublishBody.class);
+        long now = task.dueTimeMillis();
+        BeliefRun run = requireBeliefRun();
+        BeliefRun.CapturedFact captured = run.captured(body.captureTaskId());
+        BeliefRun beliefsAfter = run;
+        boolean accepted = captured != null;
+        String reason = accepted ? "PUBLISHED" : "NOT_FOUND";
+        InformationModel.State informationAfter = state.information() == null ? null
+                : state.information().information();
+        if (accepted && (charter == null
+                || !captured.publisherPartyId().equals(chairPersonOf(charter)))) {
+            accepted = false;
+            reason = "NOT_AUTHORIZED";
+            beliefsAfter = run.withReport(new BeliefRun.Report(task.taskId(),
+                    captured.publisherPartyId(), "system:" + task.taskId(), task.kind(), false,
+                    "NOT_AUTHORIZED", captured.factId(), now, state.position() + 1));
+        }
+        if (accepted) {
+            try {
+                InformationModel.State published = InformationModel.publish(informationAfter,
+                        captured.docId(), captured.publisherPartyId(),
+                        InformationModel.Audience.publicAudience(),
+                        new InformationModel.VersionDraft("订单进展公告",
+                                "截至模拟时点 " + captured.asOfMillis() + "，公司已确认订单 "
+                                        + captured.value() + " 笔。",
+                                "公司公告", now, 1L, List.of()));
+                BeliefModel.FactClaim fact = new BeliefModel.FactClaim(captured.factId(),
+                        captured.docId(), 1, captured.companyId(),
+                        BeliefModel.METRIC_ORDERS_CONFIRMED, captured.asOfMillis(),
+                        captured.value(), captured.publisherPartyId(),
+                        captured.capturedPosition(), null);
+                beliefsAfter = run.withFactClaim(fact).withoutCaptured(body.captureTaskId())
+                        .withReport(new BeliefRun.Report(task.taskId(),
+                                captured.publisherPartyId(), "system:" + task.taskId(),
+                                task.kind(), true, "PUBLISHED", fact.factId(), now,
+                                state.position() + 1));
+                informationAfter = published;
+            } catch (IllegalArgumentException rejected) {
+                accepted = false;
+                reason = "REJECTED";
+                beliefsAfter = run.withReport(new BeliefRun.Report(task.taskId(),
+                        captured.publisherPartyId(), "system:" + task.taskId(), task.kind(),
+                        false, "REJECTED", captured.factId(), now, state.position() + 1));
+            }
+        } else if (captured == null) {
+            // 找不到捕获时无法诚实署名：不改状态、不写报告；pending/used 校验保证任务真实存在
+            beliefsAfter = run;
+        }
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.add(new WorldEvent("belief-task:" + task.taskId(), "BELIEF_TASK_V1",
+                mapper.writeValueAsString(task)));
+        WorldState candidate = next(now, task.phase().name(), state.accounts(), pending,
+                state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), state.manufacturing(), state.governance(),
+                state.roles(), informationAfter == null || state.information() == null
+                        || informationAfter.equals(state.information().information())
+                        ? state.information() : state.information().withInformation(informationAfter),
+                state.trading(), state.decisions(), state.dividends(), beliefsAfter);
+        commitAndApply("task:" + task.taskId(), task.payload(), reason, events, candidate);
+    }
+
+    /** 执行与恢复共用报告资格及后续任务生成，防止两个入口漂移。 */
+    private String reportRejection(WorldState base, RoleActionPayload payload,
+                                   WorldRoleSession.ReportDraft draft, long now) {
+        if (!manifest.hasBelief() || charter == null || !draft.companyId().equals(charter.companyPartyId())) {
+            return "UNKNOWN_COMPANY";
+        }
+        if (!payload.personPartyId().equals(chairPersonOf(charter))) return "NOT_AUTHORIZED";
+        if (draft.asOfMillis() <= now) return "PAST_ASOF";
+        if (draft.asOfMillis() == Long.MAX_VALUE) return "TIME_OVERFLOW";
+        return factRequestExists(base, draft.companyId(), draft.asOfMillis()) ? "DUPLICATE_REQUEST" : null;
+    }
+
+    private PendingTask reportCaptureTask(WorldState base, PendingTask task, RoleActionPayload payload,
+                                           WorldRoleSession.ReportDraft draft) throws IOException {
+        String captureId = freeInternalTaskId("factcap:", "factcap:" + task.taskId(),
+                new LinkedHashSet<>(base.usedTaskIds()));
+        String publishId = freeInternalTaskId("factpub:", "factpub:" + task.taskId(),
+                new LinkedHashSet<>(base.usedTaskIds()));
+        return new PendingTask(captureId, draft.asOfMillis(), WorldScheduler.Phase.OBSERVATION,
+                PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1,
+                mapper.writeValueAsString(new FactCaptureBody(captureId, payload.personPartyId(),
+                        draft.companyId(), draft.asOfMillis(), publishId)));
+    }
+
+    /** 同一公司/指标/asOf 已有捕获、待捕获或已发布事实。 */
+    private boolean factRequestExists(WorldState base, String companyId, long asOf) {
+        BeliefRun run = base.beliefs();
+        for (BeliefRun.CapturedFact captured : run.captured()) {
+            if (captured.companyId().equals(companyId) && captured.asOfMillis() == asOf) {
+                return true;
+            }
+        }
+        for (BeliefModel.FactClaim fact : run.factClaims()) {
+            if (fact.companyId().equals(companyId) && fact.asOfMillis() == asOf) {
+                return true;
+            }
+        }
+        for (PendingTask pending : base.pending()) {
+            if (!PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1.equals(pending.kind())) {
+                continue;
+            }
+            try {
+                FactCaptureBody body = mapper.readValue(pending.payload(), FactCaptureBody.class);
+                if (body.companyId().equals(companyId) && body.asOfMillis() == asOf) {
+                    return true;
+                }
+            } catch (IOException invalid) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @return 当前制造台账中已确认销售合同数量（合同台账存在即已签署）。 */
+    private long manufacturingContractCount() {
+        if (state.manufacturing() == null || state.manufacturing().ledger() == null) {
+            return 0L;
+        }
+        return state.manufacturing().ledger().contracts().size();
     }
 
     /** 系统扫描：撤不相容旧单；撤净后 UPDATING 重建基点，其余阶段只停新单。 */
@@ -11768,6 +12796,15 @@ public final class WorldRuntime implements AutoCloseable {
                                  SecuritiesLedger.State securities, WorldExchange.State exchange,
                                  String reason, List<PendingTask> extra, List<WorldEvent> effects)
             throws IOException {
+        finishWithExtra(task, trading, accounts, securities, exchange, reason, extra, effects,
+                state.beliefs());
+    }
+
+    private void finishWithExtra(PendingTask task, RoleTradingModel.State trading,
+                                 Map<String, CashLedger.CashAccount> accounts,
+                                 SecuritiesLedger.State securities, WorldExchange.State exchange,
+                                 String reason, List<PendingTask> extra, List<WorldEvent> effects,
+                                 BeliefRun beliefs) throws IOException {
         List<PendingTask> pending = new ArrayList<>(state.pending());
         pending.remove(task);
         Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
@@ -11788,7 +12825,8 @@ public final class WorldRuntime implements AutoCloseable {
         WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
                 state.delivered(), used, state.commandContents(), state.commandOutcomes(), securities,
                 exchange, state.manufacturing(), state.governance(), state.roles(),
-                state.information(), requireTradingRun().withTrading(trading));
+                state.information(), requireTradingRun().withTrading(trading), state.decisions(),
+                state.dividends(), beliefs);
         commitAndApply("task:" + task.taskId(), task.payload(), reason, events, candidate);
     }
 
@@ -12474,6 +13512,9 @@ public final class WorldRuntime implements AutoCloseable {
             case PendingTask.ROLE_TRADING_TARGET_V1, PendingTask.ROLE_TRADING_REVIEW_V1,
                  PendingTask.ROLE_TRADING_CONFIRM_V1, PendingTask.ROLE_TRADING_HALT_V1,
                  PendingTask.ROLE_TRADING_CANCEL_V1 -> "targetId";
+            case PendingTask.ROLE_TRADING_BELIEF_V1 -> "beliefId";
+            case PendingTask.ROLE_TRADING_FORECAST_V1 -> "claimId";
+            case PendingTask.ROLE_TRADING_COMPANY_REPORT_V1 -> "companyId";
             default -> throw new IOException("人物回报种类未登记：" + report.kind());
         };
         if (!report.subjectId().equals(mapper.readTree(request.body()).path(field).asText())) {

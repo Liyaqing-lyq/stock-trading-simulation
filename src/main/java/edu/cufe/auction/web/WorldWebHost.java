@@ -1,6 +1,7 @@
 package edu.cufe.auction.web;
 
 import edu.cufe.auction.world.BoardModel;
+import edu.cufe.auction.world.BeliefModel;
 import edu.cufe.auction.world.BoardRun;
 import edu.cufe.auction.world.DecisionModel;
 import edu.cufe.auction.world.DecisionRun;
@@ -440,6 +441,140 @@ public final class WorldWebHost implements AutoCloseable {
                     reports, owners, valuationsAvailable,
                     snapshot.decisions().isPresent() && current.pendingBarrier().isPresent(), pending.size(),
                     snapshot.delivered().size());
+        });
+    }
+
+    /**
+     * 市场历史柱（金额/数量/价格全部为精确字符串）。
+     *
+     * @param startMillis   桶起点
+     * @param endMillis     桶终点；溢出时为 null
+     * @param complete      是否在截止前结束
+     * @param firstTradeId  首笔成交号
+     * @param lastTradeId   末笔成交号
+     * @param count         成交笔数
+     * @param open          开盘价
+     * @param high          最高价
+     * @param low           最低价
+     * @param close         收盘价
+     * @param volume        成交量；溢出为 null
+     * @param volumeStatus  OK / OVERFLOW
+     * @param amount        成交额
+     */
+    public record MarketBarView(String startMillis, String endMillis, boolean complete,
+                                String firstTradeId, String lastTradeId, String count,
+                                String open, String high, String low, String close,
+                                String volume, String volumeStatus, String amount) {
+    }
+
+    /**
+     * 相邻保留柱之间的空档。
+     *
+     * @param fromMillis  前一根柱的 endExclusive
+     * @param toMillis    后一根柱的 start
+     * @param missingBars 缺失桶数
+     */
+    public record MarketGapView(String fromMillis, String toMillis, String missingBars) {
+    }
+
+    /**
+     * 真实成交 K 线响应；同一快照的截止位置与时点。
+     *
+     * @param runId          运行标识
+     * @param position       已确认位置
+     * @param timeMillis     截止模拟时点
+     * @param lastPhase      最后阶段
+     * @param available      是否有撮合子集
+     * @param marketClosed   撮合是否已收盘
+     * @param symbols        真实证券候选
+     * @param selectedSymbol 选中证券；无候选为 null
+     * @param period         周期
+     * @param basis          价格口径
+     * @param bars           有成交柱（升序，最多 500）
+     * @param gaps           相邻保留柱之间的空档
+     * @param truncated      是否裁剪
+     * @param totalBars      裁剪前有成交桶数
+     */
+    public record MarketHistoryView(String runId, String position, String timeMillis,
+                                    String lastPhase, boolean available, boolean marketClosed,
+                                    List<String> symbols, String selectedSymbol, String period,
+                                    String basis, List<MarketBarView> bars,
+                                    List<MarketGapView> gaps, boolean truncated,
+                                    String totalBars) {
+        /** 冻结集合，避免调用方修改响应。 */
+        public MarketHistoryView {
+            symbols = List.copyOf(symbols);
+            bars = List.copyOf(bars);
+            gaps = List.copyOf(gaps);
+        }
+    }
+
+    /**
+     * 市场历史（单 writer 任务、单快照；只读，不推进世界）。
+     *
+     * @param symbol     证券；空字符串表示按真实候选稳定选择首个
+     * @param periodText minute/day/week
+     * @return K 线响应
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public MarketHistoryView marketHistory(String symbol, String periodText)
+            throws BusyException, Exception {
+        if (symbol == null) {
+            throw new IllegalArgumentException("证券不能为空");
+        }
+        MarketHistory.Period period = MarketHistory.Period.fromId(periodText);
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            OpeningRegistry registry = current.openingRegistry().orElse(null);
+            List<String> symbols = new ArrayList<>();
+            if (registry != null) {
+                for (OpeningRegistry.Security security : registry.securities()) {
+                    if (!symbols.contains(security.symbol())) {
+                        symbols.add(security.symbol());
+                    }
+                }
+            }
+            String selected;
+            if (symbol.isEmpty()) {
+                selected = symbols.isEmpty() ? null : symbols.get(0);
+            } else if (symbols.contains(symbol)) {
+                selected = symbol;
+            } else {
+                throw new IllegalArgumentException("未知证券");
+            }
+            boolean available = snapshot.exchange().isPresent();
+            boolean marketClosed = snapshot.exchange()
+                    .map(WorldExchange.State::closed).orElse(false);
+            List<WorldExchange.Trade> trades = snapshot.exchange()
+                    .map(WorldExchange.State::trades).orElse(List.of());
+            MarketHistory.Result result = selected == null
+                    ? new MarketHistory.Result("", period, snapshot.timeMillis(),
+                            snapshot.position(), List.of(), List.of(), false, 0L)
+                    : MarketHistory.aggregate(trades, selected, period, snapshot.timeMillis(),
+                            snapshot.position());
+            List<MarketBarView> bars = new ArrayList<>();
+            for (MarketHistory.Bar bar : result.bars()) {
+                bars.add(new MarketBarView(Long.toString(bar.startMillis()),
+                        bar.endMillis() == null ? null : Long.toString(bar.endMillis()),
+                        bar.complete(), Long.toString(bar.firstTradeId()),
+                        Long.toString(bar.lastTradeId()), Long.toString(bar.count()),
+                        bar.open().toPlainString(), bar.high().toPlainString(),
+                        bar.low().toPlainString(), bar.close().toPlainString(),
+                        bar.volume() == null ? null : Long.toString(bar.volume()),
+                        bar.volumeStatus(), bar.amount().toPlainString()));
+            }
+            List<MarketGapView> gaps = new ArrayList<>();
+            for (MarketHistory.Gap gap : result.gaps()) {
+                gaps.add(new MarketGapView(Long.toString(gap.fromMillis()),
+                        Long.toString(gap.toMillis()), Long.toString(gap.missingBars())));
+            }
+            return new MarketHistoryView(runId, Long.toString(snapshot.position()),
+                    Long.toString(snapshot.timeMillis()), snapshot.lastPhase(), available,
+                    marketClosed, List.copyOf(symbols), selected, period.id(),
+                    "UNADJUSTED_EXPERIMENT", bars, gaps, result.truncated(),
+                    Long.toString(result.totalBars()));
         });
     }
 
@@ -1028,6 +1163,107 @@ public final class WorldWebHost implements AutoCloseable {
             view.put("selected", List.copyOf(selected));
             return view;
         });
+    }
+
+    /**
+     * 管理员查询同一确认位置的判断及学习历史；读取不触发学习。
+     * @param personPartyId 已登记人物
+     * @return 有界审计数据；旧档案的available为false
+     * @throws BusyException 查询队列已满
+     * @throws Exception 人物无效或世界读取失败
+     */
+    public Map<String, Object> beliefView(String personPartyId) throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            var snapshot = current.snapshot();
+            var audit = current.beliefAudit(personPartyId);
+            Map<String, Object> view = new LinkedHashMap<>();
+            view.put("runId", runId);
+            view.put("position", Long.toString(snapshot.position()));
+            view.put("timeMillis", Long.toString(snapshot.timeMillis()));
+            view.put("personPartyId", personPartyId);
+            view.put("available", audit.isPresent());
+            if (audit.isPresent()) {
+                var learning = audit.orElseThrow();
+                view.putAll(beliefDetails(learning.state(),
+                        new BeliefModel.Claims(learning.sourceClaims(), learning.factClaims()),
+                        learning.policy(), personPartyId, snapshot.timeMillis()));
+            }
+            return view;
+        });
+    }
+
+    /** 本人认知审计的有界网页数据；精确整数转字符串，不修改历史。 */
+    private static Map<String, Object> beliefDetails(BeliefModel.State learning,
+                                                     BeliefModel.Claims claims,
+                                                     BeliefModel.Policy policy,
+                                                     String person, long now) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("policy", Map.of("maxBeliefsPerPerson", Long.toString(policy.maxBeliefsPerPerson()),
+                "maxOpenBeliefs", policy.maxOpenBeliefs(), "maxHorizonMillis", Long.toString(policy.maxHorizonMillis()),
+                "trustStep", policy.trustStep(), "confidenceWeight", policy.confidenceWeight(),
+                "habitThreshold", policy.habitThreshold(), "habitWindowMillis", Long.toString(policy.habitWindowMillis())));
+        var projection = BeliefModel.project(learning, policy, person, now, MAX_ROWS);
+        Map<String, BeliefModel.Belief> mine = new LinkedHashMap<>();
+        for (var belief : learning.beliefs()) {
+            if (belief.personPartyId().equals(person)) mine.put(belief.beliefId(), belief);
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (var card : projection.beliefs()) {
+            var belief = mine.get(card.beliefId());
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("beliefId", belief.beliefId()); row.put("companyId", belief.companyId());
+            row.put("metric", belief.metric()); row.put("comparator", belief.comparator().name());
+            row.put("threshold", Long.toString(belief.threshold()));
+            row.put("formedAtMillis", Long.toString(belief.formedAtMillis()));
+            row.put("targetAsOfMillis", Long.toString(belief.targetAsOfMillis()));
+            row.put("verificationPublisherPartyId", belief.verificationPublisherPartyId());
+            row.put("adoptedClaimId", belief.adoptedClaimId()); row.put("sourcePartyId", belief.sourcePartyId());
+            row.put("confidencePermille", belief.confidencePermille()); row.put("confidenceBand", card.confidenceBand());
+            row.put("rationale", belief.rationale()); row.put("verdict", card.open() ? "OPEN" : card.verdict());
+            row.put("evidence", belief.evidence().stream().map(ref -> Map.of(
+                    "docId", ref.docId(), "version", Long.toString(ref.version()), "index", Long.toString(ref.index()))).toList());
+            rows.add(row);
+        }
+        result.put("beliefs", new Section(mine.size(), rows));
+        List<Map<String, Object>> sources = new ArrayList<>();
+        for (var source : projection.sources()) {
+            sources.add(Map.of("sourcePartyId", source.sourcePartyId(), "band", source.competenceBand(),
+                    "competencePermille", BeliefModel.competencePermille(learning, person, source.sourcePartyId(), policy)));
+        }
+        result.put("sources", sources);
+        List<Map<String, Object>> habits = new ArrayList<>();
+        for (var habit : projection.habits()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("kind", habit.kind().name()); row.put("level", habit.level());
+            row.put("lastUpdatedMillis", habit.lastUpdatedMillis() < 0 ? null : Long.toString(habit.lastUpdatedMillis()));
+            habits.add(row);
+        }
+        result.put("habits", habits);
+        Map<String, BeliefModel.FactClaim> facts = new LinkedHashMap<>();
+        for (var fact : claims.factClaims()) facts.put(fact.factId(), fact);
+        List<Map<String, Object>> evaluations = new ArrayList<>();
+        for (var evaluation : learning.evaluations()) {
+            if (!evaluation.personPartyId().equals(person)) continue;
+            var fact = java.util.Objects.requireNonNull(facts.get(evaluation.factId()), "核验缺少持久声明");
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("evaluationId", evaluation.evaluationId()); row.put("beliefId", evaluation.beliefId());
+            row.put("factId", evaluation.factId()); row.put("docId", fact.docId());
+            row.put("version", Long.toString(fact.version()));
+            row.put("verdict", evaluation.verdict().name()); row.put("factValue", Long.toString(evaluation.factValue()));
+            row.put("maturedAtMillis", Long.toString(evaluation.maturedAtMillis()));
+            row.put("supersedesEvaluationId", evaluation.supersedesEvaluationId()); evaluations.add(row);
+        }
+        java.util.Collections.reverse(evaluations); result.put("evaluations", bounded(evaluations));
+        List<Map<String, Object>> revisions = new ArrayList<>();
+        for (var revision : learning.habitRevisions()) {
+            if (!revision.personPartyId().equals(person)) continue;
+            revisions.add(Map.of("revisionId", revision.revisionId(), "kind", revision.kind().name(),
+                    "fromLevel", revision.fromLevel(), "toLevel", revision.toLevel(),
+                    "atMillis", Long.toString(revision.atMillis()), "supportBeliefIds", revision.supportBeliefIds()));
+        }
+        java.util.Collections.reverse(revisions); result.put("habitRevisions", bounded(revisions));
+        return result;
     }
 
     /**

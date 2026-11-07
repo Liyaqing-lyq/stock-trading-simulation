@@ -40,6 +40,11 @@ jobs:
           java-version: '21'
           cache: maven
 
+      - name: 装 Node.js（Web 图表回归）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       # mvnw 是 only-script 模式，首次运行会自己下载 Maven 3.9.9 到 ~/.m2/wrapper。
       # setup-java 的 cache 只覆盖 ~/.m2/repository，不含这份发行包，所以单独缓存。
       - name: 缓存 Maven 发行包
@@ -69,7 +74,7 @@ jobs:
                 iconv -f GBK -t UTF-8 "$1" 2>/dev/null || cat "$1"
               fi
             }
-            for f in logs/verify/suite.log logs/verify/demo.log logs/verify/csv.log; do
+            for f in logs/verify/suite.log logs/verify/demo.log logs/verify/csv.log logs/verify/web-chart.log; do
               [ -f "$f" ] || continue
               line=$( show "$f" \
                 | tr -d '\r' | tail -25 \

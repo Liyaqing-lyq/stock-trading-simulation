@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 项目验证入口：一条命令跑完「测试套件 + 黑盒复算 [ + 界面启动 ]」。
+# 项目验证入口：一条命令跑完「测试套件 + 黑盒复算 + Web 图表 [ + 界面启动 ]」。
 #
 #   bash scripts/verify.sh              # 套件 + 黑盒复算
 #   bash scripts/verify.sh --with-gui   # 额外真启一次 JavaFX 界面（会短暂弹窗约 15 秒）
@@ -32,7 +32,7 @@ if ! cmd.exe "$CMD_C" 'echo __probe__' 2>/dev/null | tr -d '\r' | grep -q '__pro
 fi
 echo "  [INFO] cmd.exe 调用开关实测为：$CMD_C"
 
-echo "== 1/3 测试套件：mvnw.cmd clean test =="
+echo "== 1/4 测试套件：mvnw.cmd clean test =="
 cmd.exe "$CMD_C" "mvnw.cmd -B clean test" > "$LOG/suite.log" 2>&1
 if grep -q "BUILD SUCCESS" "$LOG/suite.log" && gbk "$LOG/suite.log" | grep -qE "Tests run: [0-9]+, Failures: 0, Errors: 0"; then
   ok "$(gbk "$LOG/suite.log" | grep -E '^\[INFO\] Tests run: .*Skipped: 0$' | tail -1)"
@@ -40,7 +40,7 @@ else
   bad "套件未通过，详见 $LOG/suite.log"
 fi
 
-echo "== 2/3 黑盒复算：真跑一次模拟，从原始产物核对口径 =="
+echo "== 2/4 黑盒复算：真跑一次模拟，从原始产物核对口径 =="
 # 清空输出目录不能只敲一次 rm -rf。上一个 JVM 刚退出时，Windows 可能还没释放文件句柄，
 # rm 会报 "Directory not empty" 而残留 trades.csv/orders.csv（实测约 2/12 次）。
 # 此时旧进程若仍在收尾追加，它的成交 ID 会从 1 重新开始，与本轮新生成的 ID 撞车，
@@ -122,7 +122,15 @@ else
   bad "黑盒复算未通过"; cat "$LOG/csv.log"
 fi
 
-echo "== 3/3 界面（可选）=="
+echo "== 3/4 Web 图表精度与边界 =="
+if node --check src/main/resources/web/app.js > "$LOG/web-chart.log" 2>&1 \
+    && node scripts/test-market-chart.cjs >> "$LOG/web-chart.log" 2>&1; then
+  ok "Web 图表精度、平价、量柱与未完成柱"
+else
+  bad "Web 图表未通过（需要 Node.js），详见 $LOG/web-chart.log"
+fi
+
+echo "== 4/4 界面（可选）=="
 if [ "${1:-}" = "--with-gui" ]; then
   cmd.exe "$CMD_C" "mvnw.cmd -B -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt" > /dev/null 2>&1
   timeout -k 5 20 java -cp "target/classes;$(cat target/cp.txt)" \

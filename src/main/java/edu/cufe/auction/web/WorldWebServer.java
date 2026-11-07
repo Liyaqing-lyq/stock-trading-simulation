@@ -57,6 +57,8 @@ public final class WorldWebServer implements AutoCloseable {
     /** 管理端详情页：只读 GET，一个页面一个请求。 */
     private static final Set<String> DETAIL_PATHS = Set.of("/api/admin/company",
             "/api/admin/people", "/api/admin/information", "/api/admin/performance");
+    /** 市场历史请求字段：只有证券与周期。 */
+    private static final Set<String> MARKET_HISTORY_FIELDS = Set.of("symbol", "period");
     private static final Set<String> LIVE_START_FIELDS = Set.of("expectedPosition", "expectedRevision", "persons");
     private static final Set<String> LIVE_CONTROL_FIELDS = Set.of("expectedPosition");
     private static final Set<String> LIVE_ACTIONS = Set.of("/api/admin/live/start", "/api/admin/live/stop",
@@ -238,6 +240,14 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> recallView(exchange));
                 return;
             }
+            if ("/api/admin/market-history".equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> marketHistory(exchange));
+                return;
+            }
+            if ("/api/admin/beliefs".equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> beliefView(exchange));
+                return;
+            }
             if ("/api/admin/keys".equals(path) && "GET".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> listKeys(exchange));
                 return;
@@ -317,6 +327,12 @@ public final class WorldWebServer implements AutoCloseable {
             return true;
         }
         if ("/api/admin/recall".equals(path) && "POST".equals(method)) {
+            return true;
+        }
+        if ("/api/admin/market-history".equals(path) && "POST".equals(method)) {
+            return true;
+        }
+        if ("/api/admin/beliefs".equals(path) && "POST".equals(method)) {
             return true;
         }
         if ("/api/admin/keys".equals(path) && "GET".equals(method)) {
@@ -523,6 +539,52 @@ public final class WorldWebServer implements AutoCloseable {
             throw busy;
         } catch (IllegalArgumentException invalid) {
             send(exchange, 400, error("INVALID", "请选择已登记人物"));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /** 管理员判断审计沿用同源、严格请求和身份权限边界。 */
+    private void beliefView(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        JsonNode body = jsonBody(exchange, PERSON_FIELDS);
+        JsonNode person = body.get("personId");
+        if (person == null || !person.isTextual() || person.textValue().isBlank()) {
+            send(exchange, 400, error("INVALID", "请选择已登记人物"));
+            return;
+        }
+        Object view;
+        try {
+            view = host.beliefView(person.textValue());
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "请选择已登记人物"));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /** POST /api/admin/market-history：只读当前 cut 的真实成交 OHLC。 */
+    private void marketHistory(HttpExchange exchange) throws IOException,
+            WorldWebHost.BusyException {
+        JsonNode body = jsonBody(exchange, MARKET_HISTORY_FIELDS);
+        JsonNode symbol = body.get("symbol");
+        JsonNode period = body.get("period");
+        if (symbol == null || !symbol.isTextual() || period == null || !period.isTextual()) {
+            send(exchange, 400, error("INVALID", "symbol 与 period 必须是字符串"));
+            return;
+        }
+        Object view;
+        try {
+            view = host.marketHistory(symbol.textValue(), period.textValue());
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "证券或周期不合法"));
             return;
         } catch (Exception failure) {
             throw new WorldIoFailure();

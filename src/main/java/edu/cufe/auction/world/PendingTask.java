@@ -190,6 +190,23 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 分红：持有人减值（COMPLETION）。 */
     public static final String DIVIDEND_IMPAIR_V1 = "DIVIDEND_IMPAIR_V1";
 
+    /** 信念：形成/重申主观判断（COMPLETION）。 */
+    public static final String ROLE_TRADING_BELIEF_V1 = "ROLE_TRADING_BELIEF_V1";
+
+    /** 信念：发布公开结构化来源预测（COMPLETION）。 */
+    public static final String ROLE_TRADING_FORECAST_V1 = "ROLE_TRADING_FORECAST_V1";
+
+    /** 信念：主席请求公司在 asOf 捕获订单事实（COMPLETION 请求）。 */
+    public static final String ROLE_TRADING_COMPANY_REPORT_V1 = "ROLE_TRADING_COMPANY_REPORT_V1";
+
+    /** 信念：在 asOf 的 OBSERVATION 阶段捕获合同数量（晚于同刻全部 COMPLETION）。 */
+    public static final String ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 =
+            "ROLE_TRADING_COMPANY_FACT_CAPTURE_V1";
+
+    /** 信念：下一毫秒发布已捕获事实（DELIVERY）。 */
+    public static final String INFORMATION_BELIEF_PUBLISH_FACT_V1 =
+            "INFORMATION_BELIEF_PUBLISH_FACT_V1";
+
     /** 校验必需字段与 kind/phase 对应关系。 */
     public PendingTask {
         if (taskId == null || taskId.isBlank()) {
@@ -235,9 +252,20 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                     throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
                 }
             }
-            case TRANSFER_NOTICE_V1 -> {
+            case TRANSFER_NOTICE_V1, INFORMATION_BELIEF_PUBLISH_FACT_V1 -> {
                 if (phase != WorldScheduler.Phase.DELIVERY) {
                     throw new IllegalArgumentException(kind + " 必须落在 DELIVERY 阶段，收到 " + phase);
+                }
+            }
+            case ROLE_TRADING_BELIEF_V1, ROLE_TRADING_FORECAST_V1,
+                 ROLE_TRADING_COMPANY_REPORT_V1 -> {
+                if (phase != WorldScheduler.Phase.COMPLETION) {
+                    throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
+                }
+            }
+            case ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 -> {
+                if (phase != WorldScheduler.Phase.OBSERVATION) {
+                    throw new IllegalArgumentException(kind + " 必须落在 OBSERVATION 阶段，收到 " + phase);
                 }
             }
             default -> throw new IllegalArgumentException("未启用的任务种类：" + kind);

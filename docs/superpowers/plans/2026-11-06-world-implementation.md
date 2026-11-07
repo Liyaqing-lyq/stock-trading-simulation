@@ -12,6 +12,8 @@
 
 ## 全局约束
 
+当前增量（2026-11-07）：`codex/world-belief-runtime`，基底e6a81ad/草稿PR35实际CI成功。M4g.2[运行桥](2026-11-07-belief-runtime.md)与M6a[真实成交图表](2026-11-07-market-history.md)最终candidate3本地验收：1186标准、CSV37/119/7、Node绘图/真实GUI、JavaDoc、三JVM与未重编旧11兼容全部通过。真实Hermes独立重编180哈希一致、69增量/37信念/49行情/旧11及任务和回报篡改差异对照通过，草稿PR/实际CI收尾中。本机Web18080已运行candidate3（PID51516），五Key已加载、场景全部关闭、0新增模型调用。媒体首稿隔离施工，Root正常入口取得机构/完成期任职/遗忘边界8项失败、正常流程通过，须修复后再接主树。总体尚未完成，最新写权和证据见PROJECT_MEMORY。
+
 - 金额 BigDecimal（金额 2 位、成本价 4 位），数量 long；锁顺序引擎锁 → 账户锁，模型、I/O、广播不能持有撮合锁。
 - Java 保留账目、交易、时间、权限和动作裁决；首轮单进程，不引入微服务或任意代码热加载。
 - 课程模式与扩展规则分开；成交按被动方价格；课程收益继续以初始权益为基准。
@@ -573,5 +575,8 @@ B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://
 
 - [x] 信念纯核37新增，真实阅读/精确目标/明确采纳/更正/有效贡献重算/有版本习惯与不可变投影；Hermes98独立动态通过。详见[纯核合同](2026-11-07-belief-core.md)与docs/05§38。
 - [x] 最后复跑旧SceneRoutes原子move实际AccessDenied；真实共享句柄RED后小幅修复，2新增回归+自然2000保存全过，正式1156/CSV51/132/7/GUI/JavaDoc10:01:01通过。保留旧1154错误日志；最终独审配置增量24动态通过，另Root真实sleep中断通过；草稿PR/CI随后。
-- [ ] [M4g.2运行桥](2026-11-07-belief-runtime.md)：schema12、真实观察cut、权威合同数截止、真实阅读学习、后续input与Web审计。f270fe同session exec51023仅belief-runtime-author私有镜像实施，Root独占主树/Maven/Web；d39b13 exec71830仅belief-core-independent独审配置保存增量。
+- [ ] [M4g.2运行桥](2026-11-07-belief-runtime.md)：schema12、真实观察cut、权威合同数截止、真实阅读学习、后续input与Web审计已实现；1185标准及三JVM/旧客户端/实际Web本地通过，候选2待最终独审、草稿PR/CI。原f270fe作者已交接，Root独占主树/Maven/Web；新真实Hermes exec61411独审，不把作者自测当独审。
+- [ ] [M4h.1公开证据采编纯核](2026-11-07-media-editorial-core.md)：Root已核准双人快讯/调查、真实阅读草稿、追加更正与多根来源谱系；Hermes405ace仅media-editorial-author私有镜像实施，主树无写权。后续M4h.2须接真实工具/媒体场景/Web和工时预算，然后实现采访的拒绝与匿名身份显式共享、曝光/群组/社交及其余六类工作流，不把第一步当媒体全部完成。
 - [ ] 媒体/传播、多公司银行、图表/历史与长跑验收继续，不以局部纯核冒称总体基线完成。真实供应商0新增，原51token唯一连通证据保持。
+
+信念纯核代码e6a81adfaf3b24c86e507cf32e9c54aac0ed6be1已发布草稿[PR35](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/35)，base codex/world-cognition-runtime；实际[CI42327343664](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42327343664) completed/success。1156标准、98纯核独审+24配置独审及Root实际退避中断通过，工程阶段验收完成，仍待人工review、不自动合并。
