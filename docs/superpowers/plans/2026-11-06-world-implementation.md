@@ -12,7 +12,7 @@
 
 ## 全局约束
 
-当前增量（2026-11-07）：当前`codex/world-media-editorial`基于85d71ed。前置M4g.2/M6a草稿[PR36](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/36)及实际CI42333676886成功，仍待人工review。M4h.1[公开证据采编纯核](2026-11-07-media-editorial-core.md)最终candidate4本地1246标准、CSV41/125/7、Node/真实GUI、JavaDoc12:03:19与旧12未重编新续旧读全部通过；真实Hermes bbad4c正在最终独立增量复核。M6b[账户表现曲线](2026-11-07-performance-history.md)作者eead7c已交首稿，Root发现极小正权益舍入边界，exec61696续接修复；尚未接主树。M4h.2[媒体运行桥与Web](2026-11-07-media-runtime.md)已冻结施工合同，405ace exec81622只在新私有镜像实现后端，Root负责Web/合并/验收。本机Web18080仍为已验收belief candidate3（PID51516），五Key已加载、场景全部关闭、0新增模型调用。总体尚未完成，最新写权和证据见PROJECT_MEMORY。
+当前增量（2026-11-07 12:32）：M6b最终candidate3已接收，1280标准/CSV50/119/7/Node/GUI及重新生成JavaDoc通过；Hermes独审1586纯核/127真实运行Host/31HTTP/Node、旧oracle122及105hash通过，两个P3说明问题已关闭。草稿[PR38](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/38)代码e673225、实际CI42338413263成功，依赖PR37，待人工review；最后HTML说明/文档追加CI另记。持续Web18080已升级candidate3/PID53744，原belief档1/0ms、五Key遮罩/场景关闭、0新增调用。M4h.2媒体桥首稿未完成恢复真实性，Root实际两项反例已交405ace exec86185按[运行桥合同](2026-11-07-media-runtime.md)修复，只写私有目录；主树未接桥。下一步收尾性能说明提交、接媒体后端与Web，整体基线不冒称完成。
 
 - 金额 BigDecimal（金额 2 位、成本价 4 位），数量 long；锁顺序引擎锁 → 账户锁，模型、I/O、广播不能持有撮合锁。
 - Java 保留账目、交易、时间、权限和动作裁决；首轮单进程，不引入微服务或任意代码热加载。

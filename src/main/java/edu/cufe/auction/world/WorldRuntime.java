@@ -10290,6 +10290,43 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public synchronized PerformanceModel.Performance performance(String ownerId, long startPosition,
                                                                  long endPosition) {
+        List<PerformanceModel.Point> points = performancePoints(ownerId, startPosition, endPosition);
+        return PerformanceModel.calculate(ownerId, performancePeriodId(ownerId, startPosition),
+                points);
+    }
+
+    /**
+     * 同一次逐帧采样的逐点历史：额外给出每个确认点的表现指数与当前回撤。
+     *
+     * <p>与 {@link #performance(String, long, long)} 共用 {@code performancePoints} 的一次扫描与
+     * {@link PerformanceModel} 的同一遍几何链接；只读，不追加事件、不推进时钟、不改调用预算。</p>
+     *
+     * @param ownerId       财产主体
+     * @param startPosition 起点确认位置
+     * @param endPosition   终点确认位置
+     * @return 期间表现与逐点采样
+     */
+    public synchronized PerformanceModel.History performanceHistory(String ownerId,
+                                                                   long startPosition,
+                                                                   long endPosition) {
+        List<PerformanceModel.Point> points = performancePoints(ownerId, startPosition, endPosition);
+        return PerformanceModel.history(ownerId, performancePeriodId(ownerId, startPosition), points);
+    }
+
+    /** 表现期间标识：只由规则版本、运行、主体与起点派生，与终点无关（旧输出保持不变）。 */
+    private String performancePeriodId(String ownerId, long startPosition) {
+        return "capital-period-v1:" + sha256Hex(mapper.valueToTree(
+                List.of("capital-period-v1", manifest.runId(), ownerId,
+                        Long.toString(startPosition))).toString());
+    }
+
+    /**
+     * 一次扫描确认历史，构造整段区间的估值点。
+     *
+     * <p>每次查询扫描已确认日志，在所选区间内逐点估值；不逐前缀重扫，开销仍随日志总长增长。</p>
+     */
+    private List<PerformanceModel.Point> performancePoints(String ownerId, long startPosition,
+                                                           long endPosition) {
         requireDividend();
         requireText(ownerId, "财产主体");
         if (registry.owner(ownerId) == null) {
@@ -10310,9 +10347,6 @@ public final class WorldRuntime implements AutoCloseable {
         if (frames.size() != endPosition - startPosition + 1) {
             throw new IllegalStateException("确认历史缺少完整帧");
         }
-        String periodId = "capital-period-v1:" + sha256Hex(mapper.valueToTree(
-                List.of("capital-period-v1", manifest.runId(), ownerId,
-                        Long.toString(startPosition))).toString());
         Map<Long, List<CapitalFlowReport>> flowsByPosition = new TreeMap<>();
         for (CapitalFlowReport flow : capitalFlows(ownerId)) {
             flowsByPosition.computeIfAbsent(flow.position(), ignored -> new ArrayList<>()).add(flow);
@@ -10362,7 +10396,7 @@ public final class WorldRuntime implements AutoCloseable {
                         null, null, pointFlows));
             }
         }
-        return PerformanceModel.calculate(ownerId, periodId, points);
+        return points;
     }
 
     private CapitalFrame capitalFrame(WorldCommit commit) {
