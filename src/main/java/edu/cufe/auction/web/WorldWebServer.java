@@ -54,6 +54,9 @@ public final class WorldWebServer implements AutoCloseable {
             "default-src 'self'; frame-ancestors 'none'";
     private static final Set<String> LOGIN_FIELDS = Set.of("bootstrap");
     private static final Set<String> PERSON_FIELDS = Set.of("personId");
+    /** 管理端详情页：只读 GET，一个页面一个请求。 */
+    private static final Set<String> DETAIL_PATHS = Set.of("/api/admin/company",
+            "/api/admin/people", "/api/admin/information", "/api/admin/performance");
     private static final Set<String> ADVANCE_FIELDS = Set.of("expectedPosition", "targetMillis");
     private static final Set<String> REVEAL_FIELDS = Set.of("confirm");
     private static final Set<String> ROUTE_REPLACE_FIELDS = Set.of("expectedRevision", "routes");
@@ -223,6 +226,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> adminView(exchange));
                 return;
             }
+            if (DETAIL_PATHS.contains(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> adminDetails(exchange, path));
+                return;
+            }
             if ("/api/admin/keys".equals(path) && "GET".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> listKeys(exchange));
                 return;
@@ -287,6 +294,9 @@ public final class WorldWebServer implements AutoCloseable {
             return true;
         }
         if ("/api/admin/view".equals(path) && "GET".equals(method)) {
+            return true;
+        }
+        if (DETAIL_PATHS.contains(path) && "GET".equals(method)) {
             return true;
         }
         if ("/api/admin/keys".equals(path) && "GET".equals(method)) {
@@ -452,6 +462,26 @@ public final class WorldWebServer implements AutoCloseable {
         } catch (Exception failure) {
             throw new WorldIoFailure();
         }
+    }
+
+    /** 管理端详情页：一个页面一个只读请求；读取失败统一对外 503。 */
+    private void adminDetails(HttpExchange exchange, String path) throws IOException,
+            WorldWebHost.BusyException {
+        Object view;
+        try {
+            view = switch (path) {
+                case "/api/admin/company" -> host.companyView();
+                case "/api/admin/people" -> host.peopleView();
+                case "/api/admin/information" -> host.informationView();
+                case "/api/admin/performance" -> host.performanceView();
+                default -> throw new IllegalArgumentException("未知的管理详情页");
+            };
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
     }
 
     private void listKeys(HttpExchange exchange) throws IOException {

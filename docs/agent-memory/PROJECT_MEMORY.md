@@ -2,6 +2,12 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
+## 最新接续（2026-11-07 05:42）
+
+当前分支codex/world-web-details，base67665d9。B2b PR29两轮CI均成功。Web详情8新增/1010标准、Root105 HTTP、GUI/CSV46成交121订单7排名、JavaDoc05:34:47及真实浏览器完成；独立Hermes82动态通过，交接已完成，PR30与代码CI42299095951成功。唯一当前台账为主Plan“当前接续”，下方历史状态不代表现行写权。
+
+Root独占主树/Maven；d3c63e exec59426只独审私有范围，ed3b0f exec90021只B2c Runtime完成槽私有候选。16项Inbox私有测试通过含真实时钟边界失败回归，未集成主树。5key仍仅既有51token一次；Web真实角色调用/认知媒体/多公司银行/长跑均待完成。证据docs/05§33，下一合同docs/superpowers/plans/2026-11-07-live-web-runtime.md。
+
 ## 启动规则
 
 - 先读 `AGENTS.md` 与本文件，再动代码。
@@ -223,3 +229,5 @@ Root已接回全部主树/Maven。最终candidate3 Runtime6f3f1aa3…a21e532，1
 B2b作者ed3b0f exec16971现在仅live-web-preparation准备B2c合同，无主树/Maven写权；Web作者d39b13 exec82370仅web-details-preparation/tests私有准备真实详情回归，最终Web5文件105HTTP检查已交；独审89624最终已交并退出。Root不把私有Web候选视为正式交付。B2c草案2026-11-07-live-web-runtime.md已留入口，尚未授权生产；5keys仍仅原51token一次。
 
 B2b代码f56dea4845fbc242ef4bfa2ec18b85b69160001e已建立草稿[PR29](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/29)，base为codex/world-scene-decision-budget；真实[CI42296162891](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42296162891)已completed/success，已附当前会话。1002标准及最终独审26通过，本阶段工程验收完成，等待人工review、不自动合并。下一独立分支集成Web四组只读详情；B2c完成槽仅私有候选准备，不能先称模型已驱动世界。
+
+Web详情代码90e726a70c7d53b16cc255e6b897e56f1ca0ac81已建立草稿[PR30](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/30)，base为codex/world-live-decision-runtime，已附会话。实际[CI42299095951](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42299095951)已completed/success。1010标准、Root105 HTTP及准确400/401、真实浏览器与独审82通过。本阶段工程验收完成，待至少一名人工review，不自动合并。

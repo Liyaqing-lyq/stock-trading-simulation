@@ -36,3 +36,17 @@
 - [ ] 全套课程verify含GUI/CSV、JavaDoc、评分/接口/运行证据/主Plan与项目记忆；AI草稿PR及实际CI，待人工review。
 
 这只完成真实调用闭环，不代表总体基线中的六层认知、媒体社交、差异公司/银行、分支迁移、完整图表与长时实验已完成。
+
+## B2c1 Root核准实施合同（05:42）
+
+私有实现由真实Hermes ed3b0f执行，基线B2b最终Runtime6f3f1aa3…a21e532，主树仍Root独占。最小生产范围预定WorldRuntime+LiveCompletionInbox；不改DecisionModel/DecisionRun/RunManifest字段，不新schema，不把运行桥与Web worker混同验收。
+
+- live Runtime构造时自动私有创建Inbox，无公开bind/Claim输入；容量先于dispatch提交检查，持久确认后同writer用同一个DispatchMark open，之后才返回Call。构造及启动不发网络。
+- 任意线程offerLiveDecisionCompletion只向小锁内存槽登记完整身份、不可变Reply及固定failureCode；不读世界、不允许外传到达时间。旧offerDecisionCallback在live委托；旧scripted队列保持。
+- live的drain/expire共享唯一内部pump；及时REPLY、TIMEOUT、LATE分别持久提交后ack，异常retry保留同claim。超时后等待物理HTTP返回的槽仍占容量，不无限启动新请求。
+- 原acceptDecisionReply/failDecisionAttempt在live拒绝LIVE_COMPLETION_REQUIRED，旧1..9仍原签名/原行为/原JSON。此为明确的schema10接线约束升级；B2b live测试须迁移完成登记方式但保留全部原业务/审计/恢复断言，不能把它说成旧测试完全没改。直接接口不能成为期限旁路。
+- 已知usage技术失败规范化emptybody+fixedcode，使用rejectReply；新增明确provider-failure来源事件和规范JSON，在schema10按原命令逐批重算，保留真实声明，不伪造WAIT、不产生业务任务。LATE只审计，不再次消费或下单。
+- begin在本进程仍有槽时拒切代次；轮次开始不重复begin。close释放自身槽。新进程初始槽空，恢复旧代次由已有保守结算完成，不自动网络调用。
+- Nano时钟允许负值和Long回绕，用有界间隔差值比较；16项私有Inbox测试已含4项真实RED→GREEN边界。公开epoch时点和模拟时间不可混用。
+
+正式验收必须覆盖及时但writer延迟/暂停、期限边界、超时先于late、重复/未知、known/null usage、IO候选保留、满槽物理在途、旧直接入口拒绝、新事件来源重签篡改及旧9兼容，再接HTTP worker与Web。私有绿色不等于标准套件或总体完成。
