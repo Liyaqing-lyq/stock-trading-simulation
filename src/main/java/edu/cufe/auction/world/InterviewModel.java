@@ -1126,6 +1126,40 @@ public final class InterviewModel {
     }
 
     /**
+     * 只读实际占用投影：该人物所有真实预约/会话已经占住的时间区间。
+     *
+     * <p>供运行层跨机构拼接 {@code Context.busy} 使用，避免第二份占用规则实现漂移。规则与本类
+     * 内部校验完全一致：{@code ACCEPTED/ACTIVE/COMPLETED} 占 {@code [start, start+duration)}，
+     * {@code ENDED_EARLY} 只占 {@code [start, ended)}（零长度不占），
+     * {@code PROPOSED/DECLINED/EXPIRED/CANCELED/MISSED} 不占。返回区间按起点、终点升序。</p>
+     *
+     * <p>本方法不修改状态、不产生账本、不判断授权；未知人物返回空表。</p>
+     *
+     * @param state         当前协调状态
+     * @param personPartyId 人物标识
+     * @return 该人物实际占用的半开区间，升序且只读
+     * @throws IllegalArgumentException 状态为空或人物标识为空
+     */
+    public static List<Interval> occupancy(State state, String personPartyId) {
+        requireState(state);
+        requireText(personPartyId, "人物标识");
+        List<Interval> intervals = new ArrayList<>();
+        for (Invite invite : state.invites()) {
+            if (!isParticipant(invite, personPartyId)) {
+                continue;
+            }
+            Interval occupied = occupiedInterval(invite,
+                    findSession(state, sessionIdOf(invite.requestId())));
+            if (occupied != null) {
+                intervals.add(occupied);
+            }
+        }
+        intervals.sort(Comparator.comparingLong(Interval::fromMillis)
+                .thenComparingLong(Interval::toMillis));
+        return List.copyOf(intervals);
+    }
+
+    /**
      * 管理员审计视图：全部邀请与会话。
      *
      * @param state 当前状态

@@ -82,6 +82,8 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 媒体桥：在信念档案之上接入双人采编运行桥与组织工时预算（M4h.2 schema13）。 */
     private static final int STATE_SCHEMA_MEDIA = 13;
+    /** schema14：在媒体档案之上再加双边采访预约协调子集。 */
+    private static final int STATE_SCHEMA_INTERVIEW = 14;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -126,6 +128,8 @@ public final class WorldRuntime implements AutoCloseable {
     private final DecisionModel.Config decisionConfig;
     /** 媒体采编开局配置；只有 media-editorial-experiment-v1（schema13）档案非空。 */
     private final MediaRun.Config mediaConfig;
+    /** 采访协调开局配置；只有 interview-coordination-experiment-v1（schema14）档案非空。 */
+    private final InterviewRun.Config interviewConfig;
     /** live 完成槽：构造时自动建立，scripted 为 null；不公开。 */
     private final LiveCompletionInbox liveInbox;
     /** 有界回调队列：异步线程只 offer，不读写世界状态。 */
@@ -420,7 +424,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               BeliefRun beliefs,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              MediaRun media) {
+                              MediaRun media,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              InterviewRun interviews) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -603,6 +609,26 @@ public final class WorldRuntime implements AutoCloseable {
                  InformationRun.Config information, DecisionModel.Config decisions,
                  LiveCompletionInbox injectedInbox, MediaRun.Config media)
             throws IOException {
+        this(file, manifest, openings, registry, manufacturing, charter, roles, information,
+                decisions, injectedInbox, media, null);
+    }
+
+    /**
+     * 完整构造：在媒体档案之上可再启用双边采访协调（schema14）。
+     *
+     * <p>采访配置只在 {@code interview-coordination-experiment-v1} 出现；它必须建立在媒体档案之上，
+     * 因为采访工时记进同一份 {@link MediaRun.Budget}。旧档案传 {@code null}，行为与字节保持原样。</p>
+     *
+     * @param interview 采访配置；旧档案为 null
+     * @throws IOException 日志不可用或配置与持久记录不一致
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                 OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                 BoardModel.Charter charter, RoleRun.Config roles,
+                 InformationRun.Config information, DecisionModel.Config decisions,
+                 LiveCompletionInbox injectedInbox, MediaRun.Config media,
+                 InterviewRun.Config interview)
+            throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         boolean liveProfile = decisions != null && decisions.profile() != null;
         if (liveProfile && !manifest.hasLiveDecisions()) {
@@ -718,6 +744,38 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未启用媒体模块的运行不接受媒体配置："
                     + manifest.rulesVersion());
         }
+        if (manifest.hasInterviews()) {
+            if (!manifest.hasMedia()) {
+                throw new IllegalArgumentException("采访档案必须建立在媒体档案之上："
+                        + manifest.rulesVersion());
+            }
+            if (interview == null) {
+                throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                        + " 必须提供采访开局配置");
+            }
+            for (InterviewModel.Policy policy : interview.policies()) {
+                if (media == null || media.policyOf(policy.mediaOrganizationPartyId()) == null) {
+                    throw new IllegalArgumentException("采访策略的机构必须有对应媒体策略："
+                            + policy.mediaOrganizationPartyId());
+                }
+            }
+            for (InterviewRun.ContactEntry entry : interview.contacts()) {
+                OpeningRegistry.Party party = null;
+                for (OpeningRegistry.Party candidate : registry.parties()) {
+                    if (candidate.partyId().equals(entry.targetPartyId())) {
+                        party = candidate;
+                        break;
+                    }
+                }
+                if (party == null || party.kind() != OpeningRegistry.PartyKind.PERSON) {
+                    throw new IllegalArgumentException("联系入口的对象未登记或不是人物："
+                            + entry.targetPartyId());
+                }
+            }
+        } else if (interview != null) {
+            throw new IllegalArgumentException("未启用采访模块的运行不接受采访配置："
+                    + manifest.rulesVersion());
+        }
         if (manifest.hasDecisions() && (!manifest.hasTrading() || !manifest.hasRoles()
                 || !manifest.hasInformation())) {
             throw new IllegalArgumentException("决定档案必须建立在四岗交易与阅读档案之上："
@@ -754,6 +812,7 @@ public final class WorldRuntime implements AutoCloseable {
         this.informationConfig = information;
         this.decisionConfig = decisions;
         this.mediaConfig = media;
+        this.interviewConfig = interview;
         this.liveInbox = decisions != null && decisions.live()
                 ? (injectedInbox != null ? injectedInbox
                         : new LiveCompletionInbox(decisions.limits().maxInFlight()))
@@ -2188,6 +2247,14 @@ public final class WorldRuntime implements AutoCloseable {
                          PendingTask.MEDIA_STORY_PUBLISH_V1,
                          PendingTask.MEDIA_STORY_CORRECTION_V1,
                          PendingTask.MEDIA_WORK_CANCEL_V1 -> completeMediaTask(next);
+                    case PendingTask.INTERVIEW_INVITE_V1,
+                         PendingTask.INTERVIEW_RESPOND_V1,
+                         PendingTask.INTERVIEW_CANCEL_V1,
+                         PendingTask.INTERVIEW_END_V1,
+                         PendingTask.INTERVIEW_START_GATE_V1,
+                         PendingTask.INTERVIEW_MISS_GATE_V1,
+                         PendingTask.INTERVIEW_END_GATE_V1,
+                         PendingTask.INTERVIEW_TTL_GATE_V1 -> completeInterviewTask(next);
                     case PendingTask.ROLE_TRADING_SWEEP_V1 -> completeRoleSweep(next);
                     case PendingTask.ROLE_TRADING_EXPIRE_V1 -> completeRoleExpire(next);
                     case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> completeAppointmentEnd(next);
@@ -4496,6 +4563,8 @@ public final class WorldRuntime implements AutoCloseable {
         JsonNode args = replyArgs(recorded.lastAttempt().replyBody());
         MediaTaskBody originalMedia = forcedTaskId != null && tool.startsWith("media.")
                 ? recordedMediaBody(base, recorded.actionId()) : null;
+        InterviewTaskBody originalInterview = forcedTaskId != null && tool.startsWith("interview.")
+                ? recordedInterviewBody(base, recorded.actionId()) : null;
         String kind;
         Object body;
         switch (tool) {
@@ -4633,9 +4702,86 @@ public final class WorldRuntime implements AutoCloseable {
                 }
                 body = new MediaTaskBody(organization, recorded.cutoffTimeMillis(), recorded.cutoffPosition(), recorded.barrierAtMillis(), false, "{}");
             }
+            case RoleTradingView.TOOL_INTERVIEW_INVITE -> {
+                kind = PendingTask.INTERVIEW_INVITE_V1;
+                WorldRoleSession.InterviewInviteDraft draft =
+                        strict(WorldRoleSession.InterviewInviteDraft.class, args);
+                String organization = originalInterview != null
+                        ? originalInterview.organizationPartyId()
+                        : interviewOrganizationOf(base, binding.personPartyId(), base.timeMillis());
+                if (organization == null) {
+                    throw new IOException(InterviewModel.REASON_NOT_AUTHORIZED);
+                }
+                body = new InterviewTaskBody(organization, recorded.cutoffTimeMillis(),
+                        recorded.cutoffPosition(), recorded.barrierAtMillis(), kind,
+                        mapper.writeValueAsString(draft));
+            }
+            case RoleTradingView.TOOL_INTERVIEW_RESPOND -> {
+                kind = PendingTask.INTERVIEW_RESPOND_V1;
+                WorldRoleSession.InterviewRespondDraft draft =
+                        strict(WorldRoleSession.InterviewRespondDraft.class, args);
+                InterviewModel.Invite invite = interviewInvite(base, draft.requestId());
+                if (invite == null) {
+                    throw new IOException(InterviewModel.REASON_UNKNOWN);
+                }
+                String organization = originalInterview != null
+                        ? originalInterview.organizationPartyId() : invite.organizationPartyId();
+                body = new InterviewTaskBody(organization, recorded.cutoffTimeMillis(),
+                        recorded.cutoffPosition(), recorded.barrierAtMillis(), kind,
+                        mapper.writeValueAsString(draft));
+            }
+            case RoleTradingView.TOOL_INTERVIEW_CANCEL -> {
+                kind = PendingTask.INTERVIEW_CANCEL_V1;
+                WorldRoleSession.InterviewRequestDraft draft =
+                        strict(WorldRoleSession.InterviewRequestDraft.class, args);
+                InterviewModel.Invite invite = interviewInvite(base, draft.requestId());
+                if (invite == null) {
+                    throw new IOException(InterviewModel.REASON_UNKNOWN);
+                }
+                String organization = originalInterview != null
+                        ? originalInterview.organizationPartyId() : invite.organizationPartyId();
+                body = new InterviewTaskBody(organization, recorded.cutoffTimeMillis(),
+                        recorded.cutoffPosition(), recorded.barrierAtMillis(), kind,
+                        mapper.writeValueAsString(draft));
+            }
+            case RoleTradingView.TOOL_INTERVIEW_END -> {
+                kind = PendingTask.INTERVIEW_END_V1;
+                WorldRoleSession.InterviewRequestDraft draft =
+                        strict(WorldRoleSession.InterviewRequestDraft.class, args);
+                InterviewModel.Invite invite = interviewInvite(base, draft.requestId());
+                if (invite == null) {
+                    throw new IOException(InterviewModel.REASON_UNKNOWN);
+                }
+                String organization = originalInterview != null
+                        ? originalInterview.organizationPartyId() : invite.organizationPartyId();
+                body = new InterviewTaskBody(organization, recorded.cutoffTimeMillis(),
+                        recorded.cutoffPosition(), recorded.barrierAtMillis(), kind,
+                        mapper.writeValueAsString(draft));
+            }
             default -> throw new IOException("未知业务工具：" + tool);
         }
         long dueMillis = DecisionModel.actionDueMillis(model, recorded.actionId());
+        if (InterviewRun.KINDS.contains(kind)) {
+            InterviewTaskBody interviewTask = (InterviewTaskBody) body;
+            long duration = base.interviews().actionMillis(kind);
+            if (dueMillis != recorded.barrierAtMillis() + duration) {
+                throw new IOException("采访动作耗时必须等于冻结时长：" + kind + " -> " + duration);
+            }
+            if (forcedTaskId == null) {
+                // 首次计划才检查当前互斥；历史重放由原命令与观察绑定核验，不能把自身或后来任务当冲突。
+                for (PendingTask pending : base.pending()) {
+                    if (!InterviewRun.COMMAND_KINDS.contains(pending.kind())) {
+                        continue;
+                    }
+                    RoleActionPayload stored = readRolePayload(pending);
+                    if (stored != null && stored.personPartyId().equals(binding.personPartyId())) {
+                        throw new IOException("本人已有未完成的采访动作");
+                    }
+                }
+            }
+            // 预算在"接受"帧按真实预留判定，不在这里预扣：避免同一预约被计划与接受各算一次
+            body = interviewTask;
+        }
         if (MediaRun.KINDS.contains(kind)) {
             MediaTaskBody mediaTask = (MediaTaskBody) body;
             long duration = MediaRun.durationOf(base.media().config(), kind,
@@ -4870,14 +5016,23 @@ public final class WorldRuntime implements AutoCloseable {
                     || !report.clientTaskId().equals(ref.actionId())
                     || !report.kind().equals(replanned.kind())
                     || report.timeMillis() != ref.dueMillis()) {
-                // 媒体动作的完成回报记在媒体子集里，不复制到四岗回报
+                // 媒体动作的完成回报记在媒体子集里，不复制到四岗回报；采访动作记在采访协调结果里
                 MediaRun.Report mediaReport = candidate.media() == null ? null
                         : candidate.media().reports().get(ref.taskId());
-                if (mediaReport == null
-                        || !mediaReport.personPartyId().equals(decision.personPartyId())
-                        || !mediaReport.kind().equals(replanned.kind())
-                        || mediaReport.timeMillis() != ref.dueMillis()) {
-                    throw new IOException("已记录意图缺少待办或准确完成回报：" + ref.actionId());
+                boolean mediaDone = mediaReport != null
+                        && mediaReport.personPartyId().equals(decision.personPartyId())
+                        && mediaReport.kind().equals(replanned.kind())
+                        && mediaReport.timeMillis() == ref.dueMillis();
+                if (!mediaDone) {
+                    InterviewRun.Coordination coordination = candidate.interviews() == null ? null
+                            : candidate.interviews().coordinations().get(ref.taskId());
+                    boolean interviewDone = coordination != null
+                            && coordination.personPartyId().equals(decision.personPartyId())
+                            && coordination.kind().equals(replanned.kind())
+                            && coordination.timeMillis() == ref.dueMillis();
+                    if (!interviewDone) {
+                        throw new IOException("已记录意图缺少待办或准确完成回报：" + ref.actionId());
+                    }
                 }
             }
         }
@@ -7205,7 +7360,304 @@ public final class WorldRuntime implements AutoCloseable {
         validateDecisions(candidate, previous);
         validateBeliefs(candidate, previous, commit);
         validateMedia(candidate, previous, commit);
+        validateInterviews(candidate, previous, commit);
     }
+
+    /**
+     * 采访子集恢复：对照最初可信来源重建人物/策略/联系入口，并按真实任务逐帧重算。
+     *
+     * <p>{@code InterviewModel.fromJson} 只保证内部一致，不能当作可信恢复入口；这里用冻结的
+     * {@code interviewConfig} 与开局 {@link OpeningRegistry} 重建，再逐字段比较。向 {@code persons}
+     * 追加未登记人物、改写 Policy 或联系入口都会在这里被拒绝。</p>
+     */
+    private void validateInterviews(WorldState candidate, WorldState previous, WorldCommit commit)
+            throws IOException {
+        if (!manifest.hasInterviews()) {
+            if (candidate.interviews() != null) {
+                throw new IOException("旧档案不得包含采访子集状态");
+            }
+            return;
+        }
+        InterviewRun after = candidate.interviews();
+        if (after == null) {
+            throw new IOException("采访档案缺少采访子集状态");
+        }
+        InterviewRun expectedOpen;
+        try {
+            expectedOpen = InterviewRun.open(interviewConfig, registry);
+        } catch (RuntimeException invalid) {
+            throw new IOException("采访开局配置无法重建", invalid);
+        }
+        if (!expectedOpen.config().equals(after.config())) {
+            throw new IOException("采访配置被改写：策略或联系入口与冻结开局不一致");
+        }
+        for (InterviewModel.State state : after.states()) {
+            InterviewModel.State open = expectedOpen.stateOf(
+                    state.policy().mediaOrganizationPartyId());
+            if (open == null || !open.persons().equals(state.persons())) {
+                throw new IOException("采访人物集合与开局登记不一致："
+                        + state.policy().mediaOrganizationPartyId());
+            }
+        }
+        InterviewRun before = previous == null ? expectedOpen : previous.interviews();
+        if (before == null) {
+            throw new IOException("采访子集的上一帧缺失");
+        }
+        List<PendingTask> completed = new ArrayList<>();
+        for (PendingTask task : interviewTasks(previous == null ? List.of() : previous.pending())) {
+            boolean still = false;
+            for (PendingTask now : candidate.pending()) {
+                if (now.taskId().equals(task.taskId())) {
+                    still = true;
+                    break;
+                }
+            }
+            if (!still) {
+                completed.add(task);
+            }
+        }
+        completed.sort(Comparator.comparingLong(PendingTask::dueTimeMillis)
+                .thenComparing(PendingTask::taskId));
+        InterviewRun expectedRun = before;
+        InformationRun expectedInformation = previous == null ? candidate.information()
+                : previous.information();
+        MediaRun expectedMedia = previous == null ? candidate.media() : previous.media();
+        List<PendingTask> expectedPending = new ArrayList<>(
+                previous == null ? List.of() : previous.pending());
+        for (PendingTask task : completed) {
+            WorldState step = interviewStep(previous, expectedRun, expectedInformation,
+                    expectedMedia, expectedPending);
+            InterviewFrame frame;
+            try {
+                frame = computeInterviewFrame(step, task);
+            } catch (RuntimeException invalid) {
+                throw new IOException("采访帧重算失败：" + task.taskId(), invalid);
+            }
+            expectedRun = frame.run();
+            expectedMedia = frame.media();
+            expectedPending = frame.pending();
+        }
+        if (!expectedRun.equals(after)) {
+            throw new IOException("采访子集与逐帧重算不一致：状态或协调结果被改动");
+        }
+        Map<String, PendingTask> actualById = byId(interviewTasks(candidate.pending()));
+        Map<String, PendingTask> carried = byId(interviewTasks(expectedPending));
+        for (Map.Entry<String, PendingTask> entry : actualById.entrySet()) {
+            if (carried.containsKey(entry.getKey())) {
+                if (!carried.get(entry.getKey()).equals(entry.getValue())) {
+                    throw new IOException("在途采访任务被改写：" + entry.getKey());
+                }
+                continue;
+            }
+            requireInterviewSchedulingRequest(previous, candidate, commit, entry.getValue());
+        }
+        for (String expectedId : carried.keySet()) {
+            if (!actualById.containsKey(expectedId)) {
+                throw new IOException("在途采访任务被删除或漏排：" + expectedId);
+            }
+        }
+    }
+
+    /** 只取采访任务。 */
+    private static List<PendingTask> interviewTasks(List<PendingTask> pending) {
+        List<PendingTask> tasks = new ArrayList<>();
+        for (PendingTask task : pending) {
+            if (InterviewRun.KINDS.contains(task.kind())) {
+                tasks.add(task);
+            }
+        }
+        tasks.sort(Comparator.comparing(PendingTask::taskId));
+        return tasks;
+    }
+
+    /** 逐帧重算的工作副本：只替换采访/资料/媒体分量。 */
+    private static WorldState interviewStep(WorldState previous, InterviewRun run,
+                                            InformationRun information, MediaRun media,
+                                            List<PendingTask> pending) {
+        return new WorldState(previous.schemaVersion(), previous.runId(), previous.position(),
+                previous.timeMillis(), previous.lastPhase(), previous.accounts(),
+                List.copyOf(pending), previous.delivered(), previous.usedTaskIds(),
+                previous.commandContents(), previous.commandOutcomes(), previous.securities(),
+                previous.exchange(), previous.manufacturing(), previous.governance(),
+                previous.roles(), information, previous.trading(), previous.decisions(),
+                previous.dividends(), previous.beliefs(), media, run);
+    }
+
+    /** 决定来源：按任务标识在已接收决定动作引用里查找同一任务。 */
+    private static DecisionRun.ActionRef decisionRefFor(WorldState candidate, String taskId) {
+        if (candidate.decisions() == null || taskId == null) {
+            return null;
+        }
+        for (DecisionRun.ActionRef ref : candidate.decisions().actionRefs().values()) {
+            if (taskId.equals(ref.taskId())) {
+                return ref;
+            }
+        }
+        return null;
+    }
+
+    /** 采访任务种类对应的决定工具名；非采访动作返回 null。 */
+    private static String interviewToolOf(String kind) {
+        if (PendingTask.INTERVIEW_INVITE_V1.equals(kind)) {
+            return RoleTradingView.TOOL_INTERVIEW_INVITE;
+        }
+        if (PendingTask.INTERVIEW_RESPOND_V1.equals(kind)) {
+            return RoleTradingView.TOOL_INTERVIEW_RESPOND;
+        }
+        if (PendingTask.INTERVIEW_CANCEL_V1.equals(kind)) {
+            return RoleTradingView.TOOL_INTERVIEW_CANCEL;
+        }
+        if (PendingTask.INTERVIEW_END_V1.equals(kind)) {
+            return RoleTradingView.TOOL_INTERVIEW_END;
+        }
+        return null;
+    }
+
+    /**
+     * 新增采访任务必须能回到真实来源：本批首次命令（人物动作）、已接收的决定动作引用，
+     * 或真实状态派生的门任务。
+     */
+    private void requireInterviewSchedulingRequest(WorldState previous, WorldState candidate,
+                                                   WorldCommit commit, PendingTask task)
+            throws IOException {
+        RoleActionPayload payload = readRolePayload(task);
+        if (payload == null) {
+            throw new IOException("采访任务参数无法解析：" + task.taskId());
+        }
+        if (InterviewRun.GATE_KINDS.contains(task.kind())) {
+            PendingTask derived = derivedGate(previous, task);
+            if (derived == null || !derived.equals(task)) {
+                throw new IOException("采访门任务不是由真实状态派生：" + task.taskId());
+            }
+            return;
+        }
+        String json = mapper.writeValueAsString(task);
+        boolean scheduled = false;
+        for (WorldEvent event : commit.events()) {
+            if ("TASK_SCHEDULED_V1".equals(event.type()) && event.payload().equals(json)) {
+                scheduled = true;
+                break;
+            }
+        }
+        // 决定来源：真实模型只写 DECISION_ACTION_SCHEDULED_V1，任务绑定在 actionRefs 里。
+        DecisionRun.ActionRef ref = scheduled ? null : decisionRefFor(candidate, task.taskId());
+        if (!scheduled && ref == null) {
+            throw new IOException("采访待办缺少真实排程请求：" + task.taskId());
+        }
+        if (task.phase() != WorldScheduler.Phase.COMPLETION) {
+            throw new IOException("采访人物动作必须落在 COMPLETION 阶段：" + task.taskId());
+        }
+        if (scheduled) {
+            // 直连（角色会话）路径：原防伪断言保持不变
+            if (!task.taskId().equals(roleTaskId(payload.personPartyId(), payload.clientTaskId()))
+                    || !payload.commandId().equals(roleCommandId(payload.personPartyId(),
+                    payload.clientCommandId()))
+                    || !commit.commandId().equals("cmd:" + payload.commandId())
+                    || !commit.commandContent().equals(task.payload())
+                    || !commit.result().equals("SCHEDULED:" + payload.clientTaskId())
+                    || previous.commandContents().containsKey(payload.commandId())) {
+                throw new IOException("采访排程必须唯一绑定本批新命令与人物任务：" + task.taskId());
+            }
+        } else {
+            // 决定来源路径：任务 ↔ actionRef ↔ 原决定命令/原文 三者必须同一
+            if (!payload.kind().equals(task.kind())) {
+                throw new IOException("采访待办种类与参数不一致：" + task.taskId());
+            }
+            String expectedTool = interviewToolOf(task.kind());
+            if (expectedTool == null || !expectedTool.equals(ref.tool())) {
+                throw new IOException("采访决定工具与任务种类不一致：" + task.taskId());
+            }
+            if (ref.dueMillis() != task.dueTimeMillis()) {
+                throw new IOException("采访决定到期与任务到期不一致：" + task.taskId());
+            }
+            if (!DecisionRun.actionCommandId(ref.actionId()).equals(payload.commandId())
+                    || !ref.actionId().equals(payload.clientCommandId())
+                    || !ref.actionId().equals(payload.clientTaskId())) {
+                throw new IOException("采访待办未唯一绑定原决定动作：" + task.taskId());
+            }
+            String recorded = candidate.commandContents().get(payload.commandId());
+            if (recorded == null || !recorded.equals(task.payload())) {
+                throw new IOException("采访待办参数与已记录决定命令不一致：" + task.taskId());
+            }
+            if (previous.commandContents().containsKey(payload.commandId())) {
+                throw new IOException("采访决定命令不得在更早批次已存在：" + task.taskId());
+            }
+            if (candidate.decisions() == null
+                    || DecisionModel.decision(candidate.decisions().state(), ref.actionId())
+                    .isEmpty()) {
+                throw new IOException("采访待办缺少对应原决定：" + task.taskId());
+            }
+        }
+        if (task.dueTimeMillis() != payload.dueMillis()) {
+            throw new IOException("采访任务到期与原命令不一致：" + task.taskId());
+        }
+        if (!task.payload().equals(candidate.commandContents().get(payload.commandId()))) {
+            throw new IOException("采访待办参数与已记录命令不一致：" + task.taskId());
+        }
+        InterviewTaskBody body;
+        try {
+            body = mapper.readValue(payload.body(), InterviewTaskBody.class);
+        } catch (IOException unreadable) {
+            throw new IOException("采访待办参数缺少机构或动作：" + task.taskId(), unreadable);
+        }
+        InterviewRun.Config config = candidate.interviews().config();
+        if (config.policyOf(body.organizationPartyId()) == null) {
+            throw new IOException("采访待办指向未配置的组织：" + task.taskId());
+        }
+        long duration = candidate.interviews().actionMillis(task.kind());
+        if (body.startedAtMillis() < 0
+                || task.dueTimeMillis() != body.startedAtMillis() + duration) {
+            throw new IOException("采访待办时长与冻结配置不一致：" + task.taskId());
+        }
+        if (body.startedAtMillis() < previous.timeMillis()) {
+            throw new IOException("采访动作不得回填到上一帧之前：" + task.taskId());
+        }
+        if (body.observedPosition() < 0 || body.observedPosition() > previous.position()) {
+            throw new IOException("采访待办缺少真实观察帧：" + task.taskId());
+        }
+        WorldState frame = frameAtOrNull(body.observedPosition());
+        if (frame == null || frame.timeMillis() != body.observedAtMillis()) {
+            throw new IOException("采访待办的观察帧不可解析：" + task.taskId());
+        }
+    }
+
+    /** 从上一帧真实状态重算某条门任务；不是合法门返回 null。 */
+    private PendingTask derivedGate(WorldState previous, PendingTask task) {
+        InterviewRun run = previous.interviews();
+        if (run == null) {
+            return null;
+        }
+        String suffix = task.taskId().substring(task.taskId().lastIndexOf(':') + 1);
+        for (InterviewModel.State state : run.states()) {
+            for (InterviewModel.Invite invite : state.invites()) {
+                InterviewModel.Status status = invite.status();
+                String role;
+                if ("start".equals(suffix)) {
+                    role = status == InterviewModel.Status.ACCEPTED ? "start" : null;
+                } else if ("miss".equals(suffix)) {
+                    role = status == InterviewModel.Status.ACCEPTED ? "miss" : null;
+                } else if ("end".equals(suffix)) {
+                    role = status == InterviewModel.Status.ACCEPTED
+                            || status == InterviewModel.Status.ACTIVE ? "end" : null;
+                } else if ("ttl".equals(suffix)) {
+                    role = status == InterviewModel.Status.PROPOSED
+                            || status == InterviewModel.Status.ACCEPTED ? "ttl" : null;
+                } else {
+                    role = null;
+                }
+                if (role == null) {
+                    continue;
+                }
+                PendingTask expected = gateTask(invite,
+                        state.policy().mediaOrganizationPartyId(), role, task.dueTimeMillis());
+                if (expected.taskId().equals(task.taskId()) && expected.equals(task)) {
+                    return expected;
+                }
+            }
+        }
+        return null;
+    }
+
 
     /**
      * 媒体帧逐帧重算：从上一确认状态与真实待办请求重算本帧应得的媒体状态、资料状态、
@@ -7242,7 +7694,7 @@ public final class WorldRuntime implements AutoCloseable {
 
         // 1）本帧完成的媒体任务 = 上一帧有、本帧没有
         List<PendingTask> completed = new ArrayList<>();
-        for (PendingTask task : mediaTasks(previous.pending())) {
+        for (PendingTask task : billedTasks(previous.pending())) {
             boolean stillPending = false;
             for (PendingTask now : candidate.pending()) {
                 if (now.taskId().equals(task.taskId())) {
@@ -7267,6 +7719,19 @@ public final class WorldRuntime implements AutoCloseable {
                 continue;
             }
             WorldState step = mediaStep(previous, expectedRun, expectedInformation, expectedPending);
+            if (InterviewRun.KINDS.contains(task.kind())) {
+                InterviewFrame frame;
+                try {
+                    frame = computeInterviewFrame(step, task);
+                } catch (RuntimeException invalid) {
+                    throw new IOException("采访帧重算失败：" + task.taskId(), invalid);
+                }
+                expectedRun = frame.media();
+                expectedInformation = frame.information();
+                expectedPending = frame.pending();
+                handled.add(task.taskId());
+                continue;
+            }
             MediaFrame frame;
             try {
                 frame = computeMediaFrame(step, task);
@@ -7354,6 +7819,18 @@ public final class WorldRuntime implements AutoCloseable {
         }
         media.sort(Comparator.comparing(PendingTask::taskId));
         return media;
+    }
+
+    /** 会计入媒体工时账的任务：媒体动作 + 采访动作（含会话结算）。 */
+    private static List<PendingTask> billedTasks(List<PendingTask> pending) {
+        List<PendingTask> billed = new ArrayList<>();
+        for (PendingTask task : pending) {
+            if (MediaRun.KINDS.contains(task.kind()) || InterviewRun.KINDS.contains(task.kind())) {
+                billed.add(task);
+            }
+        }
+        billed.sort(Comparator.comparing(PendingTask::taskId));
+        return billed;
     }
 
     private static Map<String, PendingTask> byId(List<PendingTask> tasks) {
@@ -7486,7 +7963,831 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.commandContents(), previous.commandOutcomes(), previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
-                previous.dividends(), previous.beliefs(), run);
+                previous.dividends(), previous.beliefs(), run, previous.interviews());
+    }
+
+    // ------------------------------------------------------------------
+    // M4i.2a 双边采访预约协调：排程、门任务、完成帧与恢复重算
+    // ------------------------------------------------------------------
+
+    /** 采访子集是否启用。 */
+    private void requireInterviewsEnabled() {
+        if (!manifest.hasInterviews() || state.interviews() == null) {
+            throw new IllegalStateException("当前运行未启用采访协调模块：" + manifest.rulesVersion());
+        }
+    }
+
+    private InterviewRun requireInterviewRun() {
+        return requireInterviewRun(state);
+    }
+
+    private InterviewRun requireInterviewRun(WorldState base) {
+        InterviewRun run = base.interviews();
+        if (!manifest.hasInterviews() || run == null) {
+            throw new IllegalStateException("当前运行未启用采访协调模块：" + manifest.rulesVersion());
+        }
+        return run;
+    }
+
+    /**
+     * 当前采访子集（只读）：供诊断与定向测试比对，不含任何第二账本。
+     *
+     * @return 采访子集；未启用时为 null
+     * @throws IOException 读取失败
+     */
+    public synchronized InterviewRun interviewRun() throws IOException {
+        requireOpen();
+        return state.interviews();
+    }
+
+    /**
+     * 本人可见的预约投影：只含本人参与的协调事实与本人可达的联系入口。
+     *
+     * <p>不含他人邀请、他人主题、全体人数或隐藏理由；未知与未登记人物得到同一份空投影。</p>
+     *
+     * @param personPartyId 人物
+     * @return 本人预约投影
+     * @throws IOException 读取失败
+     */
+    public synchronized InterviewView interviewView(String personPartyId) throws IOException {
+        requireOpen();
+        WorldState base = state;
+        InterviewRun run = base.interviews();
+        if (run == null) {
+            return new InterviewView(personPartyId, List.of(), List.of(), List.of());
+        }
+        long now = base.timeMillis();
+        List<InterviewEntry> invites = new ArrayList<>();
+        List<InterviewSessionEntry> sessions = new ArrayList<>();
+        for (InterviewModel.State state : run.states()) {
+            for (InterviewModel.InviteView view : InterviewModel.inbox(state,
+                    new InterviewModel.Context(base.roles().access(), Map.of(),
+                            Map.of(personPartyId, List.of())), personPartyId, now)) {
+                invites.add(new InterviewEntry(view.requestId(), view.fromPartyId(),
+                        view.toPartyId(), view.topic(), view.status().name(),
+                        view.windowStartMillis(), view.windowEndMillis(), view.durationMillis(),
+                        view.startMillis(), view.expiresAtMillis(),
+                        state.policy().mediaOrganizationPartyId()));
+            }
+            for (InterviewModel.SessionView view : InterviewModel.sessions(state,
+                    new InterviewModel.Context(base.roles().access(), Map.of(),
+                            Map.of(personPartyId, List.of())), personPartyId, now)) {
+                sessions.add(new InterviewSessionEntry(view.sessionId(), view.requestId(),
+                        view.startedAtMillis(), view.endedAtMillis(),
+                        view.close() == null ? "" : view.close().name()));
+            }
+        }
+        invites.sort(Comparator.comparing(InterviewEntry::requestId));
+        sessions.sort(Comparator.comparing(InterviewSessionEntry::sessionId));
+        List<ContactView> contacts = new ArrayList<>();
+        for (Map.Entry<String, Set<String>> entry : reachableMap(base, personPartyId, now)
+                .entrySet()) {
+            for (String target : entry.getValue()) {
+                for (InterviewRun.ContactEntry channel : run.contactsFor(target)) {
+                    if (InformationModel.canCite(base.information().information(), personPartyId,
+                            channel.docId(), channel.version(), now)) {
+                        contacts.add(new ContactView(target, channel.channel(),
+                                channel.description(), channel.docId(), channel.version()));
+                    }
+                }
+            }
+        }
+        contacts.sort(Comparator.comparing(ContactView::targetPartyId)
+                .thenComparing(ContactView::channel));
+        return new InterviewView(personPartyId, List.copyOf(invites), List.copyOf(sessions),
+                List.copyOf(contacts));
+    }
+
+    /**
+     * 管理员审计：全部邀请、会话与真实工时，上帝视角。
+     *
+     * @return 审计投影
+     * @throws IOException 读取失败
+     */
+    public synchronized InterviewAudit interviewAudit() throws IOException {
+        requireOpen();
+        WorldState base = state;
+        InterviewRun run = base.interviews();
+        if (run == null) {
+            return new InterviewAudit(base.position(), base.timeMillis(), List.of(), List.of(),
+                    List.of(), List.of());
+        }
+        List<InterviewEntry> invites = new ArrayList<>();
+        List<InterviewSessionEntry> sessions = new ArrayList<>();
+        for (InterviewModel.State state : run.states()) {
+            for (InterviewModel.Invite invite : state.invites()) {
+                invites.add(new InterviewEntry(invite.requestId(), invite.fromPartyId(),
+                        invite.toPartyId(), invite.topic(), invite.status().name(),
+                        invite.windowStartMillis(), invite.windowEndMillis(),
+                        invite.durationMillis(), invite.startMillis(), invite.expiresAtMillis(),
+                        state.policy().mediaOrganizationPartyId()));
+            }
+            for (InterviewModel.Session session : state.sessions()) {
+                sessions.add(new InterviewSessionEntry(session.sessionId(), session.requestId(),
+                        session.startedAtMillis(), session.endedAtMillis(),
+                        session.close() == null ? "" : session.close().name()));
+            }
+        }
+        invites.sort(Comparator.comparing(InterviewEntry::requestId));
+        sessions.sort(Comparator.comparing(InterviewSessionEntry::sessionId));
+        List<WorkEntry> works = new ArrayList<>();
+        for (MediaRun.Work work : base.media().works()) {
+            if (!InterviewRun.KINDS.contains(work.kind())
+                    && !MediaRun.KIND_INTERVIEW_SESSION.equals(work.kind())) {
+                continue;
+            }
+            works.add(new WorkEntry(work.taskId(), work.personPartyId(),
+                    work.organizationPartyId(), work.kind(), work.startedAtMillis(),
+                    work.completedAtMillis(), work.chargedMillis(), work.outcome()));
+        }
+        List<BudgetEntry> budgets = new ArrayList<>();
+        for (MediaRun.Budget budget : base.media().budgets()) {
+            budgets.add(new BudgetEntry(budget.organizationPartyId(), budget.totalMillis(),
+                    budget.spentMillis(), run.reservedMillis(budget.organizationPartyId())));
+        }
+        return new InterviewAudit(base.position(), base.timeMillis(), List.copyOf(invites),
+                List.copyOf(sessions), List.copyOf(works), List.copyOf(budgets));
+    }
+
+    /** 本人预约投影。 */
+    public record InterviewView(String personPartyId, List<InterviewEntry> invites,
+                                List<InterviewSessionEntry> sessions, List<ContactView> contacts) {
+    }
+
+    /** 一条邀请的只读投影。 */
+    public record InterviewEntry(String requestId, String fromPartyId, String toPartyId,
+                                 String topic, String status, long windowStartMillis,
+                                 long windowEndMillis, long durationMillis, long startMillis,
+                                 long expiresAtMillis, String organizationPartyId) {
+    }
+
+    /** 一条会话的只读投影。 */
+    public record InterviewSessionEntry(String sessionId, String requestId, long startedAtMillis,
+                                        long endedAtMillis, String close) {
+    }
+
+    /** 本人可达的联系入口。 */
+    public record ContactView(String targetPartyId, String channel, String description,
+                              String docId, long version) {
+    }
+
+    /** 管理员审计投影。 */
+    public record InterviewAudit(long position, long timeMillis, List<InterviewEntry> invites,
+                                 List<InterviewSessionEntry> sessions, List<WorkEntry> works,
+                                 List<BudgetEntry> budgets) {
+    }
+
+    /** 采访工时记录。 */
+    public record WorkEntry(String taskId, String personPartyId, String organizationPartyId,
+                            String kind, long startedAtMillis, long completedAtMillis,
+                            long chargedMillis, String outcome) {
+    }
+
+    /** 机构工时与采访在途预留。 */
+    public record BudgetEntry(String organizationPartyId, long totalMillis, long spentMillis,
+                              long reservedMillis) {
+    }
+
+    /** 某请求所属的采访状态与邀请；找不到返回 null。 */
+    private InterviewModel.Invite interviewInvite(WorldState base, String requestId) {
+        InterviewRun run = base.interviews();
+        if (run == null || requestId == null) {
+            return null;
+        }
+        for (InterviewModel.State state : run.states()) {
+            for (InterviewModel.Invite invite : state.invites()) {
+                if (invite.requestId().equals(requestId)) {
+                    return invite;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 请求所在机构对应的纯核状态。 */
+    private InterviewModel.State interviewStateOf(WorldState base, String organization) {
+        InterviewRun run = base.interviews();
+        return run == null ? null : run.stateOf(organization);
+    }
+
+    /** 某人此刻唯一可发起采访的机构；没有或不唯一返回 null。 */
+    private String interviewOrganizationOf(WorldState base, String person, long now) {
+        InterviewRun run = base.interviews();
+        if (run == null) {
+            return null;
+        }
+        String found = null;
+        for (InterviewModel.Policy policy : run.config().policies()) {
+            String organization = policy.mediaOrganizationPartyId();
+            if (!mediaAuthorized(base, person, RoleAccess.Action.WRITE_STORY, organization, now)) {
+                continue;
+            }
+            if (found != null) {
+                return null;
+            }
+            found = organization;
+        }
+        return found;
+    }
+
+    /** 本人的可达联系对象：由冻结入口 + 真实读完派生，不认目录发布人。 */
+    private Map<String, Set<String>> reachableMap(WorldState base, String person, long now) {
+        Map<String, Set<String>> reachable = new TreeMap<>();
+        InterviewRun run = base.interviews();
+        Set<String> targets = new TreeSet<>();
+        if (run != null) {
+            for (InterviewRun.ContactEntry entry : run.config().contacts()) {
+                if (base.information() == null) {
+                    continue;
+                }
+                if (InformationModel.canCite(base.information().information(), person,
+                        entry.docId(), entry.version(), now)) {
+                    targets.add(entry.targetPartyId());
+                }
+            }
+            if (base.information() != null) {
+                for (InformationModel.ReadObservation observation
+                        : InformationModel.observations(base.information().information(), person)) {
+                    if (observation.completedAt() > now) {
+                        continue;
+                    }
+                    for (InformationModel.Document document
+                            : base.information().information().documents()) {
+                        if (!document.docId().equals(observation.docId())) {
+                            continue;
+                        }
+                        if (document.audience().kind() == InformationModel.AudienceKind.DIRECT
+                                && person.equals(document.audience().partyId())) {
+                            targets.add(document.publisherPartyId());
+                        }
+                    }
+                }
+            }
+        }
+        targets.remove(person);
+        if (!targets.isEmpty()) {
+            reachable.put(person, targets);
+        }
+        return reachable;
+    }
+
+    /**
+     * 运行层拼出的忙碌区间：其他机构的真实预约/会话 + 本人在途媒体任务 + 在途/活动阅读。
+     *
+     * <p>排除本次操作所在机构，避免纯核把自己那条邀请判成外部冲突；不落盘、不缓存。</p>
+     */
+    private List<InterviewModel.Interval> runtimeBusy(WorldState base, String person,
+                                                      String excludeOrganization, long now) {
+        List<InterviewModel.Interval> busy = new ArrayList<>();
+        InterviewRun run = base.interviews();
+        if (run != null) {
+            for (InterviewModel.State state : run.states()) {
+                if (state.policy().mediaOrganizationPartyId().equals(excludeOrganization)) {
+                    continue;
+                }
+                busy.addAll(InterviewModel.occupancy(state, person));
+            }
+        }
+        for (PendingTask task : base.pending()) {
+            if (!MediaRun.KINDS.contains(task.kind())) {
+                continue;
+            }
+            RoleActionPayload payload = readRolePayload(task);
+            if (payload == null || !payload.personPartyId().equals(person)) {
+                continue;
+            }
+            MediaTaskBody body = mediaBody(task);
+            long start = body.startedAtMillis();
+            long end = task.dueTimeMillis();
+            if (start >= 0 && end > start) {
+                busy.add(new InterviewModel.Interval(start, end));
+            }
+        }
+        if (base.information() != null) {
+            for (InformationModel.Reading reading
+                    : base.information().information().active()) {
+                if (reading.personPartyId().equals(person)) {
+                    busy.add(new InterviewModel.Interval(reading.startedAt(), reading.dueAt()));
+                }
+            }
+        }
+        for (PendingTask task : base.pending()) {
+            RoleActionPayload payload = readRolePayload(task);
+            if (payload == null || !payload.personPartyId().equals(person)) {
+                continue;
+            }
+            if (!PendingTask.ROLE_TRADING_READ_V1.equals(task.kind())
+                    && !PendingTask.INFORMATION_START_READ_V1.equals(task.kind())) {
+                continue;
+            }
+            long end = task.dueTimeMillis();
+            long start = Math.min(base.timeMillis(), end);
+            if (end > start) {
+                busy.add(new InterviewModel.Interval(start, end));
+            }
+        }
+        busy.sort(Comparator.comparingLong(InterviewModel.Interval::fromMillis)
+                .thenComparingLong(InterviewModel.Interval::toMillis));
+        return List.copyOf(busy);
+    }
+
+    /** 构造受信 Context：当前授权快照 + 可达 + 忙碌。 */
+    private InterviewModel.Context interviewContext(WorldState base, String person,
+                                                    String excludeOrganization, long now) {
+        return new InterviewModel.Context(base.roles().access(), reachableMap(base, person, now),
+                Map.of(person, runtimeBusy(base, person, excludeOrganization, now)));
+    }
+
+    /** 本人是否有正在进行的采访会话（占注意力的同步活动）。 */
+    private boolean hasActiveInterview(String person, WorldState base) {
+        InterviewRun run = base.interviews();
+        if (run == null) {
+            return false;
+        }
+        for (InterviewModel.State state : run.states()) {
+            for (InterviewModel.Session session : state.sessions()) {
+                if (!session.open()) {
+                    continue;
+                }
+                InterviewModel.Invite invite = null;
+                for (InterviewModel.Invite candidate : state.invites()) {
+                    if (candidate.requestId().equals(session.requestId())) {
+                        invite = candidate;
+                        break;
+                    }
+                }
+                if (invite != null && (invite.fromPartyId().equals(person)
+                        || invite.toPartyId().equals(person))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 排程一个采访动作：冻结机构、唯一时长、单焦点与预算预留。
+     *
+     * @param session          角色会话
+     * @param kind             动作种类
+     * @param clientCommandId  本人命令标识
+     * @param clientTaskId     本人任务标识
+     * @param dueMillis        到期模拟毫秒
+     * @param draft            动作参数
+     * @return 回报文本
+     * @throws IOException 持久提交失败
+     */
+    String scheduleInterview(WorldRoleSession session, String kind, String clientCommandId,
+                             String clientTaskId, long dueMillis, Object draft)
+            throws IOException {
+        requireInterviewsEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        Objects.requireNonNull(session, "会话");
+        Objects.requireNonNull(draft, "采访参数");
+        String person = session.personPartyId();
+        InterviewRun run = requireInterviewRun();
+        long now = state.timeMillis();
+        String draftJson = mapper.writeValueAsString(draft);
+        String organization = interviewOrganizationForDraft(run, person, kind, draft, now);
+        long duration = run.actionMillis(kind);
+        if (dueMillis != now + duration) {
+            throw new IllegalArgumentException("采访动作到期必须等于当前时点加冻结时长："
+                    + kind + " -> " + duration);
+        }
+        requireInterviewFocusFree(person, state, kind);
+        long available = availableFor(organization, state);
+        // 记者发起的动作按真实预留判预算；控制动作与受访者动作永远不被预算卡住
+        boolean budgetRejected = chargesOrganization(run, kind, person, draft)
+                && available < duration;
+        Long observed = session.observedPosition();
+        InterviewTaskBody body = new InterviewTaskBody(organization, session.observedAt(),
+                observed == null ? -1L : observed, now, kind, draftJson);
+        String internalCommand = roleCommandId(person, clientCommandId);
+        String internalTask = roleTaskId(person, clientTaskId);
+        RoleActionPayload payload = new RoleActionPayload(internalCommand, clientCommandId,
+                clientTaskId, person, dueMillis, new TreeMap<>(session.appointments()), kind,
+                mapper.writeValueAsString(body), observed);
+        String content = mapper.writeValueAsString(payload);
+        String existing = state.commandContents().get(internalCommand);
+        if (existing != null) {
+            if (!content.equals(existing)) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(internalCommand);
+        }
+        if (dueMillis <= now) {
+            throw new IllegalArgumentException("到期时间必须晚于当前时点：" + now);
+        }
+        if (state.usedTaskIds().contains(internalTask)
+                || state.pending().stream().anyMatch(task -> task.taskId().equals(internalTask))) {
+            throw new IllegalArgumentException("任务标识运行内不复用：" + internalTask);
+        }
+        PendingTask task = new PendingTask(internalTask, dueMillis,
+                WorldScheduler.Phase.COMPLETION, kind, content);
+        return scheduleRoleTask(task, internalCommand, content, clientTaskId);
+    }
+
+    /** 只有记者发起邀请与回应时消耗其机构工时；控制动作不计组织工时。 */
+    private boolean chargesOrganization(InterviewRun run, String kind, String person, Object draft) {
+        if (PendingTask.INTERVIEW_CANCEL_V1.equals(kind)
+                || PendingTask.INTERVIEW_END_V1.equals(kind)) {
+            return false;
+        }
+        if (PendingTask.INTERVIEW_INVITE_V1.equals(kind)) {
+            return true;
+        }
+        if (PendingTask.INTERVIEW_RESPOND_V1.equals(kind) && draft instanceof WorldRoleSession.InterviewRespondDraft respond) {
+            InterviewModel.Invite invite = interviewInvite(state, respond.requestId());
+            return invite != null && invite.fromPartyId().equals(person);
+        }
+        return false;
+    }
+
+    /** 解析动作所属机构：邀请用记者唯一机构，其余用原请求的机构。 */
+    private String interviewOrganizationForDraft(InterviewRun run, String person, String kind,
+                                                 Object draft, long now) {
+        if (PendingTask.INTERVIEW_INVITE_V1.equals(kind)) {
+            String organization = interviewOrganizationOf(state, person, now);
+            if (organization == null) {
+                throw new IllegalArgumentException(InterviewModel.REASON_NOT_AUTHORIZED);
+            }
+            return organization;
+        }
+        String requestId;
+        if (draft instanceof WorldRoleSession.InterviewRespondDraft respond) {
+            requestId = respond.requestId();
+        } else if (draft instanceof WorldRoleSession.InterviewRequestDraft request) {
+            requestId = request.requestId();
+        } else {
+            throw new IllegalArgumentException("未知采访参数：" + kind);
+        }
+        InterviewModel.Invite invite = interviewInvite(state, requestId);
+        if (invite == null) {
+            throw new IllegalArgumentException(InterviewModel.REASON_UNKNOWN);
+        }
+        return invite.organizationPartyId();
+    }
+
+    /** 本人单焦点：已有未完成采访任务、正在阅读或正在采访都不能再排；结束/取消不受限。 */
+    private void requireInterviewFocusFree(String person, WorldState base, String kind) {
+        boolean control = PendingTask.INTERVIEW_CANCEL_V1.equals(kind)
+                || PendingTask.INTERVIEW_END_V1.equals(kind);
+        for (PendingTask task : base.pending()) {
+            if (!InterviewRun.KINDS.contains(task.kind())) {
+                continue;
+            }
+            RoleActionPayload payload = readRolePayload(task);
+            if (payload != null && payload.personPartyId().equals(person)
+                    && InterviewRun.COMMAND_KINDS.contains(task.kind())) {
+                throw new IllegalArgumentException("本人已有未完成的采访动作");
+            }
+        }
+        if (control) {
+            return;
+        }
+        if (hasPendingReading(person, base.pending())
+                || (base.information() != null && hasActiveReading(person))) {
+            throw new IllegalArgumentException("本人正在阅读资料，不能同时发起采访动作");
+        }
+        if (hasActiveInterview(person, base)) {
+            throw new IllegalArgumentException("本人正在进行采访会话");
+        }
+    }
+
+    /** 该机构可用工时 = 总预算 − 已耗 − 媒体在途 − 采访完整预约预留。 */
+    private long availableFor(String organization, WorldState base) {
+        MediaRun media = base.media();
+        if (media == null) {
+            return 0L;
+        }
+        InterviewRun run = base.interviews();
+        long reserved = run == null ? 0L : run.reservedMillis(organization);
+        return media.availableMillis(organization, mediaInFlight(base.pending()), reserved);
+    }
+
+    /** 门任务参数。 */
+    private record InterviewTaskBody(String organizationPartyId, long observedAtMillis,
+                                     long observedPosition, long startedAtMillis,
+                                     String operation, String body) {
+    }
+
+    /** 一帧采访完成的完整结果：纯计算，不提交。 */
+    private record InterviewFrame(boolean accepted, String reason, InterviewRun run,
+                                  InformationRun information, MediaRun media,
+                                  List<PendingTask> pending, List<PendingTask> removed) {
+    }
+
+    /** 完成一个采访任务：计算结果与提交分开，提交与恢复重算共用同一份计算。 */
+    private void completeInterviewTask(PendingTask task) throws IOException {
+        InterviewFrame frame = computeInterviewFrame(state, task);
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.add(new WorldEvent("interview-task:" + task.taskId(), "INTERVIEW_TASK_V1",
+                mapper.writeValueAsString(task)));
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        for (PendingTask now : frame.pending()) {
+            boolean existed = false;
+            for (PendingTask before : state.pending()) {
+                if (before.taskId().equals(now.taskId())) {
+                    existed = true;
+                    break;
+                }
+            }
+            if (!existed) {
+                used.add(now.taskId());
+            }
+        }
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
+                frame.pending(), state.delivered(), used, state.commandContents(),
+                state.commandOutcomes(), state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), frame.information(),
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(),
+                frame.media(), frame.run());
+        commitAndApply("task:" + task.taskId(), task.payload(), frame.reason(), events, candidate);
+    }
+
+    /** 从给定基准状态重算一次采访任务完成；不做任何 I/O 提交。 */
+    private InterviewFrame computeInterviewFrame(WorldState base, PendingTask task)
+            throws IOException {
+        InterviewRun before = requireInterviewRun(base);
+        RoleActionPayload payload = mapper.readValue(task.payload(), RoleActionPayload.class);
+        InterviewTaskBody body;
+        try {
+            body = mapper.readValue(mapper.readValue(task.payload(), RoleActionPayload.class).body(),
+                    InterviewTaskBody.class);
+        } catch (IOException unreadable) {
+            throw new IOException("采访任务参数无法解析：" + task.taskId(), unreadable);
+        }
+        String person = payload.personPartyId();
+        String organization = body.organizationPartyId();
+        InterviewModel.State stateBefore = before.stateOf(organization);
+        if (stateBefore == null) {
+            throw new IOException("采访任务指向未配置的组织：" + task.taskId());
+        }
+        long now = task.dueTimeMillis();
+        List<PendingTask> pending = new ArrayList<>(base.pending());
+        pending.remove(task);
+        List<PendingTask> removed = new ArrayList<>();
+        removed.add(task);
+        InterviewModel.State after = stateBefore;
+        boolean accepted = false;
+        String reason = InterviewModel.REASON_STATE;
+        String requestId = "";
+        long charge = 0L;
+        MediaRun media = base.media();
+        InformationRun information = base.information();
+        if (media == null) {
+            throw new IOException("当前运行没有媒体工时账，不能结算采访：" + task.taskId());
+        }
+        boolean journalistCharge = false;
+        if (InterviewRun.GATE_KINDS.contains(task.kind())) {
+            InterviewModel.Outcome outcome = InterviewModel.expire(stateBefore, now);
+            after = outcome.state();
+            reason = InterviewModel.REASON_OK;
+            accepted = true;
+            if (PendingTask.INTERVIEW_START_GATE_V1.equals(task.kind())) {
+                InterviewModel.Invite invite = findInvite(stateBefore, body.body());
+                if (invite != null) {
+                    requestId = invite.requestId();
+                    InterviewModel.Context context = interviewContext(base, invite.fromPartyId(),
+                            organization, now);
+                    InterviewModel.Outcome started = InterviewModel.start(stateBefore, context,
+                            invite.fromPartyId(), invite.requestId(), now);
+                    if (started.accepted()) {
+                        after = started.state();
+                        accepted = true;
+                        reason = InterviewModel.REASON_OK;
+                    } else {
+                        accepted = false;
+                        reason = started.reason();
+                    }
+                }
+            }
+        } else {
+            switch (task.kind()) {
+                case PendingTask.INTERVIEW_INVITE_V1 -> {
+                    WorldRoleSession.InterviewInviteDraft draft = mapper.readValue(body.body(),
+                            WorldRoleSession.InterviewInviteDraft.class);
+                    String request = InterviewModel.requestId(person, draft.requestClientId());
+                    requestId = request;
+                    InterviewModel.Context context = interviewContext(base, person, organization,
+                            now);
+                    InterviewModel.Outcome outcome = InterviewModel.invite(stateBefore, context,
+                            person, new InterviewModel.InviteRequest(request, draft.toPartyId(),
+                                    draft.topic(), draft.windowStartMillis(),
+                                    draft.windowEndMillis(), draft.durationMillis()), now);
+                    after = outcome.state();
+                    accepted = outcome.accepted();
+                    reason = outcome.reason();
+                    journalistCharge = accepted;
+                }
+                case PendingTask.INTERVIEW_RESPOND_V1 -> {
+                    WorldRoleSession.InterviewRespondDraft draft = mapper.readValue(body.body(),
+                            WorldRoleSession.InterviewRespondDraft.class);
+                    requestId = draft.requestId();
+                    InterviewModel.Invite invite = findInvite(stateBefore, requestId);
+                    if (invite == null) {
+                        accepted = false;
+                        reason = InterviewModel.REASON_UNKNOWN;
+                        break;
+                    }
+                    if (draft.accept() && availableFor(organization, base) < invite.durationMillis()) {
+                        // 预约要预留整段记者时间：机构付不起就必须在此拒绝，不能等到结算才透支
+                        accepted = false;
+                        reason = "BUDGET";
+                        break;
+                    }
+                    InterviewModel.Context context = interviewContext(base, person, organization,
+                            now);
+                    InterviewModel.Outcome outcome = InterviewModel.respond(stateBefore, context,
+                            person, requestId,
+                            new InterviewModel.Decision(draft.accept(),
+                                    draft.accept() ? draft.startMillis() : -1L), now);
+                    after = outcome.state();
+                    accepted = outcome.accepted();
+                    reason = outcome.reason();
+                    journalistCharge = accepted && invite.fromPartyId().equals(person);
+                }
+                case PendingTask.INTERVIEW_CANCEL_V1 -> {
+                    WorldRoleSession.InterviewRequestDraft draft = mapper.readValue(body.body(),
+                            WorldRoleSession.InterviewRequestDraft.class);
+                    requestId = draft.requestId();
+                    InterviewModel.Context context = interviewContext(base, person, organization,
+                            now);
+                    InterviewModel.Outcome outcome = InterviewModel.cancel(stateBefore, context,
+                            person, requestId, now);
+                    after = outcome.state();
+                    accepted = outcome.accepted();
+                    reason = outcome.reason();
+                }
+                case PendingTask.INTERVIEW_END_V1 -> {
+                    WorldRoleSession.InterviewRequestDraft draft = mapper.readValue(body.body(),
+                            WorldRoleSession.InterviewRequestDraft.class);
+                    requestId = draft.requestId();
+                    InterviewModel.Invite invite = findInvite(stateBefore, requestId);
+                    if (invite == null) {
+                        accepted = false;
+                        reason = InterviewModel.REASON_UNKNOWN;
+                        break;
+                    }
+                    InterviewModel.Context context = interviewContext(base, person, organization,
+                            now);
+                    InterviewModel.Outcome outcome = InterviewModel.end(stateBefore, context, person,
+                            "SESSION-" + requestId, now);
+                    after = outcome.state();
+                    accepted = outcome.accepted();
+                    reason = outcome.reason();
+                }
+                default -> throw new IOException("未登记的采访任务：" + task.kind());
+            }
+        }
+        // 预算：只有记者的邀请/回应按冻结动作时长计费，且必须与真实跨度一致
+        if (journalistCharge) {
+            long span = now - body.startedAtMillis();
+            if (span < 0 || span != before.actionMillis(task.kind())) {
+                media = media.withOutcome(organization, 0L,
+                        List.of(new MediaRun.Work(task.taskId(), person, organization, task.kind(),
+                                "", body.startedAtMillis(), now, 0L, MediaRun.OUTCOME_REJECTED)),
+                        null);
+                return new InterviewFrame(false, MediaModel.REASON_TIME, before,
+                        information, media, List.copyOf(pending), List.copyOf(removed));
+            }
+            if (body.observedPosition() < 0) {
+                return new InterviewFrame(false, MediaModel.REASON_TIME, before, information,
+                        media, List.copyOf(pending), List.copyOf(removed));
+            }
+            charge = span;
+        }
+        // 会话结算：ACTIVE → COMPLETED/ENDED_EARLY 时写一条实际区间的 Work
+        InterviewRun run = before.withState(organization, after);
+        MediaRun settled = media;
+        for (InterviewModel.Invite invite : after.invites()) {
+            if (invite.status() != InterviewModel.Status.COMPLETED
+                    && invite.status() != InterviewModel.Status.ENDED_EARLY) {
+                continue;
+            }
+            InterviewModel.Invite previous = findInvite(stateBefore, invite.requestId());
+            if (previous == null || previous.status() != InterviewModel.Status.ACTIVE) {
+                continue;
+            }
+            long actualEnd = invite.status() == InterviewModel.Status.COMPLETED
+                    ? invite.scheduledEnd() : endedAt(after, invite.requestId());
+            long actualStart = invite.startMillis();
+            long actual = actualEnd - actualStart;
+            if (actual < 0) {
+                actual = 0L;
+            }
+            String taskId = "interview-settle:" + invite.requestId();
+            settled = settled.withOutcome(invite.organizationPartyId(), actual,
+                    List.of(new MediaRun.Work(taskId, invite.fromPartyId(),
+                            invite.organizationPartyId(), MediaRun.KIND_INTERVIEW_SESSION, "",
+                            actualStart, Math.max(actualEnd, actualStart + 1), actual,
+                            MediaRun.OUTCOME_COMPLETED)), null);
+        }
+        run = run.withCoordination(new InterviewRun.Coordination(task.taskId(), person,
+                task.kind(), accepted, reason, requestId, now, base.position() + 1));
+        if (journalistCharge && charge > 0L && accepted) {
+            settled = settled.withOutcome(organization, charge,
+                    List.of(new MediaRun.Work(task.taskId(), person, organization, task.kind(), "",
+                            body.startedAtMillis(), now, charge, MediaRun.OUTCOME_COMPLETED)), null);
+        }
+        // 门任务：只从真实状态派生，不能伪造
+        pending.addAll(gatesFor(after, before.config(), base, now));
+        return new InterviewFrame(accepted, reason, run, information, settled,
+                List.copyOf(pending), List.copyOf(removed));
+    }
+
+    private static InterviewModel.Invite findInvite(InterviewModel.State state, String requestId) {
+        if (state == null || requestId == null || requestId.isBlank()) {
+            return null;
+        }
+        for (InterviewModel.Invite invite : state.invites()) {
+            if (invite.requestId().equals(requestId)) {
+                return invite;
+            }
+        }
+        return null;
+    }
+
+    private static long endedAt(InterviewModel.State state, String requestId) {
+        for (InterviewModel.Session session : state.sessions()) {
+            if (session.requestId().equals(requestId) && !session.open()) {
+                return session.endedAtMillis();
+            }
+        }
+        return 0L;
+    }
+
+    /** 从真实状态派生门任务；终态不再排门。 */
+    private List<PendingTask> gatesFor(InterviewModel.State state, InterviewRun.Config config,
+                                       WorldState base, long now) {
+        List<PendingTask> gates = new ArrayList<>();
+        String organization = state.policy().mediaOrganizationPartyId();
+        for (InterviewModel.Invite invite : state.invites()) {
+            if (invite.status() == InterviewModel.Status.PROPOSED) {
+                gates.add(gateTask(invite, organization, "ttl", invite.expiresAtMillis()));
+            } else if (invite.status() == InterviewModel.Status.ACCEPTED) {
+                gates.add(gateTask(invite, organization, "start", invite.startMillis()));
+                gates.add(gateTask(invite, organization, "miss", invite.startMillis() + 1));
+                gates.add(gateTask(invite, organization, "end", invite.scheduledEnd()));
+                gates.add(gateTask(invite, organization, "ttl", invite.expiresAtMillis()));
+            } else if (invite.status() == InterviewModel.Status.ACTIVE) {
+                gates.add(gateTask(invite, organization, "end", invite.scheduledEnd()));
+            }
+        }
+        List<PendingTask> fresh = new ArrayList<>();
+        for (PendingTask gate : gates) {
+            if (takenTaskId(base, gate.taskId())) {
+                continue;
+            }
+            fresh.add(gate);
+        }
+        return fresh;
+    }
+
+    private PendingTask gateTask(InterviewModel.Invite invite, String organization, String role,
+                                 long dueMillis) {
+        String operation;
+        String kind;
+        switch (role) {
+            case "start" -> {
+                kind = PendingTask.INTERVIEW_START_GATE_V1;
+                operation = "START_GATE";
+            }
+            case "miss" -> {
+                kind = PendingTask.INTERVIEW_MISS_GATE_V1;
+                operation = "MISS_GATE";
+            }
+            case "end" -> {
+                kind = PendingTask.INTERVIEW_END_GATE_V1;
+                operation = "END_GATE";
+            }
+            default -> {
+                kind = PendingTask.INTERVIEW_TTL_GATE_V1;
+                operation = "TTL_GATE";
+            }
+        }
+        InterviewTaskBody body = new InterviewTaskBody(organization, 0L, -1L, dueMillis,
+                operation, invite.requestId());
+        RoleActionPayload payload;
+        try {
+            payload = new RoleActionPayload("gate:" + invite.requestId() + ":" + role, "",
+                    "", invite.fromPartyId(), dueMillis, Map.of(), kind,
+                    mapper.writeValueAsString(body), null);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalStateException("采访门任务无法序列化", failure);
+        }
+        String json;
+        try {
+            json = mapper.writeValueAsString(payload);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalStateException("采访门任务无法序列化", failure);
+        }
+        return new PendingTask("interview-gate:" + invite.requestId() + ":" + role, dueMillis,
+                WorldScheduler.Phase.RULES, kind, json);
     }
 
     /**
@@ -9469,7 +10770,7 @@ public final class WorldRuntime implements AutoCloseable {
                 used, previous.commandContents(), previous.commandOutcomes(), previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 information, previous.trading(), previous.decisions(), previous.dividends(),
-                previous.beliefs(), previous.media());
+                previous.beliefs(), previous.media(), previous.interviews());
         List<WorldEvent> events = List.of(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()), new WorldEvent("information-report:" + task.taskId(), "INFORMATION_REPORT_V1",
                 mapper.writeValueAsString(report)));
@@ -9594,7 +10895,7 @@ public final class WorldRuntime implements AutoCloseable {
                 used, contents, outcomes, previous.securities(), previous.exchange(), previous.manufacturing(),
                 previous.governance(), previous.roles(), previous.information(), previous.trading(),
                 previous.decisions(), previous.dividends(), previous.beliefs(),
-                previous.media());
+                previous.media(), previous.interviews());
         List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + added.taskId(), "TASK_SCHEDULED_V1",
                 mapper.writeValueAsString(added)));
         List<WorldEvent> actual = commit.events().stream()
@@ -10411,7 +11712,8 @@ public final class WorldRuntime implements AutoCloseable {
                 manufacturing, governance, roles, information, trading, decisions,
                 manifest.hasDividend() ? DividendModel.empty() : null,
                 manifest.hasBelief() ? BeliefRun.empty() : null,
-                manifest.hasMedia() ? MediaRun.open(mediaConfig, registry) : null);
+                manifest.hasMedia() ? MediaRun.open(mediaConfig, registry) : null,
+                manifest.hasInterviews() ? InterviewRun.open(interviewConfig, registry) : null);
     }
 
     /**
@@ -10502,6 +11804,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasInterviews()) {
+            return STATE_SCHEMA_INTERVIEW;
+        }
         if (manifest.hasMedia()) {
             return STATE_SCHEMA_MEDIA;
         }
@@ -10686,10 +11991,33 @@ public final class WorldRuntime implements AutoCloseable {
                             DividendModel.State dividends,
                             BeliefRun beliefs,
                             MediaRun media) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, trading, decisions, dividends, beliefs, media,
+                state.interviews());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading,
+                            DecisionRun decisions,
+                            DividendModel.State dividends,
+                            BeliefRun beliefs,
+                            MediaRun media,
+                            InterviewRun interviews) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                roles, information, trading, decisions, dividends, beliefs, media);
+                roles, information, trading, decisions, dividends, beliefs, media, interviews);
     }
 
     // ==================================================================
@@ -11117,7 +12445,7 @@ public final class WorldRuntime implements AutoCloseable {
                 accounts, pending, delivered, used, contents, outcomes, previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 previous.information(), previous.trading(), previous.decisions(),
-                previous.dividends(), previous.beliefs(), previous.media());
+                previous.dividends(), previous.beliefs(), previous.media(), previous.interviews());
     }
 
     private void requireCashBatch(WorldCommit commit, WorldState candidate, WorldState expected,
@@ -12320,7 +13648,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         return new RoleTradingView(session.observedAt(), now, person, profile, appointments,
                 research, targets, children, notices,
-                roleTools(appointments, manifest.hasBelief(), manifest.hasMedia()), mediaStories);
+                roleTools(appointments, manifest.hasBelief(), manifest.hasMedia(),
+                        manifest.hasInterviews()), mediaStories);
     }
 
     /** 使用原观察任职裁剪权限，身份、个人账户及组织账户登记保持同一来源。 */
@@ -12338,7 +13667,8 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private static List<String> roleTools(List<RoleTradingView.Appointment> appointments,
-                                          boolean beliefEnabled, boolean mediaEnabled) {
+                                          boolean beliefEnabled, boolean mediaEnabled,
+                                          boolean interviewEnabled) {
         boolean researcher = false;
         boolean manager = false;
         boolean risk = false;
@@ -12396,6 +13726,15 @@ public final class WorldRuntime implements AutoCloseable {
                 tools.add(RoleTradingView.TOOL_MEDIA_CANCEL);
             }
         }
+        if (interviewEnabled) {
+            // 回应/取消/结束对任何登记人物开放；只有发起邀请需要记者岗位（由运行时再次判权）
+            tools.add(RoleTradingView.TOOL_INTERVIEW_RESPOND);
+            tools.add(RoleTradingView.TOOL_INTERVIEW_CANCEL);
+            tools.add(RoleTradingView.TOOL_INTERVIEW_END);
+            if (journalist) {
+                tools.add(RoleTradingView.TOOL_INTERVIEW_INVITE);
+            }
+        }
         return List.copyOf(tools);
     }
 
@@ -12448,6 +13787,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (manifest.hasMedia() && PendingTask.ROLE_TRADING_READ_V1.equals(kind)
                 && !mediaPendingOf(session.personPartyId(), state.pending()).isEmpty()) {
             throw new IllegalArgumentException("本人还有未完成的媒体工作，不能同时开始阅读");
+        }
+        if (manifest.hasInterviews() && PendingTask.ROLE_TRADING_READ_V1.equals(kind)
+                && hasActiveInterview(session.personPartyId(), state)) {
+            throw new IllegalArgumentException("本人正在进行采访会话，不能同时开始阅读");
         }
         String internalCommand = roleCommandId(session.personPartyId(), clientCommandId);
         String internalTask = roleTaskId(session.personPartyId(), clientTaskId);
@@ -12786,6 +14129,9 @@ public final class WorldRuntime implements AutoCloseable {
         if (hasPendingReading(person, pending) || hasActiveReading(person)) {
             throw new IllegalArgumentException("本人正在阅读资料，不能同时开展媒体工作");
         }
+        if (hasActiveInterview(person, state)) {
+            throw new IllegalArgumentException("本人正在进行采访会话，不能同时开展媒体工作");
+        }
     }
 
     /** 本人已排出但尚未完成的阅读任务也算"正在读"。 */
@@ -12822,6 +14168,24 @@ public final class WorldRuntime implements AutoCloseable {
         }
         RoleActionPayload payload = mapper.readValue(content, RoleActionPayload.class);
         return mapper.readValue(payload.body(), MediaTaskBody.class);
+    }
+
+    /**
+     * 读取已确认的采访动作原文；重放时只用它核对确定性字段，不按当前预算重算。
+     *
+     * @param base     基准状态
+     * @param actionId 决定动作
+     * @return 冻结的采访动作参数
+     * @throws IOException 缺少原文或无法解析
+     */
+    private InterviewTaskBody recordedInterviewBody(WorldState base, String actionId)
+            throws IOException {
+        String content = base.commandContents().get(DecisionRun.actionCommandId(actionId));
+        if (content == null) {
+            throw new IOException("采访决定缺少原始动作命令：" + actionId);
+        }
+        RoleActionPayload payload = mapper.readValue(content, RoleActionPayload.class);
+        return mapper.readValue(payload.body(), InterviewTaskBody.class);
     }
 
     /**

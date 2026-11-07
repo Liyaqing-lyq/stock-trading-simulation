@@ -122,11 +122,13 @@ else
   bad "黑盒复算未通过"; cat "$LOG/csv.log"
 fi
 
-echo "== 3/4 Web 图表精度与边界 =="
+echo "== 3/4 Web 图表、采访身份隔离与页面结构 =="
 if node --check src/main/resources/web/app.js > "$LOG/web-chart.log" 2>&1 \
     && node scripts/test-market-chart.cjs >> "$LOG/web-chart.log" 2>&1 \
-    && node scripts/test-performance-chart.cjs >> "$LOG/web-chart.log" 2>&1; then
-  ok "Web 图表精度、市场成交柱与账户表现历史"
+    && node scripts/test-performance-chart.cjs >> "$LOG/web-chart.log" 2>&1 \
+    && node scripts/test-interview-view.cjs >> "$LOG/web-chart.log" 2>&1 \
+    && PYTHONIOENCODING=utf-8 python scripts/test-interview-layout.py >> "$LOG/web-chart.log" 2>&1; then
+  ok "Web 图表、采访身份隔离与页面结构"
 else
   bad "Web 图表未通过（需要 Node.js），详见 $LOG/web-chart.log"
 fi

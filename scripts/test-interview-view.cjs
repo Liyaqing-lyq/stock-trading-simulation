@@ -1,0 +1,462 @@
+// 采访页面身份、迟到响应和缓存清空回归；只模拟DOM原语，调用真实app.js。
+// 用法：node scripts/test-interview-view.cjs [webDir] [caseFilter]
+"use strict";
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+
+const webDir = process.argv[2] || path.join(__dirname, "../src/main/resources/web");
+const only = process.argv[3] || "";
+const source = fs.readFileSync(path.join(webDir, "app.js"), "utf8");
+
+// ---------------------------------------------------------------- DOM 原语
+function makeElement(tag = "div") {
+  return {
+    tag, attrs: {}, children: [], _text: "", hidden: false, value: "", dataset: {},
+    get textContent() { return this._text; },
+    set textContent(value) { this._text = value === null || value === undefined ? "" : String(value); },
+    setAttribute(key, value) { this.attrs[key] = String(value); },
+    getAttribute(key) { return Object.prototype.hasOwnProperty.call(this.attrs, key) ? this.attrs[key] : null; },
+    removeAttribute(key) { delete this.attrs[key]; },
+    appendChild(child) { this.children.push(child); return child; },
+    append(...items) { this.children.push(...items); },
+    replaceChildren(...items) { this.children = items; },
+    addEventListener() { },
+    querySelectorAll() { return []; },
+    querySelector(selector) {
+      this._qs = this._qs || new Map();
+      if (!this._qs.has(selector)) this._qs.set(selector, makeElement(selector));
+      return this._qs.get(selector);
+    },
+    classList: { add() { }, remove() { }, toggle() { } }
+  };
+}
+
+function makeDocument() {
+  const nodes = new Map();
+  const document = {
+    body: makeElement("body"),
+    getElementById(id) {
+      if (!nodes.has(id)) nodes.set(id, makeElement(id));
+      return nodes.get(id);
+    },
+    createElement(tag) { return makeElement(tag); },
+    createElementNS(namespace, tag) { return makeElement(tag); },
+    createTextNode(text) { const node = makeElement("#text"); node.textContent = text; return node; },
+    querySelectorAll() { return []; },
+    addEventListener() { }
+  };
+  document._nodes = nodes;
+  return document;
+}
+
+// ---------------------------------------------------------------- 世界
+// router(method, url, options, context) -> {status, payload} | Promise<{status, payload}>
+function makeWorld(router, name) {
+  const document = makeDocument();
+  const calls = [];
+  const context = vm.createContext({
+    document, console, BigInt, Number, String, Object, Array, Map, Set, JSON,
+    setTimeout, clearTimeout, setInterval, clearInterval
+  });
+  context.fetch = async (url, options) => {
+    const method = (options && options.method) || "GET";
+    calls.push(method + " " + url);
+    const answer = await router(method, url, options || {}, context);
+    return { status: answer.status, json: async () => answer.payload };
+  };
+  vm.runInContext(source, context);
+  // `state` 是脚本级 const，不在全局对象上；显式取同一对象。
+  vm.runInContext("globalThis.state = state;", context);
+  const world = { name, context, document, calls, state: context.state };
+  world.$ = (id) => document.getElementById(id);
+  world.rows = (id) => document.getElementById(id).querySelector("tbody").children.length;
+  world.cellTexts = () => {
+    const out = [];
+    const collect = (node) => {
+      out.push(node.textContent);
+      for (const child of node.children) collect(child);
+    };
+    for (const id of ["person-name", "person-summary", "person-accounts", "person-holdings",
+      "person-market", "person-interview", "person-error"]) {
+      collect(document.getElementById(id));
+    }
+    return out.join("|");
+  };
+  return world;
+}
+
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+async function waitFor(predicate, label, limit = 400) {
+  for (let index = 0; index < limit; index += 1) {
+    if (predicate()) return;
+    await tick();
+  }
+  throw new Error("等待超时：" + label);
+}
+
+// 启动期：boot() 由脚本尾部 guard(boot()) 异步启动，必须真正等它落到 login 再进用例。
+async function bootSettled(world) {
+  await waitFor(() => world.state.mode !== "none", "boot 完成");
+  await tick();
+  await tick();
+  assert.equal(world.state.mode, "login", "用例前置：启动后应停在 login");
+  return world;
+}
+
+// ---------------------------------------------------------------- 数据
+function personView(personPartyId, extra = {}) {
+  return Object.assign({
+    personPartyId, timeMillis: 5000, appointments: 1, catalog: 3, readings: 2,
+    observations: 4, tools: ["interview.invite", "market.read"], accounts: [],
+    holdings: [], market: [], media: null
+  }, extra);
+}
+
+function invite(requestId, fromPartyId, toPartyId, topic) {
+  return { requestId, fromPartyId, toPartyId, topic, status: "PROPOSED",
+    windowStartMillis: 1, windowEndMillis: 2, durationMillis: 3, startMillis: -1 };
+}
+
+function adminInterviewView() {
+  return {
+    runId: "run-1", timeMillis: 9000, position: 7,
+    invites: [
+      { requestId: "r1", organizationPartyId: "wire", fromPartyId: "rita", toPartyId: "investor",
+        topic: "t", status: "ACTIVE", windowStartMillis: 1, windowEndMillis: 2,
+        startMillis: 1, durationMillis: 3 },
+      { requestId: "r2", organizationPartyId: "wire", fromPartyId: "bo", toPartyId: "rita",
+        topic: "t2", status: "PROPOSED", windowStartMillis: 3, windowEndMillis: 4,
+        startMillis: -1, durationMillis: 5 }
+    ],
+    sessions: [{ sessionId: "s1", requestId: "r1", startedAtMillis: 1, endedAtMillis: -1, close: "" }],
+    works: [{ taskId: "w1", personPartyId: "rita", organizationPartyId: "wire",
+      kind: "INTERVIEW_INVITE_V1", startedAtMillis: 1, completedAtMillis: 2,
+      chargedMillis: 1, outcome: "COMPLETED" }],
+    budgets: [{ organizationPartyId: "wire", totalMillis: 10, spentMillis: 1, reservedMillis: 3 }]
+  };
+}
+
+const INTERVIEW_TABLES = ["interview-invites", "interview-sessions", "interview-works", "interview-budgets"];
+
+// ---------------------------------------------------------------- 用例
+const cases = [];
+function defineCase(name, body) { cases.push({ name, body }); }
+
+// 用例 1：延迟 GET me/interview 期间真实 showMode(login) + 切人物，旧回应不得回写、也不得清掉新身份
+defineCase("stale-identity-during-interview-await", async () => {
+  const pending = [];
+  let sessionPerson = null;
+  const views = { rita: personView("rita"), bob: personView("bob", { timeMillis: 6000 }) };
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: views[sessionPerson] };
+    if (url === "/api/me/interview") {
+      return new Promise(resolve => pending.push({ person: sessionPerson, resolve }));
+    }
+    return { status: 200, payload: {} };
+  }, "case1");
+  await bootSettled(world);
+
+  const first = world.context.switchPerson("rita");
+  await waitFor(() => pending.length === 1, "rita 的采访请求已发出");
+  assert.equal(pending[0].person, "rita", "第一次请求必须属于 rita");
+
+  // 真实切身份入口：先 showMode("login")（登出/离页路径），再以新身份进入
+  world.context.showMode("login");
+  assert.equal(world.state.mode, "login", "showMode(login) 必须真的切到 login");
+  assert.equal(world.$("person-name").textContent, "—", "切身份必须清掉旧人物标记");
+  assert.equal(world.$("person-interview").hidden, true, "切身份必须隐藏个人采访面板");
+
+  const second = world.context.switchPerson("bob");
+  await waitFor(() => pending.length === 2, "bob 的采访请求已发出");
+  assert.equal(pending[1].person, "bob", "第二次请求必须属于 bob");
+  pending[1].resolve({ status: 200, payload: { personPartyId: "bob",
+    invites: [invite("bob-1", "bob", "investor", "新身份主题")], sessions: [], contacts: [] } });
+  await second;
+  assert.equal(world.$("person-name").textContent, "bob", "新身份必须写入自己的标记");
+  assert.equal(world.rows("person-interview-invites"), 1, "新身份应渲染自己的 1 条预约");
+
+  // 现在才释放旧身份结果
+  pending[0].resolve({ status: 200, payload: { personPartyId: "rita",
+    invites: [invite("rita-1", "rita", "investor", "旧身份主题"),
+      invite("rita-2", "rita", "wire", "旧身份主题二")],
+    sessions: [], contacts: [{ targetPartyId: "investor", channel: "c", description: "d" }] } });
+  await first;
+
+  assert.equal(world.$("person-name").textContent, "bob", "迟到的旧回应不得覆盖新人物标记");
+  assert.equal(world.rows("person-interview-invites"), 1, "迟到的旧回应不得写入旧预约");
+  assert.equal(world.rows("person-interview-contacts"), 0, "迟到的旧回应不得写入旧联系入口");
+  assert.ok(!world.cellTexts().includes("rita"), "个人视图不得出现旧身份文本，实际=" + world.cellTexts());
+  assert.equal(world.state.mode, "person", "最终仍在人物视角");
+  return "bob 数据完整、rita 迟到回应未回写";
+});
+
+// 用例 2：预约请求 401 触发 sessionLost，且旧 view 不再写回
+defineCase("interview-401-triggers-sessionLost", async () => {
+  let sessionPerson = null;
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("rita") };
+    if (url === "/api/me/interview") return { status: 401, payload: null };
+    return { status: 200, payload: {} };
+  }, "case2");
+  await bootSettled(world);
+
+  await world.context.switchPerson("rita");
+  assert.equal(world.state.mode, "login", "采访 401 必须走 sessionLost 进入 login");
+  assert.equal(world.$("person-name").textContent, "—", "401 后不得留下人物标记");
+  assert.equal(world.rows("person-accounts"), 0, "401 后旧 view 不得写回账户表");
+  assert.equal(world.rows("person-holdings"), 0, "401 后旧 view 不得写回持仓表");
+  assert.ok((world.$("login-error").textContent || "").includes("会话已失效"),
+    "应给出会话失效提示，实际=" + world.$("login-error").textContent);
+  return "401 → login，旧 view 未写回";
+});
+
+// 用例 3：管理员四表 + cache 渲染后，logout / 切人物 / 离页都必须清空 DOM 与 cache
+function baseRouter() {
+  return async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/admin/interview") return { status: 200, payload: adminInterviewView() };
+    if (url === "/api/admin/keys") return { status: 200, payload: { slots: [] } };
+    if (url === "/api/admin/routes") return { status: 200, payload: { revision: 1, baseUrl: "x", connected: false, routes: [] } };
+    if (url === "/api/admin/capabilities") return { status: 200, payload: { supportedScenes: [] } };
+    if (url === "/api/admin/view") return { status: 200, payload: {} };
+    if (url === "/api/session/logout") return { status: 200, payload: {} };
+    if (url === "/api/session/person") return { status: 200, payload: { personId: JSON.parse(options.body).personId } };
+    if (url === "/api/me/view") return { status: 200, payload: personView("bob") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "bob", invites: [], sessions: [], contacts: [] } };
+    return { status: 200, payload: {} };
+  };
+}
+
+async function adminRendered() {
+  const world = makeWorld(baseRouter(), "case3");
+  await bootSettled(world);
+  world.context.showMode("admin");
+  world.state.page = "interview";
+  await world.context.loadDetail("interview");
+  assert.ok(world.state.details.interview, "前置：采访详情必须进入 cache");
+  for (const id of INTERVIEW_TABLES) {
+    assert.ok(world.rows(id) > 0, "前置：" + id + " 必须已渲染");
+  }
+  assert.equal(world.$("interview-invites-empty").textContent, "", "前置：有数据时提示为空");
+  return world;
+}
+
+function assertInterviewCleared(world, how) {
+  for (const id of INTERVIEW_TABLES) {
+    assert.equal(world.rows(id), 0, how + " 后必须清空 " + id + " 行");
+  }
+  for (const id of ["interview-invites-empty", "interview-sessions-empty", "interview-works-empty"]) {
+    assert.equal(world.$(id).textContent, "", how + " 后必须清空 " + id + " 文案");
+  }
+  assert.ok(!Object.prototype.hasOwnProperty.call(world.state.details, "interview"),
+    how + " 后必须删除采访 cache，实际 keys=" + JSON.stringify(Object.keys(world.state.details)));
+}
+
+defineCase("admin-interview-cleared-on-logout", async () => {
+  const world = await adminRendered();
+  await world.context.logout();
+  assert.equal(world.state.mode, "login", "logout 应停在 login");
+  assertInterviewCleared(world, "logout");
+  return "logout 清空四表、提示文案与 cache";
+});
+
+defineCase("admin-interview-cleared-on-switch-person", async () => {
+  const world = await adminRendered();
+  await world.context.switchPerson("bob");
+  assert.equal(world.state.mode, "person", "切人物后应进入人物视角");
+  assertInterviewCleared(world, "切人物");
+  return "切人物清空四表、提示文案与 cache";
+});
+
+defineCase("admin-interview-cleared-on-leave-page", async () => {
+  const world = await adminRendered();
+  world.context.selectPage("overview", false);
+  assert.equal(world.state.page, "overview", "应已离页");
+  assertInterviewCleared(world, "离页");
+  return "离页清空四表、提示文案与 cache";
+});
+
+// 用例 4：个人预约/contacts 切身份即清空；旧延迟失败不得影响新结果
+defineCase("personal-interview-cleared-on-identity-switch", async () => {
+  const pending = [];
+  let sessionPerson = null;
+  const views = { rita: personView("rita"), bob: personView("bob") };
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: views[sessionPerson] };
+    if (url === "/api/me/interview") {
+      if (sessionPerson === "rita") {
+        return { status: 200, payload: { personPartyId: "rita",
+          invites: [invite("rita-1", "rita", "investor", "旧")],
+          sessions: [], contacts: [{ targetPartyId: "investor", channel: "c", description: "d" }] } };
+      }
+      return new Promise((resolve, reject) => pending.push({ reject }));
+    }
+    return { status: 200, payload: {} };
+  }, "case4");
+  await bootSettled(world);
+
+  await world.context.switchPerson("rita");
+  assert.equal(world.rows("person-interview-invites"), 1, "前置：rita 预约已渲染");
+  assert.equal(world.rows("person-interview-contacts"), 1, "前置：rita 联系入口已渲染");
+
+  const second = world.context.switchPerson("bob");
+  await waitFor(() => pending.length === 1, "bob 的采访请求已发出");
+  assert.equal(world.$("person-name").textContent, "bob", "前置：已切到 bob 标记");
+  const duringInvites = world.rows("person-interview-invites");
+  const duringContacts = world.rows("person-interview-contacts");
+  const duringHidden = world.$("person-interview").hidden;
+
+  pending[0].reject(new Error("network down"));
+  await second;
+  const afterInvites = world.rows("person-interview-invites");
+  const afterContacts = world.rows("person-interview-contacts");
+  const afterHidden = world.$("person-interview").hidden;
+  console.log("  诊断 切身份等待期 rows=" + duringInvites + "/" + duringContacts
+    + " hidden=" + duringHidden + " → 新请求失败后 rows=" + afterInvites + "/" + afterContacts
+    + " hidden=" + afterHidden + " 文本=" + JSON.stringify(world.cellTexts()));
+
+  assert.equal(duringInvites, 0, "切身份后必须立刻清空旧预约行（等待期仍残留 " + duringInvites + " 行）");
+  assert.equal(duringContacts, 0, "切身份后必须立刻清空旧联系入口行");
+  assert.equal(world.$("person-name").textContent, "bob", "新身份标记必须保留");
+  assert.equal(world.rows("person-interview-invites"), 0, "旧延迟失败不得让旧预约复活");
+  assert.equal(world.rows("person-interview-contacts"), 0, "旧延迟失败不得让旧联系入口复活");
+  assert.equal(world.$("person-interview").hidden, true, "无预约时应隐藏个人采访面板");
+  assert.ok(!world.cellTexts().includes("旧") && !world.cellTexts().includes("investor"),
+    "不得出现旧身份数据，实际=" + world.cellTexts());
+  return "切身份立即清空；旧延迟失败未污染新身份";
+});
+
+// 用例 5：离页（person→login→person）时旧延迟失败同样不得污染新身份（真实登出中转）
+defineCase("personal-interview-stale-failure-after-logout", async () => {
+  const pending = [];
+  let sessionPerson = null;
+  const views = { rita: personView("rita"), bob: personView("bob") };
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: views[sessionPerson] };
+    if (url === "/api/me/interview") {
+      if (sessionPerson === "rita") {
+        return new Promise((resolve, reject) => pending.push({ reject }));
+      }
+      return { status: 200, payload: { personPartyId: "bob",
+        invites: [invite("bob-1", "bob", "wire", "bob 主题")], sessions: [], contacts: [] } };
+    }
+    return { status: 200, payload: {} };
+  }, "case5");
+  await bootSettled(world);
+
+  const first = world.context.switchPerson("rita");
+  await waitFor(() => pending.length === 1, "rita 的采访请求已发出");
+  world.context.showMode("login");
+  await world.context.switchPerson("bob");
+  assert.equal(world.$("person-name").textContent, "bob", "前置：bob 已渲染");
+  assert.equal(world.rows("person-interview-invites"), 1, "前置：bob 预约已渲染");
+
+  pending[0].reject(new Error("network down"));
+  await first;
+  assert.equal(world.$("person-name").textContent, "bob", "旧失败不得覆盖新标记");
+  assert.equal(world.rows("person-interview-invites"), 1, "旧失败不得清掉新身份预约");
+  assert.ok(!world.cellTexts().includes("rita"), "不得出现旧身份文本");
+  return "旧请求失败后 bob 数据保持";
+});
+
+// 用例 6（候选-2 新增）：详情页没有 runId 时只显示真实时点，不得出现 undefined
+defineCase("admin-detail-without-runid-shows-time-only", async () => {
+  const view = adminInterviewView();
+  delete view.runId;
+  const world = makeWorld(async (method, url) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/admin/interview") return { status: 200, payload: view };
+    return { status: 200, payload: {} };
+  }, "case6");
+  await bootSettled(world);
+  world.context.showMode("admin");
+  world.state.page = "interview";
+  await world.context.loadDetail("interview");
+  const shown = world.$("context-time").textContent;
+  assert.ok(!String(shown).includes("undefined"), "详情页无 runId 时不得显示 undefined，实际=" + JSON.stringify(shown));
+  assert.equal(shown, "9000 毫秒", "应只显示真实时点，实际=" + JSON.stringify(shown));
+  assert.ok(world.rows("interview-invites") > 0, "同一渲染里四表仍应正常");
+  return "无 runId → context-time=" + JSON.stringify(shown);
+});
+
+// 用例 7（候选-2 新增）：个人采访动作必须取 media.tools（真实 me/view 的 tools 只有 information 三项）
+defineCase("personal-interview-tools-from-media", async () => {
+  let sessionPerson = null;
+  const media = {
+    tools: ["interview.respond", "interview.cancel", "interview.end"],
+    stories: [], reports: []
+  };
+  const view = personView("investor", {
+    tools: ["information.read", "information.recall", "information.belief"], media
+  });
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: view };
+    if (url === "/api/me/interview") {
+      return { status: 200, payload: { personPartyId: "investor", invites: [], sessions: [], contacts: [] } };
+    }
+    return { status: 200, payload: {} };
+  }, "case7");
+  await bootSettled(world);
+  await world.context.switchPerson("investor");
+
+  const tools = world.$("person-interview-tools").textContent || "";
+  for (const action of media.tools) {
+    assert.ok(tools.includes(action), "采访动作必须显示 " + action + "，实际=" + JSON.stringify(tools));
+  }
+  assert.ok(!tools.includes("information."), "不得把 information 工具当成采访动作，实际=" + JSON.stringify(tools));
+  assert.equal(world.$("person-interview").hidden, false,
+    "只有采访动作、无预约无联系人时面板也应显示（actions 非空）");
+  return "tools=" + JSON.stringify(tools) + " 面板可见";
+});
+
+// ---------------------------------------------------------------- 运行
+(async () => {
+  const results = [];
+  for (const item of cases) {
+    if (only && !item.name.includes(only)) continue;
+    try {
+      const detail = await item.body();
+      results.push({ name: item.name, ok: true, detail });
+      console.log("PASS " + item.name + " | " + detail);
+    } catch (failure) {
+      results.push({ name: item.name, ok: false, detail: failure && failure.message });
+      console.log("FAIL " + item.name + " | " + (failure && failure.message));
+      console.log((failure && failure.stack ? failure.stack : String(failure))
+        .split("\n").slice(0, 6).join("\n"));
+    }
+  }
+  const failed = results.filter(item => !item.ok);
+  console.log("---- 汇总 web=" + path.resolve(webDir));
+  for (const item of results) console.log((item.ok ? "PASS " : "FAIL ") + item.name);
+  console.log("WEB_INTERVIEW_BEHAVIOR=" + (failed.length ? "FAIL" : "PASS")
+    + " passed=" + (results.length - failed.length) + "/" + results.length);
+  if (failed.length) process.exitCode = 1;
+})();

@@ -2212,6 +2212,27 @@ public final class WorldWebHost implements AutoCloseable {
                                  Section versions, Section citations, Section roots) { }
 
     /**
+     * 采访预约审计：上帝视角看全部双方、机构、时间窗、真实工时与预留。
+     *
+     * @return 同一确认截止的采访审计
+     * @throws Exception 世界读取失败
+     */
+    public WorldRuntime.InterviewAudit interviewAudit() throws Exception {
+        return call(() -> readyNow().interviewAudit());
+    }
+
+    /**
+     * 本人预约投影：只含本人参与的协调事实与本人可达联系入口。
+     *
+     * @param personId 已认证人物
+     * @return 本人投影
+     * @throws Exception 世界读取失败
+     */
+    public WorldRuntime.InterviewView interviewView(String personId) throws Exception {
+        return call(() -> readyNow().interviewView(personId));
+    }
+
+    /**
      * 读取媒体机构、工时和工作流审计；仅供服务器管理员路由调用。
      * @return 同一确认截止的审计数据
      * @throws Exception 世界读取失败

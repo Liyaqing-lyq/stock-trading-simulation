@@ -12,6 +12,8 @@
 
 ## 全局约束
 
+14:09最新：M4i.1纯核已由正式1350/CSV48/125/7/Node/GUI/JavaDoc及109独审接收，草稿[PR40](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/40)，代码f2a43a2、实际CI42345467923成功。远端PR39已合入codex/world-role-trading且删除媒体分支，本会话未执行合并；PR40以已核祖先/差异的该接收分支为base。当前codex/world-interview-runtime继续M4i.2a，真实Hermes86babe exec22430只在私有镜像实施全链与Web。按用户省用量要求，更多定向回归/独审/确定性正式运行由Hermes承担，Root保持关键裁定和最终证据核验，不重跑已过套件。
+
 13:41接续：媒体PR39最后文档b297b3a的CI42343268494已成功，当前切codex/world-interview-coordination。M4i.1首稿18作者测试不足，Root独立19项只有正常链1项通过，权限/时间/占用/幂等/恢复18反例失败；真实Hermes405ace exec79655仅私有修复，尚未主树接收。旧13未重编兼容客户端和原始存档已冻结，旧版自身续写/再读基准通过，后续新实现互操作另验。上述失败与裁定见PROJECT_MEMORY最新段及interview-coordination-fix-task.txt，不降低合同或提前勾完成。
 
 13:34最终接收：M4h.2候选9已通过41专项、1321正式、CSV/Node/GUI/JavaDoc、三JVM/旧12及Hermes最终39独立检查，c8发现的T9已关闭。草稿[PR39](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/39)代码2951009、实际CI42342978816成功，待人工review；Web18080已更新。接续[M4i.1双边采访协调纯核](2026-11-07-interview-coordination.md)，405ace exec6965只写私有新模块，未接世界，完整总体基线继续。
@@ -590,7 +592,8 @@ B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://
 - [x] [M4h.2采编运行桥与Web](2026-11-07-media-runtime.md)：最终候选9实际41专项、1321标准、CSV48/124/7、Node/GUI/JavaDoc、三JVM/旧12/真实Web及39独审通过，草稿PR39实际CI42342978816成功，仍待人工review；媒体新档已上线本机18080，五场景关闭、0新增官方调用。
 - [x] [M6b账户表现历史](2026-11-07-performance-history.md)：正式1280标准及独审通过，草稿PR38最终CI42338910895成功；持续Web18080已升级，仍待人工review。完整历史回放与总体基线未完成。
 - [x] [M4i.1双边采访协调纯核](2026-11-07-interview-coordination.md)：最终主树2ba8fc7f…，29新JUnit，正式1350/CSV48/125/7/Node/GUI/JavaDoc通过，e7852d独立109检查通过。首稿18个真实失败、v2新增5失败已修；旧作者JavaDoc零警告误报已据原始日志纠正。纯核本地验收，草稿PR/人工review另记，尚未接世界/Web。
-- [ ] [M4i.2a预约运行与Web](2026-11-07-interview-runtime.md)：86babe仅在interview-runtime-author定稿接口与预算接缝；待明确实施。b逐轮DIRECT投递/自主阅读、c私有匿名证据与身份实际共享随后接续；曝光/群组/社交及其余六类媒体工作流仍待完成。
+- [ ] [M4i.2a预约运行与Web](2026-11-07-interview-runtime.md)：运行桥及只读Web已接主树，独审41正常链/旧13与12/跨JVM/真实写故障/复合篡改、正式1389/CSV45-123-7/Web/GUI/JavaDoc通过（docs05§44）。仍缺新档联系资料发布与普通受访者live入口，随schema15补齐再勾完成；持续18080未升级。
+- [ ] [M4i.2b逐轮访谈](2026-11-07-interview-dialogue.md)：intake-2纯核17JUnit+56独立断言通过并接主树；schema15运行/双方实际阅读/Web接线由Hermes在私有镜像实施，尚未接收。c匿名证据沿既有Story/Lineage方案，其他社交工作待实施。
 - [ ] 媒体/传播、多公司银行、图表/历史与长跑验收继续，不以局部纯核冒称总体基线完成。真实供应商0新增，原51token唯一连通证据保持。
 
 信念纯核代码e6a81adfaf3b24c86e507cf32e9c54aac0ed6be1已发布草稿[PR35](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/35)，base codex/world-cognition-runtime；实际[CI42327343664](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42327343664) completed/success。1156标准、98纯核独审+24配置独审及Root实际退避中断通过，工程阶段验收完成，仍待人工review、不自动合并。

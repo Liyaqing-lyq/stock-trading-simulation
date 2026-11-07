@@ -55,13 +55,16 @@ public final class WorldWebApp {
         }
 
         String mode = args.length > 3 ? args[3] : "live";
-        if (!mode.equals("live") && !mode.equals("scripted") && !mode.equals("cognition") && !mode.equals("belief") && !mode.equals("media")) {
-            throw new IllegalArgumentException("运行模式只能是live、scripted、cognition、belief或media");
+        if (!mode.equals("live") && !mode.equals("scripted") && !mode.equals("cognition")
+                && !mode.equals("belief") && !mode.equals("media") && !mode.equals("interview")) {
+            throw new IllegalArgumentException(
+                    "运行模式只能是live、scripted、cognition、belief、media或interview");
         }
         boolean live = mode.equals("live");
         boolean cognition = mode.equals("cognition");
         boolean belief = mode.equals("belief");
         boolean media = mode.equals("media");
+        boolean interview = mode.equals("interview");
 
         Files.createDirectories(workDir);
 
@@ -75,7 +78,11 @@ public final class WorldWebApp {
         }
 
         SceneRoutes routes = SceneRoutes.open(workDir);
-        WorldWebHost host = media
+        WorldWebHost host = interview
+                ? new WorldWebHost(() -> WorldWebScenario.openInterview(
+                        workDir.resolve("world-interview.journal")),
+                        routes, new LiveDecisionProvider(keys))
+                : media
                 ? new WorldWebHost(() -> WorldWebScenario.openMedia(
                         workDir.resolve("world-media.journal")),
                         routes, new LiveDecisionProvider(keys))

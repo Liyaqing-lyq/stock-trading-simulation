@@ -639,6 +639,132 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
     }
 
     /**
+     * 记者发起采访邀请：只给对象、主题、时间窗与时长，请求标识由运行层按本人命名空间生成。
+     *
+     * @param requestClientId   本人客户端请求标识
+     * @param toPartyId         采访对象
+     * @param topic             主题
+     * @param windowStartMillis 时间窗起点
+     * @param windowEndMillis   时间窗终点
+     * @param durationMillis    预约时长
+     */
+    public record InterviewInviteDraft(String requestClientId, String toPartyId, String topic,
+                                       long windowStartMillis, long windowEndMillis,
+                                       long durationMillis) {
+
+        /** 校验字段。 */
+        public InterviewInviteDraft {
+            requireText(requestClientId, "客户端请求标识");
+            requireText(toPartyId, "采访对象");
+            requireText(topic, "采访主题");
+            if (windowStartMillis < 0 || windowEndMillis <= windowStartMillis) {
+                throw new IllegalArgumentException("时间窗必须是合法半开区间");
+            }
+            if (durationMillis < 1) {
+                throw new IllegalArgumentException("预约时长必须为正");
+            }
+        }
+    }
+
+    /**
+     * 回应采访邀请：接受时必须给出一个合法开始时刻。
+     *
+     * @param requestId   完整请求标识（从本人投影得到）
+     * @param accept      是否接受
+     * @param startMillis 接受时的开始时刻；拒绝时为 {@code -1}
+     */
+    public record InterviewRespondDraft(String requestId, boolean accept, long startMillis) {
+
+        /** 校验字段。 */
+        public InterviewRespondDraft {
+            requireText(requestId, "请求标识");
+            if (accept && startMillis < 0) {
+                throw new IllegalArgumentException("接受必须给出开始时刻");
+            }
+            if (!accept && startMillis != -1L) {
+                throw new IllegalArgumentException("拒绝不携带开始时刻");
+            }
+        }
+    }
+
+    /**
+     * 指向一个已有采访请求：用于取消或结束。
+     *
+     * @param requestId 完整请求标识
+     */
+    public record InterviewRequestDraft(String requestId) {
+
+        /** 校验字段。 */
+        public InterviewRequestDraft {
+            requireText(requestId, "请求标识");
+        }
+    }
+
+    /**
+     * 记者发起采访邀请。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           邀请参数
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String inviteInterview(String clientCommandId, String clientTaskId, long dueMillis,
+                                  InterviewInviteDraft draft) throws IOException {
+        return runtime.scheduleInterview(this, PendingTask.INTERVIEW_INVITE_V1, clientCommandId,
+                clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 回应采访邀请；普通受访者无需媒体任职。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           回应参数
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String respondInterview(String clientCommandId, String clientTaskId, long dueMillis,
+                                   InterviewRespondDraft draft) throws IOException {
+        return runtime.scheduleInterview(this, PendingTask.INTERVIEW_RESPOND_V1, clientCommandId,
+                clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 取消尚未开始的采访预约；双方都可取消，撤职也不阻断。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           请求引用
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String cancelInterview(String clientCommandId, String clientTaskId, long dueMillis,
+                                  InterviewRequestDraft draft) throws IOException {
+        return runtime.scheduleInterview(this, PendingTask.INTERVIEW_CANCEL_V1, clientCommandId,
+                clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 结束进行中的采访会话；提前结束只占实际区间。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           请求引用
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String endInterview(String clientCommandId, String clientTaskId, long dueMillis,
+                               InterviewRequestDraft draft) throws IOException {
+        return runtime.scheduleInterview(this, PendingTask.INTERVIEW_END_V1, clientCommandId,
+                clientTaskId, dueMillis, draft);
+    }
+
+    /**
      * 作者提交组织草稿。
      *
      * @param clientCommandId 本人命令标识
