@@ -19,9 +19,47 @@
 
 - [x] 核对用户指定文件存在及五个互异值，记录格式，不输出值。
 - [ ] 依据现有接口及基线细化Web服务/页面接线、预算和配置DTO，核对最新提供方接口。
-- [ ] 配置管理与场景路由先失败测试，再实现；验证角色及跨源访问拒绝、默认遮罩、显式查看、秘密不落日志和导出。
+- [x] 配置管理与场景路由先失败测试，再实现；验证角色及跨源访问拒绝、默认遮罩、显式查看、秘密不落日志和导出。
 - [ ] 真实世界同快照页面、控制、图表、历史及人物权限测试，浏览器真实交互验收。
 - [ ] 有界真实模型小试与费用/失败记录，测试或未测状态准确显示。
 - [ ] 完整总体基线回归、Web使用说明、草稿PR及实际CI、人类review。
 
-当前仅完成需求固定及文件格式核对，Web和五key路由尚未实现。原本地HTML审计页仍等待用户手动反馈；不得通过切换访问方式规避已经出现的浏览器策略限制。
+当前已完成本机Web工作台和五key场景配置，902项标准验证及真实浏览器验收通过，草稿PR25实际CI成功。真实模型执行、完整历史与业务页面继续施工。原本地HTML审计页仍等待用户手动反馈；不得通过切换访问方式规避已经出现的浏览器策略限制。
+
+## Web第一阶段施工裁决（接D3c，2026-11-07）
+
+D3c代码PR24已实际CI成功，当前分支codex/world-web-workbench，base8311e7a。先交可用的本机世界工作台、权限与五槽位配置，再沿本Plan接完整页面、真实模型及总体基线其它机制。第一阶段明确为内部调试工作台，不冒称完整首版。
+
+### 文件和接口
+
+- 新增web包：KeySlots、SceneRoutes、WebSessions、WorldWebHost、WorldWebServer；新增WebApp和明确实验开局工厂；静态资源位于src/main/resources/web。不使用旧离线审计页，不新增框架或外部CDN。
+- Host独占一个writer线程创建与关闭WorldRuntime，所有管理快照及派生在同一任务/确认位置取值。只暴露明确操作，队列有界，accepted任务等待真实终态；故障/关闭排空等候者，调用方中断不能误报业务失败而稍后执行。
+- HTTP仅127.0.0.1，Host严格本地端口，Origin精确匹配，POST需X-World-Request:1、精确application/json；不开放CORS。JSON拒重复/尾随/未知/null字段，时间为严格整数或规范十进制字符串；响应金额/数量/世界位置/时点精确字符串，缺失值保留null。
+- GET /api/session只返回角色及人物标识；POST /api/session用本机引导凭据创建管理员且轮换凭据；POST /api/session/person绑定真实人物并吊销管理会话；POST /api/session/logout吊销并清Cookie。Cookie为HttpOnly/SameSite=Strict。单用户本机工作台身份切换吊销所有旧会话；旧标签页要重新登录。
+- GET /api/admin/view同快照管理查询，GET /api/me/view仅服务端RoleView裁剪；POST /api/admin/advance使用expectedPosition和targetMillis。角色端点无管理员缓存/数据，不用网页隐藏代替权限。
+- GET /api/admin/keys仅五槽遮罩；POST /api/admin/keys/{slot}/reveal要求boolean confirm=true，只向当前管理员返回，15秒清屏、切身份立即清屏。前端generation保护迟到回包，身份变化清表格、抽屉及缓存。
+- GET/POST /api/admin/routes读取/全量替换五场景非秘密配置，POST带expectedRevision避免覆盖他人修改。提供方固定DeepSeek官方地址，槽位可重分配，模型仅已核实deepseek-flash/deepseek-v4-pro。默认关闭；暂未接执行的配置明确显示未连接运行，不能把配置数值说成实际预算执行。
+
+### 场景配置
+
+公司治理/机构研究/交易执行/媒体社交/评估实验，稳定id governance/research/trading/media/evaluation，默认对应key-1..5。默认maxCalls5、maxTotalTokens8192、maxOutputTokens512、maxConcurrency1；配置校验见SceneRoutes。非秘密scene-routes.json存于run目录，成功持久后才发布revision，不进入世界经济账。实际attempt将冻结当时路由，不追溯修改已启动请求。
+
+### 验收及证据
+
+- [x] 私有KeySlots独立验证实际文件可读五值，未调用提供方；秘密不进入仓库。
+- [x] 私有真实HTTP62项候选交回；Root19项检查取得11失败，覆盖小数截断、严格JSON、精度、旧会话与异步中断。修复候选19/62/新增62通过，尚待Root复验。
+- [x] 核对私有修复，不以参考价填进lastPrice；加入正式JUnit及有证据的真实失败路径。
+- [x] SceneRoutes正式接线，保存/重开/并发冲突/真实写失败及五槽权限测试。
+- [x] 静态资源只白名单，真实WorldRuntime启动，浏览器实际登录、推进、切人物、返回、刷新、配置和遮罩验收；超2^53精确数字及空状态检查。
+- [x] 保存本地API契约/可运行Postman集合，实际服务检查。当前Postman1.75可用collection run，status命令不支持，不能声称workspace已初始化；请求仅dummy凭据并禁远端报告。
+- [x] 标准verify含GUI/CSV、JavaDoc、更新评分/记录/Plan/README、草稿PR与实际CI。
+
+后续完整工作台按基线§12的市场/股票、公司、账户、人物机构、新闻讨论、世界关系分页接入，并加入真实成交图表、确认历史与只读回看。信息与机制缺项显式标未实现，不用新页面标题冒充业务已完成。
+
+### 第一阶段当前实际结果
+
+902标准、GUI/CSV（43成交119订单7排名）、JavaDoc03:05:52、Root24HTTP/线程/超2^53精度、Postman22请求56断言已通过。浏览器完整登录/推进/配置保存重启/显式查看自动清除/人物切换与刷新已实点。candidate3仅在candidate2上增加无decisions时的屏障模块闸；最终增量独审与草稿PR/CI尚未记完成。真实模型、完整业务页面及总体基线仍在上方未完成项，不能因配置保存成功勾成模型执行成功。
+
+最终candidate3真实Hermes增量独审已完成：86源hash一致，独立重编后64/64通过；同探针对candidate2取得6个cash-only失败，证明模块闸修复有效。Root24独编HTTP、902标准/43成交119订单7排名、GUI/JavaDoc及真实浏览器均已通过，现发布草稿PR，等待实际CI；总体基线继续施工。
+
+Web工作台代码3bbf337c8cbb87ef07ca2546a082ac73ee56e075已建立草稿[PR25](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/25)，base为codex/world-capital-performance；实际[CI42277171062](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42277171062)已completed/success。最终独审64/64。下一按2026-11-07-deepseek-provider.md继续，私有修复已由Root独立重新编译后7/7通过；真实keys未调用。Root另读出可选cache字段非法类型被当缺失、超int范围choice index可能截断为0两处待正式RED核验。整体基线未完成，无自动合并。

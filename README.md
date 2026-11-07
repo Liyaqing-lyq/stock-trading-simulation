@@ -122,6 +122,18 @@ docs/       需求拆解、架构设计（类图/时序图）、接口定义、�
 
 现金分红世界桥提供schema9的实际授权、PUBLIC公告与阅读、登记、除息、足额原账付款及持有人减值。`WorldDividendDemo <目录> prepare|full|replay`为受信管理脚本，支持同一目录依次prepare/full/full在三个独立进程复跑。输出公司资产、负债、权益、利润及世界现金和股份。72专项、816项标准及独立恢复/账务核验见`docs/05`第26节，类型化资本流和运行表现见下一段。
 
+## Web 实验工作台
+
+在本机启动（JDK 21）：
+
+```powershell
+.\mvnw.cmd compile exec:java "-Dexec.mainClass=edu.cufe.auction.app.WorldWebApp"
+```
+
+打开启动窗口显示的本机网址，输入一次性管理员引导凭据。默认读取用户指定的外部五Key文件，不把API Key粘贴到登录框。引导凭据每次登录后轮换，返回管理员时使用控制台新值。工作目录默认为logs/web-workbench，重启沿用同一世界。
+
+可观察世界、账户、成交与分红，切换alice/bob/carol/dave/erin/investor人物视角，配置五场景的模型/Key槽位/预算。Key默认遮罩，显式查看15秒后清除。当前为内部调试版，真实模型尚未接入，保存场景不会产生API调用；完整经营操作和自主世界继续实施。902项标准及浏览器证据见docs/05第28节。
+
 ## 配置
 
 配置文件在 `src/main/resources/config.properties`：标的与参考价、各类 agent 的数量/初始资金/初始持仓、
@@ -133,7 +145,7 @@ AI 决策间隔、LLM 端点与限流、输出目录。要点：
 - `llm.api.key=${LLM_API_KEY}` 从环境变量注入，密钥不进仓库。
 - 需要 JDK 11 环境时：把 `pom.xml` 的 `javafx.version` 降到 `17.0.10`，并把 `maven.compiler.release` 改为 `11`。
 
-类型化资本流已接入新档案的同一现金账，管理端可用 `scheduleCapitalFlow`、`capitalFlows`、`performance` 查询真实出入资与逐帧投资表现。追加资金不计盈利，分红付款不重复计收益，减值回撤保留。42专项、858标准及独立复算见 `docs/05` 第27节。最终交付已确定为Web，上帝五key配置与完整工作台继续按Plan施工，当前尚未宣布可用。
+类型化资本流已接入新档案的同一现金账，管理端可用 `scheduleCapitalFlow`、`capitalFlows`、`performance` 查询真实出入资与逐帧投资表现。追加资金不计盈利，分红付款不重复计收益，减值回撤保留。42专项、858标准及独立复算见 `docs/05` 第27节。最终交付已确定为Web，上帝五key配置与内部工作台已接入，完整自主工作台继续按Plan施工。
 
 ## 文档
 
