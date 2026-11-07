@@ -12,7 +12,7 @@
 
 ## 全局约束
 
-当前增量（2026-11-07）：`codex/world-belief-runtime`，基底e6a81ad/草稿PR35实际CI成功。M4g.2[运行桥](2026-11-07-belief-runtime.md)与M6a[真实成交图表](2026-11-07-market-history.md)最终candidate3本地验收：1186标准、CSV37/119/7、Node绘图/真实GUI、JavaDoc、三JVM与未重编旧11兼容全部通过。真实Hermes独立重编180哈希一致、69增量/37信念/49行情/旧11及任务和回报篡改差异对照通过，草稿PR/实际CI收尾中。本机Web18080已运行candidate3（PID51516），五Key已加载、场景全部关闭、0新增模型调用。媒体首稿隔离施工，Root正常入口取得机构/完成期任职/遗忘边界8项失败、正常流程通过，须修复后再接主树。总体尚未完成，最新写权和证据见PROJECT_MEMORY。
+当前增量（2026-11-07）：当前`codex/world-media-editorial`基于85d71ed。前置M4g.2/M6a草稿[PR36](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/36)及实际CI42333676886成功，仍待人工review。M4h.1[公开证据采编纯核](2026-11-07-media-editorial-core.md)最终candidate4本地1246标准、CSV41/125/7、Node/真实GUI、JavaDoc12:03:19与旧12未重编新续旧读全部通过；真实Hermes bbad4c正在最终独立增量复核。M6b[账户表现曲线](2026-11-07-performance-history.md)作者eead7c已交首稿，Root发现极小正权益舍入边界，exec61696续接修复；尚未接主树。M4h.2[媒体运行桥与Web](2026-11-07-media-runtime.md)已冻结施工合同，405ace exec81622只在新私有镜像实现后端，Root负责Web/合并/验收。本机Web18080仍为已验收belief candidate3（PID51516），五Key已加载、场景全部关闭、0新增模型调用。总体尚未完成，最新写权和证据见PROJECT_MEMORY。
 
 - 金额 BigDecimal（金额 2 位、成本价 4 位），数量 long；锁顺序引擎锁 → 账户锁，模型、I/O、广播不能持有撮合锁。
 - Java 保留账目、交易、时间、权限和动作裁决；首轮单进程，不引入微服务或任意代码热加载。

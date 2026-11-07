@@ -1708,6 +1708,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(personPartyId, "任职人物");
         requireText(organizationPartyId, "任职组织");
         Objects.requireNonNull(role, "任职岗位");
+        requireLegacyRole(role);
         AppointmentPayload payload = new AppointmentPayload(commandId, appointmentId,
                 personPartyId, organizationPartyId, role.name(), startsAt, endsAt);
         String content = mapper.writeValueAsString(payload);
@@ -2773,7 +2774,11 @@ public final class WorldRuntime implements AutoCloseable {
         for (RoleView.Appointment appointment : appointments) {
             String organization = appointment.organizationPartyId();
             RoleAccess.Target orgTarget = RoleAccess.Target.organization(organization);
-            for (RoleAccess.Action action : RoleAccess.Action.values()) {
+            // schema 1..12 的决定输入协议固定，纯核新增枚举不得改变历史 JSON。
+            for (RoleAccess.Action action : List.of(RoleAccess.Action.READ_PRODUCT_ACCOUNT,
+                    RoleAccess.Action.READ_ORGANIZATION_FILE, RoleAccess.Action.WRITE_RESEARCH,
+                    RoleAccess.Action.SET_PORTFOLIO_TARGET, RoleAccess.Action.ISSUE_RISK_HALT,
+                    RoleAccess.Action.EXECUTE_ORDER, RoleAccess.Action.CANCEL_ORDER)) {
                 if (action == RoleAccess.Action.READ_ORGANIZATION_FILE
                         || action == RoleAccess.Action.WRITE_RESEARCH) {
                     permissions.add(permission(access, person, action, orgTarget,
@@ -7431,6 +7436,9 @@ public final class WorldRuntime implements AutoCloseable {
     private void validateRole(WorldState candidate, WorldState previous) throws IOException {
         RoleRun run = candidate.roles();
         RoleAccess.State access = run.access();
+        for (RoleAccess.Appointment appointment : access.appointments()) {
+            requireLegacyRole(appointment.role());
+        }
         RoleAccess.validateAgainst(registry, orderedOpenings, access);
         RoleAccess.State baseline = roleStateOf(roleConfig);
         if (!access.accounts().equals(baseline.accounts())) {
@@ -9702,11 +9710,21 @@ public final class WorldRuntime implements AutoCloseable {
         if (registry == null || manufacturingConfig == null || charter == null) {
             throw new IllegalArgumentException("任职与阅读档案必须同时提供登记、制造配置与章程");
         }
+        for (RoleAccess.Appointment appointment : roleConfig.appointments()) {
+            requireLegacyRole(appointment.role());
+        }
         for (String reader : informationConfig.readers()) {
             requireParty(reader, OpeningRegistry.PartyKind.PERSON, "登记读者");
         }
         InformationModel.open(registry, informationConfig.readers());
         roleStateOf(roleConfig);
+    }
+
+    /** 现有 schema 1..12 仅支持四岗，媒体岗位须由后续版本化运行桥接入。 */
+    private static void requireLegacyRole(RoleAccess.Role role) {
+        if (role == RoleAccess.Role.JOURNALIST || role == RoleAccess.Role.EDITOR) {
+            throw new IllegalArgumentException("当前规则档案尚未启用媒体岗位：" + role);
+        }
     }
 
     /**

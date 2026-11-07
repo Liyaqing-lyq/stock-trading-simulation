@@ -795,6 +795,46 @@ class WorldRuntimeRoleReadingTest {
     // 动作
     // ------------------------------------------------------------------
 
+    @Test
+    void legacyRoleViewKeepsSevenActions() throws Exception {
+        try (WorldRuntime runtime = open(tempDir.resolve("legacy-permissions.journal"))) {
+            assertEquals(java.util.Set.of(Action.READ_PRODUCT_ACCOUNT, Action.READ_ORGANIZATION_FILE,
+                    Action.WRITE_RESEARCH, Action.SET_PORTFOLIO_TARGET, Action.ISSUE_RISK_HALT,
+                    Action.EXECUTE_ORDER, Action.CANCEL_ORDER), runtime.roleView("alice")
+                    .permissions().stream().map(RoleView.Permission::action)
+                    .collect(java.util.stream.Collectors.toSet()));
+        }
+    }
+
+    @Test
+    void legacyProfileRejectsMediaAppointmentBeforeAppend() throws Exception {
+        try (WorldRuntime runtime = open(tempDir.resolve("legacy-media-appointment.journal"))) {
+            long position = runtime.snapshot().position();
+            for (Role role : List.of(Role.JOURNALIST, Role.EDITOR)) {
+                assertThrows(IllegalArgumentException.class, () -> runtime.scheduleAppointment(
+                        "media-" + role, "media-task-" + role, 1, "media-id-" + role,
+                        "frank", "ORG-G", role, 1, END));
+                assertEquals(position, runtime.snapshot().position());
+            }
+        }
+    }
+
+    @Test
+    void legacyProfileRejectsMediaOpeningBeforeCreatingJournal() throws Exception {
+        for (Role role : List.of(Role.JOURNALIST, Role.EDITOR)) {
+            Path file = tempDir.resolve("legacy-opening-" + role + ".journal");
+            Config media = new Config(List.of(mandate()), List.of(new Appointment(
+                    "media", "frank", "ORG-G", role, 0, END, null)));
+            assertThrows(IllegalArgumentException.class, () -> {
+                try (WorldRuntime ignored = new WorldRuntime(file, manifest(), OPENINGS,
+                        registry(), MFG, charter(), media, info())) {
+                    // Opening must fail before persistence.
+                }
+            });
+            assertFalse(Files.exists(file));
+        }
+    }
+
     private WorldRuntime open(Path file) throws IOException {
         return new WorldRuntime(file, manifest(), OPENINGS, registry(), MFG, charter(),
                 roles(), info());
