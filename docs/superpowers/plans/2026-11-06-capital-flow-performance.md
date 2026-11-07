@@ -1,6 +1,6 @@
 # M3d D3c 实际资本流与确认历史表现
 
-本施工单依据总体设计基线§6及已验收D1纯核。D3b真实运行桥完成独立恢复验收及草稿PR后进入执行，当前仅固定接续契约。
+本施工单依据总体设计基线§6及已验收D1纯核。D3b真实运行桥完成独立恢复验收及草稿PR后进入执行，当前按下述契约执行，结果见文末检查点。
 
 ## 范围
 
@@ -60,8 +60,18 @@ flowId由域标识、runId及原任务/命令/到期/账户/金额的规范化�
 ## 检查点
 
 - [x] 真实Hermes只读准备与Root采样纠正，固定最小运行契约。
-- [ ] 前置D3b完整本地验收、草稿PR及实际CI。
-- [ ] 正式授权测试先行、真实RED、夹具独立核对。
-- [ ] 正式授权生产、专项/全套、变异及恢复矩阵。
-- [ ] Root独立验收、Hermes独审、GUI/CSV/JavaDoc和文档。
-- [ ] AI-Generated草稿PR及实际CI，待人工实质review。
+- [x] 前置D3b完整本地验收、草稿PR23及实际CI42253286290。
+- [x] 正式授权测试先行、真实RED、夹具独立核对。
+- [x] 正式授权生产、专项/全套、变异及恢复矩阵。
+- [x] Root独立验收、Hermes独审、GUI/CSV/JavaDoc和文档。
+- [x] AI-Generated草稿PR及实际CI，待人工实质review。
+
+当前分支codex/world-capital-performance，base bd200157。作者30项缺API RED已交回，Root修夹具并增4项至34，保留作者副本。新夹具实际在D3b冻结classes验证分红/减值2000→1950→2000、真实成交2000→1800→1990及old8有限转移500通过。Root修错actor资格时点、Notice到期+1、非公司组织、真实买方成交时间、伪造Node写回和目标批次，重新取得缺API RED。作者已退出交回写权，Root独占主源码/测试/Maven。首稿34/850通过后，Root独立伪造发现实际阶段缺口，新增7项复现4个失败：完成阶段、实际通知结果、普通clock改写待发通知及排程提前移现金。修复为新schema9现金排程/完成/通知逐批从原任务重建整个候选状态及事件；其它批次保护现金与通知待办。未知字段采用严格解析，资本字段识别改为JSON字段，不用原始子串。
+
+最终候选2为41专项/857组合全绿。Root独立重编79源，20正常+44完整重签+59实际中断/半帧检查通过，12帧资本场景与39帧分红场景的Decimal复算通过。原分红212检查、三JVM幂等及真实旧schema8新旧交替接写通过。表现保留不完整估值时的已知Flow，periodId采用规范元组，历史资本事实单次预索引。原D1允许incomplete Point带Flow，作者首稿handoff对此的限制判断不成立，以实际代码为准。
+
+真实Hermes aeafaa正在只读复核Root补丁（不是作者自审全部实现）；独立最终复核及标准GUI/CSV/JavaDoc仍待收齐。Root独立证据在dividend-capital/root-matrix-candidate-2.log及root-compatibility-2.log，失败首稿和RED保留。不把这些结果写成完整总体基线验收。
+
+最终candidate3补一行溢出guard，新增第42项取得ArithmeticException真实RED后通过。858标准、47/121/7 CSV、GUI及JavaDoc01:38:11成功，Root123独立资本矩阵再跑通过；真实Hermes最终20+2和12no-op/12反例通过。完整证据docs/05§27，当前发布草稿PR与等待实际CI。
+
+资本流代码93d4b7ae18807a745317622526111dccbdef8a7b已推送并建立草稿[PR #24](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/24)，base为codex/world-dividend-runtime。真实verify run42264571970已completed/success，已附当前会话，等待人工实质review，Codex不合并。下一阶段Web正式集成沿五key配置Plan，私有候选的严格输入/身份切换修复进行中。

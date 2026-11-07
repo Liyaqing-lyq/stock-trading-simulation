@@ -224,14 +224,29 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 排程命令的规范化内容，用于幂等比对。 */
+    /** 资本流元数据：只有显式资本入口才携带，普通转账为 null 且不落 JSON。 */
+    private record CapitalMetadata(String evidenceRef) {
+        private CapitalMetadata {
+            if (evidenceRef == null || evidenceRef.isBlank()) {
+                throw new IllegalArgumentException("资本证据引用不能为空");
+            }
+        }
+    }
+
     private record ScheduleCommand(String commandId, String taskId, long dueTimeMillis,
                                    String actorOwnerId, String fromId, String toId,
-                                   BigDecimal amount, long receiptDelayMillis) {
+                                   BigDecimal amount, long receiptDelayMillis,
+                                   @com.fasterxml.jackson.annotation.JsonInclude(
+                                           com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                   CapitalMetadata capital) {
     }
 
     /** 转账任务参数；回报到期时点在排程阶段算好并持久化，完成时不再做可能溢出的加法。 */
     private record TransferPayload(String commandId, String actorOwnerId, String fromId, String toId,
-                                   BigDecimal amount, long receiptDelayMillis, long noticeDueMillis) {
+                                   BigDecimal amount, long receiptDelayMillis, long noticeDueMillis,
+                                   @com.fasterxml.jackson.annotation.JsonInclude(
+                                           com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                   CapitalMetadata capital) {
     }
 
     /** 回报投递任务参数；sourceTaskId 指向产生回报的原任务。 */
@@ -660,6 +675,51 @@ public final class WorldRuntime implements AutoCloseable {
                                                 String actorOwnerId, String fromId, String toId,
                                                 BigDecimal amount, long receiptDelayMillis)
             throws IOException {
+        return scheduleTransferCore(commandId, taskId, dueTimeMillis, actorOwnerId, fromId, toId,
+                amount, receiptDelayMillis, null);
+    }
+
+    /**
+     * 排程一次真实资本流（注资或提取）：与普通转账共用现金腿，但带资本分类与证据。
+     *
+     * <p>与普通入口不同：公司经营账户不在这里早拒，而是在到期用实际 freeCash 与专用账规则复核，
+     * 失败沿原通知；结构错误（未知账户/owner、非法金额、同一 owner 两侧）仍在排程期拒绝。</p>
+     *
+     * @param commandId          命令标识
+     * @param taskId             任务标识，运行内不复用
+     * @param dueTimeMillis      到期模拟毫秒
+     * @param actorOwnerId       可信调用方解析的财产主体（必须是来源账户 owner）
+     * @param fromId             来源账户
+     * @param toId               收方账户
+     * @param amount             正数、精确到分
+     * @param receiptDelayMillis 回报延迟，非负
+     * @param evidenceRef        受信管理场景的资本说明
+     * @return 规范化回报文本
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、结构或能力非法
+     */
+    public synchronized String scheduleCapitalFlow(String commandId, String taskId,
+                                                   long dueTimeMillis, String actorOwnerId,
+                                                   String fromId, String toId, BigDecimal amount,
+                                                   long receiptDelayMillis, String evidenceRef)
+            throws IOException {
+        requireDividend();
+        requireText(evidenceRef, "资本证据");
+        requireText(fromId, "来源账户");
+        requireText(toId, "收方账户");
+        if (fromId.equals(toId)) {
+            throw new IllegalArgumentException("同一账户不能构成资本流：" + fromId);
+        }
+        return scheduleTransferCore(commandId, taskId, dueTimeMillis, actorOwnerId, fromId, toId,
+                amount, receiptDelayMillis, new CapitalMetadata(evidenceRef));
+    }
+
+    private synchronized String scheduleTransferCore(String commandId, String taskId,
+                                                     long dueTimeMillis, String actorOwnerId,
+                                                     String fromId, String toId, BigDecimal amount,
+                                                     long receiptDelayMillis,
+                                                     CapitalMetadata capital)
+            throws IOException {
         requireOpen();
         requireWriter();
         if (paused) {
@@ -670,7 +730,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(actorOwnerId, "财产主体");
         requireText(fromId, "付款账户");
         requireText(toId, "收款账户");
-        if (manufacturingConfig != null) {
+        if (capital == null && manufacturingConfig != null) {
             String company = manufacturingConfig.accounting().companyAccountId();
             if (company.equals(fromId) || company.equals(toId)) {
                 throw new IllegalArgumentException("公司经营账户只能通过制造经营分录变动，"
@@ -691,7 +751,7 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("到期时间与回报延迟组合溢出，无法表达回报时点", overflow);
         }
         ScheduleCommand command = new ScheduleCommand(commandId, taskId, dueTimeMillis,
-                actorOwnerId, fromId, toId, normalized, receiptDelayMillis);
+                actorOwnerId, fromId, toId, normalized, receiptDelayMillis, capital);
         String content = mapper.writeValueAsString(command);
         String previousContent = state.commandContents().get(commandId);
         if (previousContent != null) {
@@ -706,16 +766,26 @@ public final class WorldRuntime implements AutoCloseable {
         if (state.usedTaskIds().contains(taskId)) {
             throw new IllegalArgumentException("任务标识运行内不复用：" + taskId);
         }
+        if (capital != null && (registry == null || registry.owner(actorOwnerId) == null)) {
+            throw new IllegalArgumentException("未知财产主体：" + actorOwnerId);
+        }
         CashLedger.CashAccount from = state.accounts().get(fromId);
-        if (from == null || !from.ownerId().equals(actorOwnerId)) {
-            throw new IllegalArgumentException("该财产主体无权动用账户：" + fromId);
+        if (capital == null) {
+            if (from == null || !from.ownerId().equals(actorOwnerId)) {
+                throw new IllegalArgumentException("该财产主体无权动用账户：" + fromId);
+            }
+        } else if (from == null) {
+            throw new IllegalArgumentException("未知付款账户：" + fromId);
         }
         if (!state.accounts().containsKey(toId)) {
             throw new IllegalArgumentException("未知收款账户：" + toId);
         }
+        if (capital != null && state.accounts().get(toId).ownerId().equals(from.ownerId())) {
+            throw new IllegalArgumentException("同一 owner 内部转移必须走普通入口：" + fromId);
+        }
 
         TransferPayload payload = new TransferPayload(commandId, actorOwnerId, fromId, toId,
-                normalized, receiptDelayMillis, noticeDueMillis);
+                normalized, receiptDelayMillis, noticeDueMillis, capital);
         PendingTask task = new PendingTask(taskId, dueTimeMillis,
                 WorldScheduler.Phase.COMPLETION, PendingTask.CASH_TRANSFER_V1,
                 mapper.writeValueAsString(payload));
@@ -3783,6 +3853,11 @@ public final class WorldRuntime implements AutoCloseable {
         if (outcome.accepted()) {
             events.add(new WorldEvent("cash:" + task.taskId(), "CASH_TRANSFERRED_V1",
                     mapper.writeValueAsString(payload)));
+            if (payload.capital() != null) {
+                events.add(new WorldEvent(capitalFlowId(payload, task),
+                        "CAPITAL_FLOW_V1", mapper.writeValueAsString(capitalFlowReport(task,
+                                payload, state.position() + 1))));
+            }
         }
 
         String noticeTaskId = freeNoticeTaskId(task.taskId(), pending, used);
@@ -7180,6 +7255,7 @@ public final class WorldRuntime implements AutoCloseable {
     private void validateAudits(WorldCommit commit, WorldState snapshot, WorldState previous) throws IOException {
         validateDividendReports(commit, previous);
         validateDividendBatch(commit, snapshot, previous);
+        validateCapitalFlows(commit, snapshot, previous);
         for (WorldEvent event : commit.events()) {
             if (!DECISION_AUDIT_V1.equals(event.type())) {
                 continue;
@@ -7525,14 +7601,19 @@ public final class WorldRuntime implements AutoCloseable {
      * 这一口径对所有后续经营付款同样适用。旧档案仍按原余额口径，保持原行为。</p>
      */
     private CashLedger.TransferOutcome transferOutcome(TransferPayload payload) {
-        if (manifest.hasDividend()) {
-            CashLedger.CashAccount fromAccount = state.accounts().get(payload.fromId());
-            CashLedger.CashAccount toAccount = state.accounts().get(payload.toId());
+        return transferOutcome(state, payload);
+    }
+
+    /** 纯转账候选：只读给定状态，供正常完成与恢复重算共用。 */
+    private CashLedger.TransferOutcome transferOutcome(WorldState base, TransferPayload payload) {
+        if (manifest.hasDividend() && payload.capital() == null) {
+            CashLedger.CashAccount fromAccount = base.accounts().get(payload.fromId());
+            CashLedger.CashAccount toAccount = base.accounts().get(payload.toId());
             if (fromAccount != null && toAccount != null
                     && !fromAccount.ownerId().equals(toAccount.ownerId())) {
                 // 新档案不允许无分类的跨 owner 资本流，避免后续表现历史被悄悄注水
                 return new CashLedger.TransferOutcome(false, "TRANSFER_UNCLASSIFIED",
-                        state.accounts());
+                        base.accounts());
             }
         }
         if (manufacturingConfig != null) {
@@ -7540,21 +7621,21 @@ public final class WorldRuntime implements AutoCloseable {
             if (company.equals(payload.fromId()) || company.equals(payload.toId())) {
                 // 到期防御复核：不把公司现金绕出经营分录
                 return new CashLedger.TransferOutcome(false, REASON_COMPANY_LEDGER_FORBIDDEN,
-                        state.accounts());
+                        base.accounts());
             }
         }
-        if (manifest.hasMatching() && state.exchange() != null) {
-            CashLedger.CashAccount from = state.accounts().get(payload.fromId());
+        if (manifest.hasMatching() && base.exchange() != null) {
+            CashLedger.CashAccount from = base.accounts().get(payload.fromId());
             if (from != null && from.ownerId().equals(payload.actorOwnerId())) {
-                BigDecimal free = WorldExchange.freeCash(state.exchange(), state.accounts(),
+                BigDecimal free = WorldExchange.freeCash(base.exchange(), base.accounts(),
                         payload.fromId());
                 if (free.compareTo(payload.amount()) < 0) {
                     return new CashLedger.TransferOutcome(false, REASON_INSUFFICIENT_CASH,
-                            state.accounts());
+                            base.accounts());
                 }
             }
         }
-        return CashLedger.computeTransfer(state.accounts(), payload.actorOwnerId(),
+        return CashLedger.computeTransfer(base.accounts(), payload.actorOwnerId(),
                 payload.fromId(), payload.toId(), payload.amount());
     }
 
@@ -7995,6 +8076,508 @@ public final class WorldRuntime implements AutoCloseable {
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
                 roles, information, trading, decisions, dividends);
+    }
+
+    // ==================================================================
+    // M3d D3c 真实资本流与确认历史表现
+    // ==================================================================
+
+    /** 一次已确认真实资本转移的管理视图。 */
+    public record CapitalFlowReport(String flowId, String taskId, String commandId, long position,
+                                    long atMillis, String actorOwnerId, String fromAccountId,
+                                    String toAccountId, String fromOwnerId, String toOwnerId,
+                                    BigDecimal amount, String evidenceRef) {
+
+        /** 校验标识、位置与金额。 */
+        public CapitalFlowReport {
+            if (flowId == null || flowId.isBlank() || taskId == null || taskId.isBlank()
+                    || commandId == null || commandId.isBlank() || actorOwnerId == null
+                    || actorOwnerId.isBlank() || fromAccountId == null || fromAccountId.isBlank()
+                    || toAccountId == null || toAccountId.isBlank() || fromOwnerId == null
+                    || fromOwnerId.isBlank() || toOwnerId == null || toOwnerId.isBlank()
+                    || evidenceRef == null || evidenceRef.isBlank()) {
+                throw new IllegalArgumentException("资本流报告字段不能为空");
+            }
+            if (position <= 0 || atMillis < 0) {
+                throw new IllegalArgumentException("资本流位置或时点非法");
+            }
+            amount = CashLedger.money(amount);
+            if (amount.signum() <= 0) {
+                throw new IllegalArgumentException("资本金额必须为正");
+            }
+        }
+    }
+
+    /** 一笔资本流报告：只由真实 payload 与到期时点派生。 */
+    private CapitalFlowReport capitalFlowReport(PendingTask task, TransferPayload payload,
+                                                long position) {
+        CashLedger.CashAccount from = state.accounts().get(payload.fromId());
+        CashLedger.CashAccount to = state.accounts().get(payload.toId());
+        if (from == null || to == null || payload.capital() == null) {
+            throw new IllegalStateException("资本流报告缺少真实账户或元数据");
+        }
+        return new CapitalFlowReport(capitalFlowId(payload, task), task.taskId(),
+                payload.commandId(), position, task.dueTimeMillis(), payload.actorOwnerId(),
+                payload.fromId(), payload.toId(), from.ownerId(), to.ownerId(),
+                payload.amount(), payload.capital().evidenceRef());
+    }
+
+    /** 资本流标识：域 + runId + 任务/命令/到期/账户/金额的长度前缀规范化摘要。 */
+    private String capitalFlowId(TransferPayload payload, PendingTask task) {
+        StringBuilder canonical = new StringBuilder("capital-flow-v1");
+        for (String field : List.of(manifest.runId(), task.taskId(), payload.commandId(),
+                Long.toString(task.dueTimeMillis()), payload.fromId(), payload.toId(),
+                payload.amount().toPlainString())) {
+            canonical.append('|').append(field.length()).append(':').append(field);
+        }
+        return "capital-flow-v1:" + sha256Hex(canonical.toString());
+    }
+
+    /**
+     * 某财产主体参与（任一侧）的真实资本事实，按确认顺序不可变。
+     *
+     * @param ownerId 财产主体
+     * @return 资本流报告列表
+     */
+    public synchronized List<CapitalFlowReport> capitalFlows(String ownerId) {
+        requireDividend();
+        requireText(ownerId, "财产主体");
+        if (registry.owner(ownerId) == null) {
+            throw new IllegalArgumentException("未知财产主体：" + ownerId);
+        }
+        List<CapitalFlowReport> flows = new ArrayList<>();
+        for (WorldCommit commit : journal.commits()) {
+            for (WorldEvent event : commit.events()) {
+                if (!"CAPITAL_FLOW_V1".equals(event.type())) {
+                    continue;
+                }
+                CapitalFlowReport report;
+                try {
+                    report = decisionMapper.readValue(event.payload(), CapitalFlowReport.class);
+                } catch (IOException | RuntimeException invalid) {
+                    throw new IllegalStateException("资本事实无法解析：" + event.eventId(), invalid);
+                }
+                if (report.fromOwnerId().equals(ownerId) || report.toOwnerId().equals(ownerId)) {
+                    flows.add(report);
+                }
+            }
+        }
+        return List.copyOf(flows);
+    }
+
+    /** 某确认帧的经济快照；表现查询按帧独立估值，不读当前状态。 */
+    private record CapitalFrame(long position, long timeMillis,
+                                Map<String, CashLedger.CashAccount> accounts,
+                                SecuritiesLedger.State securities, WorldExchange.State exchange,
+                                DividendModel.State dividends) {
+    }
+
+    /**
+     * 按确认历史逐帧采样的时间加权表现。
+     *
+     * @param ownerId       财产主体
+     * @param startPosition 起点确认位置
+     * @param endPosition   终点确认位置
+     * @return 期间表现
+     */
+    public synchronized PerformanceModel.Performance performance(String ownerId, long startPosition,
+                                                                 long endPosition) {
+        requireDividend();
+        requireText(ownerId, "财产主体");
+        if (registry.owner(ownerId) == null) {
+            throw new IllegalArgumentException("未知财产主体：" + ownerId);
+        }
+        if (startPosition <= 0 || endPosition < startPosition
+                || endPosition > state.position()) {
+            throw new IllegalArgumentException("表现区间必须落在已确认位置内："
+                    + startPosition + "-" + endPosition);
+        }
+        List<CapitalFrame> frames = new ArrayList<>();
+        for (WorldCommit commit : journal.commits()) {
+            if (commit.position() < startPosition || commit.position() > endPosition) {
+                continue;
+            }
+            frames.add(capitalFrame(commit));
+        }
+        if (frames.size() != endPosition - startPosition + 1) {
+            throw new IllegalStateException("确认历史缺少完整帧");
+        }
+        String periodId = "capital-period-v1:" + sha256Hex(mapper.valueToTree(
+                List.of("capital-period-v1", manifest.runId(), ownerId,
+                        Long.toString(startPosition))).toString());
+        Map<Long, List<CapitalFlowReport>> flowsByPosition = new TreeMap<>();
+        for (CapitalFlowReport flow : capitalFlows(ownerId)) {
+            flowsByPosition.computeIfAbsent(flow.position(), ignored -> new ArrayList<>()).add(flow);
+        }
+        List<PerformanceModel.Point> points = new ArrayList<>();
+        CapitalFrame start = frames.get(0);
+        ValuationModel.Value startValue = navOf(start, ownerId, start.timeMillis());
+        points.add(new PerformanceModel.Point(ownerId, startPosition, start.timeMillis(),
+                startValue.status(), startValue.netWorth(), startValue.netWorth(), List.of()));
+        for (int index = 1; index < frames.size(); index++) {
+            CapitalFrame frame = frames.get(index);
+            CapitalFrame previous = frames.get(index - 1);
+            List<CapitalFlowReport> flows = flowsByPosition.getOrDefault(frame.position(), List.of());
+            long due = frame.timeMillis();
+            if (flows.isEmpty()) {
+                ValuationModel.Value value = navOf(frame, ownerId, due);
+                points.add(new PerformanceModel.Point(ownerId, frame.position(), due,
+                        value.status(), value.netWorth(), value.netWorth(), List.of()));
+                continue;
+            }
+            ValuationModel.Value before = navOf(previous, ownerId, due);
+            ValuationModel.Value after = navOf(frame, ownerId, due);
+            List<PerformanceModel.Flow> pointFlows = new ArrayList<>();
+            BigDecimal signed = new BigDecimal("0.00");
+            for (CapitalFlowReport flow : flows) {
+                boolean incoming = flow.toOwnerId().equals(ownerId);
+                pointFlows.add(new PerformanceModel.Flow(flow.flowId(), ownerId,
+                        incoming ? PerformanceModel.FlowKind.CAPITAL_CONTRIBUTION
+                                : PerformanceModel.FlowKind.CAPITAL_WITHDRAWAL,
+                        flow.amount(), flow.evidenceRef()));
+                signed = incoming ? signed.add(flow.amount()) : signed.subtract(flow.amount());
+            }
+            if (before.status() == ValuationModel.Status.COMPLETE
+                    && after.status() == ValuationModel.Status.COMPLETE) {
+                BigDecimal actual = after.netWorth().subtract(before.netWorth());
+                if (actual.compareTo(signed) != 0) {
+                    throw new IllegalStateException("资本批前后估值差与真实现金流不一致："
+                            + frame.position());
+                }
+                points.add(new PerformanceModel.Point(ownerId, frame.position(), due,
+                        ValuationModel.Status.COMPLETE, before.netWorth(), after.netWorth(),
+                        pointFlows));
+            } else {
+                points.add(new PerformanceModel.Point(ownerId, frame.position(), due,
+                        before.status() != ValuationModel.Status.COMPLETE
+                                ? before.status() : after.status(),
+                        null, null, pointFlows));
+            }
+        }
+        return PerformanceModel.calculate(ownerId, periodId, points);
+    }
+
+    private CapitalFrame capitalFrame(WorldCommit commit) {
+        for (WorldEvent event : commit.events()) {
+            if (!"STATE_SNAPSHOT_V1".equals(event.type())) {
+                continue;
+            }
+            try {
+                var root = mapper.readTree(event.payload());
+                Map<String, CashLedger.CashAccount> accounts = mapper.convertValue(
+                        root.path("accounts"),
+                        new com.fasterxml.jackson.core.type.TypeReference<
+                                TreeMap<String, CashLedger.CashAccount>>() { });
+                SecuritiesLedger.State securities = root.hasNonNull("securities")
+                        ? mapper.convertValue(root.path("securities"), SecuritiesLedger.State.class)
+                        : null;
+                WorldExchange.State exchange = root.hasNonNull("exchange")
+                        ? mapper.convertValue(root.path("exchange"), WorldExchange.State.class)
+                        : null;
+                DividendModel.State dividends = root.hasNonNull("dividends")
+                        ? mapper.convertValue(root.path("dividends"), DividendModel.State.class)
+                        : DividendModel.empty();
+                return new CapitalFrame(root.path("position").asLong(),
+                        root.path("timeMillis").asLong(), accounts, securities, exchange,
+                        dividends);
+            } catch (IOException | RuntimeException invalid) {
+                throw new IllegalStateException("确认帧快照无法解析：" + commit.position(), invalid);
+            }
+        }
+        throw new IllegalStateException("确认帧缺少状态快照：" + commit.position());
+    }
+
+    /** 用同一帧的现金、证券、成交与 D0 派生净值；估值只读该帧。 */
+    private ValuationModel.Value navOf(CapitalFrame frame, String ownerId, long cutoffMillis) {
+        List<String> symbols = new ArrayList<>();
+        if (frame.securities() != null) {
+            for (SecuritiesLedger.Lot lot : frame.securities().lots()) {
+                if (!symbols.contains(lot.symbol())) {
+                    symbols.add(lot.symbol());
+                }
+            }
+        }
+        for (DividendModel.Scheme scheme : frame.dividends().schemes().values()) {
+            if (!symbols.contains(scheme.symbol())) {
+                symbols.add(scheme.symbol());
+            }
+        }
+        ValuationModel.PriceBook book = ValuationModel.prices(frame.position(), cutoffMillis,
+                frame.exchange(), registry, symbols, frame.dividends());
+        return ValuationModel.value(ownerId, frame.position(), cutoffMillis, registry,
+                frame.accounts(), frame.securities() == null
+                        ? new SecuritiesLedger.State(List.of(), List.of(),
+                        java.util.Set.of(), Map.of()) : frame.securities(),
+                frame.dividends(), book);
+    }
+
+    /**
+     * 资本批双向重算：提交前与恢复逐帧同一套校验。
+     *
+     * <p>只从 previous、真实原待办与原命令内容重算现金腿、事件、通知待办与命令回报；
+     * 非资本批不得携带资本事实或改动资本待办；旧档案一律拒绝新资本元数据与事件。</p>
+     */
+    private void validateCapitalFlows(WorldCommit commit, WorldState candidate, WorldState previous)
+            throws IOException {
+        boolean hasFact = false;
+        for (WorldEvent event : commit.events()) {
+            if ("CAPITAL_FLOW_V1".equals(event.type())) {
+                hasFact = true;
+            }
+        }
+        if (!manifest.hasDividend()) {
+            if (hasFact) {
+                throw new IOException("旧档案不得携带资本事实");
+            }
+            for (PendingTask task : candidate.pending()) {
+                if (isCapitalTransfer(task)) {
+                    throw new IOException("旧档案不得排程资本任务：" + task.taskId());
+                }
+            }
+            return;
+        }
+        if (previous == null) {
+            if (hasFact) {
+                throw new IOException("开局批次不得携带资本事实");
+            }
+            return;
+        }
+        for (PendingTask task : previous.pending()) {
+            if (isCapitalTransfer(task)) {
+                strictTransferPayload(task);
+            }
+        }
+        for (PendingTask task : candidate.pending()) {
+            if (isCapitalTransfer(task)) {
+                requireCapitalPayloadShape(task, strictTransferPayload(task));
+            }
+        }
+        PendingTask consumed = previous.pending().stream()
+                .filter(task -> commit.commandId().equals("task:" + task.taskId()))
+                .filter(WorldRuntime::isCashTask).findFirst().orElse(null);
+        PendingTask scheduled = null;
+        for (PendingTask task : candidate.pending()) {
+            if (PendingTask.CASH_TRANSFER_V1.equals(task.kind())
+                    && pendingOf(previous, task.taskId()) == null) {
+                if (scheduled != null) {
+                    throw new IOException("一次排程不能新增多个转账任务");
+                }
+                scheduled = task;
+            }
+        }
+        if (scheduled != null) {
+            validateCashSchedule(commit, candidate, previous, scheduled);
+            return;
+        }
+        if (consumed != null && PendingTask.TRANSFER_NOTICE_V1.equals(consumed.kind())) {
+            validateCashNotice(commit, candidate, previous, consumed);
+            return;
+        }
+        if (consumed == null) {
+            if (hasFact || commit.events().stream().anyMatch(event ->
+                    "CASH_TRANSFERRED_V1".equals(event.type())
+                            || "NOTICE_DELIVERED_V1".equals(event.type()))) {
+                throw new IOException("非转账批不得携带现金或通知事实");
+            }
+            for (PendingTask task : previous.pending()) {
+                if (isCashTask(task) && !task.equals(pendingOf(candidate, task.taskId()))) {
+                    throw new IOException("无关批次改写转账或通知待办：" + task.taskId());
+                }
+            }
+            for (PendingTask task : candidate.pending()) {
+                if (isCashTask(task) && pendingOf(previous, task.taskId()) == null) {
+                    throw new IOException("来源不明的转账或通知待办：" + task.taskId());
+                }
+            }
+            if (!candidate.delivered().equals(previous.delivered())) {
+                throw new IOException("非通知批改写已投递回报");
+            }
+            return;
+        }
+        TransferPayload payload = strictTransferPayload(consumed);
+        ScheduleCommand expectedCommand = new ScheduleCommand(payload.commandId(),
+                consumed.taskId(), consumed.dueTimeMillis(), payload.actorOwnerId(),
+                payload.fromId(), payload.toId(), payload.amount(),
+                payload.receiptDelayMillis(), payload.capital());
+        if (!Objects.equals(previous.commandContents().get(payload.commandId()),
+                mapper.writeValueAsString(expectedCommand))) {
+            throw new IOException("资本命令内容与首次排程不一致：" + payload.commandId());
+        }
+        if (!("SCHEDULED:" + consumed.taskId())
+                .equals(previous.commandOutcomes().get(payload.commandId()))) {
+            throw new IOException("资本命令回报与任务不一致：" + payload.commandId());
+        }
+        CashLedger.TransferOutcome outcome = transferOutcome(previous, payload);
+        if (!candidate.accounts().equals(outcome.accounts())) {
+            throw new IOException("资本批现金与重算不一致：" + consumed.taskId());
+        }
+        List<WorldEvent> expected = new ArrayList<>();
+        expected.add(new WorldEvent("task-completed:" + consumed.taskId(), "TASK_COMPLETED_V1",
+                consumed.payload()));
+        if (outcome.accepted()) {
+            expected.add(new WorldEvent("cash:" + consumed.taskId(), "CASH_TRANSFERRED_V1",
+                    consumed.payload()));
+            if (payload.capital() != null) {
+            CapitalFlowReport report = new CapitalFlowReport(capitalFlowId(payload, consumed),
+                    consumed.taskId(), payload.commandId(), commit.position(),
+                    consumed.dueTimeMillis(), payload.actorOwnerId(), payload.fromId(),
+                    payload.toId(),
+                    previous.accounts().get(payload.fromId()).ownerId(),
+                    previous.accounts().get(payload.toId()).ownerId(), payload.amount(),
+                    payload.capital().evidenceRef());
+            expected.add(new WorldEvent(report.flowId(), "CAPITAL_FLOW_V1",
+                    mapper.writeValueAsString(report)));
+            }
+        }
+        List<PendingTask> pending = new ArrayList<>(previous.pending());
+        pending.remove(consumed);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        used.add(consumed.taskId());
+        String noticeTaskId = freeNoticeTaskId(consumed.taskId(), pending, used);
+        NoticePayload noticePayload = new NoticePayload("notice:" + consumed.taskId(),
+                consumed.taskId(), payload.commandId(), payload.fromId(), payload.toId(),
+                payload.amount(), outcome.accepted(), outcome.reason());
+        PendingTask noticeTask = new PendingTask(noticeTaskId, payload.noticeDueMillis(),
+                WorldScheduler.Phase.DELIVERY, PendingTask.TRANSFER_NOTICE_V1,
+                mapper.writeValueAsString(noticePayload));
+        pending.add(noticeTask);
+        used.add(noticeTaskId);
+        expected.add(new WorldEvent("task-scheduled:" + noticeTaskId, "TASK_SCHEDULED_V1",
+                mapper.writeValueAsString(noticeTask)));
+        WorldState expectedState = cashState(previous, commit.position(), consumed.dueTimeMillis(),
+                consumed.phase().name(), outcome.accounts(), pending, previous.delivered(), used,
+                previous.commandContents(), previous.commandOutcomes());
+        requireCashBatch(commit, candidate, expectedState, "task:" + consumed.taskId(),
+                consumed.payload(), outcome.reason(), expected);
+    }
+
+    private static boolean isCashTask(PendingTask task) {
+        return PendingTask.CASH_TRANSFER_V1.equals(task.kind())
+                || PendingTask.TRANSFER_NOTICE_V1.equals(task.kind());
+    }
+
+    private boolean isCapitalTransfer(PendingTask task) throws IOException {
+        return PendingTask.CASH_TRANSFER_V1.equals(task.kind())
+                && decisionMapper.readTree(task.payload()).has("capital");
+    }
+
+    private WorldState cashState(WorldState previous, long position, long time, String phase,
+                                 Map<String, CashLedger.CashAccount> accounts,
+                                 List<PendingTask> pending, List<Notice> delivered, Set<String> used,
+                                 Map<String, String> contents, Map<String, String> outcomes) {
+        return new WorldState(previous.schemaVersion(), previous.runId(), position, time, phase,
+                accounts, pending, delivered, used, contents, outcomes, previous.securities(),
+                previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
+                previous.information(), previous.trading(), previous.decisions(), previous.dividends());
+    }
+
+    private void requireCashBatch(WorldCommit commit, WorldState candidate, WorldState expected,
+                                  String command, String content, String result,
+                                  List<WorldEvent> events) throws IOException {
+        List<WorldEvent> actual = commit.events().stream()
+                .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
+        if (!candidate.equals(expected) || !actual.equals(events)
+                || !commit.commandId().equals(command) || !commit.commandContent().equals(content)
+                || !commit.result().equals(result)) {
+            throw new IOException("现金批次无法从原任务与命令重算：" + command);
+        }
+    }
+
+    private void validateCashSchedule(WorldCommit commit, WorldState candidate, WorldState previous,
+                                      PendingTask task) throws IOException {
+        TransferPayload payload = strictTransferPayload(task);
+        requireText(payload.commandId(), "命令标识");
+        requireText(payload.actorOwnerId(), "财产主体");
+        CashLedger.CashAccount from = previous.accounts().get(payload.fromId());
+        CashLedger.CashAccount to = previous.accounts().get(payload.toId());
+        if (task.phase() != WorldScheduler.Phase.COMPLETION
+                || task.dueTimeMillis() <= previous.timeMillis()
+                || previous.usedTaskIds().contains(task.taskId())
+                || previous.commandContents().containsKey(payload.commandId())
+                || from == null || to == null || payload.receiptDelayMillis() < 0
+                || !CashLedger.money(payload.amount()).equals(payload.amount())
+                || payload.amount().signum() <= 0
+                || Math.max(1L, payload.receiptDelayMillis()) > Long.MAX_VALUE - task.dueTimeMillis()
+                || payload.noticeDueMillis() != Math.addExact(task.dueTimeMillis(),
+                        Math.max(1L, payload.receiptDelayMillis()))
+                || !task.payload().equals(mapper.writeValueAsString(payload))) {
+            throw new IOException("转账排程参数或来源非法");
+        }
+        if (payload.capital() == null) {
+            String company = manufacturingConfig.accounting().companyAccountId();
+            if (!from.ownerId().equals(payload.actorOwnerId())
+                    || company.equals(payload.fromId()) || company.equals(payload.toId())) {
+                throw new IOException("普通转账排程资格非法");
+            }
+        } else if (registry.owner(payload.actorOwnerId()) == null
+                || from.ownerId().equals(to.ownerId())) {
+            throw new IOException("资本排程主体或账户非法");
+        }
+        ScheduleCommand command = new ScheduleCommand(payload.commandId(), task.taskId(),
+                task.dueTimeMillis(), payload.actorOwnerId(), payload.fromId(), payload.toId(),
+                payload.amount(), payload.receiptDelayMillis(), payload.capital());
+        String content = mapper.writeValueAsString(command);
+        String result = "SCHEDULED:" + task.taskId();
+        List<PendingTask> pending = new ArrayList<>(previous.pending());
+        pending.add(task);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        used.add(task.taskId());
+        Map<String, String> contents = new TreeMap<>(previous.commandContents());
+        contents.put(payload.commandId(), content);
+        Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+        outcomes.put(payload.commandId(), result);
+        WorldState expected = cashState(previous, commit.position(), previous.timeMillis(),
+                previous.lastPhase(), previous.accounts(), pending, previous.delivered(), used,
+                contents, outcomes);
+        requireCashBatch(commit, candidate, expected, "cmd:" + payload.commandId(), content, result,
+                List.of(new WorldEvent("task-scheduled:" + task.taskId(), "TASK_SCHEDULED_V1",
+                        mapper.writeValueAsString(task))));
+    }
+
+    private void validateCashNotice(WorldCommit commit, WorldState candidate, WorldState previous,
+                                    PendingTask task) throws IOException {
+        NoticePayload payload = decisionMapper.readValue(task.payload(), NoticePayload.class);
+        List<PendingTask> pending = new ArrayList<>(previous.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        used.add(task.taskId());
+        List<Notice> delivered = new ArrayList<>(previous.delivered());
+        delivered.add(new Notice(payload.noticeId(), payload.sourceTaskId(), payload.commandId(),
+                payload.accepted(), payload.reason(), payload.fromId(), payload.toId(),
+                payload.amount(), task.dueTimeMillis()));
+        WorldState expected = cashState(previous, commit.position(), task.dueTimeMillis(),
+                task.phase().name(), previous.accounts(), pending, delivered, used,
+                previous.commandContents(), previous.commandOutcomes());
+        requireCashBatch(commit, candidate, expected, "task:" + task.taskId(), task.payload(),
+                "DELIVERED", List.of(new WorldEvent("task-completed:" + task.taskId(),
+                                "TASK_COMPLETED_V1", task.payload()),
+                        new WorldEvent("notice:" + payload.noticeId(), "NOTICE_DELIVERED_V1",
+                                task.payload())));
+    }
+
+    private TransferPayload strictTransferPayload(PendingTask task) throws IOException {
+        try {
+            return decisionMapper.readValue(task.payload(), TransferPayload.class);
+        } catch (IOException | RuntimeException invalid) {
+            throw new IOException("资本任务 payload 不合法：" + task.taskId(), invalid);
+        }
+    }
+
+    private void requireCapitalPayloadShape(PendingTask task, TransferPayload payload)
+            throws IOException {
+        if (payload.capital() == null) {
+            throw new IOException("资本任务缺少元数据：" + task.taskId());
+        }
+        requireText(payload.commandId(), "命令标识");
+        requireText(payload.actorOwnerId(), "财产主体");
+        requireText(payload.fromId(), "来源账户");
+        requireText(payload.toId(), "收方账户");
+        if (payload.amount() == null || payload.amount().signum() <= 0) {
+            throw new IOException("资本金额必须为正：" + task.taskId());
+        }
+        if (payload.receiptDelayMillis() < 0) {
+            throw new IOException("回报延迟不能为负：" + task.taskId());
+        }
     }
 
     // ==================================================================
