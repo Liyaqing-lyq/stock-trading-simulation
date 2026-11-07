@@ -33,6 +33,7 @@ const ADMIN_TABLES = ["accounts", "owners", "pending", "trades", "dividends", "k
 const DETAIL_PAGES = {
   company: "/api/admin/company",
   media: "/api/admin/media",
+  interview: "/api/admin/interview",
   performance: "/api/admin/performance",
   org: "/api/admin/people",
   information: "/api/admin/information"
@@ -161,6 +162,7 @@ function clearAdminDom() {
 
 function clearPersonDom() {
   clearPersonalMedia();
+  clearPersonalInterview();
   $("person-name").textContent = "—";
   $("person-summary").replaceChildren();
   for (const id of PERSON_TABLES) {
@@ -256,7 +258,7 @@ async function refreshAdmin() {
 }
 
 function renderAdminCut(view) {
-  $("context-time").textContent = view.runId + " · " + view.timeMillis + " 毫秒";
+  $("context-time").textContent = (view.runId ? view.runId + " · " : "") + view.timeMillis + " 毫秒";
   setStatus("管理员视角 · 已确认记录 " + view.position);
 }
 
@@ -446,6 +448,7 @@ async function enterPerson(personId) {
 
 async function refreshPerson() {
   clearPersonalMedia();
+  clearPersonalInterview();
   const generation = state.generation;
   let result;
   try {
@@ -470,6 +473,8 @@ async function refreshPerson() {
   setMessage("person-error", "");
   const view = result.payload;
   renderPersonalMedia(view.media);
+  await renderPersonalInterview((view.media && view.media.tools) || view.tools, generation);
+  if (!isCurrent(generation) || state.mode !== "person") return;
   $("context-time").textContent = "人物观察 · " + view.timeMillis + " 毫秒";
   $("person-name").textContent = view.personPartyId;
 
@@ -597,7 +602,8 @@ const pages = {
   media: ["媒体采编", "选题、审阅、发布与更正，都有实际工时和原始版本。"],
   people: ["人物视角", "以各自的权限观察世界，保留信息边界。"],
   models: ["模型运行", "让人物依据自己的观察完成一次判断，查看实际输入与回报。"],
-  settings: ["模型与密钥", "为五类场景配置模型、密钥槽位和调用预算。"]
+  settings: ["模型与密钥", "为五类场景配置模型、密钥槽位和调用预算。"],
+  interview: ["采访预约", "上帝视角查看双边预约、实际区间与机构工时；逐轮访谈尚未接入。"]
 };
 function selectPage(page, refresh = true) {
   if (!pages[page]) return;
@@ -605,6 +611,7 @@ function selectPage(page, refresh = true) {
   stopLivePoll();
   if (state.page === "market" && page !== "market") clearMarketDom();
   if (state.page === "media" && page !== "media") clearMediaDom();
+  if (state.page === "interview" && page !== "interview") clearInterviewDom();
   if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
   state.page = page;
   state.pageVersion += 1;
@@ -1071,6 +1078,7 @@ function label(group, value) {
 
 function clearDetailDom() {
   clearMediaDom();
+  clearInterviewDom();
   state.details = {};
   clearRecall();
   clearBeliefs();
@@ -1131,6 +1139,7 @@ function renderDetail(page, view) {
   if (page === state.page) renderAdminCut(view);
   if (page === "company") renderCompany(view);
   else if (page === "media") renderMedia(view);
+  else if (page === "interview") renderInterviewAudit(view);
   else if (page === "performance") renderPerformance(view);
   else if (page === "org") renderPeopleAdmin(view);
   else if (page === "information") renderInformation(view);
@@ -2362,3 +2371,115 @@ async function liveAction(action, event) {
 }
 $("live-start-form").addEventListener("submit", event => guard(liveAction("start", event)));
 for (const action of ["stop", "pause", "resume"]) $("live-" + action).addEventListener("click", () => guard(liveAction(action)));
+
+function clearInterviewDom() {
+  for (const id of ["interview-invites", "interview-sessions", "interview-works", "interview-budgets"]) {
+    fillTable(id, [], () => undefined);
+  }
+  for (const id of ["interview-invites-empty", "interview-sessions-empty", "interview-works-empty"]) {
+    $(id).textContent = "";
+  }
+  delete state.details.interview;
+}
+
+function windowText(start, end) {
+  if (start === undefined || start === null || end === undefined || end === null) return "—";
+  return start + "–" + end;
+}
+
+function renderInterviewAudit(view) {
+  const invites = (view && view.invites) || [];
+  fillTable("interview-invites", invites, (tr, row) => {
+    cell(tr, row.requestId);
+    cell(tr, row.organizationPartyId);
+    cell(tr, row.fromPartyId);
+    cell(tr, row.toPartyId);
+    cell(tr, row.topic);
+    cell(tr, row.status);
+    cell(tr, windowText(row.windowStartMillis, row.windowEndMillis));
+    cell(tr, row.startMillis >= 0 ? row.startMillis : "—", "num");
+    cell(tr, row.durationMillis, "num");
+  });
+  $("interview-invites-empty").textContent = invites.length ? "" : "当前没有预约记录。";
+
+  const sessions = (view && view.sessions) || [];
+  fillTable("interview-sessions", sessions, (tr, row) => {
+    cell(tr, row.sessionId);
+    cell(tr, row.requestId);
+    cell(tr, row.startedAtMillis, "num");
+    cell(tr, row.endedAtMillis >= 0 ? row.endedAtMillis : "进行中", "num");
+    cell(tr, row.close || "—");
+  });
+  $("interview-sessions-empty").textContent = sessions.length ? "" : "当前没有会话记录。";
+
+  const works = (view && view.works) || [];
+  fillTable("interview-works", works, (tr, row) => {
+    cell(tr, row.taskId);
+    cell(tr, row.personPartyId);
+    cell(tr, row.organizationPartyId);
+    cell(tr, row.kind);
+    cell(tr, row.startedAtMillis, "num");
+    cell(tr, row.completedAtMillis, "num");
+    cell(tr, row.chargedMillis, "num");
+    cell(tr, row.outcome);
+  });
+  $("interview-works-empty").textContent = works.length ? "" : "当前没有采访工时记录。";
+
+  fillTable("interview-budgets", (view && view.budgets) || [], (tr, row) => {
+    cell(tr, row.organizationPartyId);
+    cell(tr, row.totalMillis, "num");
+    cell(tr, row.spentMillis, "num");
+    cell(tr, row.reservedMillis, "num");
+  });
+}
+
+function clearPersonalInterview() {
+  const panel = $("person-interview");
+  if (panel) panel.hidden = true;
+  for (const id of ["person-interview-invites", "person-interview-contacts"]) {
+    fillTable(id, [], () => undefined);
+  }
+  $("person-interview-tools").textContent = "";
+  $("person-interview-invites-empty").textContent = "";
+  $("person-interview-contacts-empty").textContent = "";
+}
+
+async function renderPersonalInterview(tools, generation) {
+  const panel = $("person-interview");
+  if (!panel) return;
+  const actions = (tools || []).filter(tool => String(tool).startsWith("interview."));
+  $("person-interview-tools").textContent = actions.length
+    ? "可用采访动作：" + actions.join("、") : "";
+  let result;
+  try {
+    result = await request("GET", "/api/me/interview");
+  } catch (failure) {
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (result.status === 401) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) return;
+  const view = result.payload;
+  const invites = view.invites || [];
+  const contacts = view.contacts || [];
+  panel.hidden = !(invites.length || contacts.length || actions.length);
+  fillTable("person-interview-invites", invites, (tr, row) => {
+    const other = row.fromPartyId === view.personPartyId ? row.toPartyId : row.fromPartyId;
+    cell(tr, row.requestId);
+    cell(tr, other);
+    cell(tr, row.topic);
+    cell(tr, row.status);
+    cell(tr, windowText(row.windowStartMillis, row.windowEndMillis));
+    cell(tr, row.startMillis >= 0 ? row.startMillis : "—", "num");
+    cell(tr, row.durationMillis, "num");
+  });
+  $("person-interview-invites-empty").textContent = invites.length
+    ? "" : "当前没有本人参与的预约。";
+  fillTable("person-interview-contacts", contacts, (tr, row) => {
+    cell(tr, row.targetPartyId);
+    cell(tr, row.channel);
+    cell(tr, row.description);
+  });
+  $("person-interview-contacts-empty").textContent = contacts.length
+    ? "" : "本人尚未通过实际阅读取得可私信的联系入口。";
+}

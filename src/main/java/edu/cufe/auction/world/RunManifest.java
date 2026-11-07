@@ -80,6 +80,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String RULES_MEDIA_EDITORIAL_EXPERIMENT_V1 =
             "media-editorial-experiment-v1";
 
+    /** M4i.2a：在媒体档案之上接入双边采访预约协调运行桥（schema14）。 */
+    public static final String RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1 =
+            "interview-coordination-experiment-v1";
+
     /** live 决定档案唯一允许的模型配置版本；与真实 HTTP 提供方严格成对。 */
     public static final String LIVE_DECISIONS_V1 = "live-decisions-v1";
 
@@ -215,6 +219,18 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("media");
     }
 
+    /**
+     * 是否启用双边采访预约协调桥子集（schema14）。
+     *
+     * <p>只有在该模块存在时才允许出现采访子集状态、采访任务种类与采访角色工具；旧 1–13 档案
+     * 永远返回 false，因此不会因为新种类进入旧校验路径。</p>
+     *
+     * @return 模块表包含 interview 时返回 true
+     */
+    public boolean hasInterviews() {
+        return moduleVersions.containsKey("interview");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -233,7 +249,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_COGNITION_RECALL_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_COGNITION_BELIEF_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -256,7 +273,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         Map<String, Integer> expected = new TreeMap<>();
         expected.put("cash", 1);
         expected.put("scheduler", 1);
-        boolean withMedia = RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withMedia = RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion);
         boolean withBelief = withMedia || RULES_COGNITION_BELIEF_EXPERIMENT_V1.equals(rulesVersion);
         boolean withCognition = withBelief
                 || RULES_COGNITION_RECALL_EXPERIMENT_V1.equals(rulesVersion);
@@ -325,6 +343,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         }
         if (withMedia) {
             expected.put("media", 1);
+        }
+        if (RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion)) {
+            expected.put("interview", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "

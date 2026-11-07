@@ -2,7 +2,25 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
+## 当前接续入口（2026-11-07，预约运行桥合成）
+
+先读 `logs/implementation-20261106-continued/interview-runtime-root/current.md`。a最终运行桥、Root Web4、b纯核及回归已接主树；Hermes87718唯一正式验收，17570准备b/schema15接口。已证实新档Web缺联系资料发布和普通受访者live入口，必须补齐后才可称完整Web采访可用。以下为历史记录，不反复加载或重跑。
+
 ## 最新执行偏好（用户本轮明确要求，2026-11-07）
+
+14:58覆盖：作者24384已exit0，final-intake-1/final-handoff.md已冻结（自报107文件hash，10JUnit、6篡改、HTTP、3JVM接受阶段）。主树未接。后端独审3220已exit0，session20261107_142934_7b7f57，实际27正常检查+未改重开/2篡改拒绝，仅后端子集。最终复核续该session exec41293，interview-runtime-final-review-task.txt/log，自己candidate-2冻结自编；补真实DecisionRun四工具/Web控制、ACTIVE到结束跨JVM、写故障、自洽config+Policy篡改、旧13真正旧实现读新续档/旧12等，尽早findings.md；Root不重复这些运行。作者旧13 append/read都用新类不能算旧实现互操作；旧BoardModel直接JavaDoc报错与正式Maven指令差别待核，不改无关类。人物页只读不自动判缺陷，需证明既有God控制可驱动真实采访工具；若不能则列产品缺口。当前唯一活动41293，作者空闲等真实反馈；持续18080仍media。
+
+14:32覆盖：作者22430因140轮用尽exit1，非完成；其日志末尾实报7直接会话JUnit通过，但最后focus/Web路由未编译，DecisionRun工具与前端未实现、HTTP/独立JVM/篡改/旧13未做。已续同86babe exec24384，interview-runtime-continue-task.txt/log，240轮/3600秒，原私有范围不变。先编译复跑并冻结backend-intake-1，handoff.md标BACKEND_ONLY_READY供独审3220自编查核心，再继续mirror补全链/Web/验收；最终另final-intake-1/final-handoff.md，严禁覆盖已冻结候选。独审等待handoff，旧author/handoff.md曾只是API准备稿，不要误认为产品交接。当前活动24384作者+3220独审，主树未接运行桥。详细接续索引logs/implementation-20261106-continued/interview-runtime-root/checkpoint-1410.md。
+
+14:30新增独立复核exec3220，新鲜Hermes上下文，interview-runtime-independent-task.txt/log，唯一写interview-runtime-independent；先按合同备检查矩阵，最多等10分钟作者handoff再核hash冻结自编，若作者未完工必须列阻断，不称整体通过。当前活动22430作者+3220独审，b/c准备均已结束。Root主树不接未交代码。
+
+14:28增量：仅22430仍运行，86babe的a运行桥已到定向JUnit修复阶段，尚无最终handoff，约35工具轮余量时曾记断点。不要把未交候选接主树。e7852d的b/c准备32713、修订31028、谱系核验77679、最小性复核58544均已exit0；最新依据interview-evidence-preparation/minimality-check.md与contract-proposal.md（v4方向），v1–v3不作最终方案。Root纠正“私有根必须从内部Lineage删除”的额外假设：可在新schema的Story.evidence/roots保存完整真实证据，沿既有按公开doc/version的Lineage保留私根与更正历史，新submit/roots解析支持私证、人物投影隐藏、上帝可审计；不另建重复RevisionRoots表。静态已核四例及实际泄露面，未编译/未测试/未授权b/c实现。身份共享doc由真实分享者发布、通用标题、身份仅正文实际读完才知；旧1–14不改，后继schema待实施时固定。
+
+另已派e7852d exec32713做M4i.2b/c逐轮DIRECT与匿名私证的只读合同准备，唯一写interview-evidence-preparation，任务interview-evidence-preparation-task.txt/log，禁止实现或改桥作者。当前活动为22430实施a、32713准备b/c；其余旧任务均结束。两者不互写，Root等待交接后裁定/验收，不重复已有全套。
+
+14:09最新：M4i.1代码f2a43a2b8f1faaa263b20950a546bfe122ad6b9e，草稿PR40 https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/40 ，实际CI42345467923 completed/success，日志interview-coordination-root/ci-42345467923.log。创建时发现远端PR39已MERGED且原分支删除，现接收分支codex/world-role-trading SHA25adc6e64ec3715765a2768f7578638dcf8a8d5c；fetch证明b297b3a为其祖先、diff仅本阶段7文件，因此PR40已改该base。Root没有执行合并，不能据MERGED推断人工review过程。当前新分支codex/world-interview-runtime，base f2a43a2。
+
+唯一活动真实Hermes是86babe桥实施exec22430，interview-runtime-implement-task.txt/log；完整私有写权interview-runtime-author/mirror，包含后端+Web+定向测试，禁止主树/Maven/真实Key/持久Web。先前API exec76666已exit0。Root已批准接口并修正四关键问题：ACTIVE未结算工时必须全额保留到结算，不按剩余时间递减；实际读联系入口的是发起人；普通受访者可respond/cancel/end无需机构权限；恢复必须核最初可信registry/config。允许一毫秒MISS门延后释放及availableMillis重载；不改MediaRun.Config/Work/Report形状。新类只在14启用，旧13未重编夹具原件禁止改。当前Root主树只有本状态文档等增量，不要把作者尚未交接的运行桥接回。持续Web仍18080/PID22856 media固定副本、五Key遮罩/全部场景关闭、0新增官方调用。独审/正式旧执行均已结束。
 
 14:03接收更新：M4i.1两新源码已接主树，最终InterviewModel SHA2ba8fc7f9db67d1137064d739a12885862ef6e7b47615b3887d1694d52b77fb2，测试f602e18de8d7eff538d147ff9ae081b8b8db4b84cc289741c9ff1f4dab4221d8。真实独审session20261107_134734_e7852d/exec44226已exit0，candidate-1自编29JUnit+24Root适配+56自有=109去重检查通过；主树仅补两处JavaDoc且独审再次自编29/56/JavaDoc0警告。F2是世界恢复须核开局registry/config的接缝，已硬写M4i.2a合同，不是纯核功能阻断。
 

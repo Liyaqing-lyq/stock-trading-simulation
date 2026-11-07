@@ -243,7 +243,8 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> recallView(exchange));
                 return;
             }
-            if (("/api/admin/media".equals(path) || "/api/admin/capabilities".equals(path))
+            if (("/api/admin/media".equals(path) || "/api/admin/capabilities".equals(path)
+                    || "/api/admin/interview".equals(path))
                     && "GET".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> mediaOverview(exchange, path));
                 return;
@@ -300,6 +301,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requirePerson(exchange, session.get(), () -> personView(exchange, session.get()));
                 return;
             }
+            if ("/api/me/interview".equals(path) && "GET".equals(method)) {
+                requirePerson(exchange, session.get(), () -> interviewMe(exchange, session.get()));
+                return;
+            }
             send(exchange, 404, error("NOT_FOUND", "没有这个接口"));
         } catch (StopHandling stop) {
             return;
@@ -337,6 +342,12 @@ public final class WorldWebServer implements AutoCloseable {
             return true;
         }
         if ("/api/session/person".equals(path) && "POST".equals(method)) {
+            return true;
+        }
+        if ("/api/me/interview".equals(path) && "GET".equals(method)) {
+            return true;
+        }
+        if ("/api/admin/interview".equals(path) && "GET".equals(method)) {
             return true;
         }
         if ("/api/admin/view".equals(path) && "GET".equals(method)) {
@@ -647,7 +658,9 @@ public final class WorldWebServer implements AutoCloseable {
             throws IOException, WorldWebHost.BusyException {
         Object view;
         try {
-            view = path.equals("/api/admin/media") ? host.mediaAudit() : host.liveCapabilities();
+            view = path.equals("/api/admin/media") ? host.mediaAudit()
+                    : path.equals("/api/admin/interview") ? host.interviewAudit()
+                    : host.liveCapabilities();
         } catch (WorldWebHost.BusyException busy) {
             throw busy;
         } catch (Exception failure) {
@@ -917,6 +930,27 @@ public final class WorldWebServer implements AutoCloseable {
         } catch (Exception failure) {
             throw new WorldIoFailure();
         }
+    }
+
+    /**
+     * 本人预约投影：只返回本人参与的协调事实与本人可达联系入口。
+     *
+     * @param exchange 请求
+     * @param session  已认证人物会话
+     * @throws IOException              写回失败
+     * @throws WorldWebHost.BusyException 写入队列已满
+     */
+    private void interviewMe(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        Object view;
+        try {
+            view = host.interviewView(session.personId());
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
     }
 
     private void personView(HttpExchange exchange, WebSessions.Session session)

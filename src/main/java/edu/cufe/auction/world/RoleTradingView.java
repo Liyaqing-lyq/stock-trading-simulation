@@ -104,6 +104,18 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     /** 媒体工具：取消本人未完成的媒体工作。 */
     public static final String TOOL_MEDIA_CANCEL = "media.work.cancel";
 
+    /** 采访工具：记者发起预约邀请。 */
+    public static final String TOOL_INTERVIEW_INVITE = "interview.invite";
+
+    /** 采访工具：双方回应邀请（普通受访者也可用）。 */
+    public static final String TOOL_INTERVIEW_RESPOND = "interview.respond";
+
+    /** 采访工具：取消尚未开始的预约。 */
+    public static final String TOOL_INTERVIEW_CANCEL = "interview.cancel";
+
+    /** 采访工具：结束进行中的会话。 */
+    public static final String TOOL_INTERVIEW_END = "interview.end";
+
     /** 冻结全部集合。 */
     public RoleTradingView {
         if (observedAtMillis < 0 || timeMillis < 0) {

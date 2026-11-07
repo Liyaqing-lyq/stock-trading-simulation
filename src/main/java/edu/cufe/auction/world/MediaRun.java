@@ -58,6 +58,29 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
     public static final Set<String> KINDS = Set.of(KIND_PROPOSE, KIND_SUBMIT, KIND_REVIEW,
             KIND_PUBLISH, KIND_CORRECTION, KIND_CANCEL);
 
+    /** 采访协调种类（schema14 才可能出现）：只进同一工时账，不进媒体故事流。 */
+    public static final Set<String> INTERVIEW_KINDS = Set.of(
+            PendingTask.INTERVIEW_INVITE_V1, PendingTask.INTERVIEW_RESPOND_V1,
+            PendingTask.INTERVIEW_CANCEL_V1, PendingTask.INTERVIEW_END_V1,
+            PendingTask.INTERVIEW_START_GATE_V1, PendingTask.INTERVIEW_MISS_GATE_V1,
+            PendingTask.INTERVIEW_END_GATE_V1, PendingTask.INTERVIEW_TTL_GATE_V1);
+
+    /** 会话区间结算种类：一条 Work 结算一次实际同步区间。 */
+    public static final String KIND_INTERVIEW_SESSION = "INTERVIEW_SESSION_V1";
+
+    /**
+     * 是否为已登记的工作种类（媒体 + 采访 + 会话结算）。
+     *
+     * <p>采访种类只在 schema14 的运行里出现；本方法只做种类登记，不放宽任何旧档案的权限或校验。</p>
+     *
+     * @param kind 任务/工作种类
+     * @return 已登记返回 true
+     */
+    public static boolean knownKind(String kind) {
+        return kind != null && (KINDS.contains(kind) || INTERVIEW_KINDS.contains(kind)
+                || KIND_INTERVIEW_SESSION.equals(kind));
+    }
+
     /**
      * 冻结配置：各媒体策略、每组织工时总额、三档动作时长。
      *
@@ -169,8 +192,8 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
                     || organizationPartyId.isBlank()) {
                 throw new IllegalArgumentException("工作记录标识不能为空");
             }
-            if (!KINDS.contains(kind)) {
-                throw new IllegalArgumentException("未登记的媒体工作种类：" + kind);
+            if (!knownKind(kind)) {
+                throw new IllegalArgumentException("未登记的工作种类：" + kind);
             }
             if (storyId == null) {
                 storyId = "";
@@ -273,21 +296,30 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
                 throw new IllegalArgumentException("工作记录指向未配置的媒体组织："
                         + work.organizationPartyId());
             }
-            long allowed = durationOf(config, work.kind(), work.organizationPartyId());
-            if (KIND_CANCEL.equals(work.kind())) {
-                // 取消是控制动作：有冻结模拟耗时，但不预留也不消耗组织采编工时
+            long span = work.completedAtMillis() - work.startedAtMillis();
+            boolean interview = INTERVIEW_KINDS.contains(work.kind())
+                    || KIND_INTERVIEW_SESSION.equals(work.kind());
+            // 采访种类不接受冻结时长查表：计费上界就是它自己占用的真实跨度，
+            // 由运行层用原命令/会话事实重算，Work 不能自报一个更短的时长。
+            long allowed = interview ? span
+                    : durationOf(config, work.kind(), work.organizationPartyId());
+            boolean control = KIND_CANCEL.equals(work.kind())
+                    || PendingTask.INTERVIEW_CANCEL_V1.equals(work.kind())
+                    || PendingTask.INTERVIEW_END_V1.equals(work.kind());
+            if (control) {
+                // 控制动作：有模拟耗时，但不预留、不消耗组织采编工时，撤职/无预算也能执行
                 if (work.chargedMillis() != 0) {
-                    throw new IllegalArgumentException("取消动作不得消耗组织工时：" + work.taskId());
+                    throw new IllegalArgumentException("控制动作不得消耗组织工时：" + work.taskId());
                 }
             } else if (OUTCOME_REJECTED.equals(work.outcome())) {
                 if (work.chargedMillis() != 0) {
                     throw new IllegalArgumentException("预算拒绝不得计费：" + work.taskId());
                 }
             } else if (work.chargedMillis() > allowed) {
-                throw new IllegalArgumentException("工作计费超过冻结时长：" + work.taskId());
+                throw new IllegalArgumentException("工作计费超过允许时长：" + work.taskId());
             } else if (OUTCOME_COMPLETED.equals(work.outcome())
                     && work.chargedMillis() != allowed) {
-                throw new IllegalArgumentException("正常完成必须按冻结时长计费：" + work.taskId());
+                throw new IllegalArgumentException("正常完成必须按实际区间计费：" + work.taskId());
             }
             chargedByOrganization.merge(work.organizationPartyId(), work.chargedMillis(), Long::sum);
         }
@@ -372,12 +404,16 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
         return null;
     }
 
-    /** @return 该组织在途预留：由运行层按真实待办解码后的清单推导；取消动作不占工时 */
+    /** @return 该组织在途预留：由运行层按真实待办解码后的清单推导；控制动作与采访种类不在此处计价 */
     public long reservedMillis(String organizationPartyId, List<PendingWork> inFlight) {
         long reserved = 0L;
         for (PendingWork work : Objects.requireNonNull(inFlight, "在途媒体工作")) {
-            if (!KINDS.contains(work.kind())) {
-                throw new IllegalArgumentException("未登记的媒体工作种类：" + work.kind());
+            if (!knownKind(work.kind())) {
+                throw new IllegalArgumentException("未登记的工作种类：" + work.kind());
+            }
+            if (INTERVIEW_KINDS.contains(work.kind())) {
+                // 采访的预留按"完整预约区间"由运行层另算并显式传入，避免这里按动作时长低估
+                continue;
             }
             if (KIND_CANCEL.equals(work.kind())) {
                 continue;
@@ -391,12 +427,29 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
 
     /** @return 该组织可用工时；不含在途预留时传空表 */
     public long availableMillis(String organizationPartyId, List<PendingWork> inFlight) {
+        return availableMillis(organizationPartyId, inFlight, 0L);
+    }
+
+    /**
+     * 该组织可用工时，并显式扣除采访预约的完整在途预留。
+     *
+     * <p>采访的预留由运行层按"接受后整段预约区间"另算：已消耗但尚未结算的工时不能提前释放，
+     * 因此这里只做一次减法，不引进第二份余额。{@code extraReservedMillis} 为负按 0 处理。</p>
+     *
+     * @param organizationPartyId  媒体组织
+     * @param inFlight             媒体在途工作
+     * @param extraReservedMillis  采访在途预留（完整预约区间之和）
+     * @return 可用工时，可能为负（表示已透支，调用方按预算不足处理）
+     */
+    public long availableMillis(String organizationPartyId, List<PendingWork> inFlight,
+                                long extraReservedMillis) {
         Budget budget = budgetOf(organizationPartyId);
         if (budget == null) {
             return 0L;
         }
         return budget.totalMillis() - budget.spentMillis()
-                - reservedMillis(organizationPartyId, inFlight);
+                - reservedMillis(organizationPartyId, inFlight)
+                - Math.max(0L, extraReservedMillis);
     }
 
     /**
