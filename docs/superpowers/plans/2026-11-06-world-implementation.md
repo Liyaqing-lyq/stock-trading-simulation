@@ -12,6 +12,14 @@
 
 ## 全局约束
 
+13:34最终接收：M4h.2候选9已通过41专项、1321正式、CSV/Node/GUI/JavaDoc、三JVM/旧12及Hermes最终39独立检查，c8发现的T9已关闭。草稿[PR39](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/39)代码2951009、实际CI42342978816成功，待人工review；Web18080已更新。接续[M4i.1双边采访协调纯核](2026-11-07-interview-coordination.md)，405ace exec6965只写私有新模块，未接世界，完整总体基线继续。
+
+13:30最新：媒体candidate9已修复伪造事件+克隆待办，41专项、三JVM、旧12未重编互操作与正式1321/CSV48/124/7/Node/GUI/JavaDoc13:26:12全过；111文件与主树逐字一致。Web18080已切独立media档/PID22856，原belief档完整保留、五Key仍遮罩/场景关闭/0新增调用。最终独审增量与AI草稿PR/CI仍待收尾。下一采访/私信/匿名共享只读准备经Root纠正公开纪要强制、第二账本及旧schema权限错误后修订中，未开始生产实现。
+
+当前施工（2026-11-07 13:23）：M4h.2候选8已接主树，Root40专项、三JVM/旧12未重编互操作、正式1320/CSV49/123/7/Node/真实GUI及JavaDoc13:20:53通过，最终候选真实浏览器已核4版本/来源/身份裁剪。独审ac6bef复现同时伪造排程事件与待办可重复计费，Root已补第8个恢复反例并严格绑定任务与本批原始命令，定向修复验收中。最终复审/再冻结/正式验收/草稿PR/持续Web升级尚待，不冒称完成；405ace仅准备下一采访与匿名共享合同。以本段及PROJECT_MEMORY最新段覆盖下面历史状态。
+
+当前施工（2026-11-07 12:59）：已切codex/world-media-runtime，PR38最终CI成功。媒体运行桥fixed-intake-1与Web准备已通过Root 18作者复跑+5反例/21准备/34真实HTTP/11真实Host模拟provider/三JVM/旧12互操作；重复命令幂等与取消预算拒绝工作2项真实RED尚在405ace exec31300修复。独审exec62077独立核候选。详见logs/implementation-20261106-continued/media-runtime-root/checkpoint-1259.md，未接主树/未正式验收，不冒称完成。0新增真实provider，持续18080仍已接收M6b。
+
 当前增量（2026-11-07 12:32）：M6b最终candidate3已接收，1280标准/CSV50/119/7/Node/GUI及重新生成JavaDoc通过；Hermes独审1586纯核/127真实运行Host/31HTTP/Node、旧oracle122及105hash通过，两个P3说明问题已关闭。草稿[PR38](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/38)代码e673225、实际CI42338413263成功，依赖PR37，待人工review；最后HTML说明/文档追加CI另记。持续Web18080已升级candidate3/PID53744，原belief档1/0ms、五Key遮罩/场景关闭、0新增调用。M4h.2媒体桥首稿未完成恢复真实性，Root实际两项反例已交405ace exec86185按[运行桥合同](2026-11-07-media-runtime.md)修复，只写私有目录；主树未接桥。下一步收尾性能说明提交、接媒体后端与Web，整体基线不冒称完成。
 
 - 金额 BigDecimal（金额 2 位、成本价 4 位），数量 long；锁顺序引擎锁 → 账户锁，模型、I/O、广播不能持有撮合锁。
@@ -575,8 +583,11 @@ B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://
 
 - [x] 信念纯核37新增，真实阅读/精确目标/明确采纳/更正/有效贡献重算/有版本习惯与不可变投影；Hermes98独立动态通过。详见[纯核合同](2026-11-07-belief-core.md)与docs/05§38。
 - [x] 最后复跑旧SceneRoutes原子move实际AccessDenied；真实共享句柄RED后小幅修复，2新增回归+自然2000保存全过，正式1156/CSV51/132/7/GUI/JavaDoc10:01:01通过。保留旧1154错误日志；最终独审配置增量24动态通过，另Root真实sleep中断通过；草稿PR/CI随后。
-- [ ] [M4g.2运行桥](2026-11-07-belief-runtime.md)：schema12、真实观察cut、权威合同数截止、真实阅读学习、后续input与Web审计已实现；1185标准及三JVM/旧客户端/实际Web本地通过，候选2待最终独审、草稿PR/CI。原f270fe作者已交接，Root独占主树/Maven/Web；新真实Hermes exec61411独审，不把作者自测当独审。
-- [ ] [M4h.1公开证据采编纯核](2026-11-07-media-editorial-core.md)：Root已核准双人快讯/调查、真实阅读草稿、追加更正与多根来源谱系；Hermes405ace仅media-editorial-author私有镜像实施，主树无写权。后续M4h.2须接真实工具/媒体场景/Web和工时预算，然后实现采访的拒绝与匿名身份显式共享、曝光/群组/社交及其余六类工作流，不把第一步当媒体全部完成。
+- [x] [M4g.2运行桥](2026-11-07-belief-runtime.md)：最终candidate3正式1186标准/CSV/GUI/Node/JavaDoc、三JVM/旧客户端/真实Web及最终独审增量通过；草稿PR36实际CI42333676886成功，仍待人工review、不自动合并。证据与偏差见docs/05对应阶段。
+- [x] [M4h.1公开证据采编纯核](2026-11-07-media-editorial-core.md)：最终candidate4正式1246标准、CSV/GUI/Node/JavaDoc、199独立纯核/22旧权限/真实旧12兼容通过；草稿PR37实际CI42337472698成功，仍待人工review。仅双人快讯/调查、真实阅读、版本更正及来源谱系完成。
+- [x] [M4h.2采编运行桥与Web](2026-11-07-media-runtime.md)：最终候选9实际41专项、1321标准、CSV48/124/7、Node/GUI/JavaDoc、三JVM/旧12/真实Web及39独审通过，草稿PR39实际CI42342978816成功，仍待人工review；媒体新档已上线本机18080，五场景关闭、0新增官方调用。
+- [x] [M6b账户表现历史](2026-11-07-performance-history.md)：正式1280标准及独审通过，草稿PR38最终CI42338910895成功；持续Web18080已升级，仍待人工review。完整历史回放与总体基线未完成。
+- [ ] [M4i.1双边采访协调纯核](2026-11-07-interview-coordination.md)：拒绝/接受/到期/取消/预约双方活动冲突与可达权限，405ace仅私有新类实施；之后M4i.2实际投递阅读、私有证据、匿名身份显式共享与出处保护及Web。随后曝光/群组/私聊/社交及其余六类媒体工作流继续。
 - [ ] 媒体/传播、多公司银行、图表/历史与长跑验收继续，不以局部纯核冒称总体基线完成。真实供应商0新增，原51token唯一连通证据保持。
 
 信念纯核代码e6a81adfaf3b24c86e507cf32e9c54aac0ed6be1已发布草稿[PR35](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/35)，base codex/world-cognition-runtime；实际[CI42327343664](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42327343664) completed/success。1156标准、98纯核独审+24配置独审及Root实际退避中断通过，工程阶段验收完成，仍待人工review、不自动合并。

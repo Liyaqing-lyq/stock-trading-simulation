@@ -36,3 +36,5 @@ td.preview{white-space:normal;min-width:240px;max-width:380px;color:#5c6a80}
 .chart-drawdown{stroke:#a14a42}
 
 .performance-history-controls{display:grid;grid-template-columns:2fr 1fr 1fr;gap:16px;margin-bottom:18px}.performance-history-controls label{display:block;margin:0}.performance-history-controls input,.performance-history-controls select{width:100%;margin-top:8px}.performance-chart{display:flex;flex-direction:column;margin:0}.performance-chart figcaption{order:-1;margin-top:20px;font-size:12px;font-weight:600;color:#526078}.performance-chart svg[hidden]+figcaption{display:none}.performance-history-data .table-wrap{max-height:28rem;overflow:auto}@media(max-width:760px){.performance-history-controls{grid-template-columns:1fr}.performance-history-controls input,.performance-history-controls select{margin-top:5px}}
+
+.media-documents details{border-top:1px solid var(--line,#e5e7eb);padding:1rem 0}.media-documents summary{cursor:pointer;font-weight:600}.media-body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:28rem;overflow:auto;line-height:1.7}.media-documents p{overflow-wrap:anywhere}#media-story-select{width:100%;max-width:100%}

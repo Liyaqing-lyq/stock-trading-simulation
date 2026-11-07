@@ -76,6 +76,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String RULES_COGNITION_BELIEF_EXPERIMENT_V1 =
             "cognition-belief-experiment-v1";
 
+    /** M4h.2：在信念档案之上接入双人采编运行桥与组织工时预算（schema13）。 */
+    public static final String RULES_MEDIA_EDITORIAL_EXPERIMENT_V1 =
+            "media-editorial-experiment-v1";
+
     /** live 决定档案唯一允许的模型配置版本；与真实 HTTP 提供方严格成对。 */
     public static final String LIVE_DECISIONS_V1 = "live-decisions-v1";
 
@@ -202,6 +206,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("belief");
     }
 
+    /**
+     * 是否启用媒体采编运行桥子集。
+     *
+     * @return 模块表包含 media 时返回 true
+     */
+    public boolean hasMedia() {
+        return moduleVersions.containsKey("media");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -219,7 +232,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_COGNITION_RECALL_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_COGNITION_BELIEF_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_COGNITION_BELIEF_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -242,7 +256,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         Map<String, Integer> expected = new TreeMap<>();
         expected.put("cash", 1);
         expected.put("scheduler", 1);
-        boolean withBelief = RULES_COGNITION_BELIEF_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withMedia = RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withBelief = withMedia || RULES_COGNITION_BELIEF_EXPERIMENT_V1.equals(rulesVersion);
         boolean withCognition = withBelief
                 || RULES_COGNITION_RECALL_EXPERIMENT_V1.equals(rulesVersion);
         boolean withLive = withCognition
@@ -307,6 +322,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         }
         if (withBelief) {
             expected.put("belief", 1);
+        }
+        if (withMedia) {
+            expected.put("media", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "

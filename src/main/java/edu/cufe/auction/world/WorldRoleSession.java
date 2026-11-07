@@ -516,4 +516,203 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
             }
         }
     }
+
+    // ------------------------------------------------------------------
+    // 媒体采编：工具参数只含业务字段，人/组织/策略/工时由会话与冻结配置提供
+    // ------------------------------------------------------------------
+
+    /**
+     * 提出选题草稿。
+     *
+     * @param storyId  稿件标识（本人命名空间）
+     * @param template 模板名
+     * @param topic    选题
+     */
+    public record MediaProposeDraft(String storyId, String template, String topic) {
+
+        /** 校验字段。 */
+        public MediaProposeDraft {
+            requireText(storyId, "稿件标识");
+            requireText(template, "媒体模板");
+            requireText(topic, "选题");
+        }
+    }
+
+    /**
+     * 一条证据引用：只给资料、版本与本人阅读序号，人物由会话绑定。
+     *
+     * @param docId   资料
+     * @param version 固定版本
+     * @param index   本人阅读序号
+     */
+    public record MediaCitation(String docId, long version, long index) {
+
+        /** 校验字段。 */
+        public MediaCitation {
+            requireText(docId, "证据资料");
+            if (version < 1 || index < 1) {
+                throw new IllegalArgumentException("证据版本与序号必须从 1 开始");
+            }
+        }
+    }
+
+    /**
+     * 提交组织草稿。
+     *
+     * @param storyId                 稿件
+     * @param expectedRevision        期望提交次数
+     * @param title                   标题
+     * @param body                    正文
+     * @param publicSourceDescription 公开来源描述
+     * @param evidence                本人范围证据
+     */
+    public record MediaSubmitDraft(String storyId, int expectedRevision, String title, String body,
+                                   String publicSourceDescription, List<MediaCitation> evidence) {
+
+        /** 校验字段并冻结证据。 */
+        public MediaSubmitDraft {
+            requireText(storyId, "稿件标识");
+            requireText(title, "稿件标题");
+            requireText(body, "稿件正文");
+            Objects.requireNonNull(publicSourceDescription, "公开来源描述");
+            evidence = List.copyOf(Objects.requireNonNull(evidence, "证据"));
+            if (expectedRevision < 0) {
+                throw new IllegalArgumentException("期望提交次数不能为负：" + expectedRevision);
+            }
+        }
+    }
+
+    /**
+     * 编辑审阅。
+     *
+     * @param storyId          稿件
+     * @param expectedRevision 期望提交次数
+     * @param approve          true 批准
+     * @param note             退回理由
+     */
+    public record MediaReviewDraft(String storyId, int expectedRevision, boolean approve,
+                                   String note) {
+
+        /** 校验字段。 */
+        public MediaReviewDraft {
+            requireText(storyId, "稿件标识");
+            if (expectedRevision < 1) {
+                throw new IllegalArgumentException("审阅必须指向已提交版本：" + expectedRevision);
+            }
+            if (note == null) {
+                note = "";
+            }
+        }
+    }
+
+    /**
+     * 发布或开启更正：只给稿件与版本。
+     *
+     * @param storyId          稿件
+     * @param expectedRevision 期望提交次数
+     */
+    public record MediaStoryDraft(String storyId, int expectedRevision) {
+
+        /** 校验字段。 */
+        public MediaStoryDraft {
+            requireText(storyId, "稿件标识");
+            if (expectedRevision < 1) {
+                throw new IllegalArgumentException("必须指向已存在的提交次数：" + expectedRevision);
+            }
+        }
+    }
+
+    /**
+     * 记者提出选题。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           选题草稿
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String proposeStory(String clientCommandId, String clientTaskId, long dueMillis,
+                               MediaProposeDraft draft) throws IOException {
+        return runtime.scheduleMediaStory(this, PendingTask.MEDIA_STORY_PROPOSE_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 作者提交组织草稿。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           提交草稿
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String submitStory(String clientCommandId, String clientTaskId, long dueMillis,
+                              MediaSubmitDraft draft) throws IOException {
+        return runtime.scheduleMediaStory(this, PendingTask.MEDIA_STORY_SUBMIT_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 编辑审阅。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           审阅草稿
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String reviewStory(String clientCommandId, String clientTaskId, long dueMillis,
+                              MediaReviewDraft draft) throws IOException {
+        return runtime.scheduleMediaStory(this, PendingTask.MEDIA_STORY_REVIEW_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 编辑发布已批准版本。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           稿件与版本
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String publishStory(String clientCommandId, String clientTaskId, long dueMillis,
+                               MediaStoryDraft draft) throws IOException {
+        return runtime.scheduleMediaStory(this, PendingTask.MEDIA_STORY_PUBLISH_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 作者开启一轮更正。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           稿件与版本
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String startCorrection(String clientCommandId, String clientTaskId, long dueMillis,
+                                  MediaStoryDraft draft) throws IOException {
+        return runtime.scheduleMediaStory(this, PendingTask.MEDIA_STORY_CORRECTION_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 取消本人未完成的媒体工作。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String cancelMediaWork(String clientCommandId, String clientTaskId, long dueMillis)
+            throws IOException {
+        return runtime.scheduleMediaCancel(this, clientCommandId, clientTaskId, dueMillis);
+    }
 }

@@ -726,6 +726,22 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                     new String[]{"targetAsOfMillis", "long"});
             case RoleTradingView.TOOL_COMPANY_REPORT_ORDERS -> List.of(
                     new String[]{"companyId", "string"}, new String[]{"asOfMillis", "long"});
+            case RoleTradingView.TOOL_MEDIA_PROPOSE -> List.of(
+                    new String[]{"storyId", "string"}, new String[]{"template", "string"},
+                    new String[]{"topic", "string"});
+            case RoleTradingView.TOOL_MEDIA_SUBMIT -> List.of(
+                    new String[]{"storyId", "string"}, new String[]{"expectedRevision", "int"},
+                    new String[]{"title", "string"}, new String[]{"body", "string"},
+                    new String[]{"publicSourceDescription", "string"},
+                    new String[]{"evidence", "array"});
+            case RoleTradingView.TOOL_MEDIA_REVIEW -> List.of(
+                    new String[]{"storyId", "string"}, new String[]{"expectedRevision", "int"},
+                    new String[]{"approve", "boolean"}, new String[]{"note", "string"});
+            case RoleTradingView.TOOL_MEDIA_PUBLISH -> List.of(
+                    new String[]{"storyId", "string"}, new String[]{"expectedRevision", "int"});
+            case RoleTradingView.TOOL_MEDIA_CORRECTION -> List.of(
+                    new String[]{"storyId", "string"}, new String[]{"expectedRevision", "int"});
+            case RoleTradingView.TOOL_MEDIA_CANCEL -> List.of();
             case DecisionModel.TOOL_WAIT -> List.of();
             default -> List.of();
         };

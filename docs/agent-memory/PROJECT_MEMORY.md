@@ -2,7 +2,31 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 最新交接（2026-11-07 12:32，M6b已交付 / 媒体桥修复）
+## 最新交接（2026-11-07 13:34，媒体运行桥工程验收，采访纯核接续）
+
+M4h.2已按最终fixed-intake-9接收：111文件hash与主树相同；正式1321零失败/错误/跳过、CSV48/124/7、Node/GUI、JavaDoc13:26:12、三JVM及真正旧12未重编新续旧读21/104通过。独审ac6bef最终c9自编95源release17，39/39动态通过，T9伪造排程事件+克隆待办P1关闭、所测范围无新P1/P2，handoff在media-runtime-independent/c9；c8另有13HTTP与JS静态审查，Web代码/资源与c9逐字相同。独审exec53883已给handoff，等退出不再扩测。
+
+代码29510097f8c2cbc090c49ba2c00c3f642d4e6362、草稿PR39 https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/39 ，依赖PR38，实际CI42342978816 completed/success，仍待人工review、不自动合并。最后验收文档追加提交及CI另记。持续Web18080/PID22856固定runtime-20261107-132640，目录logs/web-workbench-media，新media档1/0ms；旧belief原档保留、长度/最后写时点不变；五Key配置遮罩、全部场景关闭、0新增官方调用。IAB2/tab8已登录并保留deliverable。禁止重跑启动脚本或live-once。
+
+下一M4i.1合同docs/superpowers/plans/2026-11-07-interview-coordination.md。405ace真实Hermes exec6965（interview-coordination-author-task.txt/log）只在interview-coordination-author新增InterviewModel及私有测试；先api.md、不可改已有生产类，不改主树/运行桥/MediaModel。Root已两次纠正其准备稿把未来匿名风险称现有缺陷、强制PUBLIC纪要、第二账本、跨社不去重与旧schema权限误述；以Root合同为准。Root保留主树/Maven、独验和最终接收。采访运行/匿名私有证据/社交、多公司银行、完整回放与长跑仍未完成，继续总体基线。
+
+## 前次交接（2026-11-07 13:23，媒体已接主树，最后独审缺口修复）
+
+13:30更新覆盖本节下方状态：最终fixed-intake-9=111文件与主树逐字hash相同；新增事件+待办伪造反例已修，41专项及98相关测试、三JVM/旧12通过。正式formal-verify-2实际1321零失败/错误/跳过、CSV48/124/7、Node/GUI全绿，JavaDoc13:26:12重新生成成功，formal-final-2已保存。c8独审已确认仅T9未关闭，Root修复后的c9增量复审任务已准备、待86839退出后续接，不能并发同一Hermes session。真实Web已切media新档18080/PID22856/runtime-20261107-132640，service.json在logs/web-workbench-media；旧belief服务已停止，原档18715字节/最后写时点不变，保留原件。启动脚本stdout尚空时报null错误，但新进程已成功，Root核PID/完整路径/监听后补登记并实际浏览器验证，禁止重跑该启动脚本。IAB2/tab8已登录、markDeliverable；五Key遮罩、三已接场景说明、全部禁用、0新调用；截图workbench-keys-c9.jpg。下一合同修订由405ace exec50658只写interview-preparation，未授权生产实现。PR尚未创建。
+
+当前codex/world-media-runtime，base2487c9b；14生产/资源+11新增测试已接主树。fixed-intake-8共111文件、95生产Java，Root40专项、三JVM37/33277→38/34277→38/34277及真正旧12未重编新续旧读21/104通过；正式1320/CSV49成交123订单7排名/Node/真实GUI通过，JavaDoc13:20:53真实生成。证据media-runtime-root/formal-final-1、formal-verify-1、javadoc-1、fixed-intake-8。尚未PR/持续Web升级，不宣称完成。
+
+405ace作者v4 exec30848已正常结束；Root修复v4的同刻预算按taskId排序、取消后追认旧拒绝工作、历史决定被当前离任卡住三问题。新独审ac6bef exec86839在media-runtime-independent/c8核候选8，自编release17；发现伪造TASK_SCHEDULED_V1同时克隆pending仍能重复计费。Root已追加第8个MediaPendingIntegrityTest，forged-event-red实测8项1失败，再补任务/人物命名空间、原始commit命令与due唯一绑定；forged-event-green exec96521正在运行。最终需再冻结、复审增量、正式验收、文档、秘密扫描及AI草稿PR/实际CI。不要覆盖主树这两文件以旧candidate8。
+
+下一采访/私聊/匿名共享仅只读准备，405ace exec9343、interview-preparation-task.txt与日志，唯一写interview-preparation；未获生产实现写权。Root主树/Maven唯一写。真实产品仍18080/PID53744/belief，五Key遮罩/五场景关闭/0新增provider；候选8浏览器临时browser-2 PID15456/64179（30分钟），实际4版本/2引用/旧读者v1及离页清空通过，截图media-final.jpg、reader-final.jpg。launch-media-workbench.ps1仅已准备未运行，须最终验收后才切新media档，保留旧belief原件。禁止重跑live-once或动其他服务、全局memory。
+
+## 前次交接（2026-11-07 12:59，媒体Web准备与桥边界修复）
+
+当前codex/world-media-runtime，base2487c9b；PR38最终CI42338910895成功，仍草稿/人工review。媒体桥尚未接主树。Root详细断点与所有证据索引：logs/implementation-20261106-continued/media-runtime-root/checkpoint-1259.md，继续前读该文件。fixed-intake-1=102文件/95生产源，Root编译、作者18/Root原5/Web21/真实HTTP34/Host真实loopback模型11、三JVM/旧12未重编互操作通过。新的重复command幂等与取消预算拒绝工作错误收费两个真实RED正在修复，不能宣称媒体已通过。
+
+真实Hermes405ace已完成v2（exec86185 exit0），续v3 exec31300，仅media-runtime-author私有；独审新上下文exec62077只读fixed-intake-1、只写media-runtime-independent，均有独立task/log。Root主树/Maven/最终验收单写。持续产品18080/PID53744仍已接收M6b belief旧档，五key遮罩/场景关闭，0新增供应商调用；临时媒体browser-1 PID58512/59576只是30分钟fixture，实际UI含4稿件版本与读者v1隔离、离页清空已验，但需最终候选重验。禁止重跑live-once、动其他服务或全局memory。总体仍缺后续基线，继续推进。
+
+## 前次交接（2026-11-07 12:32，M6b已交付 / 媒体桥修复）
 
 当前codex/world-performance-history；代码e673225，草稿PR38 https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/38 依赖PR37，实际CI42338413263成功，仍待人工review、不自动合并。最终candidate3=105文件（清单LF），相对独审candidate1只有两行JavaDoc和index.html起点资本流说明；独审eadbec首轮exec72563预算结束，续接exec19154完成handoff.md/final-addendum.md，105hash、class逐字一致、P3全部关闭。1586纯核/127运行Host/31HTTP/Node/122旧oracle独立证据；20/42旧测试未落原始stdout，只据实标自报。首次HTTP tmp未创建可能回退系统Temp，实际是否写未知。
 

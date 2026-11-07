@@ -11,11 +11,14 @@ import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.InformationRun;
 import edu.cufe.auction.world.ManufacturingModel;
 import edu.cufe.auction.world.ManufacturingRun;
+import edu.cufe.auction.world.MediaModel;
+import edu.cufe.auction.world.MediaRun;
 import edu.cufe.auction.world.OpeningRegistry;
 import edu.cufe.auction.world.PendingTask;
 import edu.cufe.auction.world.PerformanceModel;
 import edu.cufe.auction.world.RoleAccess;
 import edu.cufe.auction.world.RoleRun;
+import edu.cufe.auction.world.RoleTradingView;
 import edu.cufe.auction.world.RoleView;
 import edu.cufe.auction.world.ValuationModel;
 import edu.cufe.auction.world.WorldExchange;
@@ -321,6 +324,63 @@ public final class WorldWebHost implements AutoCloseable {
      */
     public RoleView roleView(String personId) throws BusyException, Exception {
         return call(() -> readyNow().roleView(personId));
+    }
+
+    /** 个人页面在同一截止取角色投影与可选采编数据；旧档案media为空。 */
+    public record PersonPage(RoleView view, Map<String, Object> media) { }
+
+    /**
+     * 读取指定已验证人物的个人页面；正文仅取实际可回忆经历，不查管理端原件。
+     * @param personId 会话绑定的真实人物
+     * @return 同一截止、服务器裁剪的个人内容
+     * @throws Exception 人物无效或世界读取失败
+     */
+    public PersonPage personPage(String personId) throws Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            var snapshot = current.snapshot();
+            if (snapshot.media().isEmpty()) return new PersonPage(current.roleView(personId), null);
+            RoleTradingView trading = current.openRoleSession(personId).view();
+            RoleView view = trading.profile();
+            List<Map<String, Object>> stories = new ArrayList<>();
+            Set<String> visibleStories = new LinkedHashSet<>();
+            for (RoleTradingView.MediaStory story : trading.media()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("storyId", story.storyId()); row.put("template", story.template());
+                row.put("status", story.status()); row.put("revisionNo", num(story.revisionNo()));
+                row.put("topic", story.topic()); row.put("authorPartyId", story.authorPartyId());
+                row.put("own", story.own()); row.put("canReview", story.canReview());
+                row.put("canPublish", story.canPublish()); row.put("sourceGroups", num(story.sourceGroups()));
+                row.put("updatedAtMillis", num(story.updatedAtMillis())); stories.add(row);
+                visibleStories.add(story.storyId());
+            }
+            List<Map<String, Object>> reports = new ArrayList<>();
+            for (MediaRun.Report report : snapshot.media().orElseThrow().reports().values()) {
+                if (!report.personPartyId().equals(personId)
+                        || (!report.storyId().isEmpty() && !visibleStories.contains(report.storyId()))) continue;
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("kind", report.kind()); row.put("accepted", report.accepted());
+                row.put("reason", report.reason()); row.put("storyId", report.storyId());
+                row.put("timeMillis", num(report.timeMillis())); reports.add(row);
+            }
+            reports.sort(Comparator.comparingLong((Map<String, Object> row) ->
+                    parseLong(row.get("timeMillis"))).reversed());
+            List<Map<String, Object>> documents = new ArrayList<>();
+            for (RoleView.Experience experience : view.observations()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("docId", experience.ref().docId()); row.put("version", num(experience.ref().version()));
+                row.put("index", num(experience.ref().index())); row.put("title", experience.title());
+                row.put("body", experience.body()); row.put("sourceDescription", experience.publicSourceDescription());
+                row.put("publishedAtMillis", num(experience.publishedAt()));
+                row.put("completedAtMillis", num(experience.completedAt())); documents.add(row);
+            }
+            Map<String, Object> media = new LinkedHashMap<>();
+            media.put("timeMillis", num(view.timeMillis()));
+            media.put("stories", bounded(stories)); media.put("reports", bounded(reports));
+            media.put("documents", bounded(documents));
+            media.put("tools", trading.tools());
+            return new PersonPage(view, java.util.Collections.unmodifiableMap(media));
+        });
     }
 
     /** 工作台账户行（金额为精确字符串）。 */
@@ -2093,6 +2153,201 @@ public final class WorldWebHost implements AutoCloseable {
     public static final List<String> LIVE_ROLE_PERSONS =
             List.of("alice", "bob", "carol", "dave");
 
+    /** 可参与本轮模型决定的真实人物及其已接入场景。 */
+    public record LivePerson(String personPartyId, String name, String sceneId) { }
+
+    /** 当前档案的实际执行能力；五个配置槽位不等于五类场景都已接入。 */
+    public record LiveCapabilities(String position, String timeMillis, boolean mediaAvailable,
+                                   List<String> supportedScenes, List<LivePerson> persons) { }
+
+    /**
+     * 查询同一截止的场景及人物能力，不调用提供方。
+     * @return 已接入场景和当前有效岗位人物
+     * @throws Exception 世界读取失败
+     */
+    public LiveCapabilities liveCapabilities() throws Exception {
+        return call(() -> {
+            WorldRuntime.Snapshot snapshot = readyNow().snapshot();
+            List<String> scenes = workers == null || !liveRuntime() ? List.of()
+                    : snapshot.media().isPresent() ? List.of("research", "trading", "media")
+                    : List.of("research", "trading");
+            return new LiveCapabilities(num(snapshot.position()), num(snapshot.timeMillis()),
+                    snapshot.media().isPresent(), scenes,
+                    scenes.isEmpty() ? List.of() : livePeople(snapshot));
+        });
+    }
+
+    private List<LivePerson> livePeople(WorldRuntime.Snapshot snapshot) {
+        OpeningRegistry registry = runtime.openingRegistry().orElse(null);
+        Map<String, LivePerson> people = new LinkedHashMap<>();
+        for (String person : LIVE_ROLE_PERSONS) {
+            people.put(person, new LivePerson(person, partyName(registry, person),
+                    person.equals("alice") ? "research" : "trading"));
+        }
+        if (snapshot.media().isPresent() && snapshot.roles().isPresent()) {
+            var media = snapshot.media().orElseThrow();
+            for (RoleAccess.Appointment appointment : snapshot.roles().orElseThrow()
+                    .access().appointments()) {
+                if (!appointment.activeAt(snapshot.timeMillis())
+                        || media.config().policyOf(appointment.organizationPartyId()) == null
+                        || (appointment.role() != RoleAccess.Role.JOURNALIST
+                            && appointment.role() != RoleAccess.Role.EDITOR)) continue;
+                // 既有四岗的路由不因新增媒体任职被静默替换。
+                people.putIfAbsent(appointment.personPartyId(),
+                        new LivePerson(appointment.personPartyId(),
+                                partyName(registry, appointment.personPartyId()), "media"));
+            }
+        }
+        return List.copyOf(people.values());
+    }
+
+    /** 媒体上帝审计视图：所有分区来自同一确认截止，条数真实且明确限制展示量。 */
+    public record MediaAuditView(String runId, String position, String timeMillis, boolean available,
+                                 Section organizations, Section stories, Section works,
+                                 Section reports, Section pending, List<String> notes) { }
+
+    /** 单篇稿件的真实文档版本与证据，不用最新正文覆盖旧版。 */
+    public record MediaStoryView(String runId, String position, String timeMillis,
+                                 String organizationPartyId, String storyId,
+                                 Section versions, Section citations, Section roots) { }
+
+    /**
+     * 读取媒体机构、工时和工作流审计；仅供服务器管理员路由调用。
+     * @return 同一确认截止的审计数据
+     * @throws Exception 世界读取失败
+     */
+    public MediaAuditView mediaAudit() throws Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            List<Map<String, Object>> organizations = new ArrayList<>();
+            List<Map<String, Object>> stories = new ArrayList<>();
+            List<Map<String, Object>> works = new ArrayList<>();
+            List<Map<String, Object>> reports = new ArrayList<>();
+            List<Map<String, Object>> pending = new ArrayList<>();
+            if (snapshot.media().isEmpty()) {
+                return new MediaAuditView(runId, num(snapshot.position()), num(snapshot.timeMillis()),
+                        false, bounded(organizations), bounded(stories), bounded(works),
+                        bounded(reports), bounded(pending), List.of("当前档案未启用采编。"));
+            }
+            MediaRun run = snapshot.media().orElseThrow();
+            WorldRuntime.MediaWorkAudit audit = current.mediaWorkAudit().orElseThrow();
+            OpeningRegistry registry = current.openingRegistry().orElse(null);
+            for (WorldRuntime.MediaBudgetBalance balance : audit.budgets()) {
+                MediaModel.Policy policy = run.config().policyOf(balance.organizationPartyId());
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("organizationPartyId", balance.organizationPartyId());
+                row.put("name", partyName(registry, balance.organizationPartyId()));
+                row.put("totalMillis", num(balance.totalMillis()));
+                row.put("spentMillis", num(balance.spentMillis()));
+                row.put("reservedMillis", num(balance.reservedMillis()));
+                row.put("availableMillis", num(balance.availableMillis()));
+                row.put("templates", policy.enabledTemplates());
+                row.put("writeMillis", num(policy.writeMillis()));
+                row.put("reviewMillis", num(policy.reviewMillis()));
+                row.put("publishMillis", num(policy.publishMillis()));
+                organizations.add(row);
+            }
+            for (MediaModel.State state : run.states()) {
+                for (MediaModel.Story story : state.stories()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("organizationPartyId", state.policy().mediaOrganizationPartyId());
+                    row.put("storyId", story.storyId());
+                    row.put("template", story.template().name());
+                    row.put("authorPartyId", story.authorPartyId());
+                    row.put("topic", story.topic());
+                    row.put("status", story.status().name());
+                    row.put("revisionNo", num(story.revisionNo()));
+                    row.put("draftVersion", num(story.draftVersion()));
+                    row.put("publicVersion", num(story.publicVersion()));
+                    row.put("sourceGroups", num(story.sourceGroups()));
+                    row.put("approvedBy", story.approvedBy());
+                    row.put("updatedAtMillis", num(story.updatedAtMillis()));
+                    stories.add(row);
+                }
+            }
+            for (MediaRun.Work work : run.works()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("taskId", work.taskId()); row.put("personPartyId", work.personPartyId());
+                row.put("organizationPartyId", work.organizationPartyId());
+                row.put("kind", work.kind()); row.put("storyId", work.storyId());
+                row.put("startedAtMillis", num(work.startedAtMillis()));
+                row.put("completedAtMillis", num(work.completedAtMillis()));
+                row.put("chargedMillis", num(work.chargedMillis()));
+                row.put("outcome", work.outcome()); works.add(row);
+            }
+            for (MediaRun.Report report : run.reports().values()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("taskId", report.taskId()); row.put("personPartyId", report.personPartyId());
+                row.put("kind", report.kind()); row.put("accepted", report.accepted());
+                row.put("reason", report.reason()); row.put("storyId", report.storyId());
+                row.put("timeMillis", num(report.timeMillis()));
+                row.put("position", num(report.position())); reports.add(row);
+            }
+            sortReportsNewestFirst(reports);
+            for (WorldRuntime.MediaWorkInFlight work : audit.pending()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("taskId", work.taskId()); row.put("personPartyId", work.personPartyId());
+                row.put("organizationPartyId", work.organizationPartyId());
+                row.put("kind", work.kind()); row.put("dueTimeMillis", num(work.dueTimeMillis()));
+                pending.add(row);
+            }
+            return new MediaAuditView(runId, num(snapshot.position()), num(snapshot.timeMillis()),
+                    true, bounded(organizations), bounded(stories), bounded(works), bounded(reports),
+                    bounded(pending), List.of("工时为本次运行的实验总预算，没有每日自动重置。",
+                    "取消控制不另扣采编工时；被取消工作按实际已过时间收费。",
+                    "发布不会自动变成人物已读经历。采访、匿名与社交传播尚未接入。"));
+        });
+    }
+
+    /**
+     * 查询指定机构稿件的原始版本与引用；仅供管理员使用。
+     * @param organizationPartyId 真实媒体机构标识
+     * @param storyId 稿件标识
+     * @param expectedPosition 页面所见确认截止，变化时拒绝跨截止拼接
+     * @return 同截止的原始版本及证据
+     * @throws Exception 稿件不存在或世界读取失败
+     */
+    public MediaStoryView mediaStory(String organizationPartyId, String storyId, long expectedPosition) throws Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            if (snapshot.position() != expectedPosition) throw new PositionMismatch(snapshot.position());
+            MediaRun run = snapshot.media().orElseThrow(() -> new IllegalArgumentException("当前档案未启用采编"));
+            MediaModel.State state = run.stateOf(organizationPartyId);
+            if (state == null) throw new IllegalArgumentException("没有此媒体机构");
+            MediaModel.Story story = state.stories().stream().filter(s -> s.storyId().equals(storyId))
+                    .findFirst().orElseThrow(() -> new IllegalArgumentException("没有此稿件"));
+            List<Map<String, Object>> versions = new ArrayList<>();
+            for (InformationModel.Document document : snapshot.information().orElseThrow().information().documents()) {
+                boolean draft = document.docId().equals(story.draftDocId());
+                if (!draft && !document.docId().equals(story.publicDocId())) continue;
+                for (InformationModel.DocumentVersion version : document.versions()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("kind", draft ? "DRAFT" : "PUBLIC"); row.put("docId", document.docId());
+                    row.put("publisherPartyId", document.publisherPartyId());
+                    row.put("version", num(version.version())); row.put("title", version.title());
+                    row.put("body", version.body()); row.put("sourceDescription", version.publicSourceDescription());
+                    row.put("publishedAtMillis", num(version.publishedAt()));
+                    row.put("readDurationMillis", num(version.readDurationMillis())); versions.add(row);
+                }
+            }
+            List<Map<String, Object>> citations = new ArrayList<>();
+            for (RoleView.ReadingRef ref : story.evidence()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("personPartyId", ref.personPartyId()); row.put("docId", ref.docId());
+                row.put("version", num(ref.version())); row.put("index", num(ref.index())); citations.add(row);
+            }
+            List<Map<String, Object>> roots = new ArrayList<>();
+            for (MediaModel.Ref ref : story.roots()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("docId", ref.docId()); row.put("version", num(ref.version())); roots.add(row);
+            }
+            return new MediaStoryView(runId, num(snapshot.position()), num(snapshot.timeMillis()),
+                    organizationPartyId, storyId, bounded(versions), bounded(citations), bounded(roots));
+        });
+    }
+
     /** 单场景累计视图；数字均为精确字符串，来源 DecisionModel。 */
     public record SceneState(String sceneId, String slotId, String model, String revision,
                              boolean enabled, String usedCalls, String reservedCalls,
@@ -2315,12 +2570,14 @@ public final class WorldWebHost implements AutoCloseable {
         if (revision != expectedRevision) {
             throw new SceneRoutes.RevisionMismatch(revision);
         }
-        if (persons == null || persons.isEmpty() || persons.size() > LIVE_ROLE_PERSONS.size()) {
-            throw new IllegalArgumentException("本轮人数必须在 1..4");
+        List<String> allowed = livePeople(current.snapshot()).stream()
+                .map(LivePerson::personPartyId).toList();
+        if (persons == null || persons.isEmpty() || persons.size() > allowed.size()) {
+            throw new IllegalArgumentException("本轮人数必须在 1.." + allowed.size());
         }
         Set<String> distinct = new LinkedHashSet<>(persons);
-        if (distinct.size() != persons.size() || !LIVE_ROLE_PERSONS.containsAll(distinct)) {
-            throw new IllegalArgumentException("人物必须是四岗中的不同人物");
+        if (distinct.size() != persons.size() || !allowed.containsAll(distinct)) {
+            throw new IllegalArgumentException("人物必须来自当前档案已接入的不同岗位人物");
         }
         if (liveRound != null && (!liveRound.pending.isEmpty()
                 || !physicalInFlight.isEmpty())) {
@@ -2418,6 +2675,11 @@ public final class WorldWebHost implements AutoCloseable {
             }
             String person = iterator.next();
             String scene = sceneFor(person);
+            if (scene == null) {
+                round.skipped.put(person, "PERSON_NOT_ELIGIBLE");
+                iterator.remove();
+                continue;
+            }
             SceneRoutes.Route route = routeOf(snapshot, scene);
             if (route == null || !route.enabled()) {
                 round.skipped.put(person, "SCENE_DISABLED");
@@ -2541,8 +2803,10 @@ public final class WorldWebHost implements AutoCloseable {
         return count;
     }
 
-    private static String sceneFor(String person) {
-        return "alice".equals(person) ? "research" : "trading";
+    private String sceneFor(String person) {
+        return livePeople(runtime.snapshot()).stream()
+                .filter(row -> row.personPartyId().equals(person)).map(LivePerson::sceneId)
+                .findFirst().orElse(null);
     }
 
     private static SceneRoutes.Route routeOf(SceneRoutes.Snapshot snapshot, String sceneId) {
@@ -2624,7 +2888,7 @@ public final class WorldWebHost implements AutoCloseable {
             runBudget = budgetUsage(model.runUsage(), runReserved,
                     model.config().budget().runCap());
             List<PersonBudget> budgets = new ArrayList<>();
-            for (String person : LIVE_ROLE_PERSONS) {
+            for (String person : model.config().budget().personCap().keySet().stream().sorted().toList()) {
                 DecisionModel.Usage used = model.personUsage().getOrDefault(person,
                         DecisionModel.Usage.zero());
                 DecisionModel.Usage cap = model.config().budget().personCap().getOrDefault(person,

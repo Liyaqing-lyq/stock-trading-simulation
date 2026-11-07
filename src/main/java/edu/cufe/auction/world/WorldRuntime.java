@@ -79,6 +79,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 信念桥：在回忆档案之上接入主观信念、来源可靠性与慢习惯（M4g.2 schema12）。 */
     private static final int STATE_SCHEMA_BELIEF = 12;
+
+    /** 媒体桥：在信念档案之上接入双人采编运行桥与组织工时预算（M4h.2 schema13）。 */
+    private static final int STATE_SCHEMA_MEDIA = 13;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -121,6 +124,8 @@ public final class WorldRuntime implements AutoCloseable {
     private final InformationRun.Config informationConfig;
     /** 冻结的决定配置；只有 decision-experiment-v1 档案非空。 */
     private final DecisionModel.Config decisionConfig;
+    /** 媒体采编开局配置；只有 media-editorial-experiment-v1（schema13）档案非空。 */
+    private final MediaRun.Config mediaConfig;
     /** live 完成槽：构造时自动建立，scripted 为 null；不公开。 */
     private final LiveCompletionInbox liveInbox;
     /** 有界回调队列：异步线程只 offer，不读写世界状态。 */
@@ -197,8 +202,26 @@ public final class WorldRuntime implements AutoCloseable {
                            Optional<DecisionRun> decisions,
                            List<PendingTask> pending, List<Notice> delivered,
                            Set<String> usedTaskIds,
-                           Optional<DividendModel.State> dividends) {
-        /** 旧 15 参构造：保持源码兼容，分红状态为空。 */
+                           Optional<DividendModel.State> dividends,
+                           Optional<MediaRun> media) {
+        /** 旧 16 参构造：保持源码兼容，媒体子集为空。 */
+        public Snapshot(long position, long timeMillis, String lastPhase,
+                        Map<String, CashLedger.CashAccount> accounts,
+                        Optional<SecuritiesLedger.State> securities,
+                        Optional<WorldExchange.State> exchange,
+                        Optional<ManufacturingRun> manufacturing,
+                        Optional<BoardRun> governance,
+                        Optional<RoleRun> roles,
+                        Optional<InformationRun> information,
+                        Optional<RoleTradingRun> trading,
+                        Optional<DecisionRun> decisions,
+                        List<PendingTask> pending, List<Notice> delivered,
+                        Set<String> usedTaskIds,
+                        Optional<DividendModel.State> dividends) {
+            this(position, timeMillis, lastPhase, accounts, securities, exchange, manufacturing,
+                    governance, roles, information, trading, decisions, pending, delivered,
+                    usedTaskIds, dividends, Optional.empty());
+        }
         public Snapshot(long position, long timeMillis, String lastPhase,
                         Map<String, CashLedger.CashAccount> accounts,
                         Optional<SecuritiesLedger.State> securities,
@@ -213,7 +236,7 @@ public final class WorldRuntime implements AutoCloseable {
                         Set<String> usedTaskIds) {
             this(position, timeMillis, lastPhase, accounts, securities, exchange, manufacturing,
                     governance, roles, information, trading, decisions, pending, delivered,
-                    usedTaskIds, Optional.empty());
+                    usedTaskIds, Optional.empty(), Optional.empty());
         }
 
         /** 防御性冻结所有集合。 */
@@ -228,6 +251,7 @@ public final class WorldRuntime implements AutoCloseable {
             trading = Objects.requireNonNull(trading, "trading");
             decisions = Objects.requireNonNull(decisions, "decisions");
             dividends = Objects.requireNonNull(dividends, "dividends");
+            media = Objects.requireNonNull(media, "media");
             pending = List.copyOf(pending);
             delivered = List.copyOf(delivered);
             usedTaskIds = Collections.unmodifiableSet(new LinkedHashSet<>(usedTaskIds));
@@ -394,7 +418,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               DividendModel.State dividends,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              BeliefRun beliefs) {
+                              BeliefRun beliefs,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              MediaRun media) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -528,7 +554,34 @@ public final class WorldRuntime implements AutoCloseable {
                         InformationRun.Config information, DecisionModel.Config decisions)
             throws IOException {
         this(file, manifest, openings, registry, manufacturing, charter, roles, information,
-                decisions, null);
+                decisions, null, null);
+    }
+
+    /**
+     * 打开或恢复一次含媒体采编运行桥的档案（{@code media-editorial-experiment-v1}，schema13）。
+     *
+     * <p>媒体配置与 {@code media:1} 模块严格成对；配置里的每个媒体组织都必须是已登记
+     * ORGANIZATION，预算与动作时长随第一批开局内容冻结。旧 1–12 档案不接受媒体配置。</p>
+     *
+     * @param file          运行日志
+     * @param manifest      运行清单
+     * @param openings      现金开局
+     * @param registry      开局登记
+     * @param manufacturing 制造配置
+     * @param charter       董事会章程
+     * @param roles         任职配置
+     * @param information   阅读配置
+     * @param decisions     决定配置
+     * @param media         媒体配置；旧档案为 null
+     * @throws IOException 日志不可用或配置与持久记录不一致
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                        OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                        BoardModel.Charter charter, RoleRun.Config roles,
+                        InformationRun.Config information, DecisionModel.Config decisions,
+                        MediaRun.Config media) throws IOException {
+        this(file, manifest, openings, registry, manufacturing, charter, roles, information,
+                decisions, null, media);
     }
 
     /**
@@ -539,6 +592,16 @@ public final class WorldRuntime implements AutoCloseable {
                  BoardModel.Charter charter, RoleRun.Config roles,
                  InformationRun.Config information, DecisionModel.Config decisions,
                  LiveCompletionInbox injectedInbox)
+            throws IOException {
+        this(file, manifest, openings, registry, manufacturing, charter, roles, information,
+                decisions, injectedInbox, null);
+    }
+
+    WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                 OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                 BoardModel.Charter charter, RoleRun.Config roles,
+                 InformationRun.Config information, DecisionModel.Config decisions,
+                 LiveCompletionInbox injectedInbox, MediaRun.Config media)
             throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         boolean liveProfile = decisions != null && decisions.profile() != null;
@@ -628,6 +691,33 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未启用信念模块的运行不接受信念参数："
                     + manifest.rulesVersion());
         }
+        if (manifest.hasMedia()) {
+            if (!manifest.hasBelief()) {
+                throw new IllegalArgumentException("媒体档案必须建立在信念档案之上："
+                        + manifest.rulesVersion());
+            }
+            if (media == null) {
+                throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                        + " 必须提供媒体开局配置");
+            }
+            for (MediaModel.Policy policy : media.policies()) {
+                OpeningRegistry.Party party = null;
+                for (OpeningRegistry.Party candidate : registry.parties()) {
+                    if (candidate.partyId().equals(policy.mediaOrganizationPartyId())) {
+                        party = candidate;
+                        break;
+                    }
+                }
+                if (party == null
+                        || party.kind() != OpeningRegistry.PartyKind.ORGANIZATION) {
+                    throw new IllegalArgumentException("媒体组织未登记或不是组织："
+                            + policy.mediaOrganizationPartyId());
+                }
+            }
+        } else if (media != null) {
+            throw new IllegalArgumentException("未启用媒体模块的运行不接受媒体配置："
+                    + manifest.rulesVersion());
+        }
         if (manifest.hasDecisions() && (!manifest.hasTrading() || !manifest.hasRoles()
                 || !manifest.hasInformation())) {
             throw new IllegalArgumentException("决定档案必须建立在四岗交易与阅读档案之上："
@@ -663,6 +753,7 @@ public final class WorldRuntime implements AutoCloseable {
         this.roleConfig = roles;
         this.informationConfig = information;
         this.decisionConfig = decisions;
+        this.mediaConfig = media;
         this.liveInbox = decisions != null && decisions.live()
                 ? (injectedInbox != null ? injectedInbox
                         : new LiveCompletionInbox(decisions.limits().maxInFlight()))
@@ -2091,6 +2182,12 @@ public final class WorldRuntime implements AutoCloseable {
                             completeBeliefCapture(next);
                     case PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1 ->
                             completeBeliefPublish(next);
+                    case PendingTask.MEDIA_STORY_PROPOSE_V1,
+                         PendingTask.MEDIA_STORY_SUBMIT_V1,
+                         PendingTask.MEDIA_STORY_REVIEW_V1,
+                         PendingTask.MEDIA_STORY_PUBLISH_V1,
+                         PendingTask.MEDIA_STORY_CORRECTION_V1,
+                         PendingTask.MEDIA_WORK_CANCEL_V1 -> completeMediaTask(next);
                     case PendingTask.ROLE_TRADING_SWEEP_V1 -> completeRoleSweep(next);
                     case PendingTask.ROLE_TRADING_EXPIRE_V1 -> completeRoleExpire(next);
                     case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> completeAppointmentEnd(next);
@@ -2215,7 +2312,7 @@ public final class WorldRuntime implements AutoCloseable {
                 Optional.ofNullable(state.information()), Optional.ofNullable(state.trading()),
                 Optional.ofNullable(state.decisions()),
                 state.pending(), state.delivered(), state.usedTaskIds(),
-                Optional.ofNullable(state.dividends()));
+                Optional.ofNullable(state.dividends()), Optional.ofNullable(state.media()));
     }
 
     /**
@@ -4397,6 +4494,8 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("观望不能排业务动作");
         }
         JsonNode args = replyArgs(recorded.lastAttempt().replyBody());
+        MediaTaskBody originalMedia = forcedTaskId != null && tool.startsWith("media.")
+                ? recordedMediaBody(base, recorded.actionId()) : null;
         String kind;
         Object body;
         switch (tool) {
@@ -4468,9 +4567,96 @@ public final class WorldRuntime implements AutoCloseable {
                 kind = PendingTask.ROLE_TRADING_COMPANY_REPORT_V1;
                 body = strict(WorldRoleSession.ReportDraft.class, args);
             }
+            case RoleTradingView.TOOL_MEDIA_PROPOSE -> {
+                kind = PendingTask.MEDIA_STORY_PROPOSE_V1;
+                WorldRoleSession.MediaProposeDraft draft =
+                        strict(WorldRoleSession.MediaProposeDraft.class, args);
+                String organization = originalMedia == null
+                        ? resolveMediaOrganization(base, binding.personPartyId(), kind,
+                                draft, base.timeMillis())
+                        : originalMedia.organizationPartyId();
+                body = new MediaTaskBody(organization, recorded.cutoffTimeMillis(), recorded.cutoffPosition(), recorded.barrierAtMillis(), false,
+                        mapper.writeValueAsString(payloadDraft(binding.personPartyId(), kind, draft)));
+            }
+            case RoleTradingView.TOOL_MEDIA_SUBMIT -> {
+                kind = PendingTask.MEDIA_STORY_SUBMIT_V1;
+                WorldRoleSession.MediaSubmitDraft draft =
+                        strict(WorldRoleSession.MediaSubmitDraft.class, args);
+                String organization = originalMedia == null
+                        ? resolveMediaOrganization(base, binding.personPartyId(), kind,
+                                draft, base.timeMillis())
+                        : originalMedia.organizationPartyId();
+                body = new MediaTaskBody(organization, recorded.cutoffTimeMillis(), recorded.cutoffPosition(), recorded.barrierAtMillis(), false,
+                        mapper.writeValueAsString(draft));
+            }
+            case RoleTradingView.TOOL_MEDIA_REVIEW -> {
+                kind = PendingTask.MEDIA_STORY_REVIEW_V1;
+                WorldRoleSession.MediaReviewDraft draft =
+                        strict(WorldRoleSession.MediaReviewDraft.class, args);
+                String organization = originalMedia == null
+                        ? resolveMediaOrganization(base, binding.personPartyId(), kind,
+                                draft, base.timeMillis())
+                        : originalMedia.organizationPartyId();
+                body = new MediaTaskBody(organization, recorded.cutoffTimeMillis(), recorded.cutoffPosition(), recorded.barrierAtMillis(), false,
+                        mapper.writeValueAsString(draft));
+            }
+            case RoleTradingView.TOOL_MEDIA_PUBLISH -> {
+                kind = PendingTask.MEDIA_STORY_PUBLISH_V1;
+                WorldRoleSession.MediaStoryDraft draft =
+                        strict(WorldRoleSession.MediaStoryDraft.class, args);
+                String organization = originalMedia == null
+                        ? resolveMediaOrganization(base, binding.personPartyId(), kind,
+                                draft, base.timeMillis())
+                        : originalMedia.organizationPartyId();
+                body = new MediaTaskBody(organization, recorded.cutoffTimeMillis(), recorded.cutoffPosition(), recorded.barrierAtMillis(), false,
+                        mapper.writeValueAsString(draft));
+            }
+            case RoleTradingView.TOOL_MEDIA_CORRECTION -> {
+                kind = PendingTask.MEDIA_STORY_CORRECTION_V1;
+                WorldRoleSession.MediaStoryDraft draft =
+                        strict(WorldRoleSession.MediaStoryDraft.class, args);
+                String organization = originalMedia == null
+                        ? resolveMediaOrganization(base, binding.personPartyId(), kind,
+                                draft, base.timeMillis())
+                        : originalMedia.organizationPartyId();
+                body = new MediaTaskBody(organization, recorded.cutoffTimeMillis(), recorded.cutoffPosition(), recorded.barrierAtMillis(), false,
+                        mapper.writeValueAsString(draft));
+            }
+            case RoleTradingView.TOOL_MEDIA_CANCEL -> {
+                kind = PendingTask.MEDIA_WORK_CANCEL_V1;
+                String organization = originalMedia == null
+                        ? resolveMediaCancelOrganization(base, binding.personPartyId(),
+                                base.pending(), base.timeMillis())
+                        : originalMedia.organizationPartyId();
+                if (organization == null) {
+                    throw new IOException("本人没有可取消的媒体工作");
+                }
+                body = new MediaTaskBody(organization, recorded.cutoffTimeMillis(), recorded.cutoffPosition(), recorded.barrierAtMillis(), false, "{}");
+            }
             default -> throw new IOException("未知业务工具：" + tool);
         }
         long dueMillis = DecisionModel.actionDueMillis(model, recorded.actionId());
+        if (MediaRun.KINDS.contains(kind)) {
+            MediaTaskBody mediaTask = (MediaTaskBody) body;
+            long duration = MediaRun.durationOf(base.media().config(), kind,
+                    mediaTask.organizationPartyId());
+            if (dueMillis != recorded.barrierAtMillis() + duration) {
+                throw new IOException("媒体动作耗时必须等于冻结时长：" + kind + " -> " + duration);
+            }
+            boolean rejected = false;
+            if (forcedTaskId == null) {
+                // 首次计划才判互斥与预算；重放既有动作只核对确定性字段
+                rejected = mediaBudgetRejected(base, mediaTask.organizationPartyId(), kind,
+                        binding.personPartyId(), duration);
+            } else {
+                // 重放：预算标志沿用原记录（不能按当前预算重算，也不能固定 false）；
+                // 首次准入由 expectedReply 按上一真实状态重算，旧命令随后不可改写。
+                rejected = originalMedia.budgetRejected();
+            }
+            body = new MediaTaskBody(mediaTask.organizationPartyId(), mediaTask.observedAtMillis(),
+                    mediaTask.observedPosition(), mediaTask.startedAtMillis(), rejected,
+                    mediaTask.body());
+        }
         String taskId = forcedTaskId != null ? forcedTaskId : freeTaskId(base,
                 DecisionRun.actionTaskId(recorded.actionId()));
         String commandId = DecisionRun.actionCommandId(recorded.actionId());
@@ -4684,7 +4870,15 @@ public final class WorldRuntime implements AutoCloseable {
                     || !report.clientTaskId().equals(ref.actionId())
                     || !report.kind().equals(replanned.kind())
                     || report.timeMillis() != ref.dueMillis()) {
-                throw new IOException("已记录意图缺少待办或准确完成回报：" + ref.actionId());
+                // 媒体动作的完成回报记在媒体子集里，不复制到四岗回报
+                MediaRun.Report mediaReport = candidate.media() == null ? null
+                        : candidate.media().reports().get(ref.taskId());
+                if (mediaReport == null
+                        || !mediaReport.personPartyId().equals(decision.personPartyId())
+                        || !mediaReport.kind().equals(replanned.kind())
+                        || mediaReport.timeMillis() != ref.dueMillis()) {
+                    throw new IOException("已记录意图缺少待办或准确完成回报：" + ref.actionId());
+                }
             }
         }
     }
@@ -7010,6 +7204,289 @@ public final class WorldRuntime implements AutoCloseable {
         validateTrading(candidate, previous);
         validateDecisions(candidate, previous);
         validateBeliefs(candidate, previous, commit);
+        validateMedia(candidate, previous, commit);
+    }
+
+    /**
+     * 媒体帧逐帧重算：从上一确认状态与真实待办请求重算本帧应得的媒体状态、资料状态、
+     * 预算、工作与报告，并与候选逐字段比较；任何"合法 checksum 下的伪造"都会在这里暴露。
+     */
+    private void validateMedia(WorldState candidate, WorldState previous, WorldCommit commit)
+            throws IOException {
+        if (!manifest.hasMedia()) {
+            if (candidate.media() != null) {
+                throw new IOException("旧档案不得包含媒体子集状态");
+            }
+            return;
+        }
+        MediaRun after = candidate.media();
+        if (after == null) {
+            throw new IOException("媒体档案缺少媒体子集状态");
+        }
+        MediaRun before = previous == null ? null : previous.media();
+        if (before == null) {
+            MediaRun expected;
+            try {
+                expected = MediaRun.open(mediaConfig, registry);
+            } catch (RuntimeException invalid) {
+                throw new IOException("媒体开局配置无法重建", invalid);
+            }
+            if (!expected.equals(after)) {
+                throw new IOException("媒体开局子集与冻结配置不一致");
+            }
+            if (!mediaTasks(candidate.pending()).isEmpty()) {
+                throw new IOException("新开局不得包含媒体待办");
+            }
+            return;
+        }
+
+        // 1）本帧完成的媒体任务 = 上一帧有、本帧没有
+        List<PendingTask> completed = new ArrayList<>();
+        for (PendingTask task : mediaTasks(previous.pending())) {
+            boolean stillPending = false;
+            for (PendingTask now : candidate.pending()) {
+                if (now.taskId().equals(task.taskId())) {
+                    stillPending = true;
+                    break;
+                }
+            }
+            if (!stillPending) {
+                completed.add(task);
+            }
+        }
+        completed.sort(Comparator.comparingLong(PendingTask::dueTimeMillis)
+                .thenComparing(PendingTask::taskId));
+
+        // 2）从上一帧与真实待办请求重算这些完成
+        MediaRun expectedRun = before;
+        InformationRun expectedInformation = previous.information();
+        List<PendingTask> expectedPending = new ArrayList<>(previous.pending());
+        Set<String> handled = new LinkedHashSet<>();
+        for (PendingTask task : completed) {
+            if (handled.contains(task.taskId())) {
+                continue;
+            }
+            WorldState step = mediaStep(previous, expectedRun, expectedInformation, expectedPending);
+            MediaFrame frame;
+            try {
+                frame = computeMediaFrame(step, task);
+            } catch (RuntimeException invalid) {
+                throw new IOException("媒体帧重算失败：" + task.taskId(), invalid);
+            }
+            for (PendingTask removed : frame.removed()) {
+                handled.add(removed.taskId());
+            }
+            expectedRun = frame.run();
+            expectedInformation = frame.information();
+            expectedPending = frame.pending();
+        }
+        if (!expectedRun.equals(after)) {
+            throw new IOException("媒体子集与逐帧重算不一致：状态/预算/工作/报告被改动");
+        }
+        if (!completed.isEmpty()
+                && (expectedInformation == null
+                || !expectedInformation.equals(candidate.information()))) {
+            // 只有媒体完成帧才会经由媒体桥改动资料子集；其他帧的资料变化由别的子集校验
+            throw new IOException("资料子集与媒体逐帧重算不一致");
+        }
+
+        // 3）在途媒体待办：只能来自本批真实排程请求，且字段与命令原文一致
+        Map<String, PendingTask> expectedById = byId(mediaTasks(expectedPending));
+        Map<String, PendingTask> actualById = byId(mediaTasks(candidate.pending()));
+        List<PendingTask> additions = new ArrayList<>();
+        for (Map.Entry<String, PendingTask> entry : actualById.entrySet()) {
+            PendingTask task = entry.getValue();
+            PendingTask carried = expectedById.get(entry.getKey());
+            if (carried != null) {
+                if (!carried.equals(task)) {
+                    throw new IOException("在途媒体任务被改写：" + task.taskId());
+                }
+                continue;
+            }
+            requireMediaSchedulingRequest(previous, candidate, commit, task);
+            additions.add(task);
+        }
+        for (String expectedId : expectedById.keySet()) {
+            if (!actualById.containsKey(expectedId)) {
+                throw new IOException("在途媒体任务被删除或漏排：" + expectedId);
+            }
+        }
+
+        // 4）本批每一条真实媒体排程事件都必须在待办里出现且内容一致
+        Map<String, PendingTask> candidateById = pendingById(candidate.pending());
+        for (WorldEvent event : commit.events()) {
+            if (!"TASK_SCHEDULED_V1".equals(event.type())) {
+                continue;
+            }
+            PendingTask scheduledTask;
+            try {
+                scheduledTask = mapper.readValue(event.payload(), PendingTask.class);
+            } catch (IOException unreadable) {
+                continue;
+            }
+            if (!MediaRun.KINDS.contains(scheduledTask.kind())) {
+                continue;
+            }
+            PendingTask present = candidateById.get(scheduledTask.taskId());
+            if (present == null || !present.equals(scheduledTask)) {
+                throw new IOException("媒体排程事件缺少对应待办：" + scheduledTask.taskId());
+            }
+        }
+
+        // 已确认待办的准入结论保持不变；取消释放预算不能追认之前拒绝的任务。
+        // 媒体待办 = 重算结果 + 已核验的新增排程（非媒体待办由其他子集校验）
+        Map<String, PendingTask> expectedAll = byId(mediaTasks(expectedPending));
+        for (PendingTask added : additions) {
+            expectedAll.put(added.taskId(), added);
+        }
+        if (!expectedAll.equals(actualById)) {
+            throw new IOException("媒体待办与逐帧重算不一致");
+        }
+    }
+
+    /** 只取媒体任务。 */
+    private static List<PendingTask> mediaTasks(List<PendingTask> pending) {
+        List<PendingTask> media = new ArrayList<>();
+        for (PendingTask task : pending) {
+            if (MediaRun.KINDS.contains(task.kind())) {
+                media.add(task);
+            }
+        }
+        media.sort(Comparator.comparing(PendingTask::taskId));
+        return media;
+    }
+
+    private static Map<String, PendingTask> byId(List<PendingTask> tasks) {
+        Map<String, PendingTask> map = new TreeMap<>();
+        for (PendingTask task : tasks) {
+            map.put(task.taskId(), task);
+        }
+        return map;
+    }
+
+    private static Map<String, PendingTask> pendingById(List<PendingTask> pending) {
+        Map<String, PendingTask> map = new TreeMap<>();
+        for (PendingTask task : pending) {
+            map.put(task.taskId(), task);
+        }
+        return map;
+    }
+
+    /**
+     * 新增媒体待办必须能回到真实的排程请求：本批 {@code TASK_SCHEDULED_V1}，
+     * 或一条已接收的决定动作引用；并按冻结配置核对组织、时长、观察帧与预算标志。
+     */
+    private void requireMediaSchedulingRequest(WorldState previous, WorldState candidate,
+                                               WorldCommit commit, PendingTask task)
+            throws IOException {
+        String json = mapper.writeValueAsString(task);
+        boolean scheduled = false;
+        for (WorldEvent event : commit.events()) {
+            if ("TASK_SCHEDULED_V1".equals(event.type()) && event.payload().equals(json)) {
+                scheduled = true;
+                break;
+            }
+        }
+        boolean fromDecision = false;
+        if (!scheduled && candidate.decisions() != null) {
+            for (DecisionRun.ActionRef ref : candidate.decisions().actionRefs().values()) {
+                if (ref.taskId().equals(task.taskId())) {
+                    fromDecision = true;
+                    break;
+                }
+            }
+        }
+        if (!scheduled && !fromDecision) {
+            throw new IOException("媒体待办缺少真实排程请求：" + task.taskId());
+        }
+        if (task.phase() != WorldScheduler.Phase.COMPLETION) {
+            throw new IOException("媒体待办必须落在 COMPLETION 阶段：" + task.taskId());
+        }
+        RoleActionPayload payload = readRolePayload(task);
+        if (payload == null) {
+            throw new IOException("媒体待办参数无法解析：" + task.taskId());
+        }
+        if (scheduled && (!task.taskId().equals(roleTaskId(payload.personPartyId(),
+                payload.clientTaskId()))
+                || !payload.commandId().equals(roleCommandId(payload.personPartyId(),
+                        payload.clientCommandId()))
+                || !commit.commandId().equals("cmd:" + payload.commandId())
+                || !commit.commandContent().equals(task.payload())
+                || !commit.result().equals("SCHEDULED:" + payload.clientTaskId())
+                || previous.commandContents().containsKey(payload.commandId()))) {
+            throw new IOException("媒体排程必须唯一绑定本批新命令与人物任务：" + task.taskId());
+        }
+        if (task.dueTimeMillis() != payload.dueMillis()) {
+            throw new IOException("媒体任务到期与原命令不一致：" + task.taskId());
+        }
+        MediaTaskBody body = mediaBody(task);
+        if (!payload.kind().equals(task.kind())) {
+            throw new IOException("媒体待办种类与参数不一致：" + task.taskId());
+        }
+        if (!task.payload().equals(candidate.commandContents().get(payload.commandId()))) {
+            throw new IOException("媒体待办参数与已记录命令不一致：" + task.taskId());
+        }
+        String organization = body.organizationPartyId();
+        if (mediaConfig.policyOf(organization) == null) {
+            throw new IOException("媒体待办指向未配置的组织：" + task.taskId());
+        }
+        long duration = MediaRun.durationOf(mediaConfig, task.kind(), organization);
+        if (body.startedAtMillis() < 0 || task.dueTimeMillis() != body.startedAtMillis() + duration) {
+            throw new IOException("媒体待办时长与冻结策略不一致：" + task.taskId());
+        }
+        if (body.startedAtMillis() < previous.timeMillis()) {
+            throw new IOException("媒体动作不得回填到上一帧之前：" + task.taskId());
+        }
+        if (!body.hasObservedPosition() || body.observedPosition() > previous.position()) {
+            throw new IOException("媒体待办缺少真实观察帧：" + task.taskId());
+        }
+        WorldState frame = frameAtOrNull(body.observedPosition());
+        if (frame == null || frame.timeMillis() != body.observedAtMillis()) {
+            throw new IOException("媒体待办的观察帧不可解析：" + task.taskId());
+        }
+        if (candidate.information() == null
+                || !candidate.information().information().persons()
+                .contains(payload.personPartyId())) {
+            throw new IOException("媒体待办的执行人未登记：" + task.taskId());
+        }
+        // 每次公开排程/决定回执只准入一个动作；使用提交前的真实预留，
+        // 不按任务名排序，也不拿后来取消后的已耗反推当时的额度。
+        boolean rejected = !PendingTask.MEDIA_WORK_CANCEL_V1.equals(task.kind())
+                && previous.media().availableMillis(organization, mediaInFlight(previous.pending()))
+                < duration;
+        if (body.budgetRejected() != rejected) {
+            throw new IOException("媒体待办的预算标志与提交前预留不符：" + task.taskId());
+        }
+    }
+
+    /** 按位置取历史帧；不存在返回 null（校验期不依赖当前 state 的边界）。 */
+    private WorldState frameAtOrNull(long position) {
+        if (position <= 0) {
+            return null;
+        }
+        for (WorldCommit commit : journal.commits()) {
+            if (commit.position() != position) {
+                continue;
+            }
+            try {
+                return decodeSnapshot(commit);
+            } catch (IOException unreadable) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** 逐帧重算的工作副本：只替换媒体相关分量，位置与时间保持上一确认状态。 */
+    private static WorldState mediaStep(WorldState previous, MediaRun run,
+                                        InformationRun information, List<PendingTask> pending) {
+        return new WorldState(previous.schemaVersion(), previous.runId(), previous.position(),
+                previous.timeMillis(), previous.lastPhase(), previous.accounts(),
+                List.copyOf(pending), previous.delivered(), previous.usedTaskIds(),
+                previous.commandContents(), previous.commandOutcomes(), previous.securities(),
+                previous.exchange(), previous.manufacturing(), previous.governance(),
+                previous.roles(), information, previous.trading(), previous.decisions(),
+                previous.dividends(), previous.beliefs(), run);
     }
 
     /**
@@ -8992,7 +9469,7 @@ public final class WorldRuntime implements AutoCloseable {
                 used, previous.commandContents(), previous.commandOutcomes(), previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 information, previous.trading(), previous.decisions(), previous.dividends(),
-                previous.beliefs());
+                previous.beliefs(), previous.media());
         List<WorldEvent> events = List.of(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()), new WorldEvent("information-report:" + task.taskId(), "INFORMATION_REPORT_V1",
                 mapper.writeValueAsString(report)));
@@ -9116,7 +9593,8 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.timeMillis(), previous.lastPhase(), previous.accounts(), pending, previous.delivered(),
                 used, contents, outcomes, previous.securities(), previous.exchange(), previous.manufacturing(),
                 previous.governance(), previous.roles(), previous.information(), previous.trading(),
-                previous.decisions(), previous.dividends(), previous.beliefs());
+                previous.decisions(), previous.dividends(), previous.beliefs(),
+                previous.media());
         List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + added.taskId(), "TASK_SCHEDULED_V1",
                 mapper.writeValueAsString(added)));
         List<WorldEvent> actual = commit.events().stream()
@@ -9720,8 +10198,11 @@ public final class WorldRuntime implements AutoCloseable {
         roleStateOf(roleConfig);
     }
 
-    /** 现有 schema 1..12 仅支持四岗，媒体岗位须由后续版本化运行桥接入。 */
-    private static void requireLegacyRole(RoleAccess.Role role) {
+    /** schema 1..12 仅支持四岗；媒体岗位只在 schema13 媒体档案显式放开。 */
+    private void requireLegacyRole(RoleAccess.Role role) {
+        if (manifest.hasMedia()) {
+            return;
+        }
         if (role == RoleAccess.Role.JOURNALIST || role == RoleAccess.Role.EDITOR) {
             throw new IllegalArgumentException("当前规则档案尚未启用媒体岗位：" + role);
         }
@@ -9929,7 +10410,8 @@ public final class WorldRuntime implements AutoCloseable {
                 manifest.hasMatching() ? WorldExchange.opening() : null,
                 manufacturing, governance, roles, information, trading, decisions,
                 manifest.hasDividend() ? DividendModel.empty() : null,
-                manifest.hasBelief() ? BeliefRun.empty() : null);
+                manifest.hasBelief() ? BeliefRun.empty() : null,
+                manifest.hasMedia() ? MediaRun.open(mediaConfig, registry) : null);
     }
 
     /**
@@ -10020,6 +10502,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasMedia()) {
+            return STATE_SCHEMA_MEDIA;
+        }
         if (manifest.hasBelief()) {
             return STATE_SCHEMA_BELIEF;
         }
@@ -10180,10 +10665,31 @@ public final class WorldRuntime implements AutoCloseable {
                             DecisionRun decisions,
                             DividendModel.State dividends,
                             BeliefRun beliefs) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, trading, decisions, dividends, beliefs, state.media());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading,
+                            DecisionRun decisions,
+                            DividendModel.State dividends,
+                            BeliefRun beliefs,
+                            MediaRun media) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                roles, information, trading, decisions, dividends, beliefs);
+                roles, information, trading, decisions, dividends, beliefs, media);
     }
 
     // ==================================================================
@@ -10611,7 +11117,7 @@ public final class WorldRuntime implements AutoCloseable {
                 accounts, pending, delivered, used, contents, outcomes, previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 previous.information(), previous.trading(), previous.decisions(),
-                previous.dividends(), previous.beliefs());
+                previous.dividends(), previous.beliefs(), previous.media());
     }
 
     private void requireCashBatch(WorldCommit commit, WorldState candidate, WorldState expected,
@@ -11767,8 +12273,54 @@ public final class WorldRuntime implements AutoCloseable {
                     entry.kind(), entry.accepted(), entry.reason(), entry.timeMillis()));
         }
 
+        List<RoleTradingView.MediaStory> mediaStories = null;
+        if (manifest.hasMedia() && snap.media() != null) {
+            mediaStories = new ArrayList<>();
+            for (MediaModel.Policy policy : snap.media().config().policies()) {
+                String organization = policy.mediaOrganizationPartyId();
+                boolean observedJournalist = false;
+                boolean observedEditor = false;
+                for (RoleTradingView.Appointment appointment : appointments) {
+                    if (!appointment.organizationPartyId().equals(organization)) {
+                        continue;
+                    }
+                    if (appointment.role() == RoleAccess.Role.JOURNALIST) {
+                        observedJournalist = true;
+                    }
+                    if (appointment.role() == RoleAccess.Role.EDITOR) {
+                        observedEditor = true;
+                    }
+                }
+                if (!observedJournalist && !observedEditor) {
+                    continue;
+                }
+                MediaModel.State mediaState = snap.media().stateOf(organization);
+                if (mediaState == null) {
+                    continue;
+                }
+                boolean canReview = observedEditor
+                        && RoleAccess.authorize(access, person, RoleAccess.Action.REVIEW_STORY,
+                        RoleAccess.Target.organization(organization), now)
+                        == RoleAccess.Decision.ALLOW;
+                boolean canPublish = observedEditor
+                        && RoleAccess.authorize(access, person, RoleAccess.Action.PUBLISH_STORY,
+                        RoleAccess.Target.organization(organization), now)
+                        == RoleAccess.Decision.ALLOW;
+                for (MediaModel.StoryView view : MediaModel.view(mediaState, access, information,
+                        person, now)) {
+                    mediaStories.add(new RoleTradingView.MediaStory(view.storyId(),
+                            view.template().name(), view.status().name(), view.revisionNo(),
+                            view.topic(), view.authorPartyId(),
+                            view.authorPartyId().equals(person),
+                            canReview && view.status() == MediaModel.Status.SUBMITTED,
+                            canPublish && view.status() == MediaModel.Status.APPROVED,
+                            view.sourceGroups(), view.updatedAtMillis()));
+                }
+            }
+        }
         return new RoleTradingView(session.observedAt(), now, person, profile, appointments,
-                research, targets, children, notices, roleTools(appointments, manifest.hasBelief()));
+                research, targets, children, notices,
+                roleTools(appointments, manifest.hasBelief(), manifest.hasMedia()), mediaStories);
     }
 
     /** 使用原观察任职裁剪权限，身份、个人账户及组织账户登记保持同一来源。 */
@@ -11786,17 +12338,21 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private static List<String> roleTools(List<RoleTradingView.Appointment> appointments,
-                                          boolean beliefEnabled) {
+                                          boolean beliefEnabled, boolean mediaEnabled) {
         boolean researcher = false;
         boolean manager = false;
         boolean risk = false;
         boolean trader = false;
+        boolean journalist = false;
+        boolean editor = false;
         for (RoleTradingView.Appointment appointment : appointments) {
             switch (appointment.role()) {
                 case RESEARCHER -> researcher = true;
                 case PORTFOLIO_MANAGER -> manager = true;
                 case RISK_OFFICER -> risk = true;
                 case EXECUTION_TRADER -> trader = true;
+                case JOURNALIST -> journalist = true;
+                case EDITOR -> editor = true;
                 default -> {
                 }
             }
@@ -11825,6 +12381,20 @@ public final class WorldRuntime implements AutoCloseable {
             tools.add(RoleTradingView.TOOL_BELIEF_ASSERT);
             tools.add(RoleTradingView.TOOL_FORECAST_PUBLISH);
             tools.add(RoleTradingView.TOOL_COMPANY_REPORT_ORDERS);
+        }
+        if (mediaEnabled) {
+            if (journalist) {
+                tools.add(RoleTradingView.TOOL_MEDIA_PROPOSE);
+                tools.add(RoleTradingView.TOOL_MEDIA_SUBMIT);
+                tools.add(RoleTradingView.TOOL_MEDIA_CORRECTION);
+            }
+            if (editor) {
+                tools.add(RoleTradingView.TOOL_MEDIA_REVIEW);
+                tools.add(RoleTradingView.TOOL_MEDIA_PUBLISH);
+            }
+            if (journalist || editor) {
+                tools.add(RoleTradingView.TOOL_MEDIA_CANCEL);
+            }
         }
         return List.copyOf(tools);
     }
@@ -11875,6 +12445,10 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(clientCommandId, "命令标识");
         requireText(clientTaskId, "任务标识");
         Objects.requireNonNull(body, "动作参数");
+        if (manifest.hasMedia() && PendingTask.ROLE_TRADING_READ_V1.equals(kind)
+                && !mediaPendingOf(session.personPartyId(), state.pending()).isEmpty()) {
+            throw new IllegalArgumentException("本人还有未完成的媒体工作，不能同时开始阅读");
+        }
         String internalCommand = roleCommandId(session.personPartyId(), clientCommandId);
         String internalTask = roleTaskId(session.personPartyId(), clientTaskId);
         RoleActionPayload payload = new RoleActionPayload(internalCommand, clientCommandId,
@@ -11920,6 +12494,764 @@ public final class WorldRuntime implements AutoCloseable {
                 List.of(new WorldEvent("task-scheduled:" + task.taskId(), "TASK_SCHEDULED_V1",
                         mapper.writeValueAsString(task))), candidate);
         return outcome;
+    }
+
+    // ------------------------------------------------------------------
+    // M4h.2 媒体采编：排程、取消、完成期双帧核验
+    // ------------------------------------------------------------------
+
+    private void requireMediaEnabled() {
+        if (!manifest.hasMedia() || state.media() == null) {
+            throw new IllegalStateException("当前运行未启用媒体采编模块：" + manifest.rulesVersion());
+        }
+    }
+
+    private MediaRun requireMediaRun() {
+        return requireMediaRun(state);
+    }
+
+    private MediaRun requireMediaRun(WorldState base) {
+        MediaRun run = base.media();
+        if (run == null) {
+            throw new IllegalStateException("当前运行没有媒体子集状态");
+        }
+        return run;
+    }
+
+    /** 选题标识按人物命名空间派生：别人无法用猜到的标识与本机构既有稿件冲突。 */
+    static String mediaStoryKey(String person, String clientStoryId) {
+        return "m:" + person.length() + ":" + person + ':' + clientStoryId;
+    }
+
+    /** 只对"提出选题"改写标识；其余动作沿用角色从投影里拿到的标识。 */
+    private static Object payloadDraft(String person, String kind, Object draft) {
+        if (PendingTask.MEDIA_STORY_PROPOSE_V1.equals(kind)
+                && draft instanceof WorldRoleSession.MediaProposeDraft propose) {
+            return new WorldRoleSession.MediaProposeDraft(
+                    mediaStoryKey(person, propose.storyId()), propose.template(), propose.topic());
+        }
+        return draft;
+    }
+
+    private record MediaTaskBody(String organizationPartyId, long observedAtMillis,
+                                 long observedPosition, long startedAtMillis,
+                                 boolean budgetRejected, String body) {
+
+        /** @return 是否携带真实观察位置（旧档任务没有） */
+        boolean hasObservedPosition() {
+            return observedPosition > 0;
+        }
+    }
+
+    /** 排程一个媒体动作：冻结组织、唯一时长、单焦点与预算预留。 */
+    String scheduleMediaStory(WorldRoleSession session, String kind, String clientCommandId,
+                              String clientTaskId, long dueMillis, Object draft)
+            throws IOException {
+        requireMediaEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        Objects.requireNonNull(session, "会话");
+        String person = session.personPartyId();
+        MediaRun run = requireMediaRun();
+        long now = state.timeMillis();
+        // 幂等：同一命令先按已记录内容比对业务字段，命中即返回原回执（世界时钟/任职变化不影响）
+        String draftJson = mapper.writeValueAsString(payloadDraft(person, kind, draft));
+        String internalCommand = roleCommandId(person, clientCommandId);
+        String existing = state.commandContents().get(internalCommand);
+        if (existing != null) {
+            RoleActionPayload storedPayload;
+            MediaTaskBody storedBody;
+            try {
+                storedPayload = mapper.readValue(existing, RoleActionPayload.class);
+                storedBody = mapper.readValue(storedPayload.body(), MediaTaskBody.class);
+            } catch (IOException unreadable) {
+                throw new IllegalArgumentException("同一命令标识的已有内容无法解析：" + clientCommandId,
+                        unreadable);
+            }
+            if (!storedPayload.kind().equals(kind) || !storedBody.body().equals(draftJson)
+                    || !storedPayload.clientTaskId().equals(clientTaskId)
+                    || storedPayload.dueMillis() != dueMillis) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(internalCommand);
+        }
+        String organization = resolveMediaOrganization(state, person, kind, draft, now);
+        long duration = MediaRun.durationOf(run.config(), kind, organization);
+        if (dueMillis != now + duration) {
+            throw new IllegalArgumentException("媒体动作到期必须等于当前时点加冻结时长："
+                    + kind + " -> " + duration);
+        }
+        requireMediaFocusFree(person, state.pending());
+        long available = run.availableMillis(organization, mediaInFlight(state.pending()));
+        // 工时不足不是技术失败：照常排程，到期以业务拒绝 BUDGET 持久回报，不计费
+        boolean budgetRejected = available < duration;
+        Long observed = session.observedPosition();
+        return scheduleRoleAction(session, kind, clientCommandId, clientTaskId, dueMillis,
+                new MediaTaskBody(organization, session.observedAt(),
+                        observed == null ? -1L : observed, now, budgetRejected, draftJson));
+    }
+
+    /** 排程取消本人未完成的媒体工作；取消不预留也不消耗组织采编工时。 */
+    String scheduleMediaCancel(WorldRoleSession session, String clientCommandId, String clientTaskId,
+                               long dueMillis) throws IOException {
+        requireMediaEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        Objects.requireNonNull(session, "会话");
+        String person = session.personPartyId();
+        MediaRun run = requireMediaRun();
+        long now = state.timeMillis();
+        String internalCommand = roleCommandId(person, clientCommandId);
+        String existing = state.commandContents().get(internalCommand);
+        if (existing != null) {
+            RoleActionPayload stored;
+            try {
+                stored = mapper.readValue(existing, RoleActionPayload.class);
+            } catch (IOException unreadable) {
+                throw new IllegalArgumentException("同一命令标识的已有内容无法解析：" + clientCommandId,
+                        unreadable);
+            }
+            if (!PendingTask.MEDIA_WORK_CANCEL_V1.equals(stored.kind())
+                    || !stored.clientTaskId().equals(clientTaskId)
+                    || stored.dueMillis() != dueMillis) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(internalCommand);
+        }
+        PendingTask target = null;
+        for (PendingTask candidate : mediaPendingOf(person, state.pending())) {
+            if (!PendingTask.MEDIA_WORK_CANCEL_V1.equals(candidate.kind())) {
+                target = candidate;
+                break;
+            }
+        }
+        String organization = target != null
+                ? mediaBody(target).organizationPartyId()
+                : mediaOrganizationOf(state, person, now);
+        if (organization == null) {
+            throw new IllegalArgumentException(MediaModel.REASON_NOT_AUTHORIZED);
+        }
+        long duration = MediaRun.durationOf(run.config(), PendingTask.MEDIA_WORK_CANCEL_V1,
+                organization);
+        if (dueMillis != now + duration) {
+            throw new IllegalArgumentException("取消动作到期必须等于当前时点加冻结时长");
+        }
+        // 预算口径：取消是控制动作，不预留、不消耗；只有被取消的原工作按已过时长计费
+        Long observed = session.observedPosition();
+        return scheduleRoleAction(session, PendingTask.MEDIA_WORK_CANCEL_V1, clientCommandId,
+                clientTaskId, dueMillis,
+                new MediaTaskBody(organization, session.observedAt(),
+                        observed == null ? -1L : observed, now, false, "{}"));
+    }
+
+    /** 本人在冻结媒体组织里唯一的媒体岗位所属组织；没有或不唯一返回 null。 */
+    private String mediaOrganizationOf(WorldState base, String person, long now) {
+        String found = null;
+        for (MediaModel.Policy policy : requireMediaRun(base).config().policies()) {
+            String organization = policy.mediaOrganizationPartyId();
+            boolean any = mediaAuthorized(base, person, RoleAccess.Action.WRITE_STORY,
+                    organization, now)
+                    || mediaAuthorized(base, person, RoleAccess.Action.REVIEW_STORY, organization,
+                    now)
+                    || mediaAuthorized(base, person, RoleAccess.Action.PUBLISH_STORY, organization,
+                    now);
+            if (!any) {
+                continue;
+            }
+            if (found != null) {
+                return null;
+            }
+            found = organization;
+        }
+        return found;
+    }
+
+    /** 解析本动作所属媒体组织：只在角色此刻有对应岗位的组织里唯一确定。 */
+    private String resolveMediaOrganization(WorldState base, String person, String kind,
+                                           Object draft, long now) {
+        RoleAccess.Action action = switch (kind) {
+            case PendingTask.MEDIA_STORY_PROPOSE_V1, PendingTask.MEDIA_STORY_SUBMIT_V1,
+                 PendingTask.MEDIA_STORY_CORRECTION_V1 -> RoleAccess.Action.WRITE_STORY;
+            case PendingTask.MEDIA_STORY_REVIEW_V1 -> RoleAccess.Action.REVIEW_STORY;
+            case PendingTask.MEDIA_STORY_PUBLISH_V1 -> RoleAccess.Action.PUBLISH_STORY;
+            default -> throw new IllegalArgumentException("未登记的媒体动作：" + kind);
+        };
+        String storyId = mediaStoryId(kind, draft);
+        boolean creating = PendingTask.MEDIA_STORY_PROPOSE_V1.equals(kind);
+        MediaRun run = requireMediaRun(base);
+        List<String> candidates = new ArrayList<>();
+        for (MediaModel.Policy policy : run.config().policies()) {
+            String organization = policy.mediaOrganizationPartyId();
+            if (!mediaAuthorized(base, person, action, organization, now)) {
+                continue;
+            }
+            if (storyId == null || creating) {
+                candidates.add(organization);
+                continue;
+            }
+            MediaModel.State mediaState = run.stateOf(organization);
+            if (mediaState != null && mediaContains(mediaState, storyId)) {
+                candidates.add(organization);
+            }
+        }
+        if (candidates.isEmpty()) {
+            throw new IllegalArgumentException(MediaModel.REASON_NOT_AUTHORIZED);
+        }
+        if (candidates.size() > 1) {
+            throw new IllegalArgumentException("同一动作匹配多个媒体组织，无法唯一确定："
+                    + candidates);
+        }
+        return candidates.get(0);
+    }
+
+    private static String mediaStoryId(String kind, Object draft) {
+        if (draft instanceof WorldRoleSession.MediaProposeDraft propose) {
+            return propose.storyId();
+        }
+        if (draft instanceof WorldRoleSession.MediaSubmitDraft submit) {
+            return submit.storyId();
+        }
+        if (draft instanceof WorldRoleSession.MediaReviewDraft review) {
+            return review.storyId();
+        }
+        if (draft instanceof WorldRoleSession.MediaStoryDraft story) {
+            return story.storyId();
+        }
+        return null;
+    }
+
+    private static boolean mediaContains(MediaModel.State mediaState, String storyId) {
+        for (MediaModel.Story story : mediaState.stories()) {
+            if (story.storyId().equals(storyId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean mediaAuthorized(String person, RoleAccess.Action action, String organization,
+                                    long now) {
+        return mediaAuthorized(state, person, action, organization, now);
+    }
+
+    private static boolean mediaAuthorized(WorldState base, String person, RoleAccess.Action action,
+                                           String organization, long now) {
+        if (base.roles() == null || now < 0) {
+            return false;
+        }
+        return RoleAccess.authorize(base.roles().access(), person, action,
+                RoleAccess.Target.organization(organization), now) == RoleAccess.Decision.ALLOW;
+    }
+
+    /** 本人未完成的媒体任务（按到期、标识排序）。 */
+    private List<PendingTask> mediaPendingOf(String person, List<PendingTask> pending) {
+        List<PendingTask> mine = new ArrayList<>();
+        for (PendingTask task : pending) {
+            if (!MediaRun.KINDS.contains(task.kind())) {
+                continue;
+            }
+            RoleActionPayload payload = readRolePayload(task);
+            if (payload != null && payload.personPartyId().equals(person)) {
+                mine.add(task);
+            }
+        }
+        mine.sort(Comparator.comparingLong(PendingTask::dueTimeMillis)
+                .thenComparing(PendingTask::taskId));
+        return mine;
+    }
+
+    /** 媒体任务的在途预留：从真实待办解码，不另存台账；预算拒绝与控制动作都不占预留。 */
+    private List<MediaRun.PendingWork> mediaInFlight(List<PendingTask> pending) {
+        List<MediaRun.PendingWork> inFlight = new ArrayList<>();
+        for (PendingTask task : pending) {
+            if (!MediaRun.KINDS.contains(task.kind())) {
+                continue;
+            }
+            MediaTaskBody body = mediaBody(task);
+            if (body.budgetRejected()) {
+                continue;
+            }
+            inFlight.add(new MediaRun.PendingWork(task.taskId(), body.organizationPartyId(),
+                    task.kind()));
+        }
+        return inFlight;
+    }
+
+    private void requireMediaFocusFree(String person, List<PendingTask> pending) {
+        if (!mediaPendingOf(person, pending).isEmpty()) {
+            throw new IllegalArgumentException("本人已有未完成的媒体工作");
+        }
+        if (hasPendingReading(person, pending) || hasActiveReading(person)) {
+            throw new IllegalArgumentException("本人正在阅读资料，不能同时开展媒体工作");
+        }
+    }
+
+    /** 本人已排出但尚未完成的阅读任务也算"正在读"。 */
+    private boolean hasPendingReading(String person, List<PendingTask> pending) {
+        for (PendingTask task : pending) {
+            if (!PendingTask.ROLE_TRADING_READ_V1.equals(task.kind())) {
+                continue;
+            }
+            RoleActionPayload payload = readRolePayload(task);
+            if (payload != null && payload.personPartyId().equals(person)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasActiveReading(String person) {
+        if (state.information() == null) {
+            return false;
+        }
+        for (InformationModel.Reading reading : state.information().information().active()) {
+            if (reading.personPartyId().equals(person)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 读取已确认的媒体动作原文；首次准入由决定转换审计重算，后续帧要求原文不变。 */
+    private MediaTaskBody recordedMediaBody(WorldState base, String actionId) throws IOException {
+        String content = base.commandContents().get(DecisionRun.actionCommandId(actionId));
+        if (content == null) {
+            throw new IOException("媒体决定缺少原始动作命令：" + actionId);
+        }
+        RoleActionPayload payload = mapper.readValue(content, RoleActionPayload.class);
+        return mapper.readValue(payload.body(), MediaTaskBody.class);
+    }
+
+    /**
+     * 决定路径上的媒体互斥检查；返回是否因工时不足而应业务拒绝（不抛技术失败）。
+     */
+    private boolean mediaBudgetRejected(WorldState base, String organization, String kind,
+                                        String person, long duration) throws IOException {
+        if (!manifest.hasMedia() || base.media() == null) {
+            throw new IOException("当前运行未启用媒体采编模块");
+        }
+        List<MediaRun.PendingWork> inFlight = new ArrayList<>();
+        for (PendingTask task : base.pending()) {
+            if (!MediaRun.KINDS.contains(task.kind())) {
+                continue;
+            }
+            MediaTaskBody body = mediaBody(task);
+            if (body.budgetRejected()) {
+                continue;
+            }
+            RoleActionPayload payload = readRolePayload(task);
+            inFlight.add(new MediaRun.PendingWork(task.taskId(), body.organizationPartyId(),
+                    task.kind()));
+            if (!PendingTask.MEDIA_WORK_CANCEL_V1.equals(kind) && payload != null
+                    && payload.personPartyId().equals(person)) {
+                throw new IOException("本人已有未完成的媒体工作");
+            }
+        }
+        if (!PendingTask.MEDIA_WORK_CANCEL_V1.equals(kind)) {
+            if (hasPendingReading(person, base.pending())) {
+                throw new IOException("本人正在阅读资料，不能同时开展媒体工作");
+            }
+            if (base.information() != null) {
+                for (InformationModel.Reading reading
+                        : base.information().information().active()) {
+                    if (reading.personPartyId().equals(person)) {
+                        throw new IOException("本人正在阅读资料，不能同时开展媒体工作");
+                    }
+                }
+            }
+        }
+        long reserved = base.media().reservedMillis(organization, inFlight);
+        long available = base.media().budgetOf(organization).totalMillis()
+                - base.media().budgetOf(organization).spentMillis() - reserved;
+        return available < duration;
+    }
+
+    /** 取消动作的目标组织：优先本人最早未完成媒体工作，其次本人唯一的媒体任职组织。 */
+    private String resolveMediaCancelOrganization(WorldState base, String person,
+                                                  List<PendingTask> pending, long now) {
+        for (PendingTask task : mediaPendingOf(person, pending)) {
+            if (!PendingTask.MEDIA_WORK_CANCEL_V1.equals(task.kind())) {
+                return mediaBody(task).organizationPartyId();
+            }
+        }
+        return mediaOrganizationOf(base, person, now);
+    }
+
+    private RoleActionPayload readRolePayload(PendingTask task) {
+        try {
+            return mapper.readValue(task.payload(), RoleActionPayload.class);
+        } catch (IOException failure) {
+            return null;
+        }
+    }
+
+    private MediaTaskBody mediaBody(PendingTask task) {
+        RoleActionPayload payload = readRolePayload(task);
+        if (payload == null) {
+            throw new IllegalStateException("媒体任务参数无法解析：" + task.taskId());
+        }
+        try {
+            return mapper.readValue(payload.body(), MediaTaskBody.class);
+        } catch (IOException failure) {
+            throw new IllegalStateException("媒体任务参数缺少组织或观察时点：" + task.taskId(),
+                    failure);
+        }
+    }
+
+    /**
+     * 完成一个媒体任务：按观察帧核证据、按真实时长计费，并把媒体状态、资料状态与待办
+     * 放进同一个候选一次提交。
+     */
+    /** 一帧媒体完成的完整结果：纯计算，不提交。 */
+    private record MediaFrame(boolean accepted, String reason, String storyId, MediaRun run,
+                              InformationRun information, List<PendingTask> pending,
+                              List<PendingTask> removed) {
+    }
+
+    /**
+     * 完成一个媒体任务：计算结果与提交分开，提交与恢复重算共用同一份计算。
+     */
+    private void completeMediaTask(PendingTask task) throws IOException {
+        MediaFrame frame = computeMediaFrame(state, task);
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.add(new WorldEvent("media-task:" + task.taskId(), "MEDIA_TASK_V1",
+                mapper.writeValueAsString(task)));
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
+                frame.pending(), state.delivered(), state.usedTaskIds(), state.commandContents(),
+                state.commandOutcomes(), state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), frame.information(),
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(), frame.run());
+        commitAndApply("task:" + task.taskId(), task.payload(), frame.reason(), events, candidate);
+    }
+
+    /** 从给定基准状态重算一次媒体任务完成；不做任何 I/O 提交。 */
+    private MediaFrame computeMediaFrame(WorldState base, PendingTask task) throws IOException {
+        MediaRun run = requireMediaRun(base);
+        RoleActionPayload payload = mapper.readValue(task.payload(), RoleActionPayload.class);
+        MediaTaskBody wrapper = mediaBody(task);
+        String person = payload.personPartyId();
+        String organization = wrapper.organizationPartyId();
+        long duration = MediaRun.durationOf(run.config(), task.kind(), organization);
+        long completedAt = task.dueTimeMillis();
+        long startedAt = wrapper.startedAtMillis();
+        List<PendingTask> removed = new ArrayList<>();
+        removed.add(task);
+        if (startedAt < 0 || completedAt - startedAt != duration) {
+            // 起点与冻结时长不一致：任务参数被改过，按 `TIME` 记拒绝，不写媒体状态
+            long baseStart = completedAt - duration;
+            MediaRun broken = run.withOutcome(organization, duration,
+                    List.of(new MediaRun.Work(task.taskId(), person, organization, task.kind(), "",
+                            baseStart, completedAt, duration, MediaRun.OUTCOME_COMPLETED)),
+                    new MediaRun.Report(task.taskId(), person, task.kind(), false,
+                            MediaModel.REASON_TIME, "", completedAt, base.position() + 1));
+            List<PendingTask> trim = new ArrayList<>(base.pending());
+            trim.remove(task);
+            return new MediaFrame(false, MediaModel.REASON_TIME, "", broken, base.information(),
+                    List.copyOf(trim), List.copyOf(removed));
+        }
+        if (wrapper.budgetRejected()) {
+            // 工时不足：业务拒绝 + 持久报告，不计费、不改业务状态
+            MediaRun rejected = run.withOutcome(organization, 0L,
+                    List.of(new MediaRun.Work(task.taskId(), person, organization, task.kind(), "",
+                            startedAt, completedAt, 0L, MediaRun.OUTCOME_REJECTED)),
+                    new MediaRun.Report(task.taskId(), person, task.kind(), false, "BUDGET", "",
+                            completedAt, base.position() + 1));
+            List<PendingTask> trim = new ArrayList<>(base.pending());
+            trim.remove(task);
+            return new MediaFrame(false, "BUDGET", "", rejected, base.information(),
+                    List.copyOf(trim), List.copyOf(removed));
+        }
+        MediaModel.State mediaBefore = run.stateOf(organization);
+        MediaModel.Policy policy = run.config().policyOf(organization);
+        RoleAccess.State access = base.roles().access();
+        InformationModel.State informationBefore = base.information().information();
+        InformationModel.State informationAfter = informationBefore;
+        MediaModel.State mediaAfter = mediaBefore;
+        MediaRun runAfter = run;
+        boolean accepted = false;
+        String reason = MediaModel.REASON_NOT_AUTHORIZED;
+        String storyId = "";
+        List<MediaRun.Work> extraWorks = new ArrayList<>();
+        long extraCharge = 0L;
+        // 观察帧必须是真实历史帧；缺失或不可解析一律拒绝，不能退回"当前状态按旧毫秒查询"
+        InformationModel.State observedInfo = observedInformation(wrapper);
+        if (observedInfo == null) {
+            MediaRun rejected = run.withOutcome(organization, 0L,
+                    List.of(new MediaRun.Work(task.taskId(), person, organization, task.kind(), "",
+                            startedAt, completedAt, 0L, MediaRun.OUTCOME_REJECTED)),
+                    new MediaRun.Report(task.taskId(), person, task.kind(), false,
+                            "OBSERVATION_FRAME", "", completedAt, base.position() + 1));
+            List<PendingTask> trim = new ArrayList<>(base.pending());
+            trim.remove(task);
+            return new MediaFrame(false, "OBSERVATION_FRAME", "", rejected, base.information(),
+                    List.copyOf(trim), List.copyOf(removed));
+        }
+        long cut = wrapper.observedAtMillis();
+
+        switch (task.kind()) {
+            case PendingTask.MEDIA_STORY_PROPOSE_V1 -> {
+                WorldRoleSession.MediaProposeDraft draft = mapper.readValue(wrapper.body(),
+                        WorldRoleSession.MediaProposeDraft.class);
+                storyId = draft.storyId();
+                MediaModel.TemplateKind template;
+                try {
+                    template = MediaModel.TemplateKind.valueOf(draft.template());
+                } catch (IllegalArgumentException notATemplate) {
+                    reason = MediaModel.REASON_TEMPLATE_NOT_ENABLED;
+                    break;
+                }
+                if (!mediaAuthorized(base, person, RoleAccess.Action.WRITE_STORY, organization, cut)
+                        || !mediaAuthorized(base, person, RoleAccess.Action.WRITE_STORY,
+                        organization, completedAt)) {
+                    reason = MediaModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                MediaModel.Outcome outcome = MediaModel.propose(mediaBefore, policy, access, person,
+                        new MediaModel.ProposeRequest(draft.storyId(), template, draft.topic(),
+                                completedAt));
+                accepted = outcome.accepted();
+                reason = outcome.reason();
+                if (accepted) {
+                    mediaAfter = outcome.state();
+                }
+            }
+            case PendingTask.MEDIA_STORY_SUBMIT_V1 -> {
+                WorldRoleSession.MediaSubmitDraft draft = mapper.readValue(wrapper.body(),
+                        WorldRoleSession.MediaSubmitDraft.class);
+                storyId = draft.storyId();
+                List<RoleView.ReadingRef> refs = new ArrayList<>();
+                for (WorldRoleSession.MediaCitation citation : draft.evidence()) {
+                    refs.add(new RoleView.ReadingRef(person, citation.docId(), citation.version(),
+                            citation.index()));
+                }
+                String cutProblem = mediaEvidenceAtCut(observedInfo, policy, person, refs, cut);
+                if (cutProblem != null) {
+                    reason = cutProblem;
+                    break;
+                }
+                MediaModel.BridgeOutcome result = MediaModel.submit(mediaBefore, policy, access,
+                        informationBefore, person, new MediaModel.SubmitRequest(draft.storyId(),
+                                draft.expectedRevision(), draft.title(), draft.body(),
+                                draft.publicSourceDescription(), refs, startedAt, completedAt),
+                        mediaContext(run, organization));
+                accepted = result.accepted();
+                reason = result.reason();
+                if (accepted) {
+                    mediaAfter = result.state();
+                    informationAfter = result.information();
+                }
+            }
+            case PendingTask.MEDIA_STORY_REVIEW_V1 -> {
+                WorldRoleSession.MediaReviewDraft draft = mapper.readValue(wrapper.body(),
+                        WorldRoleSession.MediaReviewDraft.class);
+                storyId = draft.storyId();
+                String cutProblem = mediaDraftAtCut(observedInfo, policy, person, mediaBefore,
+                        draft.storyId(), cut);
+                if (cutProblem != null) {
+                    reason = cutProblem;
+                    break;
+                }
+                MediaModel.Outcome outcome = MediaModel.review(mediaBefore, policy, access,
+                        informationBefore, person, new MediaModel.ReviewRequest(draft.storyId(),
+                                draft.expectedRevision(), draft.approve(), draft.note(), startedAt,
+                                completedAt));
+                accepted = outcome.accepted();
+                reason = outcome.reason();
+                if (accepted) {
+                    mediaAfter = outcome.state();
+                }
+            }
+            case PendingTask.MEDIA_STORY_PUBLISH_V1 -> {
+                WorldRoleSession.MediaStoryDraft draft = mapper.readValue(wrapper.body(),
+                        WorldRoleSession.MediaStoryDraft.class);
+                storyId = draft.storyId();
+                MediaModel.BridgeOutcome result = MediaModel.publish(mediaBefore, policy, access,
+                        informationBefore, person, new MediaModel.PublishRequest(draft.storyId(),
+                                draft.expectedRevision(), startedAt, completedAt));
+                accepted = result.accepted();
+                reason = result.reason();
+                if (accepted) {
+                    mediaAfter = result.state();
+                    informationAfter = result.information();
+                }
+            }
+            case PendingTask.MEDIA_STORY_CORRECTION_V1 -> {
+                WorldRoleSession.MediaStoryDraft draft = mapper.readValue(wrapper.body(),
+                        WorldRoleSession.MediaStoryDraft.class);
+                storyId = draft.storyId();
+                if (!mediaAuthorized(base, person, RoleAccess.Action.WRITE_STORY, organization, cut)
+                        || !mediaAuthorized(base, person, RoleAccess.Action.WRITE_STORY,
+                        organization, completedAt)) {
+                    reason = MediaModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                MediaModel.Outcome outcome = MediaModel.startCorrection(mediaBefore, policy, access,
+                        person, new MediaModel.CorrectionRequest(draft.storyId(),
+                                draft.expectedRevision(), completedAt));
+                accepted = outcome.accepted();
+                reason = outcome.reason();
+                if (accepted) {
+                    mediaAfter = outcome.state();
+                }
+            }
+            case PendingTask.MEDIA_WORK_CANCEL_V1 -> {
+                PendingTask target = null;
+                for (PendingTask candidate : mediaPendingOf(person, base.pending())) {
+                    if (candidate.taskId().equals(task.taskId())
+                            || PendingTask.MEDIA_WORK_CANCEL_V1.equals(candidate.kind())) {
+                        continue;
+                    }
+                    target = candidate;
+                    break;
+                }
+                if (target == null) {
+                    // 已不存在的工作：业务拒绝 + 持久报告，不产生退款、不计工时
+                    reason = "NOT_FOUND";
+                    break;
+                }
+                MediaTaskBody targetBody = mediaBody(target);
+                String targetOrganization = targetBody.organizationPartyId();
+                long targetDuration = MediaRun.durationOf(run.config(), target.kind(),
+                        targetOrganization);
+                long targetStart = target.dueTimeMillis() - targetDuration;
+                // 预算拒绝的工作从未预留，取消它只结束任务，不得计费
+                long elapsed = targetBody.budgetRejected() ? 0L : Math.max(0L,
+                        Math.min(completedAt, target.dueTimeMillis()) - targetStart);
+                extraWorks.add(new MediaRun.Work(target.taskId(), person, targetOrganization,
+                        target.kind(), "", targetStart, completedAt, elapsed,
+                        MediaRun.OUTCOME_CANCELED));
+                extraCharge += elapsed;
+                removed.add(target);
+                accepted = true;
+                reason = MediaRun.OUTCOME_CANCELED;
+            }
+            default -> throw new IllegalStateException("未登记的媒体任务：" + task.kind());
+        }
+
+        runAfter = runAfter.withState(organization, mediaAfter);
+        List<MediaRun.Work> finished = new ArrayList<>();
+        // 取消动作本身不消耗组织工时；其它动作按冻结时长计费
+        long selfCharge = PendingTask.MEDIA_WORK_CANCEL_V1.equals(task.kind()) ? 0L : duration;
+        finished.add(new MediaRun.Work(task.taskId(), person, organization, task.kind(), storyId,
+                startedAt, completedAt, selfCharge, MediaRun.OUTCOME_COMPLETED));
+        finished.addAll(extraWorks);
+        runAfter = runAfter.withOutcome(organization, selfCharge + extraCharge, finished,
+                new MediaRun.Report(task.taskId(), person, task.kind(), accepted, reason, storyId,
+                        completedAt, base.position() + 1));
+
+        List<PendingTask> pending = new ArrayList<>(base.pending());
+        pending.removeAll(removed);
+        InformationRun informationRun = base.information();
+        if (informationAfter != informationBefore) {
+            informationRun = informationRun.withInformation(informationAfter);
+        }
+        return new MediaFrame(accepted, reason, storyId, runAfter, informationRun,
+                List.copyOf(pending), List.copyOf(removed));
+    }
+
+    /** 按真实观察位置取历史信息子集；没有位置或帧不可读时返回 null。 */
+    private InformationModel.State observedInformation(MediaTaskBody wrapper) {
+        if (!wrapper.hasObservedPosition()) {
+            return null;
+        }
+        for (WorldCommit commit : journal.commits()) {
+            if (commit.position() != wrapper.observedPosition()) {
+                continue;
+            }
+            try {
+                WorldState frame = decodeSnapshot(commit);
+                if (frame.information() == null) {
+                    return null;
+                }
+                return frame.information().information();
+            } catch (IOException unreadable) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** 同一完成 cut 的其他媒体状态（不含本机构自己，纯核会自行加入）。 */
+    private static List<MediaModel.State> mediaContext(MediaRun run, String organization) {
+        List<MediaModel.State> context = new ArrayList<>();
+        for (MediaModel.State state : run.states()) {
+            if (!state.policy().mediaOrganizationPartyId().equals(organization)) {
+                context.add(state);
+            }
+        }
+        return List.copyOf(context);
+    }
+
+    /** 观察帧证据核验：按会话观察时点判公开性、真实读完与当前可回忆。 */
+    private String mediaEvidenceAtCut(InformationModel.State information, MediaModel.Policy policy,
+                                      String person, List<RoleView.ReadingRef> refs, long cut) {
+        if (cut < 0) {
+            return MediaModel.REASON_TIME;
+        }
+        Set<String> recalled = new LinkedHashSet<>();
+        for (CognitionRecall.Item item : CognitionRecall.recall(information, person, cut,
+                policy.recallPolicy()).selected()) {
+            recalled.add(item.observation().docId() + '\u0000' + item.observation().version());
+        }
+        for (RoleView.ReadingRef ref : refs) {
+            InformationModel.Document document = informationDocument(information, ref.docId());
+            if (document == null) {
+                return MediaModel.REASON_EVIDENCE_NOT_READ;
+            }
+            if (document.audience().kind() != InformationModel.AudienceKind.PUBLIC) {
+                return MediaModel.REASON_EVIDENCE_NOT_PUBLIC;
+            }
+            if (!InformationModel.canCite(information, person, ref.docId(), ref.version(), cut)) {
+                return MediaModel.REASON_EVIDENCE_NOT_READ;
+            }
+            if (!recalled.contains(ref.docId() + '\u0000' + ref.version())) {
+                return MediaModel.REASON_EVIDENCE_NOT_RECALLABLE;
+            }
+        }
+        return null;
+    }
+
+    /** 观察帧草稿核验：编辑必须在观察时点已读完该草稿版本且仍可回忆。 */
+    private String mediaDraftAtCut(InformationModel.State information, MediaModel.Policy policy,
+                                   String person, MediaModel.State mediaState, String storyId,
+                                   long cut) {
+        MediaModel.Story story = null;
+        for (MediaModel.Story candidate : mediaState.stories()) {
+            if (candidate.storyId().equals(storyId)) {
+                story = candidate;
+                break;
+            }
+        }
+        if (story == null || story.draftVersion() < 1) {
+            return null;
+        }
+        if (cut < 0
+                || !InformationModel.canCite(information, person, story.draftDocId(),
+                story.draftVersion(), cut)) {
+            return MediaModel.REASON_DRAFT_NOT_READ;
+        }
+        for (CognitionRecall.Item item : CognitionRecall.recall(information, person, cut,
+                policy.recallPolicy()).selected()) {
+            if (item.observation().docId().equals(story.draftDocId())
+                    && item.observation().version() == story.draftVersion()) {
+                return null;
+            }
+        }
+        return MediaModel.REASON_DRAFT_NOT_RECALLABLE;
+    }
+
+    private static InformationModel.Document informationDocument(InformationModel.State information,
+                                                                 String docId) {
+        for (InformationModel.Document document : information.documents()) {
+            if (document.docId().equals(docId)) {
+                return document;
+            }
+        }
+        return null;
     }
 
     // ------------------------------------------------------------------
@@ -13641,4 +14973,46 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException(field + "不能为空");
         }
     }
+    /** 同一确认截止的媒体工时余额，均为模拟毫秒。 */
+    public record MediaBudgetBalance(String organizationPartyId, long totalMillis, long spentMillis,
+                                     long reservedMillis, long availableMillis) { }
+
+    /** 管理端可观察的实际在途工作；不附带模型请求正文。 */
+    public record MediaWorkInFlight(String taskId, String personPartyId, String organizationPartyId,
+                                    String kind, long dueTimeMillis) { }
+
+    /** 媒体管理审计的工时与在途视图，不是人物可见投影。 */
+    public record MediaWorkAudit(List<MediaBudgetBalance> budgets, List<MediaWorkInFlight> pending) {
+        /** 防止调用者修改返回集合。 */
+        public MediaWorkAudit {
+            budgets = List.copyOf(budgets);
+            pending = List.copyOf(pending);
+        }
+    }
+
+    /**
+     * 只读查询当前确认截止的媒体工时与在途工作；旧档案返回空，不写日志或推进时钟。
+     * @return 管理层审计视图；不可原样提供给个人身份
+     */
+    public synchronized Optional<MediaWorkAudit> mediaWorkAudit() {
+        requireOpen();
+        if (state.media() == null) return Optional.empty();
+        MediaRun run = state.media();
+        List<MediaRun.PendingWork> inFlight = mediaInFlight(state.pending());
+        List<MediaBudgetBalance> budgets = new ArrayList<>();
+        for (MediaRun.Budget budget : run.budgets()) {
+            long available = run.availableMillis(budget.organizationPartyId(), inFlight);
+            budgets.add(new MediaBudgetBalance(budget.organizationPartyId(), budget.totalMillis(),
+                    budget.spentMillis(), budget.totalMillis() - budget.spentMillis() - available,
+                    available));
+        }
+        List<MediaWorkInFlight> pending = new ArrayList<>();
+        for (PendingTask task : state.pending()) {
+            if (!MediaRun.KINDS.contains(task.kind())) continue;
+            pending.add(new MediaWorkInFlight(task.taskId(), readRolePayload(task).personPartyId(),
+                    mediaBody(task).organizationPartyId(), task.kind(), task.dueTimeMillis()));
+        }
+        return Optional.of(new MediaWorkAudit(budgets, pending));
+    }
+
 }
