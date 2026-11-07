@@ -2,7 +2,15 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 最新交接（2026-11-07 13:23，媒体已接主树，最后独审缺口修复）
+## 最新交接（2026-11-07 13:34，媒体运行桥工程验收，采访纯核接续）
+
+M4h.2已按最终fixed-intake-9接收：111文件hash与主树相同；正式1321零失败/错误/跳过、CSV48/124/7、Node/GUI、JavaDoc13:26:12、三JVM及真正旧12未重编新续旧读21/104通过。独审ac6bef最终c9自编95源release17，39/39动态通过，T9伪造排程事件+克隆待办P1关闭、所测范围无新P1/P2，handoff在media-runtime-independent/c9；c8另有13HTTP与JS静态审查，Web代码/资源与c9逐字相同。独审exec53883已给handoff，等退出不再扩测。
+
+代码29510097f8c2cbc090c49ba2c00c3f642d4e6362、草稿PR39 https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/39 ，依赖PR38，实际CI42342978816 completed/success，仍待人工review、不自动合并。最后验收文档追加提交及CI另记。持续Web18080/PID22856固定runtime-20261107-132640，目录logs/web-workbench-media，新media档1/0ms；旧belief原档保留、长度/最后写时点不变；五Key配置遮罩、全部场景关闭、0新增官方调用。IAB2/tab8已登录并保留deliverable。禁止重跑启动脚本或live-once。
+
+下一M4i.1合同docs/superpowers/plans/2026-11-07-interview-coordination.md。405ace真实Hermes exec6965（interview-coordination-author-task.txt/log）只在interview-coordination-author新增InterviewModel及私有测试；先api.md、不可改已有生产类，不改主树/运行桥/MediaModel。Root已两次纠正其准备稿把未来匿名风险称现有缺陷、强制PUBLIC纪要、第二账本、跨社不去重与旧schema权限误述；以Root合同为准。Root保留主树/Maven、独验和最终接收。采访运行/匿名私有证据/社交、多公司银行、完整回放与长跑仍未完成，继续总体基线。
+
+## 前次交接（2026-11-07 13:23，媒体已接主树，最后独审缺口修复）
 
 13:30更新覆盖本节下方状态：最终fixed-intake-9=111文件与主树逐字hash相同；新增事件+待办伪造反例已修，41专项及98相关测试、三JVM/旧12通过。正式formal-verify-2实际1321零失败/错误/跳过、CSV48/124/7、Node/GUI全绿，JavaDoc13:26:12重新生成成功，formal-final-2已保存。c8独审已确认仅T9未关闭，Root修复后的c9增量复审任务已准备、待86839退出后续接，不能并发同一Hermes session。真实Web已切media新档18080/PID22856/runtime-20261107-132640，service.json在logs/web-workbench-media；旧belief服务已停止，原档18715字节/最后写时点不变，保留原件。启动脚本stdout尚空时报null错误，但新进程已成功，Root核PID/完整路径/监听后补登记并实际浏览器验证，禁止重跑该启动脚本。IAB2/tab8已登录、markDeliverable；五Key遮罩、三已接场景说明、全部禁用、0新调用；截图workbench-keys-c9.jpg。下一合同修订由405ace exec50658只写interview-preparation，未授权生产实现。PR尚未创建。
 
