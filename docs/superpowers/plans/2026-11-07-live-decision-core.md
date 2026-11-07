@@ -4,7 +4,7 @@
 
 ## 文件与兼容契约
 
-生产只改world/DecisionModel.java与WorldRuntime.java的旧档案配置入口闸；新增DecisionModelLiveTest及Runtime拒绝live配置的专门测试。保留原87生产中的85文件及原925测试。禁止新增另一套决定状态机、通用provider框架或改旧断言。
+生产只改world/DecisionModel.java与WorldRuntime.java的旧档案配置/回执入口与恢复闸；新增DecisionModelLiveTest及Runtime拒绝live配置的专门测试。保留原87生产中的85文件及原925测试。禁止新增另一套决定状态机、通用provider框架或改旧断言。
 
 1. Config追加可空Profile字段（只启用LIVE_HTTP_V1），注解NON_NULL；保留原七参构造，其profile=null，继续严格SCRIPTED-only及0.00费用预算。新显式profile才接受DEEPSEEK_HTTP和未知费用预算；静态工厂不能绕过record canonical校验。
 2. Usage追加可空CostStatus（UNKNOWN），旧四参构造仍拒绝null费用，金额非负两位，序列化不增加新键；缺status字段反序列化仍走旧严格语义。新unknown工厂传cost=null/status=UNKNOWN；UNKNOWN配数值费用、无status配null均拒绝，不能松开旧不变量。
@@ -22,8 +22,13 @@
 
 ## 验收顺序
 
-- [ ] 新正式测试先RED：实际DecisionModel，不使用平行玩具模型。覆盖旧null拒绝/JSON逐字、新unknown构造/混用拒绝、两层预算、未知保守、超额冻结、多个在途、幂等、恢复/伪造累计、旧Runtime建档前拒绝。
-- [ ] 最小生产实现与新旧全套通过。
-- [ ] Root实际旧编译客户端与JSON对照、独立探针；Hermes独审明确完整输入合法对照，不能用缺字段先失败冒充目标覆盖。
-- [ ] 标准verify含GUI/CSV、JavaDoc、评分/接口/证据/Plan同步、AI草稿PR及实际CI。
+- [x] 新正式测试先RED：实际DecisionModel，不使用平行玩具模型。覆盖旧null拒绝/JSON逐字、新unknown构造/混用拒绝、两层预算、未知保守、超额冻结、多个在途、幂等、恢复/伪造累计、旧Runtime建档前拒绝。
+- [x] 最小生产实现与新旧全套通过。最终新增28，组合953。
+- [x] Root实际旧编译客户端与JSON对照、独立探针；Hermes独审明确完整输入合法对照，不能用缺字段先失败冒充目标覆盖。
+- [x] 标准verify含GUI/CSV、JavaDoc、评分/接口/证据/Plan同步、AI草稿PR及实际CI。
 - [ ] B2另单：scene稳定累计预算/冻结路线、持久派发标记、异步runner/代次/超时、schema10、新Web场景和审计。B1不勾成B2。
+
+Root补充验收：candidate1另在途自动retry穿透全局冻结，2正式回归RED修复；candidate2又有4费用状态反例，新增3模型/1Runtime正式测试先失败后修复。候选3在旧pending/newpending、live已知零声明、旧正常/复用/旧代次回执入口及恢复归档/审计隔离新费用格式。Root24+4、真实旧构造/完整State JSON精确、同journal新旧推进time1至7及现金4100、953标准/CSV49/121/7/GUI/JavaDoc04:06:05已通过。最终独审与PR/CI尚待，不能勾整个B2。
+
+
+工程验收完成：953标准、Root28、真实Hermes57、PR27代码269e854及CI42285963075实际成功。仍待人工review。B2见场景预算Plan，不在本单冒称连接。
