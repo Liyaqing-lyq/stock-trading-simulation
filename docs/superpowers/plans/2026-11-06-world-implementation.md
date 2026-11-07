@@ -12,6 +12,8 @@
 
 ## 全局约束
 
+13:41接续：媒体PR39最后文档b297b3a的CI42343268494已成功，当前切codex/world-interview-coordination。M4i.1首稿18作者测试不足，Root独立19项只有正常链1项通过，权限/时间/占用/幂等/恢复18反例失败；真实Hermes405ace exec79655仅私有修复，尚未主树接收。旧13未重编兼容客户端和原始存档已冻结，旧版自身续写/再读基准通过，后续新实现互操作另验。上述失败与裁定见PROJECT_MEMORY最新段及interview-coordination-fix-task.txt，不降低合同或提前勾完成。
+
 13:34最终接收：M4h.2候选9已通过41专项、1321正式、CSV/Node/GUI/JavaDoc、三JVM/旧12及Hermes最终39独立检查，c8发现的T9已关闭。草稿[PR39](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/39)代码2951009、实际CI42342978816成功，待人工review；Web18080已更新。接续[M4i.1双边采访协调纯核](2026-11-07-interview-coordination.md)，405ace exec6965只写私有新模块，未接世界，完整总体基线继续。
 
 13:30最新：媒体candidate9已修复伪造事件+克隆待办，41专项、三JVM、旧12未重编互操作与正式1321/CSV48/124/7/Node/GUI/JavaDoc13:26:12全过；111文件与主树逐字一致。Web18080已切独立media档/PID22856，原belief档完整保留、五Key仍遮罩/场景关闭/0新增调用。最终独审增量与AI草稿PR/CI仍待收尾。下一采访/私信/匿名共享只读准备经Root纠正公开纪要强制、第二账本及旧schema权限错误后修订中，未开始生产实现。
@@ -587,7 +589,8 @@ B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://
 - [x] [M4h.1公开证据采编纯核](2026-11-07-media-editorial-core.md)：最终candidate4正式1246标准、CSV/GUI/Node/JavaDoc、199独立纯核/22旧权限/真实旧12兼容通过；草稿PR37实际CI42337472698成功，仍待人工review。仅双人快讯/调查、真实阅读、版本更正及来源谱系完成。
 - [x] [M4h.2采编运行桥与Web](2026-11-07-media-runtime.md)：最终候选9实际41专项、1321标准、CSV48/124/7、Node/GUI/JavaDoc、三JVM/旧12/真实Web及39独审通过，草稿PR39实际CI42342978816成功，仍待人工review；媒体新档已上线本机18080，五场景关闭、0新增官方调用。
 - [x] [M6b账户表现历史](2026-11-07-performance-history.md)：正式1280标准及独审通过，草稿PR38最终CI42338910895成功；持续Web18080已升级，仍待人工review。完整历史回放与总体基线未完成。
-- [ ] [M4i.1双边采访协调纯核](2026-11-07-interview-coordination.md)：拒绝/接受/到期/取消/预约双方活动冲突与可达权限，405ace仅私有新类实施；之后M4i.2实际投递阅读、私有证据、匿名身份显式共享与出处保护及Web。随后曝光/群组/私聊/社交及其余六类媒体工作流继续。
+- [x] [M4i.1双边采访协调纯核](2026-11-07-interview-coordination.md)：最终主树2ba8fc7f…，29新JUnit，正式1350/CSV48/125/7/Node/GUI/JavaDoc通过，e7852d独立109检查通过。首稿18个真实失败、v2新增5失败已修；旧作者JavaDoc零警告误报已据原始日志纠正。纯核本地验收，草稿PR/人工review另记，尚未接世界/Web。
+- [ ] [M4i.2a预约运行与Web](2026-11-07-interview-runtime.md)：86babe仅在interview-runtime-author定稿接口与预算接缝；待明确实施。b逐轮DIRECT投递/自主阅读、c私有匿名证据与身份实际共享随后接续；曝光/群组/社交及其余六类媒体工作流仍待完成。
 - [ ] 媒体/传播、多公司银行、图表/历史与长跑验收继续，不以局部纯核冒称总体基线完成。真实供应商0新增，原51token唯一连通证据保持。
 
 信念纯核代码e6a81adfaf3b24c86e507cf32e9c54aac0ed6be1已发布草稿[PR35](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/35)，base codex/world-cognition-runtime；实际[CI42327343664](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42327343664) completed/success。1156标准、98纯核独审+24配置独审及Root实际退避中断通过，工程阶段验收完成，仍待人工review、不自动合并。
