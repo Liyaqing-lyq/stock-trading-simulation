@@ -15,3 +15,17 @@ td.preview{white-space:normal;min-width:240px;max-width:380px;color:#5c6a80}
 .live-decisions summary{cursor:pointer;font-weight:600}.live-decisions pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto;padding:1rem;background:#f6f8fb;border-radius:8px;font-size:12px}
 #recall-items details{padding:1rem 0;border-bottom:1px solid var(--line,#e2e6ed)}
 #recall-items summary{cursor:pointer;font-weight:600}.recall-body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto;padding:1rem;background:#f6f8fb;border-radius:8px;font-size:12px}
+
+#belief-items details{padding:1rem 0;border-bottom:1px solid var(--line,#e2e6ed)}
+#belief-items summary{cursor:pointer;font-weight:600}#belief-items dd{white-space:pre-wrap;overflow-wrap:anywhere}#belief-revisions{max-height:24rem;overflow:auto;font-size:12px;line-height:1.7}
+.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.section-head h2{margin-bottom:6px}
+.section-head p{margin:0 0 18px;color:#8a95a6;font-size:12px}
+#candle-chart{width:100%;height:auto;min-height:180px;max-height:380px;overflow:visible}
+.chart-wick{stroke-width:1.5}
+.chart-body{stroke-width:1}
+.chart-up{stroke:#2f7d5c;fill:#dff0e6}
+.chart-down{stroke:#a14a42;fill:#fbe4e1}
+.chart-incomplete{stroke-dasharray:4 3}
+.chart-volume{fill:#c9d6ea;stroke:#9fb2d1;stroke-width:1}
+.chart-volume-unknown{fill:#f4e6d7;stroke:#c08b52;stroke-dasharray:3 3}

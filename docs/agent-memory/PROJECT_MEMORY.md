@@ -2,15 +2,35 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 最新接续（2026-11-07 10:01 M4g.1本地验收 / M4g.2运行桥）
+## 最新接收（2026-11-07 11:21 M4g.2/M6a candidate3）
 
-当前codex/world-belief-core base1cd53eb。最终候选3=91Java/5resources/3tests/99hash，BeliefModel e124ccf8…b145。纯核37新增+SceneRoutes2回归=1156标准全绿，CSV51/132/7、真实GUI、JavaDoc10:01:01通过。最后1154旧SceneRoutes一次IO错误已真实复现AccessDenied，6次原子move有界重试修复；原90源现在仅SceneRoutes有改，禁止沿用“原90未改”描述最终候选。失败与2000保存/9专项/全套证据docs/05§38。
+Root已按真实独立日志接收candidate3：Hermes c9a4a7独立重编180哈希一致、69增量/37信念/49行情/旧11、pending/captured/report篡改及真实工具重开全绿，旧candidate1差异对照真实RED；记录belief-runtime-root/independent-acceptance.md与belief-runtime-independent/c3/logs/verify-increment-run-2.log。正式1186/CSV37/119/7/Node/GUI/JavaDoc及旧客户端3/三JVM4仍为最终证据。独审worker44796在结束阶段再次试图处理私有范围外/tmp校验文件，Root仅停止已核验的自身进程树8节点，未删除系统文件；未产出final-addendum，不把Root接收记录署为Hermes。该审查已结束，不再续接旧检查进程。
 
-真实Hermes d39b13候选2自编98动态通过，同session20261107_045400_d39b13 exec71830候选3配置增量24动态已通过（独立自编99hash），无主树/Maven权。Root另实际命中退避sleep后中断验证通过；独审预中断本身不证明该分支。作者f270fe私有最终22合同测试已接回；其旧BeliefModel缺Rootguard/防御复制，不得覆盖主树。
+当前持久Web PID51516，固定runtime-20261107-1120 candidate3，同world-belief.journal position1/time0；IAB2/tab8已重新登录并保留deliverable，五Key全部配置/遮罩/场景关闭，截图workbench-keys-candidate3.jpg。替代此前PID43192/candidate2记录。0新增供应商调用；绝不重跑live-once。待草稿PR及实际CI后切媒体分支。
 
-下一正式合同docs/superpowers/plans/2026-11-07-belief-runtime.md：作者同session20261107_070330_f270fe exec51023仅belief-runtime-author私有镜像实施，180轮/7200秒；Root拥有主树/Maven/Web/文档。先实际RED后实现，旧schema11已编译客户端class d5c41e01…b5346保持不重编，旧11运行档position10/time30尚未做新桥交替验证。新API待作者api.md，不假设私有完成。
+媒体405ace exec28959尚在私有首稿交接；Root在media-editorial-root/preliminary-1独编冻结源码，正常完整链PASS，其他机构看选题/换机构策略/作者与编辑三个完成期到期/遗忘全文/离职工作流共8项FAIL。修复任务已备media-editorial-fix-task.txt，待首稿worker退出后续同session，不能并发写同镜像。主树无MediaModel。Root独占主树/Maven/验收。
 
-当前准备纯核AI草稿PR/CI，仍待人工review；总体未完成，运行桥/媒体/多公司银行/图表/长跑继续。真实供应商仍仅此前key-1单次51token，本阶段0新增，其他4槽未测；禁止重跑live-once标记。Root临时浏览器61293夹具已过期，不是持续服务。
+## 前轮接续（2026-11-07 M4g.2恢复修复 / M6a真实Web图表）
+
+最新覆盖前述候选2结论：Root又实证将非主席报告拒绝改成accepted=true/SCHEDULED仍被恢复接受（report-integrity-red-1，9项1失败）。candidate3对三类认知角色动作逐分支重算成功/拒绝报告并精确比较，23专项绿。最终formal-verify-3 exit0：1186标准零失败/错误/跳过、CSV37/119/7、Node/真实GUI全绿，JavaDoc11:06:48成功；旧未重编客户端old11-*-3和三JVM-*-4亦通过。candidate3=180冻结文件，Root逐字hash比主树无差异，Runtime d2b89e55d3d8e64425ca020f9068c68da0aae2780eaf27d9c1430c9b1c0b49ae；Scenario保持7234b5b2…3192b。待独立Hermes首轮exec61411退出拿session ID，续接belief-runtime-final-review-task.txt核candidate3增量；首轮handoff已写，1181独立全套、31信念+49市场Host+7旧11独立探针通过，删/插publish pending失败（Root已修），不等于最终candidate3已独审。首轮结束后额外Temp脚本验证/清理不属于授权私有写范围，最终续接已明确只在私有目录、不删证据、不重跑无关全套。当前Web PID43192仍固定candidate2运行副本，待最终接收后精确升级；不得把当前服务称candidate3。
+
+当前Root主树已合运行桥与市场历史，93生产Java。f270fe修复交接后Root另复现并修复两个缺陷：重算必须绑定previous真实pending而不能信任BELIEF_TASK副本；重复预测发布业务拒绝不得让重算停机。main-targeted-3.log实际25项全绿。新实际live回执测试又复现UNKNOWN_TOOL：新Web档案缺动作耗时；仅belief档案新增三工具耗时，保留旧liveConfig。decision-red-1/green-1记录两项（真实发布→阅读→判断→程序事实→核验阅读→下一轮持久input，以及写入中断无半状态/恢复发布）由1错到全绿。
+
+旧schema11未重编client再次对最新主树续写、旧91源runtime回读全部通过（old11-new-append-2/old11-old-read-2）。随后Root补两条删除内部pending的合法摘要反例，8项中2失败；共用报告资格/子任务构造并逐帧核对capture/publish pending及调度事件后22专项绿。最新正式formal-verify-2 exit0：1185标准零失败/错误/跳过、CSV46/119/7、Node绘图、真实GUI全绿；JavaDoc10:54:21成功。三JVM最新three-jvm-*-3.log全部通过（30/100→47/304→63/321，K=3、重读不重复、下一轮真实input与来源新置信）。旧第一轮探针误把管理员全局审计作人物投影，已改roleView，失败日志保留不计产品缺陷。
+
+最新冻结candidate2=180文件（93Java/5生产资源/75测试Java/6测试资源/1Node）；Runtime16e25f77…6563b、Scenario7234b5b2…3192b。独立真实Hermes新上下文exec61411仍只读candidate1（173文件），独写belief-runtime-independent；其候选尚不含beliefConfig与pending完整性修复/新测试，必须补增量复核。独审/草稿PR/实际CI仍待，不以当前正式本地通过冒称全部完成。媒体只读准备405ace已交media-preparation/handoff.md及提案；Root采用复用已有文档/阅读，否决匿名身份自动给编辑/单根谱系/快讯默认无独立审阅。核准docs/superpowers/plans/2026-11-07-media-editorial-core.md，续同真实Hermes405ace exec28959，仅media-editorial-author镜像新增MediaModel/修改RoleAccess与新测试，其他93源只读。首步公开证据双人采编，后续运行桥/预算/采访匿名/社交全部保留，不冒称本步完成整个媒体。
+
+当前持续Web服务：http://127.0.0.1:18080，PID43192，工作目录logs/web-workbench-belief，独立schema12空档world-belief.journal，固定运行副本runtime-20261107-1054（后续主树clean不影响）。已真实浏览器登录，IAB2/tab8保留deliverable；五Key已配置/五场景全部默认关闭，0新增供应商调用，没有改原旧运行档。截图belief-runtime-root/workbench-keys.jpg。只允许精确停止本任务该PID并核对类/工作目录，勿扫杀其他Java服务。管理员一次性bootstrap已登录消费，勿在聊天输出Key或服务秘密。241待提交文件逐字比对真实五Key无命中（secret-scan-1.json）。
+
+Root新增WorldRuntimeBeliefIntegrityTest实际正常入口：重复报告唯一fact/不停世界/恢复通过；同毫秒真实合同计入、下一毫秒合同排除且跨捕获/发布重开通过；原候选合法摘要伪造captured.value/formed confidence被接受两项RED（integrity-run-4.log 4项2通过2失败），已修且最新6项全部绿。早前篡改夹具JSON重编码改变开局BigDecimal scale导致假绿，已用exactBigDecimals和未改event保留原文修正，早两轮日志不得当作产品通过证据。
+
+Root合并Web编译到web-review-2-classes，搭配只读review-1-classes运行10项JUnit全通过（3判断HTTP+5聚合+2市场HTTP/真实成交/同档重开）。市场图Root先实际复现超大价格一分钱丢失；作者BigInt修复后Root又修低价平价除零、真实浏览器SVG hidden属性不移除两缺陷，均保留RED/GREEN。新增scripts/test-market-chart.cjs纳入verify.sh及CI Node22。实际浏览器判断详情/纯文本防注入/人物选择/身份清空与分钟日周OHLCV/空档/离页清空通过，截图browser-beliefs-1.png和market-history-root/browser-market-day.png；两个15分钟测试服务已由Root准确停止，无当前持续Web服务。
+
+旧schema11未重编客户端d5c41e01…b5346对review-1候选续写后，旧target/classes回读position12/time31、输入与RoleJSON不变。证据old11-new-append-1.log/old11-old-read-1.log。旧Runtime类已保留old11-runtime-classes，WorldRuntime.class SHA f60c243b27f0d56d3774f7abb43611048c1d00e4447b5b339177105c239b9236，后续新桥最终还需复测。真实Key仍0新增请求；总体/独审/正式全套/PR未完成。
+
+当前 `codex/world-belief-runtime`，base e6a81adfaf3b24c86e507cf32e9c54aac0ed6be1。前一信念纯核草稿PR35已发布，实际CI42327343664 completed/success。1156标准、CSV51/132/7、真实GUI、JavaDoc10:01:01、98纯核独审+24配置独审全部通过。最终候选3=91Java/5资源/3测试/99hash，BeliefModel e124ccf8…b145；原90源仅SceneRoutes短时原子替换AccessDenied修复。失败及真实sleep后中断证据docs/05§38，不删除旧错误日志。
+
+当前写权仍为Root独占主树/Maven/文档/最终验收；f270fe只写belief-runtime-author私有镜像，BeliefModel只读。市场作者已交回，其自测不称独立审查。禁止重跑live-once标记。总体仍缺本桥最终验收、媒体、多公司银行、完整表现图表与长跑；各草稿待人工review，不自动合并。
 
 ### 前阶段确认
 

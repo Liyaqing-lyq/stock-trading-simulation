@@ -56,6 +56,15 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     /** 执行员工具：撤销本人子单。 */
     public static final String TOOL_CHILD_CANCEL = "role.child.cancel";
 
+    /** 认知工具：形成/重申一条主观判断。 */
+    public static final String TOOL_BELIEF_ASSERT = "belief.assert";
+
+    /** 认知工具：发布公开结构化来源预测。 */
+    public static final String TOOL_FORECAST_PUBLISH = "forecast.publish";
+
+    /** 认知工具：主席请求公司订单事实公告。 */
+    public static final String TOOL_COMPANY_REPORT_ORDERS = "company.reportOrders";
+
     /** 冻结全部集合。 */
     public RoleTradingView {
         if (observedAtMillis < 0 || timeMillis < 0) {

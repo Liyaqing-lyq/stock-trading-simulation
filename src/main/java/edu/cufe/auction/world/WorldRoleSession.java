@@ -28,7 +28,20 @@ import java.util.TreeMap;
  * @param appointments 组织→任职标识（不可变）
  */
 public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long observedAt,
-                               Map<String, String> appointments) {
+                               Map<String, String> appointments, Long observedPosition) {
+
+    /**
+     * 旧四参构造：没有精确观察位置（旧档案）。
+     *
+     * @param runtime       所属运行
+     * @param personPartyId 人物
+     * @param observedAt    观察时点
+     * @param appointments  组织→任职标识
+     */
+    public WorldRoleSession(WorldRuntime runtime, String personPartyId, long observedAt,
+                            Map<String, String> appointments) {
+        this(runtime, personPartyId, observedAt, appointments, null);
+    }
 
     /** 校验字段并冻结映射。 */
     public WorldRoleSession {
@@ -373,5 +386,134 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
                               ChildRef ref) throws IOException {
         return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_CHILD_CANCEL_V1,
                 clientCommandId, clientTaskId, dueMillis, ref);
+    }
+
+    /**
+     * 形成/重申一条主观判断；person 与核验发布者由会话与观察帧决定，模型不可填。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           判断草稿
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String assertBelief(String clientCommandId, String clientTaskId, long dueMillis,
+                               BeliefDraft draft) throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_BELIEF_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 发布一条公开结构化来源预测（文档与主张同批）。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           预测草稿
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String publishForecast(String clientCommandId, String clientTaskId, long dueMillis,
+                                  ForecastDraft draft) throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_FORECAST_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 以当前章程主席身份请求公司在未来精确时点发布订单事实公告。
+     *
+     * <p>{@code dueMillis} 是这条请求完成的正工时点（必须晚于当前）；真正的事实时点由
+     * {@code draft.asOfMillis()} 给出，必须晚于请求完成时刻。捕获发生在 asOf 的 OBSERVATION 阶段，
+     * 发布在 asOf+1 毫秒。</p>
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       请求完成时刻（正工时）
+     * @param draft           请求草稿（含未来 asOf）
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String reportOrders(String clientCommandId, String clientTaskId, long dueMillis,
+                               ReportDraft draft) throws IOException {
+        return runtime.scheduleRoleAction(this, PendingTask.ROLE_TRADING_COMPANY_REPORT_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 主观判断草稿：只含模型可见的业务字段。
+     *
+     * @param beliefId          本人判断标识
+     * @param companyId         目标公司
+     * @param comparator        比较方向
+     * @param threshold         阈值
+     * @param targetAsOfMillis  精确目标时点
+     * @param adoptedClaimId    明确采纳的来源主张；自拟为空
+     * @param evidence          1..3 条本人 scoped 阅读引用
+     * @param rationale         本人自述，可空
+     */
+    public record BeliefDraft(String beliefId, String companyId,
+                              BeliefModel.Comparator comparator, long threshold,
+                              long targetAsOfMillis, String adoptedClaimId,
+                              List<RoleView.ReadingRef> evidence, String rationale) {
+
+        /** 校验静态字段。 */
+        public BeliefDraft {
+            requireText(beliefId, "判断标识");
+            requireText(companyId, "判断公司");
+            Objects.requireNonNull(comparator, "比较方向");
+            evidence = List.copyOf(Objects.requireNonNull(evidence, "判断证据"));
+        }
+    }
+
+    /**
+     * 公开来源预测草稿：正文只是声明，不被解析成权威事实。
+     *
+     * @param claimId                稳定主张标识
+     * @param docId                  新文档标识
+     * @param title                  标题
+     * @param body                   正文
+     * @param publicSourceDescription 公开来源描述
+     * @param readDurationMillis     固定阅读耗时
+     * @param companyId              目标公司
+     * @param comparator             比较方向
+     * @param threshold              阈值
+     * @param targetAsOfMillis       精确目标时点
+     */
+    public record ForecastDraft(String claimId, String docId, String title, String body,
+                                String publicSourceDescription, long readDurationMillis,
+                                String companyId, BeliefModel.Comparator comparator,
+                                long threshold, long targetAsOfMillis) {
+
+        /** 校验静态字段。 */
+        public ForecastDraft {
+            requireText(claimId, "来源主张标识");
+            requireText(docId, "来源主张文档");
+            requireText(title, "来源主张标题");
+            requireText(body, "来源主张正文");
+            Objects.requireNonNull(publicSourceDescription, "公开来源描述");
+            requireText(companyId, "来源主张公司");
+            Objects.requireNonNull(comparator, "来源主张比较");
+            if (readDurationMillis <= 0) {
+                throw new IllegalArgumentException("阅读耗时必须为正：" + readDurationMillis);
+            }
+        }
+    }
+
+    /**
+     * 公司事实公告请求草稿。
+     *
+     * @param companyId   公司主体
+     * @param asOfMillis  事实时点（未来）
+     */
+    public record ReportDraft(String companyId, long asOfMillis) {
+
+        /** 校验字段。 */
+        public ReportDraft {
+            requireText(companyId, "公司主体");
+            if (asOfMillis <= 0) {
+                throw new IllegalArgumentException("事实时点必须为正：" + asOfMillis);
+            }
+        }
     }
 }

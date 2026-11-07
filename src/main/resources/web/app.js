@@ -19,7 +19,10 @@ const state = {
   liveTimer: null,
   liveRequest: 0,
   liveBusy: false,
-  recallRequest: 0
+  recallRequest: 0,
+  beliefRequest: 0,
+  marketRequest: 0,
+  market: null
 };
 
 const ADMIN_TABLES = ["accounts", "owners", "pending", "trades", "dividends", "keys"];
@@ -36,7 +39,8 @@ const DETAIL_TABLES = ["company-report", "company-inventory", "company-orders",
   "performance-owners", "performance-holdings", "performance-flows", "org-parties",
   "org-owners", "org-appointments", "org-mandates", "org-reports",
   "information-documents", "information-active", "information-closed",
-  "information-observations", "information-readers", "information-reports"];
+  "information-observations", "information-readers", "information-reports",
+  "market-bars", "market-gaps"];
 const PERSON_TABLES = ["person-accounts", "person-holdings", "person-market"];
 
 const $ = (id) => document.getElementById(id);
@@ -132,8 +136,7 @@ function clearAdminDom() {
   $("routes-list").replaceChildren();
   $("routes-result").textContent = "";
   $("route-provider").textContent = "";
-  $("trade-chart").replaceChildren();
-  $("chart-caption").textContent = "尚无真实成交。";
+  clearMarketDom();
   for (const name of ["accounts", "pending", "trades", "position"]) $("metric-" + name).textContent = "—";
   for (const id of ADMIN_TABLES) {
     fillTable(id, [], () => undefined);
@@ -238,6 +241,9 @@ async function refreshAdmin() {
     state.details[state.page] = null;
     await loadDetail(state.page);
   }
+  if (state.page === "market" && current()) {
+    await loadMarketHistory(generation, pageVersion);
+  }
 }
 
 function renderAdminCut(view) {
@@ -253,7 +259,6 @@ function renderAdmin(view) {
   $("metric-trades").textContent = String(view.trades.length);
   $("metric-position").textContent = view.position;
   if (!$("advance-target").value) $("advance-target").value = String(BigInt(view.timeMillis) + 1000n);
-  renderTradeChart(view.trades);
   setStatus("管理员视角 · 已确认记录 " + view.position);
 
   const snapshot = $("snapshot");
@@ -586,6 +591,7 @@ function selectPage(page, refresh = true) {
   if (!pages[page]) return;
   clearSecrets();
   stopLivePoll();
+  if (state.page === "market" && page !== "market") clearMarketDom();
   state.page = page;
   state.pageVersion += 1;
   $("page-title").textContent = pages[page][0];
@@ -698,35 +704,281 @@ function svgNode(name, attributes, label) {
   if (label !== undefined) node.textContent = label;
   return node;
 }
-function renderTradeChart(trades) {
-  const svg = $("trade-chart"); svg.replaceChildren(); svg.hidden = true;
-  if (!trades.length) { $("chart-caption").textContent = "尚无真实成交。"; return; }
-  const symbol = trades[trades.length - 1].symbol;
-  const points = trades.filter(trade => trade.symbol === symbol).slice(-500);
-  const prices = points.map(trade => Number(trade.price));
-  if (prices.some(value => !Number.isFinite(value))) {
-    $("chart-caption").textContent = "价格超出绘图范围，请查看下表精确数据。"; return;
+function clearMarketDom() {
+  state.marketRequest += 1;
+  state.market = null;
+  const svg = $("candle-chart");
+  if (svg) { svg.replaceChildren(); svg.setAttribute("hidden", ""); }
+  if ($("market-symbol")) $("market-symbol").replaceChildren();
+  if ($("market-period")) $("market-period").value = "minute";
+  for (const id of ["market-cut", "market-summary", "market-status", "market-bars-count",
+    "chart-caption", "market-bars-note"]) {
+    if ($(id)) $(id).textContent = "";
   }
-  const first = BigInt(points[0].timeMillis), last = BigInt(points[points.length - 1].timeMillis);
-  const min = Math.min(...prices), max = Math.max(...prices), span = max - min || Math.max(Math.abs(max) * .02, .01);
-  const low = min - span * .15, high = max + span * .15;
-  const denominator = Number(last - first) || 1;
-  const y = value => 205 - (value - low) / (high - low) * 180;
-  for (let i = 0; i < 4; i++) {
-    const value = low + (high - low) * i / 3, lineY = y(value);
-    svg.append(svgNode("line", { x1: 72, y1: lineY, x2: 878, y2: lineY, class: "chart-grid" }));
-    svg.append(svgNode("text", { x: 61, y: lineY + 4, "text-anchor": "end", class: "chart-label" }, value.toFixed(2)));
+  if ($("chart-caption")) $("chart-caption").textContent = "尚无真实成交。";
+  for (const id of ["market-bars", "market-gaps"]) {
+    if ($(id)) fillTable(id, [], () => undefined);
   }
-  const coords = points.map((trade, index) => [72 + Number(BigInt(trade.timeMillis) - first) / denominator * 806, y(prices[index])]);
-  svg.append(svgNode("polyline", { points: coords.map(point => point.join(",")).join(" "), class: "chart-line" }));
-  for (const [index, point] of coords.entries()) {
-    const dot = svgNode("circle", { cx: point[0], cy: point[1], r: 3, class: "chart-point" });
-    dot.append(svgNode("title", {}, points[index].timeMillis + " 毫秒 · " + points[index].price + " 元")); svg.append(dot);
+  for (const id of ["market-bars-empty", "market-gaps-empty"]) {
+    if ($(id)) $(id).hidden = true;
   }
-  svg.append(svgNode("text", { x: 72, y: 234, class: "chart-label" }, String(first)));
-  svg.append(svgNode("text", { x: 878, y: 234, "text-anchor": "end", class: "chart-label" }, String(last)));
-  $("chart-caption").textContent = symbol + " · 最近 " + points.length + " 笔真实成交（最多 500 笔）· 纵轴：元；横轴：模拟毫秒";
-  svg.hidden = false;
+  setMessage("market-error", "");
+}
+
+async function loadMarketHistory(generation = state.generation,
+                                 pageVersion = state.pageVersion) {
+  if (state.mode !== "admin" || state.page !== "market") return;
+  const requestId = ++state.marketRequest;
+  const symbol = $("market-symbol").value || "";
+  const period = $("market-period").value || "minute";
+  setMessage("market-error", "");
+  $("market-status").textContent = "正在读取当前确认截止的真实成交…";
+  let result;
+  try {
+    result = await request("POST", "/api/admin/market-history", { symbol, period });
+  } catch (failure) {
+    if (isCurrent(generation) && state.mode === "admin"
+        && pageVersion === state.pageVersion && requestId === state.marketRequest) {
+      $("market-status").textContent = "";
+      setMessage("market-error", failure.message);
+    }
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "admin"
+      || pageVersion !== state.pageVersion || state.page !== "market"
+      || requestId !== state.marketRequest
+      || ($("market-symbol").value || "") !== symbol
+      || ($("market-period").value || "minute") !== period) return;
+  if (result.status === 401 || result.status === 403) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) {
+    $("market-status").textContent = "";
+    setMessage("market-error", "读取市场历史失败（" + result.status + "），请稍后重试。");
+    return;
+  }
+  $("market-status").textContent = "";
+  state.market = result.payload;
+  renderMarketHistory(result.payload);
+}
+
+function renderMarketHistory(view) {
+  $("market-cut").textContent = view.runId + " · 记录 " + view.position
+    + " · " + view.timeMillis + " 毫秒";
+  const statusText = view.available ? (view.marketClosed ? "撮合已收盘" : "撮合开放")
+    : "未启用撮合";
+  $("market-summary").textContent = statusText + " · 口径 " + basisLabel(view.basis)
+    + " · 有成交桶 " + view.totalBars
+    + (view.truncated ? "（仅显示最近 500 根）" : "");
+  $("market-bars-count").textContent = String(view.bars.length) + " / " + view.totalBars;
+
+  const symbols = Array.isArray(view.symbols) ? view.symbols : [];
+  const select = $("market-symbol");
+  const previous = view.selectedSymbol || select.value || "";
+  select.replaceChildren();
+  for (const symbol of symbols) {
+    const option = document.createElement("option");
+    option.value = symbol;
+    option.textContent = symbol;
+    select.appendChild(option);
+  }
+  if (!symbols.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "（无真实证券）";
+    select.appendChild(option);
+  }
+  select.value = symbols.includes(previous) ? previous : (symbols[0] || "");
+  $("market-period").value = view.period || "minute";
+
+  const svg = $("candle-chart");
+  svg.replaceChildren();
+  svg.setAttribute("hidden", "");
+  fillTable("market-bars", view.bars || [], (tr, row) => {
+    cell(tr, row.startMillis, "num");
+    cell(tr, row.endMillis, "num");
+    cell(tr, row.complete ? "是" : "否");
+    cell(tr, row.firstTradeId + " / " + row.lastTradeId, "num");
+    cell(tr, row.count, "num");
+    cell(tr, row.open, "num");
+    cell(tr, row.high, "num");
+    cell(tr, row.low, "num");
+    cell(tr, row.close, "num");
+    cell(tr, row.volume, "num");
+    cell(tr, volumeStatusLabel(row.volumeStatus));
+    cell(tr, row.amount, "num");
+  });
+  fillTable("market-gaps", view.gaps || [], (tr, row) => {
+    cell(tr, row.fromMillis, "num");
+    cell(tr, row.toMillis, "num");
+    cell(tr, row.missingBars, "num");
+  });
+
+  $("market-bars-empty").hidden = (view.bars || []).length !== 0;
+  $("market-bars-empty").textContent = view.available
+    ? "此周期尚无真实成交。" : "此运行未启用撮合，不生成成交表。";
+  $("market-gaps-empty").hidden = (view.gaps || []).length !== 0;
+  $("market-bars-note").textContent = view.available
+    ? "只有实际有成交的桶；空档不补价。表格字符串为原始精度。"
+    : "此运行没有撮合子集，不能生成价格、成交量或成交额。";
+
+  if (!view.available) {
+    $("chart-caption").textContent = "此运行未启用撮合，不生成 K 线。";
+    return;
+  }
+  if (!view.bars || !view.bars.length) {
+    $("chart-caption").textContent = "所选证券与周期在当前截止前尚无真实成交。";
+    return;
+  }
+  renderCandleChart(view);
+}
+
+function priceToHundredths(value) {
+  const raw = String(value === null || value === undefined ? "" : value).trim();
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(raw);
+  if (!match) return null;
+  const fraction = (match[3] || "").padEnd(2, "0").slice(0, 2);
+  const scaled = BigInt(match[2]) * 100n + BigInt(fraction || "0");
+  return match[1] === "-" ? -scaled : scaled;
+}
+
+function volumeToBigInt(value) {
+  if (value === null || value === undefined || value === "") return null;
+  try {
+    return BigInt(String(value));
+  } catch (ignored) {
+    return null;
+  }
+}
+
+function hundredthsToText(value) {
+  const negative = value < 0n;
+  const absolute = negative ? -value : value;
+  const integer = absolute / 100n;
+  const fraction = absolute % 100n;
+  return (negative ? "-" : "") + integer.toString() + "."
+    + fraction.toString().padStart(2, "0");
+}
+
+function basisLabel(value) {
+  return ({ UNADJUSTED_EXPERIMENT: "原始成交价（未复权）" })[value] || String(value || "—");
+}
+
+function volumeStatusLabel(value) {
+  return ({ OK: "正常", OVERFLOW: "数量超出整数范围" })[value] || String(value || "—");
+}
+
+function renderCandleChart(view) {
+  const bars = view.bars || [];
+  const svg = $("candle-chart");
+  svg.replaceChildren();
+  svg.setAttribute("hidden", "");
+  if (!bars.length) return;
+
+  const parsed = [];
+  let minPrice = null;
+  let maxPrice = null;
+  let maxVolume = null;
+  for (const bar of bars) {
+    const open = priceToHundredths(bar.open);
+    const high = priceToHundredths(bar.high);
+    const low = priceToHundredths(bar.low);
+    const close = priceToHundredths(bar.close);
+    if (open === null || high === null || low === null || close === null) {
+      $("chart-caption").textContent = "价格字符串无法解析，请查看下表精确值。";
+      return;
+    }
+    const volume = volumeToBigInt(bar.volume);
+    if (volume !== null) {
+      if (maxVolume === null || volume > maxVolume) maxVolume = volume;
+    }
+    minPrice = minPrice === null || low < minPrice ? low : minPrice;
+    maxPrice = maxPrice === null || high > maxPrice ? high : maxPrice;
+    parsed.push({ bar, open, high, low, close, volume });
+  }
+  let span = maxPrice - minPrice;
+  if (span === 0n) {
+    span = maxPrice === 0n ? 1n : (maxPrice < 0n ? -maxPrice : maxPrice) / 50n;
+    if (span === 0n) span = 1n;
+  }
+  const padding = span / 8n || 1n;
+  const lowBound = minPrice - padding;
+  const highBound = maxPrice + padding;
+  const priceSpan = highBound - lowBound;
+  const y = (value) => 272 - Number((value - lowBound) * 230n / priceSpan);
+
+  for (let index = 0; index < 4; index++) {
+    const value = lowBound + (highBound - lowBound) * BigInt(index) / 3n;
+    const lineY = y(value);
+    svg.appendChild(svgNode("line", { x1: 76, y1: lineY, x2: 940, y2: lineY,
+      class: "chart-grid" }));
+    svg.appendChild(svgNode("text", { x: 66, y: lineY + 4, "text-anchor": "end",
+      class: "chart-label" }, hundredthsToText(value)));
+  }
+  const first = BigInt(bars[0].startMillis);
+  const last = BigInt(bars[bars.length - 1].startMillis);
+  const timeSpan = last - first;
+  const width = Math.max(3, Math.min(16, 800 / Math.max(bars.length, 1) * 0.62));
+  for (const item of parsed) {
+    const bar = item.bar;
+    const start = BigInt(bar.startMillis);
+    const offset = timeSpan === 0n ? 480
+      : 80 + Number((start - first) * 800n / timeSpan);
+    const openY = y(item.open), closeY = y(item.close);
+    const highY = y(item.high), lowY = y(item.low);
+    const up = item.close >= item.open;
+    const stateClass = (up ? "chart-up" : "chart-down")
+      + (bar.complete ? "" : " chart-incomplete");
+    svg.appendChild(svgNode("line", { x1: offset, y1: highY, x2: offset, y2: lowY,
+      class: "chart-wick " + stateClass }));
+    const top = Math.min(openY, closeY);
+    const body = svgNode("rect", { x: offset - width / 2, y: top, width,
+      height: Math.max(1, Math.abs(openY - closeY)),
+      class: "chart-body " + stateClass });
+    body.appendChild(svgNode("title", {}, bar.startMillis + "–"
+      + (bar.endMillis === null ? "溢出" : bar.endMillis) + " 毫秒 · "
+      + (bar.complete ? "已完成" : "未完成") + " · 开 " + bar.open + " · 高 " + bar.high
+      + " · 低 " + bar.low + " · 收 " + bar.close + " · 量 "
+      + (bar.volume === null ? "未知（数量超出整数范围）" : bar.volume)
+      + " · 额 " + bar.amount));
+    svg.appendChild(body);
+  }
+
+  svg.appendChild(svgNode("line", { x1: 76, y1: 390, x2: 940, y2: 390,
+    class: "chart-grid" }));
+  svg.appendChild(svgNode("text", { x: 66, y: 394, "text-anchor": "end",
+    class: "chart-label" }, "成交量"));
+  for (const item of parsed) {
+    const bar = item.bar;
+    const start = BigInt(bar.startMillis);
+    const offset = timeSpan === 0n ? 480
+      : 80 + Number((start - first) * 800n / timeSpan);
+    if (item.volume === null) {
+      const unknown = svgNode("rect", { x: offset - width / 2, y: 378, width,
+        height: 12, class: "chart-volume chart-volume-unknown" });
+      unknown.appendChild(svgNode("title", {}, "成交量未知（数量超出整数范围）"));
+      svg.appendChild(unknown);
+      continue;
+    }
+    const height = maxVolume === null || maxVolume === 0n ? 1
+      : Math.max(1, Number(item.volume * 70n / maxVolume));
+    const volumeBar = svgNode("rect", { x: offset - width / 2, y: 390 - height, width,
+      height, class: "chart-volume" });
+    volumeBar.appendChild(svgNode("title", {}, "成交量 " + bar.volume + " 股"));
+    svg.appendChild(volumeBar);
+  }
+
+  svg.appendChild(svgNode("text", { x: 80, y: 414, class: "chart-label" },
+    String(first)));
+  svg.appendChild(svgNode("text", { x: 940, y: 414, "text-anchor": "end",
+    class: "chart-label" }, String(last)));
+  svg.appendChild(svgNode("text", { x: 80, y: 426, class: "chart-label" },
+    "虚线 = 未完成柱；成交量柱高为近似坐标，精确值见下表；量溢出显示未知"));
+  svg.setAttribute("aria-label", (view.selectedSymbol || "证券") + " "
+    + view.period + " 真实成交 OHLC 与成交量，共 " + bars.length + " 根；精确值见下方表格");
+  svg.removeAttribute("hidden");
+  $("chart-caption").textContent = (view.selectedSymbol || "证券") + " · "
+    + ({ minute: "分钟", day: "模拟日", week: "模拟周" }[view.period] || view.period)
+    + " · 显示最近 " + bars.length + " / 共 " + view.totalBars
+    + " 个有成交桶 · 纵轴：元；横轴：模拟毫秒（近似坐标）";
 }
 
 // ---------------------------------------------------------------- 绑定
@@ -765,6 +1017,9 @@ document.querySelectorAll("[data-page]").forEach(button => {
 });
 $("routes-form").addEventListener("submit", event => guard(saveRoutes(event)));
 $("refresh").addEventListener("click", () => guard(state.mode === "admin" ? refreshAdmin() : refreshPerson()));
+$("market-symbol").addEventListener("change", () => guard(loadMarketHistory()));
+$("market-period").addEventListener("change", () => guard(loadMarketHistory()));
+$("market-refresh").addEventListener("click", () => guard(loadMarketHistory()));
 // ---------------------------------------------------------------- 管理详情页（公司 / 表现 / 人物任职 / 信息阅读）
 
 const LABELS = {
@@ -802,6 +1057,7 @@ function label(group, value) {
 function clearDetailDom() {
   state.details = {};
   clearRecall();
+  clearBeliefs();
   $("recall-person").replaceChildren();
   for (const id of DETAIL_TABLES) {
     fillTable(id, [], () => undefined);
@@ -1264,6 +1520,7 @@ function renderInformation(view) {
     $("recall-person").value = selectedPerson;
   }
   loadRecall();
+  loadBeliefs();
   fillTable("information-reports", (view.managementReports || {}).rows, (tr, row) => {
     cell(tr, row.taskId);
     cell(tr, row.kind);
@@ -1338,8 +1595,93 @@ async function loadRecall() {
   }
 }
 
-$("recall-person").addEventListener("change", () => loadRecall());
+$("recall-person").addEventListener("change", () => { loadRecall(); loadBeliefs(); });
 $("recall-refresh").addEventListener("click", () => loadRecall());
+
+const BELIEF_LABELS = {
+  OPEN: "待核验", HIT: "符合判断", MISS: "判断落空", LOW: "低", MID: "中", HIGH: "高",
+  VERIFY_BEFORE_ACT: "行动前核实", SEEK_SECOND_SOURCE: "寻找第二个来源"
+};
+function beliefLabel(value) { return BELIEF_LABELS[value] || text(value); }
+
+function clearBeliefs() {
+  state.beliefRequest += 1;
+  for (const id of ["belief-cut", "belief-status", "belief-evaluations-count", "belief-revisions-count"]) $(id).textContent = "";
+  for (const id of ["belief-policy", "belief-items", "belief-revisions"]) $(id).replaceChildren();
+  for (const id of ["belief-sources", "belief-habits", "belief-evaluations"]) fillTable(id, [], () => undefined);
+  setMessage("belief-error", "");
+}
+
+async function loadBeliefs() {
+  clearBeliefs();
+  const personId = $("recall-person").value;
+  if (!personId || state.mode !== "admin" || state.page !== "information") return;
+  const generation = state.generation;
+  const pageVersion = state.pageVersion;
+  const requestId = state.beliefRequest;
+  const current = () => isCurrent(generation) && state.mode === "admin"
+    && state.page === "information" && state.pageVersion === pageVersion
+    && state.beliefRequest === requestId && $("recall-person").value === personId;
+  $("belief-status").textContent = "正在查询…";
+  try {
+    const response = await request("POST", "/api/admin/beliefs", { personId });
+    if (!current()) return;
+    if (response.status === 401 || response.status === 403) { sessionLost(); return; }
+    if (response.status !== 200 || !response.payload) throw new Error("读取判断与学习失败，请稍后重试。");
+    const view = response.payload;
+    renderAdminCut(view);
+    $("belief-cut").textContent = cutText(view, "人物 " + view.personPartyId);
+    if (!view.available) {
+      $("belief-status").textContent = "当前档案未启用判断与学习实验；没有自动改动旧运行。";
+      return;
+    }
+    const policy = view.policy;
+    fillDl("belief-policy", [["判断总量上限", policy.maxBeliefsPerPerson], ["待核验上限", policy.maxOpenBeliefs],
+      ["最远预测（模拟毫秒）", policy.maxHorizonMillis], ["每次来源分数变化", policy.trustStep],
+      ["置信影响权重", policy.confidenceWeight], ["每级习惯支持数", policy.habitThreshold],
+      ["习惯支持窗口（模拟毫秒）", policy.habitWindowMillis]]);
+    $("belief-status").textContent = "判断 " + view.beliefs.total + " 条 · 本页 " + view.beliefs.rows.length
+      + " 条 · 累计核验 " + view.evaluations.total + " 次";
+    for (const item of view.beliefs.rows) {
+      const detail = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = item.beliefId + " · " + item.companyId + " · 已确认合同数 "
+        + (item.comparator === "AT_LEAST" ? "≥ " : "≤ ") + item.threshold + " · " + beliefLabel(item.verdict);
+      const fields = document.createElement("dl"); fields.className = "grid";
+      const pairs = [["形成时点", item.formedAtMillis], ["精确预测时点", item.targetAsOfMillis],
+        ["置信程度", beliefLabel(item.confidenceBand)], ["实验置信分（满分1000）", item.confidencePermille],
+        ["采纳来源", item.sourcePartyId || "自拟判断"], ["核验发布者", item.verificationPublisherPartyId],
+        ["本人理由", item.rationale], ["实际已读证据", item.evidence.map(ref => ref.docId + " v" + ref.version + " · 本人阅读 " + ref.index).join("；")]];
+      for (const [name, value] of pairs) {
+        const term = document.createElement("dt"); term.textContent = name;
+        const description = document.createElement("dd"); description.textContent = text(value);
+        fields.append(term, description);
+      }
+      detail.append(summary, fields); $("belief-items").appendChild(detail);
+    }
+    fillTable("belief-sources", view.sources, (tr, row) => {
+      cell(tr, row.sourcePartyId); cell(tr, beliefLabel(row.band)); cell(tr, row.competencePermille, "num");
+    });
+    fillTable("belief-habits", view.habits, (tr, row) => {
+      cell(tr, beliefLabel(row.kind)); cell(tr, row.level, "num"); cell(tr, row.lastUpdatedMillis, "num");
+    });
+    fillTable("belief-evaluations", view.evaluations.rows, (tr, row) => {
+      cell(tr, row.beliefId); cell(tr, row.docId + " v" + row.version); cell(tr, beliefLabel(row.verdict));
+      cell(tr, row.factValue, "num"); cell(tr, row.maturedAtMillis, "num"); cell(tr, row.supersedesEvaluationId);
+    });
+    $("belief-evaluations-count").textContent = "显示 " + view.evaluations.rows.length + " / " + view.evaluations.total;
+    $("belief-revisions-count").textContent = "显示 " + view.habitRevisions.rows.length + " / " + view.habitRevisions.total;
+    for (const item of view.habitRevisions.rows) {
+      const line = document.createElement("p");
+      line.textContent = item.atMillis + " · " + beliefLabel(item.kind) + "：" + item.fromLevel + " → " + item.toLevel
+        + " · 支持判断：" + (item.supportBeliefIds.join("、") || "无");
+      $("belief-revisions").appendChild(line);
+    }
+  } catch (failure) {
+    if (current()) { $("belief-status").textContent = ""; setMessage("belief-error", failure.message); }
+  }
+}
+$("belief-refresh").addEventListener("click", () => loadBeliefs());
 
 function renderClosedReadings() {
   const view = state.details.information;

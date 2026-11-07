@@ -53,7 +53,9 @@ public record InformationRun(InformationModel.State information, Map<String, Rep
      */
     public record Config(List<String> readers,
                          @JsonInclude(JsonInclude.Include.NON_NULL)
-                         CognitionRecall.Policy recallPolicy) {
+                         CognitionRecall.Policy recallPolicy,
+                         @JsonInclude(JsonInclude.Include.NON_NULL)
+                         BeliefModel.Policy beliefPolicy) {
 
         /** 深拷贝、去空白并排序。 */
         public Config {
@@ -78,7 +80,17 @@ public record InformationRun(InformationModel.State information, Map<String, Rep
          * @param readers 读者人物标识清单
          */
         public Config(List<String> readers) {
-            this(readers, null);
+            this(readers, null, null);
+        }
+
+        /**
+         * 二参构造：只有回忆参数，保持 schema11 的开局内容字节与源码兼容。
+         *
+         * @param readers      读者人物标识清单
+         * @param recallPolicy 回忆参数；旧档案为 null
+         */
+        public Config(List<String> readers, CognitionRecall.Policy recallPolicy) {
+            this(readers, recallPolicy, null);
         }
     }
 
