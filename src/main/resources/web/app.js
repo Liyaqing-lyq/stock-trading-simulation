@@ -22,7 +22,9 @@ const state = {
   recallRequest: 0,
   beliefRequest: 0,
   marketRequest: 0,
-  market: null
+  market: null,
+  performanceRequest: 0,
+  performanceHistory: null
 };
 
 const ADMIN_TABLES = ["accounts", "owners", "pending", "trades", "dividends", "keys"];
@@ -36,7 +38,8 @@ const DETAIL_TABLES = ["company-report", "company-inventory", "company-orders",
   "company-batches", "company-contracts", "company-receivables", "company-bills",
   "company-seats", "company-meetings", "company-budgets", "company-commitments",
   "company-reviews", "company-evidence", "company-reports", "performance-accounts",
-  "performance-owners", "performance-holdings", "performance-flows", "org-parties",
+  "performance-owners", "performance-holdings", "performance-flows",
+  "performance-points", "performance-history-flows", "org-parties",
   "org-owners", "org-appointments", "org-mandates", "org-reports",
   "information-documents", "information-active", "information-closed",
   "information-observations", "information-readers", "information-reports",
@@ -592,6 +595,7 @@ function selectPage(page, refresh = true) {
   clearSecrets();
   stopLivePoll();
   if (state.page === "market" && page !== "market") clearMarketDom();
+  if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
   state.page = page;
   state.pageVersion += 1;
   $("page-title").textContent = pages[page][0];
@@ -1058,6 +1062,7 @@ function clearDetailDom() {
   state.details = {};
   clearRecall();
   clearBeliefs();
+  clearPerformanceHistoryDom();
   $("recall-person").replaceChildren();
   for (const id of DETAIL_TABLES) {
     fillTable(id, [], () => undefined);
@@ -1080,6 +1085,10 @@ function clearDetailDom() {
     "org-appointment-filter", "information-closed-filter"]) {
     if ($(id)) $(id).value = "ALL";
   }
+  for (const id of ["performance-history-start", "performance-history-end"]) {
+    if ($(id)) $(id).value = "";
+  }
+  if ($("performance-history-owner")) $("performance-history-owner").replaceChildren();
   document.querySelectorAll("#admin .empty").forEach(node => { node.hidden = true; });
 }
 
@@ -1378,6 +1387,11 @@ function renderPerformance(view) {
   });
   fillSection("performance-flows-empty", "performance-flows-count", view.flows);
   fillNotes("performance-notes", view.notes);
+  fillPerformanceHistoryOwners(view);
+  fillPerformanceHistoryRange(view.position);
+  if (state.page === "performance" && state.mode === "admin") {
+    guard(loadPerformanceHistory());
+  }
 }
 
 function renderPerformanceOwners() {
@@ -1404,6 +1418,329 @@ function renderPerformanceOwners() {
   $("performance-owners-empty").hidden = rows.length !== 0;
   $("performance-owners-count").textContent = "显示 " + rows.length + " / 本页 " + (section.rows || []).length
     + " 条（总计 " + section.total + " 条）";
+}
+
+// ---------------------------------------------------------------- 规模/指数/回撤历史
+
+const PERFORMANCE_CHART = { left: 76, right: 936, top: 16, bottom: 158 };
+const PERFORMANCE_FLOW_LABEL = { CAPITAL_CONTRIBUTION: "流入", CAPITAL_WITHDRAWAL: "流出" };
+
+function clearPerformanceHistoryVisuals() {
+  state.performanceHistory = null;
+  for (const id of ["performance-scale-chart", "performance-index-chart", "performance-drawdown-chart"]) {
+    const svg = $(id);
+    if (svg) { svg.replaceChildren(); svg.setAttribute("hidden", ""); }
+  }
+  for (const id of ["performance-points", "performance-history-flows"]) {
+    if ($(id)) fillTable(id, [], () => undefined);
+  }
+  for (const id of ["performance-history-cut", "performance-history-count", "performance-history-range",
+    "performance-points-count", "performance-history-flows-count"]) {
+    if ($(id)) $(id).textContent = "";
+  }
+  if ($("performance-chart-caption")) $("performance-chart-caption").textContent = "尚未查询历史区间。";
+  if ($("performance-points-empty")) $("performance-points-empty").hidden = true;
+  if ($("performance-history-flows-empty")) $("performance-history-flows-empty").hidden = true;
+}
+
+function clearPerformanceHistoryDom() {
+  state.performanceRequest += 1;
+  clearPerformanceHistoryVisuals();
+  if ($("performance-history-status")) $("performance-history-status").textContent = "选择主体与起止确认位置后查询。";
+  setMessage("performance-history-error", "");
+}
+
+/** 主体下拉只来自本页已读取的净资产行；不额外请求、不猜主体。 */
+function fillPerformanceHistoryOwners(view) {
+  const select = $("performance-history-owner");
+  if (!select) return;
+  const previous = select.value;
+  const rows = (view && view.owners ? view.owners.rows : []) || [];
+  select.replaceChildren();
+  for (const row of rows) {
+    const option = document.createElement("option");
+    option.value = row.ownerId;
+    option.textContent = row.ownerName && row.ownerName !== row.ownerId
+      ? row.ownerId + "（" + row.ownerName + "）" : row.ownerId;
+    select.appendChild(option);
+  }
+  if (!rows.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "（没有可估值主体）";
+    select.appendChild(option);
+  }
+  const owners = rows.map(row => row.ownerId);
+  select.value = owners.includes(previous) ? previous : (owners[0] || "");
+}
+
+/** 默认填入“最近至多 400 帧”的请求值；响应里始终写实际起点。 */
+function fillPerformanceHistoryRange(position) {
+  if (!position) return;
+  const end = BigInt(position);
+  const start = end - 399n > 1n ? end - 399n : 1n;
+  if (!$("performance-history-end").value) $("performance-history-end").value = end.toString();
+  if (!$("performance-history-start").value) $("performance-history-start").value = start.toString();
+}
+
+function performancePositionText(value) {
+  return /^(0|[1-9][0-9]*)$/.test(String(value || "").trim()) ? String(value).trim() : null;
+}
+
+async function loadPerformanceHistory(generation = state.generation,
+                                      pageVersion = state.pageVersion) {
+  if (state.mode !== "admin" || state.page !== "performance") return;
+  const ownerId = $("performance-history-owner").value || "";
+  const startText = performancePositionText($("performance-history-start").value);
+  const endText = performancePositionText($("performance-history-end").value);
+  const requestId = ++state.performanceRequest;
+  setMessage("performance-history-error", "");
+  if (!ownerId) {
+    $("performance-history-status").textContent = "没有可查询的财产主体。";
+    return;
+  }
+  if (!startText || !endText) {
+    $("performance-history-status").textContent = "";
+    setMessage("performance-history-error", "起止位置必须是十进制整数（不接受小数、负号、空格或科学计数法）。");
+    return;
+  }
+  $("performance-history-status").textContent = "正在读取所选区间的确认历史…";
+  let result;
+  try {
+    result = await request("POST", "/api/admin/performance-history",
+      { ownerId, startPosition: startText, endPosition: endText });
+  } catch (failure) {
+    if (isCurrent(generation) && state.mode === "admin" && pageVersion === state.pageVersion
+        && requestId === state.performanceRequest) {
+      $("performance-history-status").textContent = "";
+      setMessage("performance-history-error", failure.message);
+    }
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "admin" || pageVersion !== state.pageVersion
+      || state.page !== "performance" || requestId !== state.performanceRequest
+      || ($("performance-history-owner").value || "") !== ownerId
+      || performancePositionText($("performance-history-start").value) !== startText
+      || performancePositionText($("performance-history-end").value) !== endText) return;
+  if (result.status === 401 || result.status === 403) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) {
+    clearPerformanceHistoryVisuals();
+    $("performance-history-status").textContent = "";
+    const message = result.payload && result.payload.message
+      ? result.payload.message : "读取表现历史失败（" + result.status + "）";
+    setMessage("performance-history-error", message);
+    return;
+  }
+  renderPerformanceHistory(result.payload);
+}
+
+function renderPerformanceHistory(view) {
+  state.performanceHistory = view;
+  $("performance-history-cut").textContent = "运行 " + view.runId + " · 实时截止 记录 "
+    + view.position + " · " + view.timeMillis + " 毫秒";
+  const laterThanEnd = BigInt(view.endPosition) < BigInt(view.position);
+  $("performance-history-range").textContent = "所选区间 " + view.startPosition + "（"
+    + view.startTimeMillis + " 毫秒）– " + view.endPosition + "（" + view.endTimeMillis
+    + " 毫秒）· 共 " + view.totalPoints + " 个确认点 · 单次上限 " + view.framesLimit + " 帧"
+    + (laterThanEnd ? " · 终点早于实时截止，图只覆盖所选区间" : "");
+  $("performance-history-count").textContent = view.totalPoints + " 点";
+  const period = view.performance || {};
+  const statusText = ({ COMPLETE: "完整可用", INCOMPLETE_VALUATION: "存在缺价或组织不支持：指数与回撤不适用",
+    NON_POSITIVE_EQUITY: "存在零或负权益：指数与回撤不适用", NO_PERIOD: "不足两个确认点：无期间" })[period.status]
+    || text(period.status);
+  $("performance-history-status").textContent = statusText + " · 收益率 " + text(period.returnRate)
+    + " · 指数 " + text(period.index) + " · 最大回撤 " + text(period.maxDrawdown)
+    + " · 相邻区间 " + text(period.segmentCount) + " · 期间 " + text(period.periodId);
+
+  const points = view.points || [];
+  fillTable("performance-points", points, (tr, row) => {
+    cell(tr, row.position, "num");
+    cell(tr, row.timeMillis, "num");
+    cell(tr, label("valuation", row.valuationStatus));
+    cell(tr, row.navBeforeFlow, "num");
+    cell(tr, row.navAfterFlow, "num");
+    cell(tr, row.index, "num");
+    cell(tr, row.drawdown, "num");
+    cell(tr, (row.flows || []).map(flow => (PERFORMANCE_FLOW_LABEL[flow.kind] || flow.kind)
+      + " " + flow.amount).join("；"));
+  });
+  $("performance-points-empty").hidden = points.length !== 0;
+  $("performance-points-count").textContent = points.length === 0 ? ""
+    : "显示 " + points.length + " 行（每个确认点一行）";
+
+  const flows = (view.flows || { rows: [] });
+  fillTable("performance-history-flows", flows.rows, (tr, row) => {
+    cell(tr, row.flowId);
+    cell(tr, PERFORMANCE_FLOW_LABEL[row.kind] || row.kind);
+    cell(tr, row.position, "num");
+    cell(tr, row.atMillis, "num");
+    cell(tr, row.fromOwnerId + " / " + row.fromAccountId);
+    cell(tr, row.toOwnerId + " / " + row.toAccountId);
+    cell(tr, row.amount, "num");
+    cell(tr, row.evidenceRef);
+  });
+  $("performance-history-flows-empty").hidden = flows.rows.length !== 0;
+  $("performance-history-flows-count").textContent = flows.rows.length === 0 ? ""
+    : "显示 " + flows.rows.length + " / 共 " + flows.total + " 条";
+  renderPerformanceCharts(view);
+}
+
+/** 精确十进制转 BigInt（指定 scale）；不接受指数记数法，解析失败返回 null。 */
+function decimalToScaled(value, scale) {
+  const raw = String(value === null || value === undefined ? "" : value).trim();
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(raw);
+  if (!match) return null;
+  const fraction = (match[3] || "").padEnd(scale, "0").slice(0, scale);
+  const magnitude = BigInt(match[2]) * (10n ** BigInt(scale)) + BigInt(fraction || "0");
+  return match[1] === "-" ? -magnitude : magnitude;
+}
+
+function scaledToText(value, scale) {
+  const negative = value < 0n;
+  const absolute = negative ? -value : value;
+  const unit = 10n ** BigInt(scale);
+  const integer = absolute / unit;
+  const fraction = (absolute % unit).toString().padStart(scale, "0");
+  return (negative ? "-" : "") + integer.toString() + (scale > 0 ? "." + fraction : "");
+}
+
+function performanceAxis(entries) {
+  const first = BigInt(entries[0].point.position);
+  const last = BigInt(entries[entries.length - 1].point.position);
+  return { first, span: last - first };
+}
+
+/** 横轴 = 确认位置线性映射；span 为 0（单点）时居中。axis 只算一次，不在每点重扫。 */
+function performanceChartX(axis, position) {
+  const left = PERFORMANCE_CHART.left;
+  const right = PERFORMANCE_CHART.right;
+  if (axis.span === 0n) return (left + right) / 2;
+  return left + Number((BigInt(position) - axis.first) * BigInt(right - left) / axis.span);
+}
+
+function drawPerformanceSeries(svg, entries, options) {
+  const known = entries.filter(entry => entry.value !== null);
+  if (!known.length) return false;
+  let min = known[0].value;
+  let max = known[0].value;
+  for (const entry of known) {
+    if (entry.value < min) min = entry.value;
+    if (entry.value > max) max = entry.value;
+  }
+  let span = max - min;
+  if (span === 0n) {
+    const magnitude = max < 0n ? -max : max;
+    span = magnitude / 50n;
+    if (span === 0n) span = 1n;
+    min -= span / 2n;
+    max += span / 2n;
+  }
+  const padding = span / 8n || 1n;
+  const low = min - padding;
+  const high = max + padding;
+  const range = high - low;
+  const top = PERFORMANCE_CHART.top;
+  const bottom = PERFORMANCE_CHART.bottom;
+  const y = (value) => bottom - Number((value - low) * BigInt(bottom - top) / range);
+  const scale = options.scale;
+  const axis = performanceAxis(entries);
+
+  for (let index = 0; index < 4; index++) {
+    const value = low + range * BigInt(index) / 3n;
+    const lineY = y(value);
+    svg.appendChild(svgNode("line", { x1: PERFORMANCE_CHART.left, y1: lineY,
+      x2: PERFORMANCE_CHART.right, y2: lineY, class: "chart-grid" }));
+    svg.appendChild(svgNode("text", { x: PERFORMANCE_CHART.left - 10, y: lineY + 4,
+      "text-anchor": "end", class: "chart-label" }, scaledToText(value, scale)));
+  }
+  if (options.baseline !== undefined) {
+    const baseY = y(options.baseline);
+    svg.appendChild(svgNode("line", { x1: PERFORMANCE_CHART.left, y1: baseY,
+      x2: PERFORMANCE_CHART.right, y2: baseY, class: "chart-baseline" }));
+    svg.appendChild(svgNode("text", { x: PERFORMANCE_CHART.right, y: baseY - 4,
+      "text-anchor": "end", class: "chart-label" }, options.baselineLabel));
+  }
+
+  let path = "";
+  let open = false;
+  for (const entry of entries) {
+    if (entry.value === null) { open = false; continue; }
+    const px = Math.round(performanceChartX(axis, entry.point.position));
+    const py = Math.round(y(entry.value));
+    path += (open ? " L " : " M ") + px + " " + py;
+    open = true;
+  }
+  if (path) svg.appendChild(svgNode("path", { d: path.trim(), class: "chart-line " + options.className }));
+
+  if (entries.length <= 240) {
+    for (const entry of entries) {
+      if (entry.value === null) continue;
+      const circle = svgNode("circle", { cx: performanceChartX(axis, entry.point.position),
+        cy: y(entry.value), r: 2.5, class: "chart-point" });
+      circle.appendChild(svgNode("title", {}, "位置 " + entry.point.position + " · "
+        + entry.point.timeMillis + " 毫秒 · " + options.unit + " "
+        + scaledToText(entry.value, scale)));
+      svg.appendChild(circle);
+    }
+  }
+  return true;
+}
+
+function renderPerformanceChart(id, points, key, scale, options = {}) {
+  const svg = $(id);
+  if (!svg) return false;
+  svg.replaceChildren();
+  svg.setAttribute("hidden", "");
+  if (!points.length) return false;
+  const entries = points.map(point => ({ point, value: decimalToScaled(point[key], scale) }));
+  const drawn = drawPerformanceSeries(svg, entries, { scale, className: options.className || "",
+    baseline: options.baseline, baselineLabel: options.baselineLabel, unit: options.unit });
+  if (!drawn) return false;
+  if (options.flowMarkers) {
+    const axis = performanceAxis(entries);
+    for (const point of points) {
+      for (const flow of point.flows || []) {
+        const x = Math.round(performanceChartX(axis, point.position));
+        const line = svgNode("line", { x1: x, y1: PERFORMANCE_CHART.top, x2: x,
+          y2: PERFORMANCE_CHART.bottom, class: "chart-flow" });
+        line.appendChild(svgNode("title", {}, (PERFORMANCE_FLOW_LABEL[flow.kind] || flow.kind)
+          + " " + flow.amount + " · 位置 " + point.position));
+        svg.appendChild(line);
+      }
+    }
+  }
+  svg.appendChild(svgNode("text", { x: PERFORMANCE_CHART.left, y: 182, class: "chart-label" },
+    "位置 " + points[0].position));
+  svg.appendChild(svgNode("text", { x: PERFORMANCE_CHART.right, y: 182, "text-anchor": "end",
+    class: "chart-label" }, "位置 " + points[points.length - 1].position));
+  svg.removeAttribute("hidden");
+  return true;
+}
+
+function renderPerformanceCharts(view) {
+  const points = view.points || [];
+  const caption = $("performance-chart-caption");
+  if (!points.length) {
+    for (const id of ["performance-scale-chart", "performance-index-chart", "performance-drawdown-chart"]) {
+      const svg = $(id);
+      if (svg) { svg.replaceChildren(); svg.setAttribute("hidden", ""); }
+    }
+    caption.textContent = "所选区间没有确认点。";
+    return;
+  }
+  const scaleDrawn = renderPerformanceChart("performance-scale-chart", points, "navAfterFlow", 2,
+    { unit: "元", flowMarkers: true });
+  const indexDrawn = renderPerformanceChart("performance-index-chart", points, "index", 12,
+    { unit: "指数", baseline: 10n ** 12n, baselineLabel: "基数 1", className: "chart-index" });
+  const drawdownDrawn = renderPerformanceChart("performance-drawdown-chart", points, "drawdown", 12,
+    { unit: "回撤", baseline: 0n, baselineLabel: "回撤 0", className: "chart-drawdown" });
+  const complete = view.performance && view.performance.status === "COMPLETE";
+  caption.textContent = "横轴 = 确认记录位置（" + points[0].position + "–"
+    + points[points.length - 1].position + "），不是均匀时间；纵轴单位：资金规模 元 / 指数（基数 1）/ 回撤。"
+    + (complete ? "" : " 期间不完整：指数与回撤按口径留空，只画已知的资金规模。")
+    + (scaleDrawn ? "" : " 资金规模缺少可用估值。")
+    + (indexDrawn ? "" : " 没有可画的表现指数。")
+    + (drawdownDrawn ? "" : " 没有可画的回撤。");
 }
 
 function renderPeopleAdmin(view) {
@@ -1710,6 +2047,24 @@ for (const [id, render] of [["company-report-filter", renderCompanyReports],
   ["information-closed-filter", renderClosedReadings]]) {
   $(id).addEventListener("change", () => render());
 }
+
+for (const id of ["performance-history-owner", "performance-history-start",
+  "performance-history-end"]) {
+  $(id).addEventListener("change", () => clearPerformanceHistoryDom());
+}
+$("performance-history-query").addEventListener("click", () => {
+  guard(loadPerformanceHistory());
+});
+$("performance-history-recent").addEventListener("click", () => {
+  const position = state.details.performance ? state.details.performance.position : null;
+  if (!position) return;
+  const end = BigInt(position);
+  const start = end - 399n > 1n ? end - 399n : 1n;
+  $("performance-history-start").value = start.toString();
+  $("performance-history-end").value = end.toString();
+  clearPerformanceHistoryVisuals();
+  guard(loadPerformanceHistory());
+});
 
 guard(boot());
 

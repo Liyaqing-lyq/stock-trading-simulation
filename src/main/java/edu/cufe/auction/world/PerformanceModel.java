@@ -24,6 +24,10 @@ import java.util.Set;
  * <p><b>不适用</b>：任一估值点缺完整估值则整体 {@link Status#INCOMPLETE_VALUATION}；完整点出现
  * 零或负权益则 {@link Status#NON_POSITIVE_EQUITY}；不足两点则 {@link Status#NO_PERIOD}。
  * 三种不适用都不输出收益率、指数或回撤，也绝不跨缺口连乘。</p>
+ *
+ * <p><b>逐点历史</b>：{@link #history(String, String, List)} 与
+ * {@link #calculate(String, String, List)} 共用同一遍链接，因此逐点指数、当前回撤与期间汇总
+ * 不可能来自两套公式。</p>
  */
 public final class PerformanceModel {
 
@@ -164,6 +168,78 @@ public final class PerformanceModel {
     }
 
     /**
+     * 一个确认点的展示采样：原样保留该 {@link Point}，并给出该点时的高精度指数与当前回撤。
+     *
+     * <p>指数与回撤要么同时给出、要么同时为空：不完整估值、非正权益与无期间一律为空，
+     * 不许用别处的指数补一个画点。回撤是<b>该点时</b>的当前回撤（相对此前峰值），不是累计最大值。</p>
+     *
+     * <p><b>这是 12 位舍入后的显示值，不是权益状态</b>：{@code index = 0.000000000000} 只表示
+     * 该点正指数舍入为零，不能据此判断权益为零（例如合法正权益从 1e42 降到 0.01 时，精确指数约 1e-44）；
+     * {@code drawdown = 1.000000000000} 同样只表示 {@code (峰值 − 指数) / 峰值 ≥ 0.9999999999995}。
+     * 零或负权益由 {@link Status#NON_POSITIVE_EQUITY} 表达，且那种期间不输出任何曲线点，
+     * 两种情形不得混用。</p>
+     *
+     * @param point    该确认点的估值点
+     * @param index    该点时的累计表现指数（scale 12，≥ 0）；不可用为空
+     * @param drawdown 该点时的当前回撤（scale 12，0 ≤ d ≤ 1）；不可用为空
+     */
+    public record Series(Point point, BigDecimal index, BigDecimal drawdown) {
+
+        /** 校验点非空、精度、缺失组合与显示值边界（0 与 1 是舍入结果，不是权益状态）。 */
+        public Series {
+            Objects.requireNonNull(point, "采样点");
+            boolean hasCurve = index != null;
+            if (hasCurve != (drawdown != null)) {
+                throw new IllegalArgumentException("指数与回撤必须同时给出："
+                        + point.position());
+            }
+            if (hasCurve) {
+                if (point.valuationStatus() != ValuationModel.Status.COMPLETE) {
+                    throw new IllegalArgumentException("非完整估值点不得携带指数："
+                            + point.position());
+                }
+                if (index.scale() != OUTPUT_SCALE || drawdown.scale() != OUTPUT_SCALE) {
+                    throw new IllegalArgumentException("指数与回撤必须精确到 12 位小数："
+                            + point.position());
+                }
+                if (index.signum() < 0) {
+                    throw new IllegalArgumentException("指数不得为负：" + point.position());
+                }
+                if (drawdown.signum() < 0 || drawdown.compareTo(ONE) > 0) {
+                    throw new IllegalArgumentException("回撤必须落在 [0,1]：" + point.position());
+                }
+            }
+        }
+    }
+
+    /**
+     * 一次期间的逐点历史：既有 {@link Performance} 与逐点采样共用同一遍几何链接。
+     *
+     * @param performance 与 {@code calculate} 同构的期间结果
+     * @param series      与输入估值点一一对应、顺序相同、长度相同的逐点采样
+     */
+    public record History(Performance performance, List<Series> series) {
+
+        /** 校验身份一致、状态与空值组合一致，并冻结集合。 */
+        public History {
+            Objects.requireNonNull(performance, "期间表现");
+            series = Collections.unmodifiableList(
+                    new ArrayList<>(Objects.requireNonNull(series, "逐点采样")));
+            boolean complete = performance.status() == Status.COMPLETE;
+            for (Series item : series) {
+                if (!item.point().ownerId().equals(performance.ownerId())) {
+                    throw new IllegalArgumentException("采样点主体与期间不一致："
+                            + item.point().position());
+                }
+                if ((item.index() != null) != complete) {
+                    throw new IllegalArgumentException("采样点指数可用性与期间状态不一致："
+                            + item.point().position());
+                }
+            }
+        }
+    }
+
+    /**
      * 计算一个期间的流量剔除表现。
      *
      * <p>先完成全部结构校验（主体一致、位置严格递增、时点不倒退、流标识唯一、首点无流、
@@ -176,6 +252,54 @@ public final class PerformanceModel {
      * @return 期间表现
      */
     public static Performance calculate(String ownerId, String periodId, List<Point> points) {
+        Linked linked = link(ownerId, periodId, points);
+        return new Performance(ownerId, periodId, linked.status(), linked.returnRate(),
+                linked.index(), linked.maxDrawdown(), linked.segments());
+    }
+
+    /**
+     * 计算一个期间的逐点历史：期间汇总与逐点指数/当前回撤来自同一遍链接。
+     *
+     * <p>首点在完整期间下指数恰为 {@code 1.000000000000}、回撤恰为 {@code 0.000000000000}；
+     * 其余点为前缀几何链接与"相对该点之前高精度峰值"的当前回撤。期间不完整时逐点指数与回撤
+     * 全部为空，但已知的资金规模仍随 {@link Point} 返回，不填 0、不连成假曲线。</p>
+     *
+     * <p>逐点指数与回撤是 12 位舍入后的<b>显示值</b>：合法正权益的极端下跌可以让指数显示为
+     * {@code 0.000000000000}、回撤显示为 {@code 1.000000000000}；这表示"小于显示精度"，
+     * 不是零/负权益状态（那种期间根本没有曲线点）。</p>
+     *
+     * @param ownerId  财产主体
+     * @param periodId 表现期间标识
+     * @param points   按位置递增的估值点
+     * @return 期间表现与逐点采样
+     */
+    public static History history(String ownerId, String periodId, List<Point> points) {
+        Linked linked = link(ownerId, periodId, points);
+        List<Series> series = new ArrayList<>(linked.points().size());
+        for (int index = 0; index < linked.points().size(); index++) {
+            series.add(new Series(linked.points().get(index),
+                    linked.indexByPoint().get(index), linked.drawdownByPoint().get(index)));
+        }
+        return new History(new Performance(ownerId, periodId, linked.status(),
+                linked.returnRate(), linked.index(), linked.maxDrawdown(), linked.segments()),
+                series);
+    }
+
+    // ------------------------------------------------------------------
+    // 内部：单遍链接
+    // ------------------------------------------------------------------
+
+    /**
+     * 一次链接的中间结果：既有区间列表，以及逐点指数与逐点当前回撤（不可用状态时为 null）。
+     * 它让 {@code calculate} 与 {@code history} 共用同一套校验、归因与舍入。
+     */
+    private record Linked(List<Point> points, List<Segment> segments,
+                          List<BigDecimal> indexByPoint, List<BigDecimal> drawdownByPoint,
+                          BigDecimal returnRate, BigDecimal index, BigDecimal maxDrawdown,
+                          Status status) {
+    }
+
+    private static Linked link(String ownerId, String periodId, List<Point> points) {
         requireText(ownerId, "财产主体");
         requireText(periodId, "表现期间");
         List<Point> input = new ArrayList<>(Objects.requireNonNull(points, "估值点"));
@@ -199,19 +323,26 @@ public final class PerformanceModel {
             status = Status.COMPLETE;
         }
 
+        List<BigDecimal> indexByPoint = new ArrayList<>(Collections.nCopies(input.size(), null));
+        List<BigDecimal> drawdownByPoint = new ArrayList<>(Collections.nCopies(input.size(), null));
+        List<Segment> segments = new ArrayList<>();
+
         if (status != Status.COMPLETE) {
-            List<Segment> segments = new ArrayList<>();
             for (int i = 1; i < input.size(); i++) {
                 segments.add(new Segment(input.get(i - 1).position(), input.get(i).position(),
                         status, null, null));
             }
-            return new Performance(ownerId, periodId, status, null, null, null, segments);
+            return new Linked(Collections.unmodifiableList(input),
+                    Collections.unmodifiableList(segments),
+                    Collections.unmodifiableList(indexByPoint),
+                    Collections.unmodifiableList(drawdownByPoint), null, null, null, status);
         }
 
         BigDecimal index = ONE;
         BigDecimal peak = ONE;
-        BigDecimal drawdown = BigDecimal.ZERO;
-        List<Segment> segments = new ArrayList<>();
+        BigDecimal maxDrawdown = BigDecimal.ZERO;
+        indexByPoint.set(0, ONE.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN));
+        drawdownByPoint.set(0, BigDecimal.ZERO.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN));
         for (int i = 1; i < input.size(); i++) {
             Point previous = input.get(i - 1);
             Point current = input.get(i);
@@ -219,27 +350,29 @@ public final class PerformanceModel {
                     .divide(previous.navAfterFlow(), MATH);
             BigDecimal segmentReturn = factor.subtract(ONE).setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN);
             index = index.multiply(factor, MATH);
+            BigDecimal currentDrawdown = BigDecimal.ZERO;
             if (index.compareTo(peak) > 0) {
                 peak = index;
             } else {
-                BigDecimal fall = peak.subtract(index).divide(peak, MATH);
-                if (fall.compareTo(drawdown) > 0) {
-                    drawdown = fall;
+                currentDrawdown = peak.subtract(index).divide(peak, MATH);
+                if (currentDrawdown.compareTo(maxDrawdown) > 0) {
+                    maxDrawdown = currentDrawdown;
                 }
             }
             segments.add(new Segment(previous.position(), current.position(), Status.COMPLETE,
                     segmentReturn, index.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN)));
+            indexByPoint.set(i, index.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN));
+            drawdownByPoint.set(i, currentDrawdown.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN));
         }
-        return new Performance(ownerId, periodId, Status.COMPLETE,
+        return new Linked(Collections.unmodifiableList(input),
+                Collections.unmodifiableList(segments),
+                Collections.unmodifiableList(indexByPoint),
+                Collections.unmodifiableList(drawdownByPoint),
                 index.subtract(ONE).setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN),
                 index.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN),
-                drawdown.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN),
-                segments);
+                maxDrawdown.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN),
+                Status.COMPLETE);
     }
-
-    // ------------------------------------------------------------------
-    // 内部
-    // ------------------------------------------------------------------
 
     private static void validateStructure(String ownerId, List<Point> points) {
         Set<String> flowIds = new HashSet<>();

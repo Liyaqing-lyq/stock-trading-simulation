@@ -685,6 +685,95 @@ public final class WorldWebHost implements AutoCloseable {
                                   Section holdings, Section flows, List<String> notes) {
     }
 
+    /**
+     * 一个点的曲线行；所有数值为精确字符串，前端只做坐标缩放。
+     *
+     * @param position        确认位置
+     * @param timeMillis      该确认帧的模拟时点
+     * @param valuationStatus 该点估值状态
+     * @param navBeforeFlow   资本流发生前净资产；不可用为空
+     * @param navAfterFlow    资本流发生后净资产（帧末规模）；不可用为空
+     * @param index           该点的表现指数；不可用为空
+     * @param drawdown        该点的当前回撤；不可用为空
+     * @param flows           该点登记的真实资本流
+     */
+    public record PerformanceCurvePointView(String position, String timeMillis,
+                                            String valuationStatus,
+                                            String navBeforeFlow, String navAfterFlow,
+                                            String index, String drawdown,
+                                            List<PerformanceFlowView> flows) {
+        /** 冻结集合。 */
+        public PerformanceCurvePointView {
+            flows = List.copyOf(flows);
+        }
+    }
+
+    /**
+     * 一个点内登记的真实资本流（方向沿用 PerformanceModel 的种类）。
+     *
+     * @param flowId      资本流标识
+     * @param kind        CAPITAL_CONTRIBUTION / CAPITAL_WITHDRAWAL
+     * @param amount      金额（字符串）
+     * @param position    该点确认位置
+     * @param atMillis    该点模拟时点
+     * @param evidenceRef 证据引用
+     */
+    public record PerformanceFlowView(String flowId, String kind, String amount,
+                                      String position, String atMillis, String evidenceRef) {
+    }
+
+    /**
+     * 期间汇总投影（与 {@link PerformanceModel.Performance} 同值，字段保持字符串）。
+     *
+     * @param periodId     表现期间
+     * @param status       期间状态
+     * @param returnRate   期间收益率；不可用为空
+     * @param index        期间指数；不可用为空
+     * @param maxDrawdown  期间最大回撤；不可用为空
+     * @param segmentCount 相邻区间数
+     */
+    public record PerformancePeriodView(String periodId, String status, String returnRate,
+                                        String index, String maxDrawdown, String segmentCount) {
+    }
+
+    /**
+     * 账户规模、表现指数与回撤历史响应。
+     *
+     * <p>{@code position}/{@code timeMillis} 是当前实时截止，{@code startPosition}/
+     * {@code endPosition}/{@code startTimeMillis}/{@code endTimeMillis} 是所选区间；
+     * 两者分开，绝不把区间终点冒充实时世界时间。</p>
+     *
+     * @param runId           当前运行
+     * @param position        当前实时截止确认位置
+     * @param timeMillis      当前实时截止模拟时点
+     * @param ownerId         所选财产主体
+     * @param ownerName       主体名称
+     * @param startPosition   所选区间实际起点
+     * @param endPosition     所选区间终点
+     * @param startTimeMillis 起点确认帧模拟时点
+     * @param endTimeMillis   终点确认帧模拟时点
+     * @param totalPoints     真实总点数
+     * @param framesLimit     本次允许的最大帧数
+     * @param performance     期间汇总
+     * @param points          逐点曲线
+     * @param flows           区间内真实资本流（新→旧）
+     * @param notes           口径说明
+     */
+    public record PerformanceHistoryView(String runId, String position, String timeMillis,
+                                         String ownerId, String ownerName,
+                                         String startPosition, String endPosition,
+                                         String startTimeMillis, String endTimeMillis,
+                                         String totalPoints, String framesLimit,
+                                         PerformancePeriodView performance,
+                                         List<PerformanceCurvePointView> points,
+                                         Section flows, List<String> notes) {
+        /** 冻结集合。 */
+        public PerformanceHistoryView {
+            points = List.copyOf(points);
+            notes = List.copyOf(notes);
+        }
+    }
+
     /** 单页最多返回的行数；总量另行给出，不截断计数。 */
     public static final int MAX_ROWS = 50;
 
@@ -1542,6 +1631,106 @@ public final class WorldWebHost implements AutoCloseable {
                     Long.toString(snapshot.timeMillis()), performanceAvailable,
                     bounded(accountRows), bounded(ownerRows), bounded(holdingRows),
                     bounded(flowRows), notes);
+        });
+    }
+
+    /**
+     * 账户规模、表现指数与回撤历史（单 writer 任务、单快照；只读，不推进世界）。
+     *
+     * <p>先取当前世界 cut，再查所选区间；区间终点与实时 cut 在响应里分别是两个字段。
+     * 超过 {@link #MAX_PERFORMANCE_FRAMES} 直接拒绝，不静默截断、不改起点。</p>
+     *
+     * @param ownerId       财产主体
+     * @param startPosition 起点确认位置
+     * @param endPosition   终点确认位置
+     * @return 历史响应
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public PerformanceHistoryView performanceHistory(String ownerId, long startPosition,
+                                                      long endPosition)
+            throws BusyException, Exception {
+        if (ownerId == null || ownerId.isBlank()) {
+            throw new IllegalArgumentException("未知财产主体：" + ownerId);
+        }
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            OpeningRegistry registry = current.openingRegistry().orElse(null);
+            long cut = snapshot.position();
+            if (startPosition <= 0 || endPosition < startPosition || endPosition > cut) {
+                throw new IllegalArgumentException("历史区间必须落在已确认位置内："
+                        + startPosition + "-" + endPosition);
+            }
+            long frames = endPosition - startPosition + 1;
+            if (frames > MAX_PERFORMANCE_FRAMES) {
+                throw new IllegalArgumentException("历史区间 " + startPosition + "-" + endPosition
+                        + " 共 " + frames + " 帧，超过上限 " + MAX_PERFORMANCE_FRAMES);
+            }
+            PerformanceModel.History history =
+                    current.performanceHistory(ownerId, startPosition, endPosition);
+            PerformanceModel.Performance performance = history.performance();
+
+            List<PerformanceCurvePointView> pointRows = new ArrayList<>();
+            for (PerformanceModel.Series series : history.series()) {
+                PerformanceModel.Point point = series.point();
+                List<PerformanceFlowView> pointFlows = new ArrayList<>();
+                for (PerformanceModel.Flow flow : point.flows()) {
+                    pointFlows.add(new PerformanceFlowView(flow.flowId(), flow.kind().name(),
+                            dec(flow.amount()), Long.toString(point.position()),
+                            Long.toString(point.atMillis()), flow.evidenceRef()));
+                }
+                pointRows.add(new PerformanceCurvePointView(Long.toString(point.position()),
+                        Long.toString(point.atMillis()), point.valuationStatus().name(),
+                        dec(point.navBeforeFlow()), dec(point.navAfterFlow()),
+                        dec(series.index()), dec(series.drawdown()), pointFlows));
+            }
+
+            List<Map<String, Object>> flowRows = new ArrayList<>();
+            for (WorldRuntime.CapitalFlowReport flow : current.capitalFlows(ownerId)) {
+                if (flow.position() < startPosition || flow.position() > endPosition) {
+                    continue;
+                }
+                boolean incoming = flow.toOwnerId().equals(ownerId);
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("flowId", flow.flowId());
+                row.put("kind", incoming ? PerformanceModel.FlowKind.CAPITAL_CONTRIBUTION.name()
+                        : PerformanceModel.FlowKind.CAPITAL_WITHDRAWAL.name());
+                row.put("position", num(flow.position()));
+                row.put("atMillis", num(flow.atMillis()));
+                row.put("fromOwnerId", flow.fromOwnerId());
+                row.put("fromAccountId", flow.fromAccountId());
+                row.put("toOwnerId", flow.toOwnerId());
+                row.put("toAccountId", flow.toAccountId());
+                row.put("amount", dec(flow.amount()));
+                row.put("evidenceRef", flow.evidenceRef());
+                flowRows.add(row);
+            }
+            flowRows.sort(Comparator.comparingLong(
+                            (Map<String, Object> row) -> parseLong(row.get("atMillis")))
+                    .thenComparingLong(row -> parseLong(row.get("position"))).reversed());
+
+            String startTime = pointRows.isEmpty() ? null : pointRows.get(0).timeMillis();
+            String endTime = pointRows.isEmpty() ? null
+                    : pointRows.get(pointRows.size() - 1).timeMillis();
+
+            List<String> notes = new ArrayList<>();
+            notes.add("资金规模 = 该确认帧的净资产（现金含冻结不重复相加 + 持仓按最后有效成交价 + 分红应收 − 分红应付）；缺价点断开，不填 0。");
+            notes.add("表现指数以 1 为基数，按真实资本流前后的估值几何链接；当前回撤相对该点之前的高精度峰值。两者与期间汇总来自同一遍计算，前端不重算收益。");
+            notes.add("横轴是确认记录位置，不是均匀时间；同一毫秒可以有多个确认点。每点的模拟时刻另列。");
+            notes.add("区间超过 " + MAX_PERFORMANCE_FRAMES + " 帧会被拒绝；响应总带实际起点，" +
+                    "\"最近 " + MAX_PERFORMANCE_FRAMES + " 帧\"只是默认请求值，不代表全期。");
+            notes.add("注资与提取不画成盈利；分红登记、除息应收与到账只是资产形态变化，不重复记收益。课程排行榜的初始权益口径不在此页混用。");
+
+            return new PerformanceHistoryView(runId, num(cut), num(snapshot.timeMillis()),
+                    ownerId, ownerName(registry, ownerId), num(startPosition),
+                    num(endPosition), startTime, endTime, num(pointRows.size()),
+                    num(MAX_PERFORMANCE_FRAMES),
+                    new PerformancePeriodView(performance.periodId(),
+                            performance.status().name(), dec(performance.returnRate()),
+                            dec(performance.index()), dec(performance.maxDrawdown()),
+                            num(performance.segments().size())),
+                    pointRows, bounded(flowRows), notes);
         });
     }
 

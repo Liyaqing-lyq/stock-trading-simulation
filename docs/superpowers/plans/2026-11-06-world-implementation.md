@@ -12,7 +12,7 @@
 
 ## 全局约束
 
-当前增量（2026-11-07）：当前`codex/world-media-editorial`基于85d71ed。前置M4g.2/M6a草稿[PR36](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/36)及实际CI42333676886成功，仍待人工review。M4h.1[公开证据采编纯核](2026-11-07-media-editorial-core.md)最终candidate4本地1246标准、CSV41/125/7、Node/真实GUI、JavaDoc12:03:19与旧12未重编新续旧读全部通过；真实Hermes bbad4c正在最终独立增量复核。M6b[账户表现曲线](2026-11-07-performance-history.md)作者eead7c已交首稿，Root发现极小正权益舍入边界，exec61696续接修复；尚未接主树。M4h.2[媒体运行桥与Web](2026-11-07-media-runtime.md)已冻结施工合同，405ace exec81622只在新私有镜像实现后端，Root负责Web/合并/验收。本机Web18080仍为已验收belief candidate3（PID51516），五Key已加载、场景全部关闭、0新增模型调用。总体尚未完成，最新写权和证据见PROJECT_MEMORY。
+当前增量（2026-11-07 12:22）：当前codex/world-performance-history，基底f16cc9c4。M4h.1最终独审199检查/22旧角色及真正旧12新续旧读通过，草稿[PR37](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/37)实际CI42337472698成功，待人工review。M6b[账户表现历史](2026-11-07-performance-history.md)已接主树，1280标准、CSV50/119/7、两组Node/真实GUI、71专项和旧calculate122输出全通过；真实浏览器验证18确认点及资本流/回撤/范围与身份隔离。exec72563正独审105文件候选；最后两行JavaDoc修改需确保重新生成。M4h.2[媒体运行桥](2026-11-07-media-runtime.md)作者405ace exec81622仍在私有后端实施，Root负责Web/合并/验收。本机持续Web18080仍belief candidate3/PID51516，尚未升级M6b；五Key已加载且场景关闭，0新增供应商调用。总体未完成，继续接收性能独审、交付该增量并推进媒体运行桥。
 
 - 金额 BigDecimal（金额 2 位、成本价 4 位），数量 long；锁顺序引擎锁 → 账户锁，模型、I/O、广播不能持有撮合锁。
 - Java 保留账目、交易、时间、权限和动作裁决；首轮单进程，不引入微服务或任意代码热加载。

@@ -2,7 +2,15 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 最新交接（2026-11-07 M4h.1接收 / M6b接回准备）
+## 最新交接（2026-11-07 12:22，M6b正式通过、独审继续）
+
+当前codex/world-performance-history，base f16cc9c4c37e8f0e5e295274d8143fdb88800078，M6b13文件已接主树未提交。前置媒体纯核草稿PR37已发布，实际CI42337472698成功，依赖PR36，待人工review且不自动合并。M6b正式formal-verify-1实际1280零失败/错误/跳过、CSV50/119/7、两组Node图表及真实GUI通过；main-targeted-1为71通过。旧calculate未重编客户端122输出逐字同golden，旧12客户端新续旧读21/104通过。证据performance-history-root，原始formal-final-1已保存。
+
+性能独审exec72563仍在performance-history-independent，候选1共105文件；尚未收到最终handoff。Root最后仅改PerformanceModel与Runtime两处中文JavaDoc（精确舍入说明、扫描完整日志的复杂度说明），执行代码与正式测试版相同；javadoc-2显示up-to-date跳过，不能称已重新生成，需确保最终JavaDoc反映两处注释。实际浏览器成果和测试服务见下方接回准备记录。下一步独审接收→冻结最终主树候选→文档/secret scan→草稿PR及实际CI→更新持续Web；总体任务继续。
+
+媒体运行桥exec81622作者仍在私有src/main/java实现和调试；不能接回尚未交付代码。api.md的观察时间代替观察帧、恢复只核摘要与非DecisionRun完整测试均需Root实证核查。Root独占主树/Maven/正式验收。持续Web仍18080/PID51516/belief candidate3，尚无M6b更新；本轮仍0新增供应商调用。
+
+## 前次交接（2026-11-07 M4h.1接收 / M6b接回准备）
 
 媒体纯核candidate4最终已接收：103文件hash与主树一致，MediaModel 2756c7d9…99ed8、Runtime a2d4fe5d…5c23。formal-verify-5实际1246零失败/错误/跳过、CSV41/125/7、Node/真实GUI全绿，JavaDoc12:03:19成功；原始logs/verify与data已保存media-editorial-root/formal-final-5。bbad4c独审c4/handoff-c4.md：199核心0失败0问题、22旧四岗、真实未重编旧12client新续旧读21/104全部通过，首轮四问题已关闭。Root再次old12-*-4全绿，248候选文件与5Key逐字扫描0命中。独审误写C:\c4sums.tmp（hash无秘密），删除被其安全闸门拒绝，Root未碰范围外文件；偏差记录docs05§40，不影响代码证据，不能宣称全写权合规。当前媒体分支准备提交AI草稿PR，未自动合并。
 

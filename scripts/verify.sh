@@ -124,8 +124,9 @@ fi
 
 echo "== 3/4 Web 图表精度与边界 =="
 if node --check src/main/resources/web/app.js > "$LOG/web-chart.log" 2>&1 \
-    && node scripts/test-market-chart.cjs >> "$LOG/web-chart.log" 2>&1; then
-  ok "Web 图表精度、平价、量柱与未完成柱"
+    && node scripts/test-market-chart.cjs >> "$LOG/web-chart.log" 2>&1 \
+    && node scripts/test-performance-chart.cjs >> "$LOG/web-chart.log" 2>&1; then
+  ok "Web 图表精度、市场成交柱与账户表现历史"
 else
   bad "Web 图表未通过（需要 Node.js），详见 $LOG/web-chart.log"
 fi

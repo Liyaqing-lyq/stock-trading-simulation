@@ -29,3 +29,10 @@ td.preview{white-space:normal;min-width:240px;max-width:380px;color:#5c6a80}
 .chart-incomplete{stroke-dasharray:4 3}
 .chart-volume{fill:#c9d6ea;stroke:#9fb2d1;stroke-width:1}
 .chart-volume-unknown{fill:#f4e6d7;stroke:#c08b52;stroke-dasharray:3 3}
+#performance-scale-chart,#performance-index-chart,#performance-drawdown-chart{width:100%;height:auto;min-height:130px;max-height:220px;overflow:visible;margin-top:12px}
+.chart-baseline{stroke:#b8c2d4;stroke-width:1;stroke-dasharray:6 4}
+.chart-flow{stroke:#c08b52;stroke-width:1.5;stroke-dasharray:2 3}
+.chart-index{stroke:#3f7d6a}
+.chart-drawdown{stroke:#a14a42}
+
+.performance-history-controls{display:grid;grid-template-columns:2fr 1fr 1fr;gap:16px;margin-bottom:18px}.performance-history-controls label{display:block;margin:0}.performance-history-controls input,.performance-history-controls select{width:100%;margin-top:8px}.performance-chart{display:flex;flex-direction:column;margin:0}.performance-chart figcaption{order:-1;margin-top:20px;font-size:12px;font-weight:600;color:#526078}.performance-chart svg[hidden]+figcaption{display:none}.performance-history-data .table-wrap{max-height:28rem;overflow:auto}@media(max-width:760px){.performance-history-controls{grid-template-columns:1fr}.performance-history-controls input,.performance-history-controls select{margin-top:5px}}

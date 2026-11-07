@@ -59,6 +59,9 @@ public final class WorldWebServer implements AutoCloseable {
             "/api/admin/people", "/api/admin/information", "/api/admin/performance");
     /** 市场历史请求字段：只有证券与周期。 */
     private static final Set<String> MARKET_HISTORY_FIELDS = Set.of("symbol", "period");
+    /** 表现历史请求字段：主体与所选区间的起止确认位置。 */
+    private static final Set<String> PERFORMANCE_HISTORY_FIELDS = Set.of("ownerId", "startPosition",
+            "endPosition");
     private static final Set<String> LIVE_START_FIELDS = Set.of("expectedPosition", "expectedRevision", "persons");
     private static final Set<String> LIVE_CONTROL_FIELDS = Set.of("expectedPosition");
     private static final Set<String> LIVE_ACTIONS = Set.of("/api/admin/live/start", "/api/admin/live/stop",
@@ -244,6 +247,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> marketHistory(exchange));
                 return;
             }
+            if ("/api/admin/performance-history".equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> performanceHistory(exchange));
+                return;
+            }
             if ("/api/admin/beliefs".equals(path) && "POST".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> beliefView(exchange));
                 return;
@@ -330,6 +337,9 @@ public final class WorldWebServer implements AutoCloseable {
             return true;
         }
         if ("/api/admin/market-history".equals(path) && "POST".equals(method)) {
+            return true;
+        }
+        if ("/api/admin/performance-history".equals(path) && "POST".equals(method)) {
             return true;
         }
         if ("/api/admin/beliefs".equals(path) && "POST".equals(method)) {
@@ -585,6 +595,34 @@ public final class WorldWebServer implements AutoCloseable {
             throw busy;
         } catch (IllegalArgumentException invalid) {
             send(exchange, 400, error("INVALID", "证券或周期不合法"));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /** POST /api/admin/performance-history：所选区间的规模、指数、回撤与真实资本流。 */
+    private void performanceHistory(HttpExchange exchange) throws IOException,
+            WorldWebHost.BusyException {
+        JsonNode body = jsonBody(exchange, PERFORMANCE_HISTORY_FIELDS);
+        JsonNode owner = body.get("ownerId");
+        Long start = strictLong(body.get("startPosition"));
+        Long end = strictLong(body.get("endPosition"));
+        if (owner == null || !owner.isTextual() || owner.textValue().isBlank()
+                || start == null || end == null) {
+            send(exchange, 400, error("INVALID",
+                    "ownerId 与起止确认位置必须是精确字符串或严格整数"));
+            return;
+        }
+        Object view;
+        try {
+            view = host.performanceHistory(owner.textValue(), start, end);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "请求参数不合法" : invalid.getMessage()));
             return;
         } catch (Exception failure) {
             throw new WorldIoFailure();
