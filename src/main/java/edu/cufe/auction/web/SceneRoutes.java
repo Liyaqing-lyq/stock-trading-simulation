@@ -11,6 +11,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -323,8 +324,7 @@ public final class SceneRoutes implements AutoCloseable {
                 channel.force(true);
             }
             try {
-                Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING);
+                replaceAtomically(temp);
             } catch (AtomicMoveNotSupportedException unsupported) {
                 // 契约要求原子替换；不支持就失败保持旧配置，不做非原子降级
                 throw new IOException("文件系统不支持原子替换，拒绝降级写入");
@@ -337,6 +337,27 @@ public final class SceneRoutes implements AutoCloseable {
                 // 只清理自己的临时文件；清理失败不掩盖原始错误
             }
             throw new IOException("场景路由写入失败");
+        }
+    }
+
+    /** 短时共享占用只重试原子替换，最多六次；持续拒绝或中断保持旧配置。 */
+    private void replaceAtomically(Path temp) throws IOException {
+        for (int attempt = 0; ; attempt++) {
+            try {
+                Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+                return;
+            } catch (AccessDeniedException denied) {
+                if (attempt == 5) {
+                    throw denied;
+                }
+                try {
+                    Thread.sleep(20L << attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("场景路由写入已中断");
+                }
+            }
         }
     }
 

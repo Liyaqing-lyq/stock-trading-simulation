@@ -2,7 +2,17 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 最新接续（2026-11-07 M4f回忆运行桥本地验收）
+## 最新接续（2026-11-07 10:01 M4g.1本地验收 / M4g.2运行桥）
+
+当前codex/world-belief-core base1cd53eb。最终候选3=91Java/5resources/3tests/99hash，BeliefModel e124ccf8…b145。纯核37新增+SceneRoutes2回归=1156标准全绿，CSV51/132/7、真实GUI、JavaDoc10:01:01通过。最后1154旧SceneRoutes一次IO错误已真实复现AccessDenied，6次原子move有界重试修复；原90源现在仅SceneRoutes有改，禁止沿用“原90未改”描述最终候选。失败与2000保存/9专项/全套证据docs/05§38。
+
+真实Hermes d39b13候选2自编98动态通过，同session20261107_045400_d39b13 exec71830候选3配置增量24动态已通过（独立自编99hash），无主树/Maven权。Root另实际命中退避sleep后中断验证通过；独审预中断本身不证明该分支。作者f270fe私有最终22合同测试已接回；其旧BeliefModel缺Rootguard/防御复制，不得覆盖主树。
+
+下一正式合同docs/superpowers/plans/2026-11-07-belief-runtime.md：作者同session20261107_070330_f270fe exec51023仅belief-runtime-author私有镜像实施，180轮/7200秒；Root拥有主树/Maven/Web/文档。先实际RED后实现，旧schema11已编译客户端class d5c41e01…b5346保持不重编，旧11运行档position10/time30尚未做新桥交替验证。新API待作者api.md，不假设私有完成。
+
+当前准备纯核AI草稿PR/CI，仍待人工review；总体未完成，运行桥/媒体/多公司银行/图表/长跑继续。真实供应商仍仅此前key-1单次51token，本阶段0新增，其他4槽未测；禁止重跑live-once标记。Root临时浏览器61293夹具已过期，不是持续服务。
+
+### 前阶段确认
 
 当前 `codex/world-cognition-runtime`，base `e885cf9cb3651c652908017bb0e94ce33f2e2eec`。回忆桥已接主树并冻结candidate3（90源/5资源/4测试，99哈希）。1117标准零失败/错误/跳过，CSV51成交/132订单/7排名、真实GUI、JavaDoc均通过；Root20三JVM、旧DTO未重编指纹828217b8…553f4、旧schema10旧写新续旧读、真实Web遗忘/重读/身份清空/同档恢复通过。五Key仍仅此前key-1一次51token，其余4未测，本轮0新增供应商请求。
 
