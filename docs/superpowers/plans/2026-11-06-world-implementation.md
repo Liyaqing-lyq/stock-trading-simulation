@@ -55,10 +55,10 @@
 
 ### 当前接续
 
-- 当前分支 `codex/world-capital-performance`，基线 `bd200157`。D3b 草稿 PR23 的代码及文档 CI 已通过，完整证据见 docs/05 §26。
+- 当前分支 `codex/world-deepseek-provider`，基线 `5f68a16`。D3b/D3c/Web 草稿 PR23–25 已发布，各代码 CI 实际成功；Web 文档 CI42277945916也已成功。[有界模型适配器](2026-11-07-deepseek-provider.md)925标准及单次真实key-1连通已通过，尚未启用真实世界模型执行。
 - [D3c 实际资本流及确认历史表现](2026-11-06-capital-flow-performance.md)最终candidate3本地验收：42专项/858标准、47成交121订单7排名、GUI及JavaDoc01:38:11，Root123资本检查与Decimal通过，原D3b212/旧8/三JVM保持。真实Hermes最终独立20+2及12no-op/12反例通过。完整证据docs/05§27；草稿PR24代码93d4b7a已发布，verify42264571970实际成功，待人工review。
-- Root 独占所有主源码、测试和 Maven。真实 Hermes aeafaa 仅在 web-root-candidate-1 私有目录修复 Root19HTTP检查确认的11失败，849817资本最终独审已释放，均不修改主树。私有目录的准备结果不能计作已集成能力。
-- 用户确定最终交付为 Web，并授权指定文件五个 key 按场景配置。[Web 与五 key 配置接续单](2026-11-07-web-key-configuration.md)保持服务端加载、上帝显式查看与人物隔离。实际文件仅验证五个值可读取，尚未调用提供方；私有 HTTP 宿主 48 项已通过，前端、场景配置、模型与浏览器验收仍在施工。
+- Root当前独占主树和Maven；aeafaa仅在live-decision-core-preparation私有准备新profile/未知费用纯核，849817仅在deepseek-independent-review最终补正index反例漏usage。私有准备结果不能计作已集成能力，写权随交接明确变更。
+- 用户确定最终交付为 Web，并授权指定文件五个 key 按场景配置。[Web 与五 key 配置接续单](2026-11-07-web-key-configuration.md)第一阶段已完成：902标准、Root24HTTP、独审64、Postman22请求56断言、真实浏览器登录/推进/配置/查看清除/人物隔离/重启。key-1已单次flash连通成功（46输入5输出51总、931毫秒），无重试，其他4槽未测，账单未知；完整业务页面与真实模型运行继续施工。
 - M6 原离线审计页由用户稍后手动查看，尚待反馈。PR6–22 已由人工账号合并到累计基线 `codex/world-role-trading`，main 尚未汇总全部阶段。新 PR23 仍为草稿，Codex 不自动合并。取消/重新公告、认知媒体、差异公司/银行和长时实验仍未完成，总体基线继续执行。
 
 以下保留各阶段任务与原始执行记录。
@@ -486,3 +486,7 @@ Root拥有全部主树/Maven；作者aeafaa仅拥有deepseek-adapter-preparation
 最终candidate3真实Hermes增量独审已完成：86源hash一致，独立重编后64/64通过；同探针对candidate2取得6个cash-only失败，证明模块闸修复有效。Root24独编HTTP、902标准/43成交119订单7排名、GUI/JavaDoc及真实浏览器均已通过，现发布草稿PR，等待实际CI；总体基线继续施工。
 
 Web工作台代码3bbf337c8cbb87ef07ca2546a082ac73ee56e075已建立草稿[PR25](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/25)，base为codex/world-capital-performance；实际[CI42277171062](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42277171062)已completed/success。最终独审64/64。下一按2026-11-07-deepseek-provider.md继续，私有修复已由Root独立重新编译后7/7通过；真实keys未调用。Root另读出可选cache字段非法类型被当缺失、超int范围choice index可能截断为0两处待正式RED核验。整体基线未完成，无自动合并。
+
+DeepSeek候选6436d61e…a2cbc最终真实Hermes独审已补正：每个index反例有含合法usage的成功基底，独编42/42；相同探针对旧客户端33/42，9失败包括两个截断为0的整数，先前37项中5个index断言因缺usage是假覆盖，原报告已另存superseded。Root独编10与纠正版42、925标准/47成交126订单7排名/GUI/JavaDoc及单次真实51token均通过。当前发布适配器草稿PR并等待实际CI，世界运行桥与总体基线继续施工。
+
+有界提供方代码bd07ba0d6ae636c32c968e67b3531b52453b138d已建立草稿[PR26](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/26)，base为codex/world-web-workbench；实际[CI42280670472](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42280670472)已completed/success。A传输阶段验收完成，仍待人工review；下一按2026-11-07-live-decision-core.md实施现有DecisionModel的B1版本化用量/预算纯核，私有替代模型的62项不计正式覆盖。世界运行桥未连接，总体基线继续施工。
