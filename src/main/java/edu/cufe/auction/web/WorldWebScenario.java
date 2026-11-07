@@ -2,6 +2,7 @@ package edu.cufe.auction.web;
 
 import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.CashLedger;
+import edu.cufe.auction.world.CognitionRecall;
 import edu.cufe.auction.world.DecisionModel;
 import edu.cufe.auction.world.InformationRun;
 import edu.cufe.auction.world.ManufacturingModel;
@@ -36,6 +37,17 @@ public final class WorldWebScenario {
     public static final String LIVE_RUN_ID = "web-live";
     /** live 档案标识。 */
     public static final String LIVE_PROFILE = "web-live-http-v1";
+    /** 回忆实验档案运行标识（独立日志，与 live/scripted 并存，不迁移）。 */
+    public static final String COGNITION_RUN_ID = "web-cognition";
+    /** 回忆实验档案标识。 */
+    public static final String COGNITION_PROFILE = "web-cognition-recall-v1";
+    /**
+     * 冻结的回忆实验参数：14 模拟日半衰期、阈值 100‰、最多 8 条、正文 12000 UTF-16 字符。
+     *
+     * <p><b>实验值，未经调优</b>；不是"现实最佳"。修改即改变实验，必须新开日志。</p>
+     */
+    public static final CognitionRecall.Policy COGNITION_POLICY =
+            new CognitionRecall.Policy(14L * 24 * 60 * 60 * 1000, 100, 8, 12_000);
     /** 唯一证券代码。 */
     public static final String SYMBOL = "CUFE1";
     /** 公司组织主体。 */
@@ -178,6 +190,44 @@ public final class WorldWebScenario {
                 "scripted-v1", Map.of("wake", 1L), Map.of(),
                 new DecisionModel.Limits(1, 1_000, 1_000, 200, 200, 1, 1, 1_000),
                 new DecisionModel.Budget(zero, caps));
+    }
+
+    /**
+     * 打开（或按同一开局继续）回忆实验世界：schema11、真实 HTTP 模型、同一经济开局，
+     * 额外冻结回忆实验参数。
+     *
+     * <p>与 live 档案完全并列：独立日志、独立 manifest，不迁移任何旧日志。参数是实验值，
+     * 未经调优，修改参数必须新开日志。</p>
+     *
+     * @param journal 回忆实验日志（独立于 world-live.journal）
+     * @return 运行时与 manifest 的运行标识
+     * @throws Exception 创建失败
+     */
+    public static WorldWebHost.Opened openCognition(Path journal) throws Exception {
+        RunManifest manifest = cognitionManifest();
+        WorldRuntime runtime = new WorldRuntime(journal, manifest, openings(), registry(),
+                new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
+                        "SUP", "CUS", "OPS"), SYMBOL), charter(), roles(), cognitionInformation(),
+                liveConfig());
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
+    /** @return 回忆实验档案的 manifest（schema11、live 决定 + cognition-recall:1） */
+    public static RunManifest cognitionManifest() {
+        Map<String, Integer> modules = new TreeMap<>();
+        for (String name : List.of("cash", "scheduler", "registry", "securities", "matching",
+                "manufacturing", "governance", "roles", "information", "trading", "decisions",
+                "dividend", "live-decisions", "cognition-recall")) {
+            modules.put(name, 1);
+        }
+        return new RunManifest(COGNITION_RUN_ID, 11L,
+                RunManifest.RULES_COGNITION_RECALL_EXPERIMENT_V1, modules,
+                Map.of("profile", COGNITION_PROFILE), RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    /** 回忆档案的资料配置：同一批登记读者 + 冻结实验参数。 */
+    private static InformationRun.Config cognitionInformation() {
+        return new InformationRun.Config(information().readers(), COGNITION_POLICY);
     }
 
     /**

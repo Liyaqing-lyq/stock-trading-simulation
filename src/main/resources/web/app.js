@@ -18,7 +18,8 @@ const state = {
   live: null,
   liveTimer: null,
   liveRequest: 0,
-  liveBusy: false
+  liveBusy: false,
+  recallRequest: 0
 };
 
 const ADMIN_TABLES = ["accounts", "owners", "pending", "trades", "dividends", "keys"];
@@ -800,6 +801,8 @@ function label(group, value) {
 
 function clearDetailDom() {
   state.details = {};
+  clearRecall();
+  $("recall-person").replaceChildren();
   for (const id of DETAIL_TABLES) {
     fillTable(id, [], () => undefined);
   }
@@ -1249,6 +1252,18 @@ function renderInformation(view) {
     cell(tr, row.completedReadings, "num");
   });
   fillSection("information-readers-empty", null, view.readers);
+  const selectedPerson = $("recall-person").value;
+  $("recall-person").replaceChildren();
+  for (const reader of (view.readers || {}).rows || []) {
+    const option = document.createElement("option");
+    option.value = reader.partyId;
+    option.textContent = reader.partyId + (reader.name ? "（" + reader.name + "）" : "");
+    $("recall-person").appendChild(option);
+  }
+  if (Array.from($("recall-person").options).some(option => option.value === selectedPerson)) {
+    $("recall-person").value = selectedPerson;
+  }
+  loadRecall();
   fillTable("information-reports", (view.managementReports || {}).rows, (tr, row) => {
     cell(tr, row.taskId);
     cell(tr, row.kind);
@@ -1261,6 +1276,70 @@ function renderInformation(view) {
   fillSection("information-reports-empty", "information-reports-count", view.managementReports);
   fillNotes("information-notes", view.notes);
 }
+
+function clearRecall() {
+  state.recallRequest += 1;
+  $("recall-cut").textContent = "";
+  $("recall-status").textContent = "";
+  $("recall-policy").replaceChildren();
+  $("recall-items").replaceChildren();
+  setMessage("recall-error", "");
+}
+
+async function loadRecall() {
+  clearRecall();
+  const personId = $("recall-person").value;
+  if (!personId || state.mode !== "admin" || state.page !== "information") return;
+  const generation = state.generation;
+  const pageVersion = state.pageVersion;
+  const requestId = state.recallRequest;
+  const current = () => isCurrent(generation) && state.mode === "admin"
+    && state.page === "information" && state.pageVersion === pageVersion
+    && state.recallRequest === requestId && $("recall-person").value === personId;
+  $("recall-status").textContent = "正在查询…";
+  try {
+    const response = await request("POST", "/api/admin/recall", { personId });
+    if (!current()) return;
+    if (response.status === 401 || response.status === 403) { sessionLost(); return; }
+    if (response.status !== 200 || !response.payload) throw new Error("读取回忆失败，请稍后重试。");
+    const view = response.payload;
+    renderAdminCut(view);
+    $("recall-cut").textContent = cutText(view, "人物 " + view.personPartyId);
+    if (!view.available) {
+      $("recall-status").textContent = "当前档案未启用回忆实验；原有资料与阅读记录保持原口径。";
+      return;
+    }
+    const policy = view.policy;
+    fillDl("recall-policy", [["半衰期（模拟毫秒）", policy.halfLifeMillis],
+      ["最低分（满分1000）", policy.thresholdPermille], ["最多经历", policy.maxItems],
+      ["内容字符预算（含标题及来源，UTF16）", policy.maxContentChars]]);
+    $("recall-status").textContent = "达到回忆阈值 " + view.eligibleCount + " 条 · 低于阈值 "
+      + view.forgottenCount + " 条 · 当前选中 " + view.selected.length + " 条 · 已选内容字符 "
+      + view.contentChars + (view.budgetTruncated ? " · 有内容因条数或字符预算未选入" : " · 未触发预算截断");
+    for (const item of view.selected) {
+      const detail = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = item.title + " · " + item.docId + " v" + item.version + " · 分数 " + item.score;
+      const meta = document.createElement("p");
+      meta.className = "hint";
+      meta.textContent = "首次读完 " + item.completedAt + " · 最近读完 " + item.lastReadAt
+        + " · 阅读记录 " + item.lastReadId + " · 公开来源：" + text(item.publicSourceDescription);
+      const body = document.createElement("pre");
+      body.className = "recall-body";
+      body.textContent = item.body;
+      detail.append(summary, meta, body);
+      $("recall-items").appendChild(detail);
+    }
+  } catch (failure) {
+    if (current()) {
+      $("recall-status").textContent = "";
+      setMessage("recall-error", failure.message);
+    }
+  }
+}
+
+$("recall-person").addEventListener("change", () => loadRecall());
+$("recall-refresh").addEventListener("click", () => loadRecall());
 
 function renderClosedReadings() {
   const view = state.details.information;
@@ -1355,6 +1434,10 @@ function renderLive(v) {
   for (const item of v.skips) {
     const li = document.createElement("li");
     li.textContent = item.personPartyId + "：" + item.reason;
+    if (item.inputSize) {
+      li.textContent += "（字符 " + item.inputSize.actualChars + " / " + item.inputSize.maxChars
+        + "，UTF8字节 " + item.inputSize.actualBytes + " / " + item.inputSize.maxBytes + "）";
+    }
     $("live-skips").appendChild(li);
   }
   if (!v.skips.length) {

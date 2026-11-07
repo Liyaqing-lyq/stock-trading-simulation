@@ -68,6 +68,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1 =
             "live-decision-world-experiment-v1";
 
+    /** M4f：在 live 决定档案之上接入已有经历的有界回忆（schema11，仍为 live 模型配置）。 */
+    public static final String RULES_COGNITION_RECALL_EXPERIMENT_V1 =
+            "cognition-recall-experiment-v1";
+
     /** live 决定档案唯一允许的模型配置版本；与真实 HTTP 提供方严格成对。 */
     public static final String LIVE_DECISIONS_V1 = "live-decisions-v1";
 
@@ -176,6 +180,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("live-decisions");
     }
 
+    /**
+     * 是否启用已有经历的有界回忆。
+     *
+     * @return 模块表包含 cognition-recall 时返回 true
+     */
+    public boolean hasCognitionRecall() {
+        return moduleVersions.containsKey("cognition-recall");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -191,7 +204,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_COGNITION_RECALL_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -214,7 +228,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         Map<String, Integer> expected = new TreeMap<>();
         expected.put("cash", 1);
         expected.put("scheduler", 1);
-        boolean withLive = RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withCognition = RULES_COGNITION_RECALL_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withLive = withCognition
+                || RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1.equals(rulesVersion);
         boolean withDividend = withLive
                 || RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion);
         boolean withTrading = withLive
@@ -269,6 +285,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         }
         if (withLive) {
             expected.put("live-decisions", 1);
+        }
+        if (withCognition) {
+            expected.put("cognition-recall", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "

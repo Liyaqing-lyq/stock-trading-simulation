@@ -73,6 +73,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** live 决定：持久派发事实与冻结场景计划（B2b schema10）。 */
     private static final int STATE_SCHEMA_LIVE_DECISIONS = 10;
+
+    /** 回忆桥：live 决定之上接入已有经历的有界回忆（M4f schema11）。 */
+    private static final int STATE_SCHEMA_COGNITION_RECALL = 11;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -588,6 +591,19 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (manifest.hasRoles() != manifest.hasInformation()) {
             throw new IllegalArgumentException("任职与资料阅读模块必须同时启用："
+                    + manifest.rulesVersion());
+        }
+        if (manifest.hasCognitionRecall()) {
+            if (!manifest.hasLiveDecisions()) {
+                throw new IllegalArgumentException("回忆档案必须建立在 live 决定档案之上："
+                        + manifest.rulesVersion());
+            }
+            if (information == null || information.recallPolicy() == null) {
+                throw new IllegalArgumentException("回忆档案必须提供冻结的回忆参数："
+                        + manifest.rulesVersion());
+            }
+        } else if (information != null && information.recallPolicy() != null) {
+            throw new IllegalArgumentException("未启用回忆模块的运行不接受回忆参数："
                     + manifest.rulesVersion());
         }
         if (manifest.hasDecisions() && (!manifest.hasTrading() || !manifest.hasRoles()
@@ -2091,6 +2107,75 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * 新档决定输入超过冻结上限：类型化失败，只带安全数值，不携带输入正文或凭据。
+     *
+     * <p>继承 {@link IllegalArgumentException} 保持旧调用方兼容；固定错误码
+     * {@link #CODE}，宿主据此展示明确原因，不得吞成无诊断的拒绝。</p>
+     */
+    public static final class DecisionInputTooLargeException extends IllegalArgumentException {
+
+        /** 固定错误码。 */
+        public static final String CODE = "INPUT_TOO_LARGE";
+
+        private final long actualChars;
+        private final long actualBytes;
+        private final long maxChars;
+        private final long maxBytes;
+
+        /**
+         * 记录超限事实。
+         *
+         * @param actualChars 冻结输入的 UTF-16 字符数
+         * @param actualBytes 冻结输入的 UTF-8 字节数
+         * @param maxChars    冻结的字符上限
+         * @param maxBytes    冻结的字节上限
+         */
+        public DecisionInputTooLargeException(long actualChars, long actualBytes, long maxChars,
+                                              long maxBytes) {
+            super("决定输入超过冻结上限（" + CODE + "）");
+            this.actualChars = actualChars;
+            this.actualBytes = actualBytes;
+            this.maxChars = maxChars;
+            this.maxBytes = maxBytes;
+        }
+
+        /** @return 固定错误码 */
+        public String code() {
+            return CODE;
+        }
+
+        /** @return 实际字符数 */
+        public long actualChars() {
+            return actualChars;
+        }
+
+        /** @return 实际 UTF-8 字节数 */
+        public long actualBytes() {
+            return actualBytes;
+        }
+
+        /** @return 冻结字符上限 */
+        public long maxChars() {
+            return maxChars;
+        }
+
+        /** @return 冻结字节上限 */
+        public long maxBytes() {
+            return maxBytes;
+        }
+    }
+
+    /** 输入实际字符/UTF-8 字节必须同时落在冻结上限内；不做任何截断。 */
+    private static void requireInputWithinLimits(String input, DecisionModel.Limits limits) {
+        long chars = input.length();
+        long bytes = input.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (chars > limits.maxInputChars() || bytes > DecisionModel.MAX_INPUT_BYTES) {
+            throw new DecisionInputTooLargeException(chars, bytes, limits.maxInputChars(),
+                    DecisionModel.MAX_INPUT_BYTES);
+        }
+    }
+
     /** @return 当前管理端快照（只读、同一提交位置） */
     public synchronized Snapshot snapshot() {
         return new Snapshot(state.position(), state.timeMillis(), state.lastPhase(),
@@ -2148,6 +2233,38 @@ public final class WorldRuntime implements AutoCloseable {
 
     private RoleView roleView(WorldState snap, String personPartyId,
                               RoleAccess.State access) {
+        return roleView(snap, personPartyId, access, recallAt(snap, personPartyId));
+    }
+
+    /**
+     * 回忆结果：旧档案返回 null（不改变任何旧行为），新档案按冻结 Policy 在快照时点取有界回忆。
+     *
+     * <p>未登记人物同样走纯核（返回空结果），由视图自身的可见性校验决定是否拒绝。</p>
+     */
+    private CognitionRecall.Result recallAt(WorldState snap, String personPartyId) {
+        if (informationConfig == null || informationConfig.recallPolicy() == null) {
+            return null;
+        }
+        if (snap.information() == null) {
+            return null;
+        }
+        return CognitionRecall.recall(snap.information().information(), personPartyId,
+                snap.timeMillis(), informationConfig.recallPolicy());
+    }
+
+    /** 同一次回忆中该 doc/version 的冻结原文；未选中返回 null（不是"不可引用"）。 */
+    private static String recalledBody(CognitionRecall.Result recall, String docId, long version) {
+        for (CognitionRecall.Item item : recall.selected()) {
+            InformationModel.ReadObservation observation = item.observation();
+            if (observation.docId().equals(docId) && observation.version() == version) {
+                return observation.body();
+            }
+        }
+        return null;
+    }
+
+    private RoleView roleView(WorldState snap, String personPartyId,
+                              RoleAccess.State access, CognitionRecall.Result recall) {
         String person = personPartyId == null ? "" : personPartyId;
         if (snap.information() == null) {
             throw new IllegalStateException("快照缺少阅读子集");
@@ -2209,18 +2326,42 @@ public final class WorldRuntime implements AutoCloseable {
                 access, person, now);
         Map<String, Integer> ordinals = readingOrdinals(information, person);
         List<RoleView.Experience> observations = new ArrayList<>();
-        for (InformationModel.ReadObservation observation
-                : InformationModel.observations(information, person)) {
-            Integer index = ordinals.get(observation.readId());
-            if (index == null) {
-                throw new IllegalStateException("经历找不到本人阅读序号：" + observation.readId());
+        if (recall == null) {
+            for (InformationModel.ReadObservation observation
+                    : InformationModel.observations(information, person)) {
+                Integer index = ordinals.get(observation.readId());
+                if (index == null) {
+                    throw new IllegalStateException("经历找不到本人阅读序号：" + observation.readId());
+                }
+                observations.add(new RoleView.Experience(
+                        new RoleView.ReadingRef(observation.personPartyId(), observation.docId(),
+                                observation.version(), index),
+                        observation.title(), observation.body(),
+                        observation.publicSourceDescription(), observation.publishedAt(),
+                        observation.completedAt()));
             }
-            observations.add(new RoleView.Experience(
-                    new RoleView.ReadingRef(observation.personPartyId(), observation.docId(),
-                            observation.version(), index),
-                    observation.title(), observation.body(),
-                    observation.publicSourceDescription(), observation.publishedAt(),
-                    observation.completedAt()));
+        } else {
+            // 新档：只投影本次可回忆的原 Observation；引用序号仍按本人全部阅读映射，不按 selected 重排
+            for (CognitionRecall.Item item : recall.selected()) {
+                InformationModel.ReadObservation observation = item.observation();
+                Integer index = ordinals.get(observation.readId());
+                if (index == null) {
+                    throw new IllegalStateException("经历找不到本人阅读序号：" + observation.docId());
+                }
+                Integer lastIndex = ordinals.get(item.lastReadId());
+                if (lastIndex == null) {
+                    throw new IllegalStateException("最近阅读找不到本人阅读序号：" + observation.docId());
+                }
+                observations.add(new RoleView.Experience(
+                        new RoleView.ReadingRef(observation.personPartyId(), observation.docId(),
+                                observation.version(), index),
+                        observation.title(), observation.body(),
+                        observation.publicSourceDescription(), observation.publishedAt(),
+                        observation.completedAt(),
+                        new RoleView.RecallOrigin(new RoleView.ReadingRef(person,
+                                observation.docId(), observation.version(), lastIndex),
+                                item.lastReadAt())));
+            }
         }
         List<RoleView.Reading> readings = new ArrayList<>();
         for (InformationModel.Reading reading : information.active()) {
@@ -2236,7 +2377,8 @@ public final class WorldRuntime implements AutoCloseable {
         List<RoleView.Permission> permissions = permissionsOf(access, appointments, person, now);
         return new RoleView(now, person, appointments, accounts, holdings, market, catalog,
                 observations, readings, permissions,
-                List.of(RoleView.TOOL_CATALOG, RoleView.TOOL_START_READ, RoleView.TOOL_CITE));
+                List.of(RoleView.TOOL_CATALOG, RoleView.TOOL_START_READ, RoleView.TOOL_CITE),
+                recall == null ? null : new RoleView.RecallMetadata(recall.budgetTruncated()));
     }
 
     /**
@@ -2257,6 +2399,59 @@ public final class WorldRuntime implements AutoCloseable {
         requireRoleReadingEnabled();
         return InformationModel.canCite(requireInformationRun().information(), personPartyId,
                 docId, version, state.timeMillis());
+    }
+
+    /**
+     * 管理员回忆审计：同一切点上的冻结参数与完整回忆结果。
+     *
+     * <p>它不进入人物输入、也不在 {@link WorldRoleSession} 上提供；只有可信宿主（管理员侧）
+     * 可以按人物查询。旧档案没有回忆参数，返回空。</p>
+     *
+     * @param runId         运行标识
+     * @param position      生成该结果时的已确认提交位置
+     * @param timeMillis    生成该结果时的世界时点
+     * @param personPartyId 被查询的登记人物
+     * @param policy        冻结的回忆实验参数
+     * @param result        纯核返回的不可变结果（含分数、候选与遗忘计数）
+     */
+    public record RecallAudit(String runId, long position, long timeMillis, String personPartyId,
+                              CognitionRecall.Policy policy, CognitionRecall.Result result) {
+
+        /** 校验字段。 */
+        public RecallAudit {
+            requireText(runId, "审计运行标识");
+            requireText(personPartyId, "审计人物");
+            Objects.requireNonNull(policy, "审计回忆参数");
+            Objects.requireNonNull(result, "审计回忆结果");
+            if (position <= 0 || timeMillis < 0) {
+                throw new IllegalArgumentException("审计位置或时点非法：" + position + " / "
+                        + timeMillis);
+            }
+        }
+    }
+
+    /**
+     * 按人物读取同一切点的回忆审计。
+     *
+     * @param personPartyId 已登记人物标识
+     * @return 旧档案为 {@link Optional#empty()}；新档案返回冻结参数与完整结果
+     * @throws IllegalArgumentException 人物为空或未登记
+     */
+    public synchronized Optional<RecallAudit> recallAudit(String personPartyId) {
+        requireOpen();
+        requireText(personPartyId, "人物");
+        if (informationConfig == null || informationConfig.recallPolicy() == null) {
+            return Optional.empty();
+        }
+        requireRoleReadingEnabled();
+        InformationModel.State information = requireInformationRun().information();
+        if (!information.persons().contains(personPartyId)) {
+            throw new IllegalArgumentException("人物不可见");
+        }
+        CognitionRecall.Result result = CognitionRecall.recall(information, personPartyId,
+                state.timeMillis(), informationConfig.recallPolicy());
+        return Optional.of(new RecallAudit(manifest.runId(), state.position(),
+                state.timeMillis(), personPartyId, informationConfig.recallPolicy(), result));
     }
 
     /**
@@ -2821,6 +3016,11 @@ public final class WorldRuntime implements AutoCloseable {
             List<String> tools = allowedToolsOf(view);
             String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
                     pendingActionsAt(state, run, request.personPartyId()), tools, decisionConfig);
+            if (decisionConfig.live()
+                    && informationConfig != null && informationConfig.recallPolicy() != null) {
+                // 新档：先量实际字符/字节，超限在构造 ProviderPlan 之前就明确失败，整批不提交
+                requireInputWithinLimits(input, decisionConfig.limits());
+            }
             DecisionModel.ProviderPlan plan = decisionConfig.live()
                     ? new DecisionModel.ProviderPlan(request.route(),
                             input.getBytes(java.nio.charset.StandardCharsets.UTF_8).length)
@@ -9117,6 +9317,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasCognitionRecall()) {
+            return STATE_SCHEMA_COGNITION_RECALL;
+        }
         if (manifest.hasLiveDecisions()) {
             return STATE_SCHEMA_LIVE_DECISIONS;
         }
@@ -10672,7 +10875,9 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
 
-        RoleView profile = roleView(snap, person, scopedRoleAccess(access, person, effective));
+        CognitionRecall.Result recall = recallAt(snap, person);
+        RoleView profile = roleView(snap, person, scopedRoleAccess(access, person, effective),
+                recall);
 
         Set<String> organizations = new HashSet<>(effective.keySet());
         List<RoleTradingView.ResearchView> research = new ArrayList<>();
@@ -10686,9 +10891,16 @@ public final class WorldRuntime implements AutoCloseable {
             String title = fixed == null ? note.docId() : fixed.title();
             boolean read = InformationModel.canCite(information, person, note.docId(),
                     note.docVersion(), now);
+            String body;
+            if (recall == null) {
+                body = read && fixed != null ? fixed.body() : null;
+            } else {
+                // 新档：正文只来自同 cut 选中经历的冻结原文；read 仍只表示历史引用资格
+                body = read ? recalledBody(recall, note.docId(), note.docVersion()) : null;
+            }
             research.add(new RoleTradingView.ResearchView(note.researchId(),
                     note.organizationPartyId(), note.productOwnerId(), note.symbol(), note.docId(),
-                    note.docVersion(), title, read && fixed != null ? fixed.body() : null, read));
+                    note.docVersion(), title, body, read));
         }
 
         List<RoleTradingView.TargetView> targets = new ArrayList<>();

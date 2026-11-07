@@ -26,7 +26,7 @@
 
 ## 4. 新Web档案与可观察交付
 
-- `WorldWebScenario.cognitionManifest()`/`openCognition(Path)`复用同一经济开局与liveConfig，新增明确实验Policy：14模拟日半衰期、阈值100、8条、12000 UTF16正文字符。参数未经调优，不宣称现实最优，修改需新日志。
+- `WorldWebScenario.cognitionManifest()`/`openCognition(Path)`复用同一经济开局与liveConfig，新增明确实验Policy：14模拟日半衰期、阈值100、8条、12000 UTF16内容字符（含标题及公开来源）。参数未经调优，不宣称现实最优，修改需新日志。
 - App第四参数增加`cognition`，使用独立world-cognition.journal；**当前默认是live，保持live**（准备稿“默认scripted”为错误）。旧live/scripted不变。启动/读取/保存配置不发真实请求，仍明确单轮启用。
 - Root在现有上帝信息页增加人物回忆审计：可选择登记人物，同cut显示Policy/候选及遗忘数/截断/选中经历与最近获取/分数；原全量资料审计继续存在。对应新admin HTTP鉴权/Origin/严格参数/no-store，人物接口不能获得该对象。页面实测使用独立dummy/loopback世界真实发布与读取，不造历史数据冒称生产实验。
 - 公共API中文JavaDoc。只用现有依赖，最终Web阶段未完成项仍如实标注。
@@ -35,11 +35,15 @@
 
 Root拥有主树/Maven/WebHost/Server/三资源及全部文档。作者先在cognition-runtime-author私有镜像改InformationRun、RunManifest、RoleView、DecisionRun、WorldRuntime、WorldWebScenario、WorldWebApp和新测试；其余83生产源只读，不动CognitionRecall/InformationModel/RoleTradingView/WorldJournal。
 
-- [ ] 先测试：新档/旧档配置能力闸、参数恢复拒绝；原构造JSON/旧profile行为不变；原始READ-n/Policy/score/内部源均不进入角色DTO或input。
-- [ ] 真实Runtime完成阅读→遗忘→重新阅读工时未到→恢复；research旁路同样收口；引用资格/准确义务/账户/权限/普通目录不丢；独立人物互不继承。
-- [ ] 输入实际字节/字符两类超额、第二个人使整批超额不留第一人的决定或预留；同cut/恢复冻结输入/ProviderPlan估算准确。
-- [ ] Root旧编译客户端不重编指纹828217b8…553f4保持；真实旧schema10新续写旧二进制读回，schema11三JVM读/重读/input一致，伪造新策略/新字段旧档拒绝。
-- [ ] Root接admin查询/UI与Host超限原因，测试401/403/Origin/严格JSON/同cut/身份切换清空；真实浏览器展示本轮查询和重读效果。
-- [ ] 正式全套含CSV/GUI、JavaDoc、独立冻结复核、文档与草稿PR/CI。所有未测边界明确保留，不以编译RED冒称语义RED。
+- [x] 先测试：新档/旧档配置能力闸、参数恢复拒绝；原构造JSON/旧profile行为不变；原始READ-n/Policy/score/内部源均不进入角色DTO或input。
+- [x] 真实Runtime完成阅读→遗忘→重新阅读工时未到→恢复；research旁路同样收口；引用资格/准确义务/账户/权限/普通目录不丢；独立人物互不继承。
+- [x] 输入实际字节/字符两类超额、第二个人使整批超额不留第一人的决定或预留；同cut/恢复冻结输入/ProviderPlan估算准确。
+- [x] Root旧编译客户端不重编指纹828217b8…553f4保持；真实旧schema10新续写旧二进制读回，schema11三JVM读/重读/input一致，伪造新策略/新字段旧档拒绝。
+- [x] Root接admin查询/UI与Host超限原因，测试401/403/Origin/严格JSON/同cut/身份切换清空；真实浏览器展示本轮查询和重读效果。
+- [x] 正式全套含CSV/GUI、JavaDoc、独立冻结复核、文档与草稿PR/CI。所有未测边界明确保留，不以编译RED冒称语义RED。
 
 执行中发现未知入口先给Root具体位置/影响，在范围内修正；不让用户重复裁决既定需求。总体仍缺信念/偏信/成熟习惯、媒体社交、多公司银行、完整图表和长跑。
+
+## 本地验收记录（2026-11-07）
+
+上述前五项已有实际证据，见docs/05 §37。最终candidate3：1117标准、CSV51/132/7、GUI和JavaDoc通过；独审候选1为135动态/13静态，最终增量10动态/12静态。research旁路由作者正常工具测试与可执行变异覆盖，独审未动态覆盖；浏览器由Root完成。草稿PR34及实际代码CI42314108569成功，仍待人工review。没有长跑、吞吐或新真实供应商请求。

@@ -234,6 +234,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> adminDetails(exchange, path));
                 return;
             }
+            if ("/api/admin/recall".equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> recallView(exchange));
+                return;
+            }
             if ("/api/admin/keys".equals(path) && "GET".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> listKeys(exchange));
                 return;
@@ -310,6 +314,9 @@ public final class WorldWebServer implements AutoCloseable {
             return true;
         }
         if (DETAIL_PATHS.contains(path) && "GET".equals(method)) {
+            return true;
+        }
+        if ("/api/admin/recall".equals(path) && "POST".equals(method)) {
             return true;
         }
         if ("/api/admin/keys".equals(path) && "GET".equals(method)) {
@@ -495,6 +502,28 @@ public final class WorldWebServer implements AutoCloseable {
             };
         } catch (WorldWebHost.BusyException busy) {
             throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /** 管理员只读查询；复用严格JSON与同源POST协议，不接收实验策略。 */
+    private void recallView(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        JsonNode body = jsonBody(exchange, PERSON_FIELDS);
+        JsonNode person = body.get("personId");
+        if (person == null || !person.isTextual() || person.textValue().isBlank()) {
+            send(exchange, 400, error("INVALID", "请选择已登记人物"));
+            return;
+        }
+        Object view;
+        try {
+            view = host.recallView(person.textValue());
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "请选择已登记人物"));
+            return;
         } catch (Exception failure) {
             throw new WorldIoFailure();
         }

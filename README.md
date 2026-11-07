@@ -176,4 +176,10 @@ AI 决策间隔、LLM 端点与限流、输出目录。要点：
 
 模型完成登记阶段已通过1059项标准验证（含课程GUI/CSV）；真实响应映射和期限竞争见docs/05第34节。Web角色worker与开始/停止/暂停/继续已接线，1085项标准通过。默认使用world-live.journal；第四启动参数scripted可回旧world.journal。保存场景配置不会自动调用；从“模型运行”页明确开始一轮，最多四岗各一次。界面显示真实预算和输入回执，治理/媒体/评估执行与整体设计基线仍待完成，见docs/05第35节。
 
-已有阅读经历的回忆纯核已通过1099项标准与95项独立检查：原始档案保留，遗忘影响可得性，实际再次读完才刷新回忆。该能力尚未接人物输入和Web，没有默认启用遗忘；版本化接线、偏信与习惯继续按实施Plan推进。
+已有经历的有界回忆已接入独立schema11实验档案与Web信息页，1117项标准通过。人物经历和研究报告正文同步裁剪，真实重读完成后恢复，原始审计保留；管理员可选择人物查看策略、遗忘与完整原文，人物界面不能获取管理审计。第四启动参数`cognition`使用独立`world-cognition.journal`，默认仍为live，原档案不迁移。当前14模拟日/100阈值/8条/12000 UTF16内容字符属于未调优实验配置；偏信、习惯、媒体及总体基线继续按实施Plan推进。验证见docs/05第37节。
+
+显式启动回忆实验工作台（端口被占用时换端口，不会关闭已有服务）：
+
+```powershell
+.\mvnw.cmd exec:java "-Dexec.mainClass=edu.cufe.auction.app.WorldWebApp" "-Dexec.args=logs/web-cognition C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt 18080 cognition"
+```
