@@ -184,3 +184,24 @@ Root现拥有全部生产/测试/Maven。B1最终candidate3为DecisionModel2d312
 B1最终candidate3已由真实Hermes afc0c5独立核87源并重编：原40+补充2+新增费用15，共57项动态纯核断言全过；另11静态检查，Runtime部分仅静态，未冒称其做过动态测试。Root的Runtime配置2对照2拒绝及正常/复用/旧代次真实journal隔离测试独立成立。独审报告将Root“4项Runtime RED”混称，实际是Runtime测试类4测试，其中新增1测试含3入口分支；真实RED为该新增测试，数量以JUnit日志为准。发布前实际五key逐字扫描199个仓库文件通过。当前本地验收齐备，准备AI草稿PR，人工review与CI待远端事实。
 
 真实模型预算纯核代码269e854d88f840f3c7890b5a441ec2333addb3d6已建立草稿[PR27](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/27)，base为codex/world-deepseek-provider；实际[CI42285963075](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42285963075)已completed/success，已附当前会话。本地953/标准GUI/CSV/JavaDoc和独审57通过，B1工程验收完成，仍待人工实质review，未合并。下一按2026-11-07-scene-decision-budget.md继续B2a。Root已拒收私有新测试的无效预算/输出边界/不存在动作超额等夹具，要求修正，不把缺API RED当语义正确。
+
+## B2a 测试先行写权（B1 PR27 CI之后）
+
+当前codex/world-scene-decision-budget base6db6963；B1代码269e854/PR27实际CI42285963075成功，文档6db6963的CI42286406476仍进行中。aeafaa exec86025仅新DecisionModelRouteTest及Maven独占，87生产尚未授改。Root已拒收9类私有夹具（scripted零费用误判UNKNOWN、非法Route先抛、scene cap未入Route、x2不存在、conditional跳过伪造等），详细反馈live-provider-preparation/b2a-root-test-review.txt；不得把缺API编译当语义已通过。afc0c5 exec9628仅scene-decision-independent准备独立实际模型探针。Root负责文档、契约和独立验收，不并发跑Maven或改新测试。下一接回正式测试核对，再授DecisionModel单文件实现；不启用网络或真实keys。
+
+## B2a Root测试核准与新作者写权
+
+旧aeafaa exec86025已退出，主树正式测试14项仍有cap256却要求1168预留成功、把run/person输入1100当总cap、REJECTED空decision解引用和可跳过retry断言。Root接回后纠正这些新测试夹具，并补7项真实场景边界/UTF8/低cap恢复retry/冻结slot-model-output/实际退款不退次数/按plan输出超额/跨scene全局revision，共21项，缺API RED在scene-decision-root/formal-root-corrected-red.log；原953断言不改。
+
+旧作者已有1042消息且连续两轮夹具错误，本模块改用新真实Hermes实施上下文（exec75641，session ID待日志返回）。新作者仅DecisionModel.java与scene-decision-author私有目录及Maven独占；新21测试只读、其它86生产不授改，预算80轮2400秒。Root不并发Maven或写DecisionModel。afc0c5独审准备51项已交且exec9628结束，未跑正式候选，不计通过。旧aeafaa不再拥有任何主树/Maven。
+
+Root另用B1最终冻结类独立编译旧16/10构造客户端，class哈希31e0495d…87f05、完整JSON指纹90a7032d…8bf76，真实运行合法WAIT且无plan字段；后续不重编同class以验新代码。PR27文档CI42286406476也实际success。B2a仍施工，未新发真实key请求。
+
+### 2026-11-07 B2a接续
+
+场景计划及累计预算纯核candidate2本地验收：23新增/976标准、44成交123订单7排名、GUI/JavaDoc04:35:08，Root23及真实Hermes58独立通过；DecisionModel768a4ee6…fa8c5，旧客户端JSON完整指纹90a7032d…bf76保持。正式证据docs/05 §31及scene-decision-*私有日志。当前发布草稿PR，B2b/schema10持久派发与B2c/Web真实调用继续，不能当总体完成。
+
+Root独占主树/Maven；真实作者20261107_041840_ed3b0f仅live-runtime-preparation只读准备（exec51627），无主树写权。独审20261107_034237_afc0c5最终58全绿已退出。旧aeafaa不再拥有写权。无新增真实key调用。
+
+场景预算代码a883e99192fd7822e9d5861db5560a86d436075f已建立草稿[PR28](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/28)，base为codex/world-live-decision-core；实际[CI42289821622](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42289821622)已completed/success，已附会话。本地976及Root23/Hermes58通过，仍待人工review、不自动合并。下一按2026-11-07-live-decision-runtime.md实施B2b。作者ed3b0f只读准备exec51627已退出，当前Root独占主树/Maven。
+

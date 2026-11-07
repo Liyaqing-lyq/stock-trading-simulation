@@ -64,6 +64,23 @@ public final class DecisionModel {
     /** 唯一不排业务动作的内建工具。 */
     public static final String TOOL_WAIT = "role.wait";
 
+    /** 五个稳定场景标识；与 Web 现有场景范围一致，世界层不得 import Web。 */
+    public static final List<String> SCENE_IDS =
+            List.of("governance", "research", "trading", "media", "evaluation");
+    /** 五个提供方槽位标识，只引用 key 编号，不携带任何凭据。 */
+    public static final List<String> SLOT_IDS =
+            List.of("key-1", "key-2", "key-3", "key-4", "key-5");
+    /** 本单允许冻结的模型标识。 */
+    public static final List<String> ROUTE_MODELS =
+            List.of("deepseek-flash", "deepseek-v4-pro");
+
+    /** 固定估算版本：输入预留 = 冻结输入的 UTF-8 字节数 + 1024 个 token 的本地余量。 */
+    public static final String ESTIMATE_VERSION = "utf8-plus-1024-v1";
+    /** 本地估算余量；只是本地假设，不是提供方账单上限，实际超额仍按回执冻结。 */
+    public static final long ESTIMATE_MARGIN_TOKENS = 1024L;
+    /** 单次冻结输入允许的最大 UTF-8 字节数。 */
+    public static final long MAX_INPUT_BYTES = 60_000L;
+
     /** 当前 session 未开启。 */
     public static final String REASON_SESSION_NOT_OPEN = "SESSION_NOT_OPEN";
     /** session 已开启。 */
@@ -115,6 +132,15 @@ public final class DecisionModel {
 
     /** 静态工具参数（DTO）校验失败：属技术失败，不是观望。 */
     public static final String REASON_TOOL_ARGS_INVALID = "TOOL_ARGS_INVALID";
+
+    /** 旧 scripted 档案不能携带提供方计划。 */
+    public static final String REASON_PLAN_NOT_ALLOWED = "PLAN_NOT_ALLOWED";
+    /** 计划预留超过冻结的单次输入或输出上限。 */
+    public static final String REASON_PLAN_EXCEEDS_PER_CALL = "PLAN_EXCEEDS_PER_CALL";
+    /** 新计划的 revision 低于已观察到的最高 revision。 */
+    public static final String REASON_ROUTE_REVISION_STALE = "ROUTE_REVISION_STALE";
+    /** 同一 revision 与场景被绑到不同 Route。 */
+    public static final String REASON_ROUTE_CONFLICT = "ROUTE_CONFLICT";
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
@@ -270,6 +296,84 @@ public final class DecisionModel {
         /** @return 零用量，费用已知 0.00（旧语义） */
         public static Usage zero() {
             return new Usage(0, 0, 0, new BigDecimal("0.00"));
+        }
+    }
+
+    /**
+     * 一次场景路由：冻结场景、槽位、模型、配置版本与预算上限，只含非秘密字段。
+     *
+     * @param sceneId         五个稳定场景之一
+     * @param slotId          提供方槽位 {@code key-1}..{@code key-5}
+     * @param model           模型标识
+     * @param revision        配置版本，非负
+     * @param maxCalls        场景累计调用上限 1..100
+     * @param maxTotalTokens  场景输入加输出的 token 总上限 256..1000000
+     * @param maxOutputTokens 单次输出预留 128..8192，且不超过总上限
+     * @param maxConcurrency  派发并发上限 1..4，且不超过调用上限
+     */
+    public record Route(String sceneId, String slotId, String model, long revision,
+                        int maxCalls, int maxTotalTokens, int maxOutputTokens,
+                        int maxConcurrency) {
+
+        /** 校验场景、槽位、模型与各项范围。 */
+        public Route {
+            if (!SCENE_IDS.contains(sceneId)) {
+                throw new IllegalArgumentException("未知场景：" + sceneId);
+            }
+            if (!SLOT_IDS.contains(slotId)) {
+                throw new IllegalArgumentException("未知槽位：" + slotId);
+            }
+            if (!ROUTE_MODELS.contains(model)) {
+                throw new IllegalArgumentException("未知模型：" + model);
+            }
+            if (revision < 0) {
+                throw new IllegalArgumentException("路由版本不能为负：" + revision);
+            }
+            if (maxCalls < 1 || maxCalls > 100) {
+                throw new IllegalArgumentException("场景调用上限必须是 1..100：" + maxCalls);
+            }
+            if (maxTotalTokens < 256 || maxTotalTokens > 1_000_000) {
+                throw new IllegalArgumentException("场景 token 总上限必须是 256..1000000："
+                        + maxTotalTokens);
+            }
+            if (maxOutputTokens < 128 || maxOutputTokens > 8_192) {
+                throw new IllegalArgumentException("单次输出上限必须是 128..8192：" + maxOutputTokens);
+            }
+            if (maxOutputTokens > maxTotalTokens) {
+                throw new IllegalArgumentException("单次输出上限不能超过场景 token 总上限");
+            }
+            if (maxConcurrency < 1 || maxConcurrency > 4) {
+                throw new IllegalArgumentException("并发上限必须是 1..4：" + maxConcurrency);
+            }
+            if (maxConcurrency > maxCalls) {
+                throw new IllegalArgumentException("并发上限不能超过场景调用上限");
+            }
+        }
+    }
+
+    /**
+     * 冻结一次决定的提供方计划：路由与冻结输入的 UTF-8 字节数。
+     *
+     * <p>输入预留 = {@code inputBytes + 1024}，输出预留 = 路由单次输出上限，尝试次数 1；
+     * 1024 只是本地估算余量，不是官方账单上限。费用一律未知。</p>
+     *
+     * @param route      本次决定冻结的路由
+     * @param inputBytes 冻结输入的 UTF-8 字节数，1..60000
+     */
+    public record ProviderPlan(Route route, long inputBytes) {
+
+        /** 校验路由存在与输入字节范围；与输入正文的一致性由 OpenRequest 与决定核。 */
+        public ProviderPlan {
+            Objects.requireNonNull(route, "路由");
+            if (inputBytes < 1 || inputBytes > MAX_INPUT_BYTES) {
+                throw new IllegalArgumentException("输入字节必须在 1.." + MAX_INPUT_BYTES
+                        + "：" + inputBytes);
+            }
+        }
+
+        /** @return 输入预留 token 数（字节数加本地估算余量） */
+        public long reservedInputTokens() {
+            return Math.addExact(inputBytes, ESTIMATE_MARGIN_TOKENS);
         }
     }
 
@@ -468,9 +572,23 @@ public final class DecisionModel {
                            String toolContractVersion, List<String> allowedTools,
                            String inputText, String inputDigest,
                            Status status, Outcome outcome, String recordedTool,
-                           List<Attempt> attempts) {
+                           List<Attempt> attempts,
+                           @JsonInclude(JsonInclude.Include.NON_NULL) ProviderPlan plan) {
 
-        /** 校验身份、摘要、尝试连续性与终态。 */
+        /** 旧十六参构造：没有计划，保持 B1 固定规则。 */
+        public Decision(String runId, String actionId, String personPartyId, String wakeReason,
+                        long decisionAtMillis, long barrierAtMillis,
+                        long cutoffPosition, long cutoffTimeMillis,
+                        String toolContractVersion, List<String> allowedTools,
+                        String inputText, String inputDigest,
+                        Status status, Outcome outcome, String recordedTool,
+                        List<Attempt> attempts) {
+            this(runId, actionId, personPartyId, wakeReason, decisionAtMillis, barrierAtMillis,
+                    cutoffPosition, cutoffTimeMillis, toolContractVersion, allowedTools,
+                    inputText, inputDigest, status, outcome, recordedTool, attempts, null);
+        }
+
+        /** 校验身份、摘要、计划输入字节、尝试连续性与终态。 */
         public Decision {
             requireText(runId, "运行标识");
             requireText(actionId, "动作标识");
@@ -496,6 +614,10 @@ public final class DecisionModel {
             allowedTools = tools;
             if (!inputDigest.equals(canonicalDigest(toolContractVersion, tools, inputText))) {
                 throw new IllegalArgumentException("输入摘要与冻结输入不一致：" + actionId);
+            }
+            if (plan != null && plan.inputBytes()
+                    != inputText.getBytes(StandardCharsets.UTF_8).length) {
+                throw new IllegalArgumentException("计划输入字节与冻结输入不一致：" + actionId);
             }
 
             Objects.requireNonNull(status, "状态");
@@ -589,6 +711,8 @@ public final class DecisionModel {
             List<Decision> copy = List.copyOf(decisions);
             Set<String> actionIds = new LinkedHashSet<>();
             Set<String> attemptIds = new LinkedHashSet<>();
+            long previousRevision = -1L;
+            Map<String, Route> routeByRevisionScene = new TreeMap<>();
             for (Decision decision : copy) {
                 if (!decision.runId().equals(runId)) {
                     throw new IllegalArgumentException("决定不属于本运行：" + decision.actionId());
@@ -597,6 +721,20 @@ public final class DecisionModel {
                     throw new IllegalArgumentException("动作标识重复：" + decision.actionId());
                 }
                 validateDecision(config, decision, recoveryGeneration);
+                ProviderPlan plan = decision.plan();
+                if (plan != null) {
+                    if (plan.route().revision() < previousRevision) {
+                        throw new IllegalArgumentException("场景路由版本倒退："
+                                + decision.actionId());
+                    }
+                    previousRevision = plan.route().revision();
+                    String key = plan.route().revision() + "|" + plan.route().sceneId();
+                    Route seen = routeByRevisionScene.put(key, plan.route());
+                    if (seen != null && !seen.equals(plan.route())) {
+                        throw new IllegalArgumentException("同版本同场景存在不同路由："
+                                + decision.actionId());
+                    }
+                }
                 for (Attempt attempt : decision.attempts()) {
                     long sequence = sequenceOf(attempt.attemptId());
                     if (!attempt.attemptId().equals(ATTEMPT_PREFIX + sequence)
@@ -606,6 +744,32 @@ public final class DecisionModel {
                 }
             }
             decisions = copy;
+
+            Map<String, long[]> sceneObserved = new TreeMap<>();
+            for (Decision decision : copy) {
+                ProviderPlan plan = decision.plan();
+                if (plan == null) {
+                    continue;
+                }
+                String sceneId = plan.route().sceneId();
+                long[] observed = sceneObserved.computeIfAbsent(sceneId, ignored ->
+                        new long[]{plan.route().maxCalls(), plan.route().maxTotalTokens(), 0L, 0L});
+                observed[0] = Math.max(observed[0], plan.route().maxCalls());
+                observed[1] = Math.max(observed[1], plan.route().maxTotalTokens());
+                for (Attempt attempt : decision.attempts()) {
+                    observed[2] = Math.addExact(observed[2], 1L);
+                    Usage accounted = attempt.settledDone() ? attempt.settled() : attempt.reserved();
+                    observed[3] = Math.addExact(observed[3],
+                            Math.addExact(accounted.inputTokens(), accounted.outputTokens()));
+                }
+            }
+            for (Map.Entry<String, long[]> entry : sceneObserved.entrySet()) {
+                long[] observed = entry.getValue();
+                if (observed[2] > observed[0] || observed[3] > observed[1]) {
+                    throw new IllegalArgumentException("场景占额超过已观察到的最高上限："
+                            + entry.getKey());
+                }
+            }
 
             Map<String, Usage> computedPerson = new TreeMap<>();
             Usage computedRun = zeroUsage(config);
@@ -649,6 +813,16 @@ public final class DecisionModel {
                 || decision.attempts().size() > config.limits().maxAttemptsPerDecision()) {
             throw new IllegalArgumentException("决定不符合冻结的原因、输入或尝试限制");
         }
+        ProviderPlan plan = decision.plan();
+        if (plan != null) {
+            if (!config.live()) {
+                throw new IllegalArgumentException("旧档案不得携带提供方计划");
+            }
+            if (plan.reservedInputTokens() > config.limits().perCallInputTokens()
+                    || plan.route().maxOutputTokens() > config.limits().perCallOutputTokens()) {
+                throw new IllegalArgumentException("计划的单次预留超过冻结上限");
+            }
+        }
         try {
             if (Math.addExact(decision.decisionAtMillis(), thinkMillis) != decision.barrierAtMillis()) {
                 throw new IllegalArgumentException("决定屏障与冻结思考耗时不一致");
@@ -666,7 +840,7 @@ public final class DecisionModel {
             Attempt attempt = decision.attempts().get(index);
             if (attempt.recoveryGeneration() > generation
                     || attempt.recoveryGeneration() < previousGeneration
-                    || !attempt.reserved().equals(reservation(config))) {
+                    || !attempt.reserved().equals(reservationFor(config, decision))) {
                 throw new IllegalArgumentException("尝试代次或预留与冻结配置不一致");
             }
             previousGeneration = attempt.recoveryGeneration();
@@ -685,13 +859,21 @@ public final class DecisionModel {
                 continue;
             }
             Usage expectedUsage;
-            try {
-                expectedUsage = settleUsage(config, attempt.declaredUsage());
-            } catch (ReplyFailure invalidUsage) {
+            if (attempt.declaredUsage() != null
+                    && exceedsReservation(attempt.declaredUsage(), attempt.reserved())) {
                 if (attempt.outcome() != Outcome.TECHNICAL_FAILED) {
-                    throw new IllegalArgumentException("非法或未知用量不能形成已记录决定");
+                    throw new IllegalArgumentException("超过预留的声明只能形成技术失败");
                 }
                 expectedUsage = attempt.reserved();
+            } else {
+                try {
+                    expectedUsage = settleUsage(config, attempt.declaredUsage());
+                } catch (ReplyFailure invalidUsage) {
+                    if (attempt.outcome() != Outcome.TECHNICAL_FAILED) {
+                        throw new IllegalArgumentException("非法或未知用量不能形成已记录决定");
+                    }
+                    expectedUsage = attempt.reserved();
+                }
             }
             if (!expectedUsage.equals(attempt.settled())) {
                 throw new IllegalArgumentException("尝试结算与原声明或保守预留不一致");
@@ -767,9 +949,19 @@ public final class DecisionModel {
     public record OpenRequest(String runId, String actionId, String personPartyId, String wakeReason,
                               long decisionAtMillis, long cutoffPosition, long cutoffTimeMillis,
                               String toolContractVersion, List<String> allowedTools,
-                              String inputText) {
+                              String inputText,
+                              @JsonInclude(JsonInclude.Include.NON_NULL) ProviderPlan plan) {
 
-        /** 校验静态字段。 */
+        /** 旧十参构造：没有计划。 */
+        public OpenRequest(String runId, String actionId, String personPartyId, String wakeReason,
+                           long decisionAtMillis, long cutoffPosition, long cutoffTimeMillis,
+                           String toolContractVersion, List<String> allowedTools,
+                           String inputText) {
+            this(runId, actionId, personPartyId, wakeReason, decisionAtMillis, cutoffPosition,
+                    cutoffTimeMillis, toolContractVersion, allowedTools, inputText, null);
+        }
+
+        /** 校验静态字段；有计划时核输入字节等于冻结正文的 UTF-8 字节数。 */
         public OpenRequest {
             requireText(runId, "运行标识");
             requireText(actionId, "动作标识");
@@ -781,6 +973,10 @@ public final class DecisionModel {
                 throw new IllegalArgumentException("决定点与观察截止不能为负");
             }
             normalizeTools(allowedTools);
+            if (plan != null && plan.inputBytes()
+                    != inputText.getBytes(StandardCharsets.UTF_8).length) {
+                throw new IllegalArgumentException("计划输入字节与实际输入不一致：" + actionId);
+            }
         }
     }
 
@@ -910,14 +1106,39 @@ public final class DecisionModel {
         }
         String digest = canonicalDigest(request.toolContractVersion(), tools, request.inputText());
 
-        Usage reserved = reservation(config);
+        ProviderPlan plan = request.plan();
+        if (plan != null && !config.live()) {
+            return reject(Verdict.REJECTED, REASON_PLAN_NOT_ALLOWED, state);
+        }
+        Usage reserved;
+        if (plan != null) {
+            if (plan.reservedInputTokens() > config.limits().perCallInputTokens()
+                    || plan.route().maxOutputTokens() > config.limits().perCallOutputTokens()) {
+                return reject(Verdict.REJECTED, REASON_PLAN_EXCEEDS_PER_CALL, state);
+            }
+            if (plan.route().revision() < highestRevision(state)) {
+                return reject(Verdict.REJECTED, REASON_ROUTE_REVISION_STALE, state);
+            }
+            Route seen = routeAt(state, plan.route().sceneId(), plan.route().revision());
+            if (seen != null && !seen.equals(plan.route())) {
+                return reject(Verdict.REJECTED, REASON_ROUTE_CONFLICT, state);
+            }
+            reserved = Usage.unknownCost(1, plan.reservedInputTokens(),
+                    plan.route().maxOutputTokens());
+        } else {
+            reserved = reservation(config);
+        }
+
         boolean liveBlocked = config.live() && liveBudgetBlocked(state);
-        if (liveBlocked || !coversFor(config, headroom(state, request.personPartyId()), reserved)) {
+        boolean budget = !liveBlocked
+                && coversFor(config, headroom(state, request.personPartyId()), reserved)
+                && (plan == null || sceneCovers(state, plan, reserved));
+        if (!budget) {
             Decision blocked = new Decision(state.runId(), request.actionId(),
                     request.personPartyId(), request.wakeReason(), request.decisionAtMillis(),
                     barrier, request.cutoffPosition(), request.cutoffTimeMillis(),
                     request.toolContractVersion(), tools, request.inputText(), digest,
-                    Status.EXPIRED, Outcome.BUDGET_EXHAUSTED, "", List.of());
+                    Status.EXPIRED, Outcome.BUDGET_EXHAUSTED, "", List.of(), plan);
             State next = append(state, blocked);
             return new Result(Verdict.BUDGET_EXHAUSTED, REASON_BUDGET_EXHAUSTED, next, blocked);
         }
@@ -929,7 +1150,7 @@ public final class DecisionModel {
                 request.wakeReason(), request.decisionAtMillis(), barrier,
                 request.cutoffPosition(), request.cutoffTimeMillis(),
                 request.toolContractVersion(), tools, request.inputText(), digest,
-                Status.OPEN, Outcome.NONE, "", List.of(attempt));
+                Status.OPEN, Outcome.NONE, "", List.of(attempt), plan);
         State next = append(state, decision, Math.addExact(state.nextAttemptSequence(), 1L));
         return accept(next, decision);
     }
@@ -982,6 +1203,10 @@ public final class DecisionModel {
         }
 
         Config config = state.config();
+        if (reply.usage() != null && exceedsReservation(reply.usage(), attempt.reserved())) {
+            return settleTechnical(state, decision, attempt, reply,
+                    REASON_USAGE_EXCEEDS_RESERVATION, true);
+        }
         if (reply.body().length() > config.limits().maxReplyChars()) {
             return settleTechnical(state, decision, attempt, reply, REASON_REPLY_TOO_LARGE, true);
         }
@@ -1015,7 +1240,7 @@ public final class DecisionModel {
                 decision.barrierAtMillis(), decision.cutoffPosition(), decision.cutoffTimeMillis(),
                 decision.toolContractVersion(), decision.allowedTools(), decision.inputText(),
                 decision.inputDigest(), Status.RECORDED, outcome, recordedTool,
-                replaceAttempt(decision.attempts(), done));
+                replaceAttempt(decision.attempts(), done), decision.plan());
         State next = append(state, recorded);
         return accept(next, recorded);
     }
@@ -1272,6 +1497,55 @@ public final class DecisionModel {
                 subtractFor(config, personCap, personUsed.plus(outstandingPerson)));
     }
 
+    /**
+     * 场景累计已结算用量（只从决定与尝试派生，不维护第二份计数）；费用一律未知。
+     *
+     * @param state   当前状态
+     * @param sceneId 场景标识
+     * @return 已结算用量
+     */
+    public static Usage sceneUsage(State state, String sceneId) {
+        requireText(sceneId, "场景");
+        SceneTotals totals = sceneTotals(state, sceneId, null);
+        return Usage.unknownCost(totals.usedAttempts(), totals.usedInput(), totals.usedOutput());
+    }
+
+    /**
+     * 场景未结算预留（只从决定与尝试派生）；费用一律未知。
+     *
+     * @param state   当前状态
+     * @param sceneId 场景标识
+     * @return 未结算预留
+     */
+    public static Usage sceneReserved(State state, String sceneId) {
+        requireText(sceneId, "场景");
+        SceneTotals totals = sceneTotals(state, sceneId, null);
+        return Usage.unknownCost(totals.reservedAttempts(), totals.reservedInput(),
+                totals.reservedOutput());
+    }
+
+    /**
+     * 该场景已观察到的最高版本路由；预算不足的零尝试终态也算已观察。
+     *
+     * @param state   当前状态
+     * @param sceneId 场景标识
+     * @return 最高版本路由；该场景还没有计划时为空
+     */
+    public static Optional<Route> latestRoute(State state, String sceneId) {
+        requireText(sceneId, "场景");
+        Route latest = null;
+        for (Decision decision : state.decisions()) {
+            ProviderPlan plan = decision.plan();
+            if (plan == null || !plan.route().sceneId().equals(sceneId)) {
+                continue;
+            }
+            if (latest == null || plan.route().revision() > latest.revision()) {
+                latest = plan.route();
+            }
+        }
+        return Optional.ofNullable(latest);
+    }
+
     // ------------------------------------------------------------------
     // 序列化
     // ------------------------------------------------------------------
@@ -1368,28 +1642,35 @@ public final class DecisionModel {
      */
     private static Result settleTechnical(State state, Decision decision, Attempt attempt,
                                           Reply reply, String reason, boolean useDeclared) {
+        Usage declared = reply == null ? null : reply.usage();
         Usage settled = attempt.reserved();
         String body = reply == null ? "" : reply.body();
         String source = reply == null ? "" : reply.usageSource();
+        boolean overrun = declared != null && exceedsReservation(declared, attempt.reserved());
         if (useDeclared && reply != null) {
-            try {
-                settled = settleUsage(state.config(), reply.usage());
-            } catch (ReplyFailure failure) {
-                settled = attempt.reserved();
-                reason = failure.reason;
+            if (overrun) {
+                // 已知声明超过本 attempt 预留：保留真实声明，按预留保守结算以便全局阻断
+                reason = REASON_USAGE_EXCEEDS_RESERVATION;
+            } else {
+                try {
+                    settled = settleUsage(state.config(), declared);
+                } catch (ReplyFailure failure) {
+                    settled = attempt.reserved();
+                    reason = failure.reason;
+                }
             }
         }
-        boolean liveOverrun = state.config().live() && reply != null && reply.usage() != null
-                && (reply.usage().inputTokens() > attempt.reserved().inputTokens()
-                || reply.usage().outputTokens() > attempt.reserved().outputTokens());
+        boolean liveOverrun = state.config().live() && overrun;
         // 已有超额（来自任何已确认尝试）同样禁止自动重试：当前回执 guard 之外再查派生阻断
         boolean liveBlocked = state.config().live() && liveBudgetBlocked(state);
         boolean canRetry = !liveOverrun && !liveBlocked
                 && decision.attempts().size() < state.config().limits().maxAttemptsPerDecision();
-        Usage reserved = reservation(state.config());
-        boolean budget = canRetry && coversFor(state.config(),
-                headroomAfter(state, decision.personPartyId(), settled, attempt.attemptId()),
-                reserved);
+        Usage reserved = reservationFor(state.config(), decision);
+        boolean budget = canRetry
+                && coversFor(state.config(),
+                    headroomAfter(state, decision.personPartyId(), settled, attempt.attemptId()),
+                    reserved)
+                && sceneCoversAfter(state, decision, settled, attempt.attemptId(), reserved);
         if (canRetry && !budget) {
             reason += ":" + REASON_NO_RETRY_BUDGET;
         }
@@ -1423,7 +1704,7 @@ public final class DecisionModel {
                 decision.wakeReason(), decision.decisionAtMillis(), decision.barrierAtMillis(),
                 decision.cutoffPosition(), decision.cutoffTimeMillis(),
                 decision.toolContractVersion(), decision.allowedTools(), decision.inputText(),
-                decision.inputDigest(), status, outcome, recordedTool, attempts);
+                decision.inputDigest(), status, outcome, recordedTool, attempts, decision.plan());
     }
 
     private static List<Decision> replaceDecision(List<Decision> decisions, Decision decision) {
@@ -1498,7 +1779,8 @@ public final class DecisionModel {
                 && decision.cutoffTimeMillis() == request.cutoffTimeMillis()
                 && decision.toolContractVersion().equals(request.toolContractVersion())
                 && decision.allowedTools().equals(normalizeTools(request.allowedTools()))
-                && decision.inputText().equals(request.inputText());
+                && decision.inputText().equals(request.inputText())
+                && Objects.equals(decision.plan(), request.plan());
     }
 
     private static Usage reservation(Config config) {
@@ -1507,6 +1789,22 @@ public final class DecisionModel {
                         config.limits().perCallOutputTokens())
                 : new Usage(1, config.limits().perCallInputTokens(),
                         config.limits().perCallOutputTokens(), new BigDecimal("0.00"));
+    }
+
+    /** 该决定每次尝试的预留：有计划按计划冻结，没有计划沿用旧单次上限。 */
+    private static Usage reservationFor(Config config, Decision decision) {
+        ProviderPlan plan = decision.plan();
+        if (plan != null) {
+            return Usage.unknownCost(1, plan.reservedInputTokens(),
+                    plan.route().maxOutputTokens());
+        }
+        return reservation(config);
+    }
+
+    /** @return 声明用量是否超过该次尝试的预留 */
+    private static boolean exceedsReservation(Usage usage, Usage reserved) {
+        return usage.inputTokens() > reserved.inputTokens()
+                || usage.outputTokens() > reserved.outputTokens();
     }
 
     private static Usage settleUsage(Config config, Usage usage) {
@@ -1575,6 +1873,116 @@ public final class DecisionModel {
             return Usage.unknownCost(attempts, input, output);
         }
         return new Usage(attempts, input, output, left.cost().min(right.cost()));
+    }
+
+    // ------------------------------------------------------------------
+    // 场景预算派生：只从决定与尝试计算，不维护第二份计数
+    // ------------------------------------------------------------------
+
+    /** 某一场景的已结算与未结算汇总。 */
+    private record SceneTotals(long usedAttempts, long usedInput, long usedOutput,
+                               long reservedAttempts, long reservedInput,
+                               long reservedOutput) {
+    }
+
+    private static SceneTotals sceneTotals(State state, String sceneId, String excludedAttemptId) {
+        long usedAttempts = 0;
+        long usedInput = 0;
+        long usedOutput = 0;
+        long reservedAttempts = 0;
+        long reservedInput = 0;
+        long reservedOutput = 0;
+        for (Decision decision : state.decisions()) {
+            ProviderPlan plan = decision.plan();
+            if (plan == null || !plan.route().sceneId().equals(sceneId)) {
+                continue;
+            }
+            for (Attempt attempt : decision.attempts()) {
+                if (attempt.settledDone()) {
+                    usedAttempts = Math.addExact(usedAttempts, 1L);
+                    usedInput = Math.addExact(usedInput, attempt.settled().inputTokens());
+                    usedOutput = Math.addExact(usedOutput, attempt.settled().outputTokens());
+                } else if (!attempt.attemptId().equals(excludedAttemptId)) {
+                    reservedAttempts = Math.addExact(reservedAttempts, 1L);
+                    reservedInput = Math.addExact(reservedInput, attempt.reserved().inputTokens());
+                    reservedOutput = Math.addExact(reservedOutput, attempt.reserved().outputTokens());
+                }
+            }
+        }
+        return new SceneTotals(usedAttempts, usedInput, usedOutput, reservedAttempts,
+                reservedInput, reservedOutput);
+    }
+
+    /** 新请求的 scene 预算：上限取该场景已观察到的最高版本路由（含本请求）。 */
+    private static boolean sceneCovers(State state, ProviderPlan plan, Usage reserved) {
+        String sceneId = plan.route().sceneId();
+        try {
+            Route cap = latestRoute(state, sceneId).orElse(null);
+            if (cap == null || cap.revision() < plan.route().revision()) {
+                cap = plan.route();
+            }
+            SceneTotals totals = sceneTotals(state, sceneId, null);
+            long usedTokens = Math.addExact(totals.usedInput(), totals.usedOutput());
+            long outstandingTokens = Math.addExact(totals.reservedInput(),
+                    totals.reservedOutput());
+            long newTokens = Math.addExact(reserved.inputTokens(), reserved.outputTokens());
+            long calls = Math.addExact(Math.addExact(totals.usedAttempts(),
+                    totals.reservedAttempts()), 1L);
+            return Math.addExact(Math.addExact(usedTokens, outstandingTokens), newTokens)
+                    <= cap.maxTotalTokens() && calls <= cap.maxCalls();
+        } catch (ArithmeticException overflow) {
+            return false;
+        }
+    }
+
+    /** retry 的 scene 预算：上限仍取该场景当前已观察的最新路由，不能借旧高 cap 绕过。 */
+    private static boolean sceneCoversAfter(State state, Decision decision, Usage settled,
+                                            String excludedAttemptId, Usage reserved) {
+        ProviderPlan plan = decision.plan();
+        if (plan == null) {
+            return true;
+        }
+        String sceneId = plan.route().sceneId();
+        try {
+            Route cap = latestRoute(state, sceneId).orElse(plan.route());
+            SceneTotals totals = sceneTotals(state, sceneId, excludedAttemptId);
+            long usedInput = Math.addExact(totals.usedInput(), settled.inputTokens());
+            long usedOutput = Math.addExact(totals.usedOutput(), settled.outputTokens());
+            long usedAttempts = Math.addExact(totals.usedAttempts(), settled.attempts());
+            long usedTokens = Math.addExact(usedInput, usedOutput);
+            long outstandingTokens = Math.addExact(totals.reservedInput(),
+                    totals.reservedOutput());
+            long newTokens = Math.addExact(reserved.inputTokens(), reserved.outputTokens());
+            long calls = Math.addExact(Math.addExact(usedAttempts, totals.reservedAttempts()), 1L);
+            return Math.addExact(Math.addExact(usedTokens, outstandingTokens), newTokens)
+                    <= cap.maxTotalTokens() && calls <= cap.maxCalls();
+        } catch (ArithmeticException overflow) {
+            return false;
+        }
+    }
+
+    /** 全状态中已观察到的最高路由版本；没有任何计划时为 -1。 */
+    private static long highestRevision(State state) {
+        long highest = -1L;
+        for (Decision decision : state.decisions()) {
+            ProviderPlan plan = decision.plan();
+            if (plan != null && plan.route().revision() > highest) {
+                highest = plan.route().revision();
+            }
+        }
+        return highest;
+    }
+
+    /** 该场景在该版本上已绑定的路由；没有时返回 null。 */
+    private static Route routeAt(State state, String sceneId, long revision) {
+        for (Decision decision : state.decisions()) {
+            ProviderPlan plan = decision.plan();
+            if (plan != null && plan.route().sceneId().equals(sceneId)
+                    && plan.route().revision() == revision) {
+                return plan.route();
+            }
+        }
+        return null;
     }
 
     /**

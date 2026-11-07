@@ -55,9 +55,9 @@
 
 ### 当前接续
 
-- 当前分支 `codex/world-live-decision-core`，基线 `72d90d5`。[有界模型适配器](2026-11-07-deepseek-provider.md)PR26代码CI42280670472和文档CI42281109727均实际成功，925标准及单次真实key-1连通通过。当前实施[B1用量与预算纯核](2026-11-07-live-decision-core.md)，尚未启用真实世界模型执行。
+- 当前分支 `codex/world-scene-decision-budget`，基线 `6db6963`。B1草稿PR27代码269e854、CI42285963075实际成功，953标准及Root28/独审57通过。当前实施[B2a场景冻结与可变预留](2026-11-07-scene-decision-budget.md)，尚未启用真实世界模型执行。
 - [D3c 实际资本流及确认历史表现](2026-11-06-capital-flow-performance.md)最终candidate3本地验收：42专项/858标准、47成交121订单7排名、GUI及JavaDoc01:38:11，Root123资本检查与Decimal通过，原D3b212/旧8/三JVM保持。真实Hermes最终独立20+2及12no-op/12反例通过。完整证据docs/05§27；草稿PR24代码93d4b7a已发布，verify42264571970实际成功，待人工review。
-- Root当前拥有全部主树/Maven；B1 candidate3已953标准通过，真实Hermes afc0c5仅私有终审，aeafaa仅私有准备下一[B2a场景预算](2026-11-07-scene-decision-budget.md)。最新写权和证据见文末04:06记录，历史授权均已释放。
+- B2a新真实Hermes作者（exec75641）仅DecisionModel与Maven独占，新21测试已由Root核准且作者只读；其它86生产不授改。旧aeafaa全部写权释放。afc0c5独审51项仅准备完成，待冻结候选。详见文末新作者写权。
 - 用户确定最终交付为 Web，并授权指定文件五个 key 按场景配置。[Web 与五 key 配置接续单](2026-11-07-web-key-configuration.md)第一阶段已完成：902标准、Root24HTTP、独审64、Postman22请求56断言、真实浏览器登录/推进/配置/查看清除/人物隔离/重启。key-1已单次flash连通成功（46输入5输出51总、931毫秒），无重试，其他4槽未测，账单未知；完整业务页面与真实模型运行继续施工。
 - M6 原离线审计页由用户稍后手动查看，尚待反馈。PR6–22 已由人工账号合并到累计基线 `codex/world-role-trading`，main 尚未汇总全部阶段。新 PR23 仍为草稿，Codex 不自动合并。取消/重新公告、认知媒体、差异公司/银行和长时实验仍未完成，总体基线继续执行。
 
@@ -500,3 +500,24 @@ Root现拥有全部生产/测试/Maven。B1最终candidate3为DecisionModel2d312
 B1最终candidate3已由真实Hermes afc0c5独立核87源并重编：原40+补充2+新增费用15，共57项动态纯核断言全过；另11静态检查，Runtime部分仅静态，未冒称其做过动态测试。Root的Runtime配置2对照2拒绝及正常/复用/旧代次真实journal隔离测试独立成立。独审报告将Root“4项Runtime RED”混称，实际是Runtime测试类4测试，其中新增1测试含3入口分支；真实RED为该新增测试，数量以JUnit日志为准。发布前实际五key逐字扫描199个仓库文件通过。当前本地验收齐备，准备AI草稿PR，人工review与CI待远端事实。
 
 真实模型预算纯核代码269e854d88f840f3c7890b5a441ec2333addb3d6已建立草稿[PR27](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/27)，base为codex/world-deepseek-provider；实际[CI42285963075](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42285963075)已completed/success，已附当前会话。本地953/标准GUI/CSV/JavaDoc和独审57通过，B1工程验收完成，仍待人工实质review，未合并。下一按2026-11-07-scene-decision-budget.md继续B2a。Root已拒收私有新测试的无效预算/输出边界/不存在动作超额等夹具，要求修正，不把缺API RED当语义正确。
+
+## B2a 测试先行写权（B1 PR27 CI之后）
+
+当前codex/world-scene-decision-budget base6db6963；B1代码269e854/PR27实际CI42285963075成功，文档6db6963的CI42286406476仍进行中。aeafaa exec86025仅新DecisionModelRouteTest及Maven独占，87生产尚未授改。Root已拒收9类私有夹具（scripted零费用误判UNKNOWN、非法Route先抛、scene cap未入Route、x2不存在、conditional跳过伪造等），详细反馈live-provider-preparation/b2a-root-test-review.txt；不得把缺API编译当语义已通过。afc0c5 exec9628仅scene-decision-independent准备独立实际模型探针。Root负责文档、契约和独立验收，不并发跑Maven或改新测试。下一接回正式测试核对，再授DecisionModel单文件实现；不启用网络或真实keys。
+
+## B2a Root测试核准与新作者写权
+
+旧aeafaa exec86025已退出，主树正式测试14项仍有cap256却要求1168预留成功、把run/person输入1100当总cap、REJECTED空decision解引用和可跳过retry断言。Root接回后纠正这些新测试夹具，并补7项真实场景边界/UTF8/低cap恢复retry/冻结slot-model-output/实际退款不退次数/按plan输出超额/跨scene全局revision，共21项，缺API RED在scene-decision-root/formal-root-corrected-red.log；原953断言不改。
+
+旧作者已有1042消息且连续两轮夹具错误，本模块改用新真实Hermes实施上下文（exec75641，session ID待日志返回）。新作者仅DecisionModel.java与scene-decision-author私有目录及Maven独占；新21测试只读、其它86生产不授改，预算80轮2400秒。Root不并发Maven或写DecisionModel。afc0c5独审准备51项已交且exec9628结束，未跑正式候选，不计通过。旧aeafaa不再拥有任何主树/Maven。
+
+Root另用B1最终冻结类独立编译旧16/10构造客户端，class哈希31e0495d…87f05、完整JSON指纹90a7032d…8bf76，真实运行合法WAIT且无plan字段；后续不重编同class以验新代码。PR27文档CI42286406476也实际success。B2a仍施工，未新发真实key请求。
+
+## B2a最终本地验收及接续（2026-11-07 04:35）
+
+候选2固定87源，DecisionModel768a4ee6…fa8c5，Runtime保持B1。23新增专项、976标准、CSV44/123/7、GUI及JavaDoc04:35:08通过；Root23独编及旧编译客户端完整JSON90a7032d…bf76一致；真实Hermes afc0c5独编58/58并核87源一致。候选1两个恢复cap漏洞均实际RED后修，降低cap合法恢复对照保留。
+
+Root现拥有全部主树/测试/Maven。新作者ed3b0f实施进程75641已退出，只读B2b准备exec51627，仅live-runtime-preparation私有目录可写，禁止主树/Maven/Temp/keys；afc0c5最终独审40912已退出，无在写任务。旧aeafaa无任何写权。本单当前发布AI草稿PR及等待实际CI，下一B2b持久派发/schema10，B2c真实Web角色调用。此前唯一真实key请求51token，没有新增调用；总体基线继续施工。
+
+场景预算代码a883e99192fd7822e9d5861db5560a86d436075f已建立草稿[PR28](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/28)，base为codex/world-live-decision-core；实际[CI42289821622](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42289821622)已completed/success，已附会话。本地976及Root23/Hermes58通过，仍待人工review、不自动合并。下一按2026-11-07-live-decision-runtime.md实施B2b。作者ed3b0f只读准备exec51627已退出，当前Root独占主树/Maven。
+
