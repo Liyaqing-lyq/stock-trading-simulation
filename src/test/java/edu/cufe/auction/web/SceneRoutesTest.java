@@ -2,11 +2,20 @@ package edu.cufe.auction.web;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
+import com.sun.nio.file.ExtendedOpenOption;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
+import java.time.Duration;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -15,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * 五场景路由配置：默认值、保存/重开、并发冲突、真实写失败与严格 JSON。
@@ -188,6 +198,61 @@ class SceneRoutesTest {
             assertEquals(1L, routes.view().revision());
             assertEquals(1, errors.size(), String.valueOf(errors));
             assertTrue(errors.get(0) instanceof SceneRoutes.RevisionMismatch);
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    @DisplayName("Windows 短时禁止删除共享：原子替换受阻后恢复，配置只提交一次")
+    void transientSharingDenialRecovers() throws Exception {
+        Path dir = work("transient-sharing");
+        try (SceneRoutes routes = SceneRoutes.open(dir)) {
+            Path file = dir.resolve(SceneRoutes.FILE_NAME);
+            var release = Executors.newSingleThreadScheduledExecutor();
+            try (FileChannel held = FileChannel.open(file, StandardOpenOption.READ,
+                    ExtendedOpenOption.NOSHARE_DELETE)) {
+                Path probe = dir.resolve("probe.tmp");
+                Files.writeString(probe, "probe");
+                assertThrows(java.nio.file.AccessDeniedException.class, () -> Files.move(
+                        probe, file, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING));
+                Files.delete(probe);
+                var closed = release.schedule(() -> { held.close(); return true; },
+                        75, TimeUnit.MILLISECONDS);
+                routes.replace(0L, defaultRoutes(9, SceneRoutes.MODEL_PRO));
+                assertTrue(closed.get(2, TimeUnit.SECONDS));
+                assertEquals(1L, routes.view().revision());
+                try (SceneRoutes reopened = SceneRoutes.open(dir)) {
+                    assertEquals(routes.view(), reopened.view());
+                }
+                try (var files = Files.list(dir)) {
+                    assertEquals(List.of(file), files.toList());
+                }
+            } finally {
+                release.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    @DisplayName("Windows 持续禁止删除共享：有界失败且文件、revision不变，无临时残留")
+    void permanentSharingDenialKeepsOldState() throws Exception {
+        Path dir = work("permanent-sharing");
+        try (SceneRoutes routes = SceneRoutes.open(dir)) {
+            Path file = dir.resolve(SceneRoutes.FILE_NAME);
+            byte[] before = Files.readAllBytes(file);
+            try (FileChannel held = FileChannel.open(file, StandardOpenOption.READ,
+                    ExtendedOpenOption.NOSHARE_DELETE)) {
+                assertTimeoutPreemptively(Duration.ofSeconds(3), () ->
+                        assertThrows(IOException.class, () -> routes.replace(0L,
+                                defaultRoutes(9, SceneRoutes.MODEL_PRO))));
+                assertEquals(0L, routes.view().revision());
+                assertArrayEqualsBytes(before, Files.readAllBytes(file));
+                try (var files = Files.list(dir)) {
+                    assertEquals(List.of(file), files.toList());
+                }
+            }
         }
     }
 

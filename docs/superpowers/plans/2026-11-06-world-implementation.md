@@ -55,6 +55,9 @@
 
 ### 当前接续
 
+- 当前新分支 `codex/world-belief-core`，base `1cd53eb`。回忆运行桥PR34代码CI42314108569、文档CI42314416430均已成功。M4g.1唯一合同为[信念、来源可靠性与慢习惯纯核](2026-11-07-belief-core.md)，含冻结前澄清。真实Hermes f270fe原exec6410已由Root仅停止核验过身份的私有worker以交付具体反例，现exec8522续同session修复；仅写belief-core-author。d39b13 exec29091独审合同完成，15条澄清意见由Root裁定，报告无动态测试结论。
+- Root初始provisional-3独立8测试2通过/6失败；作者修复后provisional-5为12测试11通过/1失败，Root追加新建/新评估时点检查（2行）后provisional-6共13通过；保留provisional-7-red以同13测试证实旧代码的2项回填过去失败。现已冻结candidate1：91源/5资源/1Root测试，97哈希；新增BeliefModel SHA f6e44b06…92fa1，旧90源未动。Root接回该新类与13正式回归，Maven专项08:04:45通过；作者仍修其原测试，正式全套与最终合并未验收。d39b13 exec63793正在独立自编/动态审查候选，禁止读作者和Root测试。
+- 旧schema11客户端已编译并真实创建档案10/30，class hash d5c41e01…b5346，后续禁止重编；新桥兼容尚未验收。M6 Web图表只读准备由d39b13完成在web-history-preparation/prepare.md，尚未授权生产实现。信念本段随后必须接运行/Web，不作为完整认知完成。
 - 当前实施分支 `codex/world-cognition-runtime`，base `e885cf9cb3651c652908017bb0e94ce33f2e2eec`。施工单：[M4f回忆运行桥与Web观察](2026-11-07-cognition-runtime.md)。真实Hermes作者f270fe私有七源已交；Root接回冻结candidate1并修复旧cash档Optional审计接口，主树及candidate2已通过1117标准、CSV51/132/7、真实GUI、JavaDoc07:35:26。
 - Root新增5项包括新HTTP真实404失败与旧cash审计真实异常失败的修复；另20三JVM、旧DTO未重编指纹不变、旧schema10旧写→新续→旧读通过。真实浏览器初读/遗忘/重读中/完成恢复、跨人物选择、身份清空及同档重启均通过，最终截图与细节在cognition-runtime-root/browser-acceptance.md。新真实供应商调用仍为0。
 - 独审 `20261107_045400_d39b13` 已完成：候选1自编后135项动态和13项Web静态通过；最终candidate3自编、99文件哈希无差异，新增10项动态和12项静态通过。未动态覆盖research正文旁路（该项由作者正常工具测试及变异反例覆盖），未做浏览器（由Root完成）。本阶段草稿PR34及代码CI42314108569已成功；PR33代码/文档CI42310013886/42310471565已成功。
@@ -565,3 +568,10 @@ B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://
 下一施工单docs/superpowers/plans/2026-11-07-cognition-runtime.md。准备会话20261107_070330_f270fe初轮60工具到限，续90910报告完成；Root纠正默认模式仍live、角色DTO不得带Policy/score或全局READ-n。新schema11冻结策略、两条全文路径同时裁剪、本人scoped阅读引用、管理员独立审计是下一硬边界。Root独占主树/Maven，作者尚未获得主树写权。
 
 草稿PR34：https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/34；代码2f206aa7da89d2677a955f8ba87c6a548b624398，base codex/world-cognition-recall，实际CI42314108569成功。SSH推送两次服务器500失败后，同一已授权仓库HTTPS推送成功；未改远端配置、未合并。
+
+### M4g.1本地验收与M4g.2接续（2026-11-07 10:01）
+
+- [x] 信念纯核37新增，真实阅读/精确目标/明确采纳/更正/有效贡献重算/有版本习惯与不可变投影；Hermes98独立动态通过。详见[纯核合同](2026-11-07-belief-core.md)与docs/05§38。
+- [x] 最后复跑旧SceneRoutes原子move实际AccessDenied；真实共享句柄RED后小幅修复，2新增回归+自然2000保存全过，正式1156/CSV51/132/7/GUI/JavaDoc10:01:01通过。保留旧1154错误日志；最终独审配置增量24动态通过，另Root真实sleep中断通过；草稿PR/CI随后。
+- [ ] [M4g.2运行桥](2026-11-07-belief-runtime.md)：schema12、真实观察cut、权威合同数截止、真实阅读学习、后续input与Web审计。f270fe同session exec51023仅belief-runtime-author私有镜像实施，Root独占主树/Maven/Web；d39b13 exec71830仅belief-core-independent独审配置保存增量。
+- [ ] 媒体/传播、多公司银行、图表/历史与长跑验收继续，不以局部纯核冒称总体基线完成。真实供应商0新增，原51token唯一连通证据保持。

@@ -183,3 +183,5 @@ AI 决策间隔、LLM 端点与限流、输出目录。要点：
 ```powershell
 .\mvnw.cmd exec:java "-Dexec.mainClass=edu.cufe.auction.app.WorldWebApp" "-Dexec.args=logs/web-cognition C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt 18080 cognition"
 ```
+
+信念与学习纯核已通过1156项标准测试（含既有功能），支持真实已读证据、精确时点核验、来源可靠性和有版本的慢习惯；尚在接入世界任务、决定输入和Web页面。此阶段同时修复配置原子保存的短时访问拒绝，持续写失败仍保留旧配置。实际失败、修复与验证见docs/05第38节；总体设计基线尚未完成。
