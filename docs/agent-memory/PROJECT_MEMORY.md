@@ -2,7 +2,33 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 最新交接（2026-11-07 13:34，媒体运行桥工程验收，采访纯核接续）
+## 最新执行偏好（用户本轮明确要求，2026-11-07）
+
+14:03接收更新：M4i.1两新源码已接主树，最终InterviewModel SHA2ba8fc7f9db67d1137064d739a12885862ef6e7b47615b3887d1694d52b77fb2，测试f602e18de8d7eff538d147ff9ae081b8b8db4b84cc289741c9ff1f4dab4221d8。真实独审session20261107_134734_e7852d/exec44226已exit0，candidate-1自编29JUnit+24Root适配+56自有=109去重检查通过；主树仅补两处JavaDoc且独审再次自编29/56/JavaDoc0警告。F2是世界恢复须核开局registry/config的接缝，已硬写M4i.2a合同，不是纯核功能阻断。
+
+按用户省用量要求，正式确定性验收委托405ace exec67543（已exit0），仅target/data/logs写权；interview-formal/handoff.md及原始证据：一次1350零失败/错误/跳过、CSV脚本48/125/7、Node/GUI通过；项目JavaDoc真实14:01:47.781及单类严格0警告。GUI会继续追加CSV，因此归档data现105/327/7不能称是第2步冻结48/125/7；据实使用脚本断言和日志。旧v3JavaDoc误报因GBK日志被英文grep误判，原日志3警告保留，正式handoff已更正。主树尚待提交AI草稿PR与CI；Web18080仍media，不因纯核新增而重启。
+
+下一M4i.2a API session86babe exec76666在interview-runtime-author，只可镜像/写api.md与handoff、未给生产实现写权；合同docs/superpowers/plans/2026-11-07-interview-runtime.md为Root准据，接口准备任务interview-runtime-api-task.txt/log。formal/独审均已结束；当前仅76666运行。下一步PR40→接口裁定→隔离实现和独审，完整基线继续。
+
+13:55续接：采访v3 exec33751已exit0，405ace handoff-v3.md源码7a594ff4bf488f6b750aa04adedcf5242d2bb4560e2206cee8f688603906699b，作者29JUnit+Root标识适配11+8+5通过；未主树接回。Root不再重复整套；独立真实Hermes exec44226（interview-independent-task.txt/log）仅interview-coordination-independent，已从v3交接冻结自编/边界中，最终handoff尚待。新增transitionAt和长度前缀requestId；Root旧probe原件仍是旧接口，独审在自己目录只做标识/终态时点字段适配，须审diff。
+
+下一桥只读准备session20261107_134412_86babe，首exec79764已exit0，修订exec65495已见结束报告待poll；handoff-v2.md取代v1。Root纠正后保留每机构State并从其他真实State派生busy、不改MediaRun.Config旧record、开始要授权、投递不自动阅读。Root已写docs/superpowers/plans/2026-11-07-interview-runtime.md合同（M4i.2a协调运行/Web、b逐轮DIRECT、c匿名私证），尚未发桥实施写权。不要采纳准备稿新增IdentityDisclosurePolicy或强制匿名稿身份共享。当前主树只有文档变化、没有InterviewModel，仍需独审→接回→唯一正式验收→草稿PR；媒体Web保持18080/PID22856，0新官方调用。
+
+用户剩余用量约30%，允许放慢速度但不降质量，要求更多边界确认、复核和确定性任务交给真实Hermes，减少重复规则/读取/运行。后续由Hermes在隔离目录负责完整定向回归与独审，Root保留关键裁定、证据抽查、唯一主树写入及一次最终正式验收；已有测试不因换上下文重跑。准备稿另由真实Hermes exec79764，interview-runtime-preparation-task.txt/log，唯一写interview-runtime-preparation，调查M4i.2接线不实施。
+
+Root provisional-2原19检查已全部通过；新增5项仍失败，additional-corrected.log才是正确夹具（前任/继任不重叠）：过去开始回应抛异常、取消倒退接受时点、继任记者ID探测、EXPIRED/MISSED过早转移的JSON被接受。v3修复任务已准备interview-coordination-fix-v3-task.txt，须等待当前79655正常退出后才续同405ace，不并发写。v3拟引入发起人长度前缀requestId helper，需将Root测试仅做标识适配、保留全部行为断言；最终独审交Hermes。主树尚未采访代码。
+
+## 前次交接（2026-11-07 13:41，采访纯核独验修复中）
+
+当前codex/world-interview-coordination，base b297b3adca8b15b8591e3985b0f5c4a175c41cc3。媒体PR39最终文档CI42343268494实际completed/success，独审53883已exit0，仍待人工review不合并。持续Web18080/PID22856保持accepted media；0新增官方provider，禁止重跑live-once或启动迁移脚本。
+
+采访作者405ace首稿exec6965已exit0，handoff.md自报18测试与JavaDoc通过，但Root不接收。冻结provisional-1源5ed0e0a9142f1f168fb617a53f83721398b2c6866310db49ff5bf7decbb04597后，Root正常入口11项1过10失败，另8恢复/溢出反例全部真实RED：接受授权/开始外部busy缺失、倒退时间、零时点、提前结束未释放、ID探测、跨状态幂等、错过预约不终止、迟结束延长，以及JSON一致性。证据interview-coordination-root/{InterviewBoundaryProbe.java,InterviewRecoveryProbe.java,provisional-1}。首次probe编译误用expire返回类型已修；正式失败日志来自成功编译后运行。
+
+同真实Hermes session20261107_105327_405ace续接exec79655，interview-coordination-fix-task.txt/log，只写原author目录；Root裁定接受时必须核权限、错过精确开始转终态、提前结束占实际区间、正常结束截预约终点、原invite跨状态幂等、未知与无权一致。尚未handoff-v2，不接主树。主树只有状态文档变化，禁止把新纯核说成Web采访完成。
+
+Root已一次性编译旧13客户端OldSchema13Client.class SHA b50d9461b419e59f5efb071d4b494db4b6ac0bd6927db1ab4ad64b4c7b355704，位于interview-coordination-root/old13-client-classes，之后禁止重编。old13-original保持39/33277，包含v2文章、仅读v1读者、pending选题和已保存决定输入；副本old13-baseline-check由旧c9类续到41/34277并旧读通过，日志old13-baseline-append/read。此时只证明旧13基准，未来新实现续写尚未验证。正式1321套本阶段未重跑，采访总体仍未验收。
+
+## 前次交接（2026-11-07 13:34，媒体运行桥工程验收，采访纯核接续）
 
 M4h.2已按最终fixed-intake-9接收：111文件hash与主树相同；正式1321零失败/错误/跳过、CSV48/124/7、Node/GUI、JavaDoc13:26:12、三JVM及真正旧12未重编新续旧读21/104通过。独审ac6bef最终c9自编95源release17，39/39动态通过，T9伪造排程事件+克隆待办P1关闭、所测范围无新P1/P2，handoff在media-runtime-independent/c9；c8另有13HTTP与JS静态审查，Web代码/资源与c9逐字相同。独审exec53883已给handoff，等退出不再扩测。
 
