@@ -207,6 +207,24 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     public static final String INFORMATION_BELIEF_PUBLISH_FACT_V1 =
             "INFORMATION_BELIEF_PUBLISH_FACT_V1";
 
+    /** 媒体：提出选题（COMPLETION，schema13）。 */
+    public static final String MEDIA_STORY_PROPOSE_V1 = "MEDIA_STORY_PROPOSE_V1";
+
+    /** 媒体：提交组织草稿（COMPLETION，schema13）。 */
+    public static final String MEDIA_STORY_SUBMIT_V1 = "MEDIA_STORY_SUBMIT_V1";
+
+    /** 媒体：编辑审阅（COMPLETION，schema13）。 */
+    public static final String MEDIA_STORY_REVIEW_V1 = "MEDIA_STORY_REVIEW_V1";
+
+    /** 媒体：发布已批准版本（COMPLETION，schema13）。 */
+    public static final String MEDIA_STORY_PUBLISH_V1 = "MEDIA_STORY_PUBLISH_V1";
+
+    /** 媒体：开启更正轮（COMPLETION，schema13）。 */
+    public static final String MEDIA_STORY_CORRECTION_V1 = "MEDIA_STORY_CORRECTION_V1";
+
+    /** 媒体：取消本人未完成的媒体工作（COMPLETION，schema13）。 */
+    public static final String MEDIA_WORK_CANCEL_V1 = "MEDIA_WORK_CANCEL_V1";
+
     /** 校验必需字段与 kind/phase 对应关系。 */
     public PendingTask {
         if (taskId == null || taskId.isBlank()) {
@@ -266,6 +284,12 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
             case ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 -> {
                 if (phase != WorldScheduler.Phase.OBSERVATION) {
                     throw new IllegalArgumentException(kind + " 必须落在 OBSERVATION 阶段，收到 " + phase);
+                }
+            }
+            case MEDIA_STORY_PROPOSE_V1, MEDIA_STORY_SUBMIT_V1, MEDIA_STORY_REVIEW_V1,
+                 MEDIA_STORY_PUBLISH_V1, MEDIA_STORY_CORRECTION_V1, MEDIA_WORK_CANCEL_V1 -> {
+                if (phase != WorldScheduler.Phase.COMPLETION) {
+                    throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }
             }
             default -> throw new IllegalArgumentException("未启用的任务种类：" + kind);

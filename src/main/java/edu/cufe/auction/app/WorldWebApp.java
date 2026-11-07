@@ -21,7 +21,7 @@ import java.util.concurrent.CountDownLatch;
  * 凭据只加载到服务端内存，用于场景调用及遮罩/显式查看，控制台只打印一次性管理员引导凭据，
  * 绝不打印 API key。启动不调用模型；只有管理员显式开始后，已启用场景才可发送有界请求。</p>
  *
- * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief]}；默认
+ * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media]}；默认
  * {@code logs/web-workbench}、{@code C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt}、
  * 端口 18080（被占用则明确失败，不会杀掉已有服务）；默认live用独立world-live.journal，scripted仍用world.journal，
  * 显式cognition使用world-cognition.journal与冻结的回忆实验策略，belief使用独立world-belief.journal
@@ -43,7 +43,7 @@ public final class WorldWebApp {
     /**
      * 启动并阻塞，直至进程结束或启动失败。
      *
-     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition或belief，均可省略
+     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief或media，均可省略
      * @throws Exception 启动失败（凭据、目录、端口、世界）
      */
     public static void main(String[] args) throws Exception {
@@ -55,12 +55,13 @@ public final class WorldWebApp {
         }
 
         String mode = args.length > 3 ? args[3] : "live";
-        if (!mode.equals("live") && !mode.equals("scripted") && !mode.equals("cognition") && !mode.equals("belief")) {
-            throw new IllegalArgumentException("运行模式只能是live、scripted、cognition或belief");
+        if (!mode.equals("live") && !mode.equals("scripted") && !mode.equals("cognition") && !mode.equals("belief") && !mode.equals("media")) {
+            throw new IllegalArgumentException("运行模式只能是live、scripted、cognition、belief或media");
         }
         boolean live = mode.equals("live");
         boolean cognition = mode.equals("cognition");
         boolean belief = mode.equals("belief");
+        boolean media = mode.equals("media");
 
         Files.createDirectories(workDir);
 
@@ -74,7 +75,11 @@ public final class WorldWebApp {
         }
 
         SceneRoutes routes = SceneRoutes.open(workDir);
-        WorldWebHost host = belief
+        WorldWebHost host = media
+                ? new WorldWebHost(() -> WorldWebScenario.openMedia(
+                        workDir.resolve("world-media.journal")),
+                        routes, new LiveDecisionProvider(keys))
+                : belief
                 ? new WorldWebHost(() -> WorldWebScenario.openBelief(
                         workDir.resolve("world-belief.journal")),
                         routes, new LiveDecisionProvider(keys))
@@ -115,7 +120,9 @@ public final class WorldWebApp {
         System.out.println("场景配置：" + workDir.resolve(SceneRoutes.FILE_NAME).toAbsolutePath()
                 .normalize());
         System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
-        System.out.println(belief
+        System.out.println(media
+                ? "模式：采编实验（schema13，独立 world-media.journal）；未自动调用模型。"
+                : belief
                 ? "模式：判断与学习实验（schema12，独立 world-belief.journal）；未自动调用模型。"
                         + "请在页面核对场景配置并明确开始一轮。"
                 : cognition

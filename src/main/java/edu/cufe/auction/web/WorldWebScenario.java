@@ -7,6 +7,8 @@ import edu.cufe.auction.world.DecisionModel;
 import edu.cufe.auction.world.InformationRun;
 import edu.cufe.auction.world.ManufacturingModel;
 import edu.cufe.auction.world.ManufacturingRun;
+import edu.cufe.auction.world.MediaModel;
+import edu.cufe.auction.world.MediaRun;
 import edu.cufe.auction.world.OpeningRegistry;
 import edu.cufe.auction.world.RoleAccess;
 import edu.cufe.auction.world.RoleRun;
@@ -17,6 +19,7 @@ import edu.cufe.auction.world.WorldRuntime;
 import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -322,6 +325,99 @@ public final class WorldWebScenario {
                 new DecisionModel.Budget(DecisionModel.Usage.unknownCost(100, 1_000_000, 200_000),
                         caps),
                 DecisionModel.Profile.LIVE_HTTP_V1);
+    }
+
+    /** 媒体新档案的明确登记人物，旧档案不添加任职或预算。 */
+    public static final List<String> MEDIA_PERSONS = List.of("rita", "ed", "sam", "bea");
+
+    /**
+     * 打开独立采编实验档案：两个媒体组织、各自独立记者与编辑，不生成虚构新闻。
+     *
+     * @param journal 独立 world-media.journal
+     * @return 权威运行时与实际运行标识
+     * @throws Exception 开局或恢复失败
+     */
+    public static WorldWebHost.Opened openMedia(Path journal) throws Exception {
+        OpeningRegistry base = registry();
+        List<OpeningRegistry.Party> parties = new ArrayList<>(base.parties());
+        List<OpeningRegistry.PropertyOwner> owners = new ArrayList<>(base.owners());
+        for (String organization : List.of("wire", "investigative")) {
+            parties.add(new OpeningRegistry.Party(organization,
+                    OpeningRegistry.PartyKind.ORGANIZATION,
+                    organization.equals("wire") ? "快讯社（实验）" : "调查社（实验）"));
+            owners.add(new OpeningRegistry.PropertyOwner(organization,
+                    OpeningRegistry.OwnerKind.ORGANIZATION, organization));
+        }
+        Map<String, String> names = Map.of("rita", "快讯记者", "ed", "快讯编辑",
+                "sam", "调查记者", "bea", "调查编辑");
+        for (String person : MEDIA_PERSONS) {
+            parties.add(new OpeningRegistry.Party(person, OpeningRegistry.PartyKind.PERSON,
+                    names.get(person)));
+            owners.add(new OpeningRegistry.PropertyOwner(person,
+                    OpeningRegistry.OwnerKind.PERSON, person));
+        }
+        OpeningRegistry registry = new OpeningRegistry(parties, owners, base.securities(),
+                base.allocations());
+        List<RoleAccess.Appointment> appointments = new ArrayList<>(roles().appointments());
+        long end = 30L * 86_400_000L;
+        for (int i = 0; i < MEDIA_PERSONS.size(); i++) {
+            appointments.add(new RoleAccess.Appointment("MEDIA-" + i, MEDIA_PERSONS.get(i),
+                    i < 2 ? "wire" : "investigative",
+                    i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
+                    0L, end, null));
+        }
+        List<String> readers = new ArrayList<>(information().readers());
+        readers.addAll(MEDIA_PERSONS);
+        InformationRun.Config info = new InformationRun.Config(readers, COGNITION_POLICY,
+                new edu.cufe.auction.world.BeliefModel.Policy(
+                        200, 8, end, 20, 200, 3, end));
+        RunManifest manifest = mediaManifest();
+        WorldRuntime runtime = new WorldRuntime(journal, manifest, openings(), registry,
+                new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
+                        "SUP", "CUS", "OPS"), SYMBOL), charter(),
+                new RoleRun.Config(roles().mandates(), appointments), info, mediaDecisionConfig(),
+                mediaConfig());
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
+    /** @return schema13独立采编档案；与既有档案并存，不隐式迁移 */
+    public static RunManifest mediaManifest() {
+        Map<String, Integer> modules = new TreeMap<>(beliefManifest().moduleVersions());
+        modules.put("media", 1);
+        return new RunManifest("web-media", 11L, RunManifest.RULES_MEDIA_EDITORIAL_EXPERIMENT_V1,
+                modules, Map.of("profile", "web-media-editorial-v1"), RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    /** @return 未调优的实验配置，每机构总工时240000毫秒，不是现实媒体日报制度 */
+    public static MediaRun.Config mediaConfig() {
+        List<MediaModel.Policy> policies = List.of(
+                new MediaModel.Policy("wire", Map.of(MediaModel.TemplateKind.WIRE, 1),
+                        10_000L, 3_000L, 2_000L, 500L, 250L, COGNITION_POLICY),
+                new MediaModel.Policy("investigative", Map.of(MediaModel.TemplateKind.INVESTIGATIVE, 2),
+                        10_000L, 3_000L, 2_000L, 500L, 250L, COGNITION_POLICY));
+        return new MediaRun.Config(policies, Map.of("wire", 240_000L, "investigative", 240_000L),
+                1_000L, 1_000L, 250L);
+    }
+
+    /** @return 既有角色与新增采编人物的有界模型配置，启动不调用提供方 */
+    public static DecisionModel.Config mediaDecisionConfig() {
+        DecisionModel.Config base = beliefConfig();
+        MediaRun.Config media = mediaConfig();
+        MediaModel.Policy policy = media.policies().get(0);
+        Map<String, Long> actions = new TreeMap<>(base.actionMillisByTool());
+        actions.put(RoleTradingView.TOOL_MEDIA_PROPOSE, media.proposeMillis());
+        actions.put(RoleTradingView.TOOL_MEDIA_SUBMIT, policy.writeMillis());
+        actions.put(RoleTradingView.TOOL_MEDIA_REVIEW, policy.reviewMillis());
+        actions.put(RoleTradingView.TOOL_MEDIA_PUBLISH, policy.publishMillis());
+        actions.put(RoleTradingView.TOOL_MEDIA_CORRECTION, media.correctionMillis());
+        actions.put(RoleTradingView.TOOL_MEDIA_CANCEL, media.cancelMillis());
+        Map<String, DecisionModel.Usage> caps = new TreeMap<>(base.budget().personCap());
+        for (String person : MEDIA_PERSONS) {
+            caps.put(person, DecisionModel.Usage.unknownCost(25, 250_000, 50_000));
+        }
+        return new DecisionModel.Config(base.providerKind(), base.providerId(), base.pricingVersion(),
+                base.thinkMillisByWake(), actions, base.limits(),
+                new DecisionModel.Budget(base.budget().runCap(), caps), base.profile());
     }
 
     private static BigDecimal money(String value) {

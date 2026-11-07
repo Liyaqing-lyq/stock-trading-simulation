@@ -243,6 +243,15 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> recallView(exchange));
                 return;
             }
+            if (("/api/admin/media".equals(path) || "/api/admin/capabilities".equals(path))
+                    && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> mediaOverview(exchange, path));
+                return;
+            }
+            if ("/api/admin/media-story".equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> mediaStory(exchange));
+                return;
+            }
             if ("/api/admin/market-history".equals(path) && "POST".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> marketHistory(exchange));
                 return;
@@ -318,6 +327,9 @@ public final class WorldWebServer implements AutoCloseable {
     }
 
     private boolean knownRoute(String path, String method) {
+        if (("/api/admin/media".equals(path) || "/api/admin/capabilities".equals(path))
+                && "GET".equals(method)) return true;
+        if ("/api/admin/media-story".equals(path) && "POST".equals(method)) return true;
         if ("/api/session".equals(path) && "GET".equals(method)) {
             return true;
         }
@@ -630,6 +642,49 @@ public final class WorldWebServer implements AutoCloseable {
         send(exchange, 200, mapper.writeValueAsString(view));
     }
 
+    /** 两个只读管理员入口都经过统一身份验证，不开放角色原始审计。 */
+    private void mediaOverview(HttpExchange exchange, String path)
+            throws IOException, WorldWebHost.BusyException {
+        Object view;
+        try {
+            view = path.equals("/api/admin/media") ? host.mediaAudit() : host.liveCapabilities();
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /** 选择稿件后读取真实原始版本，未知字段和不明确标识直接拒绝。 */
+    private void mediaStory(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        JsonNode body = jsonBody(exchange, Set.of("organizationPartyId", "storyId", "expectedPosition"));
+        JsonNode organization = body.get("organizationPartyId");
+        JsonNode story = body.get("storyId");
+        Long expected = strictLong(body.get("expectedPosition"));
+        if (organization == null || !organization.isTextual() || organization.textValue().isBlank()
+                || story == null || !story.isTextual() || story.textValue().isBlank()
+                || expected == null || expected < 1) {
+            send(exchange, 400, error("INVALID", "请选择媒体机构与稿件"));
+            return;
+        }
+        Object view;
+        try {
+            view = host.mediaStory(organization.textValue(), story.textValue(), expected);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新采编页面后重新选择"));
+            return;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "当前档案没有此机构稿件"));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
     private void listKeys(HttpExchange exchange) throws IOException {
         List<Map<String, Object>> slots = new ArrayList<>();
         for (KeySlots.SlotView view : keys.views()) {
@@ -867,7 +922,8 @@ public final class WorldWebServer implements AutoCloseable {
     private void personView(HttpExchange exchange, WebSessions.Session session)
             throws IOException, WorldWebHost.BusyException {
         try {
-            RoleView view = host.roleView(session.personId());
+            WorldWebHost.PersonPage page = host.personPage(session.personId());
+            RoleView view = page.view();
             List<Map<String, Object>> accounts = new ArrayList<>();
             for (RoleView.Account account : view.accounts()) {
                 Map<String, Object> row = new LinkedHashMap<>();
@@ -920,6 +976,7 @@ public final class WorldWebServer implements AutoCloseable {
             response.put("readings", view.readings().size());
             response.put("observations", view.observations().size());
             response.put("permissions", view.permissions().size());
+            if (page.media() != null) response.put("media", page.media());
             send(exchange, 200, mapper.writeValueAsString(response));
         } catch (WorldWebHost.BusyException busy) {
             throw busy;

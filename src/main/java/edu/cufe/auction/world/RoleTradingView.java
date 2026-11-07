@@ -27,11 +27,37 @@ import java.util.Objects;
  * @param children         本人子单进度
  * @param notices          本人 client 回报
  * @param tools            本次观察可执行的工具名
+ * @param media            媒体工作流元数据；媒体未启用为 null 且不落 JSON
  */
 public record RoleTradingView(long observedAtMillis, long timeMillis, String personPartyId,
                               RoleView profile, List<Appointment> appointments,
                               List<ResearchView> research, List<TargetView> targets,
-                              List<ChildView> children, List<Notice> notices, List<String> tools) {
+                              List<ChildView> children, List<Notice> notices, List<String> tools,
+                              @com.fasterxml.jackson.annotation.JsonInclude(
+                                      com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                              List<MediaStory> media) {
+
+    /**
+     * 兼容构造：没有媒体子集（schema12 及更旧的视图逐字不变）。
+     *
+     * @param observedAtMillis 会话固定观察时点
+     * @param timeMillis       视图派生时刻
+     * @param personPartyId    视图人物
+     * @param profile          原角色视图
+     * @param appointments     观察任职
+     * @param research         研究目录
+     * @param targets          母任务
+     * @param children         子单
+     * @param notices          回报
+     * @param tools            可用工具
+     */
+    public RoleTradingView(long observedAtMillis, long timeMillis, String personPartyId,
+                           RoleView profile, List<Appointment> appointments,
+                           List<ResearchView> research, List<TargetView> targets,
+                           List<ChildView> children, List<Notice> notices, List<String> tools) {
+        this(observedAtMillis, timeMillis, personPartyId, profile, appointments, research, targets,
+                children, notices, tools, null);
+    }
 
     /** 阅读工具：开始读一个明确版本。 */
     public static final String TOOL_READING_START = "role.reading.start";
@@ -65,6 +91,19 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     /** 认知工具：主席请求公司订单事实公告。 */
     public static final String TOOL_COMPANY_REPORT_ORDERS = "company.reportOrders";
 
+    /** 媒体工具：提出选题。 */
+    public static final String TOOL_MEDIA_PROPOSE = "media.story.propose";
+    /** 媒体工具：提交组织草稿。 */
+    public static final String TOOL_MEDIA_SUBMIT = "media.story.submit";
+    /** 媒体工具：编辑审阅。 */
+    public static final String TOOL_MEDIA_REVIEW = "media.story.review";
+    /** 媒体工具：发布已批准版本。 */
+    public static final String TOOL_MEDIA_PUBLISH = "media.story.publish";
+    /** 媒体工具：开启更正轮。 */
+    public static final String TOOL_MEDIA_CORRECTION = "media.story.correction";
+    /** 媒体工具：取消本人未完成的媒体工作。 */
+    public static final String TOOL_MEDIA_CANCEL = "media.work.cancel";
+
     /** 冻结全部集合。 */
     public RoleTradingView {
         if (observedAtMillis < 0 || timeMillis < 0) {
@@ -78,6 +117,27 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
         children = List.copyOf(children);
         notices = List.copyOf(notices);
         tools = List.copyOf(tools);
+        media = media == null ? null : List.copyOf(media);
+    }
+
+    /**
+     * 本组织媒体稿件元数据：不含正文、不含内部根标识、不含他人机构稿件。
+     *
+     * @param storyId      稿件标识
+     * @param template     模板
+     * @param status       状态名
+     * @param revisionNo   提交次数
+     * @param topic        选题
+     * @param authorPartyId 作者
+     * @param own          是否本人作者
+     * @param canReview    本岗位此刻能否审阅（仅编辑且稿件待审）
+     * @param canPublish   本岗位此刻能否发布（仅编辑且稿件已批准）
+     * @param sourceGroups 独立来源组数
+     * @param updatedAtMillis 最近变化时刻
+     */
+    public record MediaStory(String storyId, String template, String status, int revisionNo,
+                             String topic, String authorPartyId, boolean own, boolean canReview,
+                             boolean canPublish, int sourceGroups, long updatedAtMillis) {
     }
 
     /**

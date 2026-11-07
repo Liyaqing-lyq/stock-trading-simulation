@@ -24,12 +24,15 @@ const state = {
   marketRequest: 0,
   market: null,
   performanceRequest: 0,
-  performanceHistory: null
+  performanceHistory: null,
+  mediaRequest: 0,
+  capabilities: null
 };
 
 const ADMIN_TABLES = ["accounts", "owners", "pending", "trades", "dividends", "keys"];
 const DETAIL_PAGES = {
   company: "/api/admin/company",
+  media: "/api/admin/media",
   performance: "/api/admin/performance",
   org: "/api/admin/people",
   information: "/api/admin/information"
@@ -133,6 +136,8 @@ function clearSecrets() {
 }
 
 function clearAdminDom() {
+  state.capabilities = null;
+  $("live-persons").replaceChildren();
   clearLiveDom();
   state.position = null;
   state.routeRevision = null;
@@ -155,6 +160,7 @@ function clearAdminDom() {
 }
 
 function clearPersonDom() {
+  clearPersonalMedia();
   $("person-name").textContent = "—";
   $("person-summary").replaceChildren();
   for (const id of PERSON_TABLES) {
@@ -439,6 +445,7 @@ async function enterPerson(personId) {
 }
 
 async function refreshPerson() {
+  clearPersonalMedia();
   const generation = state.generation;
   let result;
   try {
@@ -462,6 +469,7 @@ async function refreshPerson() {
   }
   setMessage("person-error", "");
   const view = result.payload;
+  renderPersonalMedia(view.media);
   $("context-time").textContent = "人物观察 · " + view.timeMillis + " 毫秒";
   $("person-name").textContent = view.personPartyId;
 
@@ -586,6 +594,7 @@ const pages = {
   performance: ["账户表现与历史", "净资产、期间表现与真实资本流，口径唯一。"],
   org: ["人物与任职", "谁能做什么，任职何时生效或结束。"],
   information: ["信息与阅读", "谁发布了什么版本，谁实际读到什么。"],
+  media: ["媒体采编", "选题、审阅、发布与更正，都有实际工时和原始版本。"],
   people: ["人物视角", "以各自的权限观察世界，保留信息边界。"],
   models: ["模型运行", "让人物依据自己的观察完成一次判断，查看实际输入与回报。"],
   settings: ["模型与密钥", "为五类场景配置模型、密钥槽位和调用预算。"]
@@ -595,6 +604,7 @@ function selectPage(page, refresh = true) {
   clearSecrets();
   stopLivePoll();
   if (state.page === "market" && page !== "market") clearMarketDom();
+  if (state.page === "media" && page !== "media") clearMediaDom();
   if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
   state.page = page;
   state.pageVersion += 1;
@@ -647,11 +657,12 @@ async function refreshRoutes(generation, current = () => true) {
     state.routeRevision = null;
     return;
   }
+  if (!await refreshCapabilities(generation, current)) return;
   const config = result.payload;
   state.routeRevision = config.revision;
   $("route-provider").textContent = "DeepSeek · " + config.baseUrl + " · 配置版本 " + config.revision;
   $("route-runtime").textContent = config.connected
-    ? "研究与交易已连接执行器；保存配置不会自动调用。公司治理、媒体与评估仍待接入。"
+    ? "当前档案已接入：" + state.capabilities.supportedScenes.map(id => LIVE_SCENES[id] || id).join("、") + "。保存配置不会自动调用；其余场景尚未接入。"
     : "配置可保存，尚未连接世界决策执行器；当前不会因此产生模型调用。";
   $("routes-list").replaceChildren();
   for (const route of config.routes) {
@@ -1059,6 +1070,7 @@ function label(group, value) {
 }
 
 function clearDetailDom() {
+  clearMediaDom();
   state.details = {};
   clearRecall();
   clearBeliefs();
@@ -1093,6 +1105,7 @@ function clearDetailDom() {
 }
 
 async function loadDetail(page) {
+  if (page === "media") clearMediaDom();
   const url = DETAIL_PAGES[page];
   if (!url || state.mode !== "admin") return;
   const generation = state.generation;
@@ -1117,6 +1130,7 @@ async function loadDetail(page) {
 function renderDetail(page, view) {
   if (page === state.page) renderAdminCut(view);
   if (page === "company") renderCompany(view);
+  else if (page === "media") renderMedia(view);
   else if (page === "performance") renderPerformance(view);
   else if (page === "org") renderPeopleAdmin(view);
   else if (page === "information") renderInformation(view);
@@ -2066,6 +2080,137 @@ $("performance-history-recent").addEventListener("click", () => {
   guard(loadPerformanceHistory());
 });
 
+// 采编观察：管理员原件与个人真实经历分别由服务器投影，正文始终作为文字显示。
+const MEDIA_TABLES = ["media-organizations", "media-stories", "media-works", "media-reports", "media-pending", "media-citations", "media-roots"];
+const MEDIA_LABELS = { WIRE: "快讯", INVESTIGATIVE: "调查", DRAFT: "编辑中", SUBMITTED: "待审阅",
+  RETURNED: "已退回", APPROVED: "待发布", PUBLISHED: "已发布", PUBLIC: "公开成稿",
+  COMPLETED: "已完成", CANCELED: "已取消", NOT_AUTHORIZED: "当前任职无权操作",
+  BUDGET: "工时不足", BUSY: "已有专注工作", VERSION: "版本已变化",
+  EVIDENCE_NOT_READ: "证据尚未读完", EVIDENCE_NOT_RECALLABLE: "证据当前不可回忆",
+  DRAFT_NOT_READ: "草稿尚未读完", DRAFT_NOT_RECALLABLE: "草稿当前不可回忆",
+  MEDIA_STORY_PROPOSE_V1: "提出选题", MEDIA_STORY_SUBMIT_V1: "提交草稿",
+  MEDIA_STORY_REVIEW_V1: "编辑审阅", MEDIA_STORY_PUBLISH_V1: "发布",
+  MEDIA_STORY_CORRECTION_V1: "开启更正", MEDIA_WORK_CANCEL_V1: "取消工作" };
+function mediaLabel(value) { return MEDIA_LABELS[value] || text(value); }
+function mediaTable(id, section, columns) {
+  fillTable(id, (section || {}).rows, (tr, row) => {
+    for (const key of columns) {
+      const value = key === "accepted" ? (row[key] ? "通过" : "拒绝")
+        : key === "templates" ? Object.entries(row[key] || {}).map(([name, count]) => mediaLabel(name) + " · 至少 " + count + " 组原始来源").join("；")
+        : ["kind", "template", "status", "outcome", "reason"].includes(key) ? mediaLabel(row[key]) : row[key];
+      cell(tr, value);
+    }
+  });
+  fillSection(id + "-empty", id + "-count", section);
+}
+function clearMediaStory() {
+  state.mediaRequest += 1;
+  $("media-versions").replaceChildren();
+  $("media-story-cut").textContent = "";
+  for (const id of ["media-citations", "media-roots"]) mediaTable(id, null, []);
+  setMessage("media-story-error", "");
+}
+function clearMediaDom() {
+  clearMediaStory();
+  for (const id of MEDIA_TABLES) mediaTable(id, null, []);
+  $("media-story-select").replaceChildren();
+  $("media-story-select").disabled = true;
+  $("media-cut").textContent = "";
+  $("media-notes").replaceChildren();
+  delete state.details.media;
+}
+function renderMedia(view) {
+  clearMediaStory();
+  $("media-cut").textContent = cutText(view, view.available ? "采编实验" : "本档案未启用采编");
+  fillNotes("media-notes", view.notes);
+  mediaTable("media-organizations", view.organizations, ["name", "templates", "totalMillis", "spentMillis", "reservedMillis", "availableMillis"]);
+  mediaTable("media-stories", view.stories, ["organizationPartyId", "storyId", "template", "topic", "authorPartyId", "status", "revisionNo", "draftVersion", "publicVersion", "sourceGroups", "approvedBy"]);
+  mediaTable("media-pending", view.pending, ["taskId", "personPartyId", "organizationPartyId", "kind", "dueTimeMillis"]);
+  mediaTable("media-works", view.works, ["taskId", "personPartyId", "organizationPartyId", "kind", "storyId", "startedAtMillis", "completedAtMillis", "chargedMillis", "outcome"]);
+  mediaTable("media-reports", view.reports, ["personPartyId", "kind", "storyId", "accepted", "reason", "timeMillis", "position"]);
+  const select = $("media-story-select"); select.replaceChildren();
+  const empty = document.createElement("option"); empty.value = ""; empty.textContent = "选择稿件查看原始版本"; select.appendChild(empty);
+  (view.stories.rows || []).forEach((story, index) => {
+    const option = document.createElement("option"); option.value = String(index);
+    option.textContent = story.organizationPartyId + " · " + story.topic + " · " + story.storyId;
+    select.appendChild(option);
+  });
+  select.disabled = !view.available || view.stories.rows.length === 0;
+}
+function renderMediaDocuments(id, section) {
+  const list = $(id); list.replaceChildren();
+  for (const item of (section || {}).rows || []) {
+    const detail = document.createElement("details"), summary = document.createElement("summary");
+    summary.textContent = (item.kind ? (item.kind === "DRAFT" ? "组织草稿" : mediaLabel(item.kind)) + " · " : "") + item.title + " · v" + item.version;
+    const meta = document.createElement("p"); meta.className = "hint";
+    meta.textContent = item.docId + " · 发布 " + item.publishedAtMillis + " 毫秒"
+      + (item.completedAtMillis ? " · 本人读完 " + item.completedAtMillis + " 毫秒" : "");
+    const source = document.createElement("p"); source.textContent = item.sourceDescription || "未提供自由文字来源描述";
+    const body = document.createElement("pre"); body.className = "media-body"; body.textContent = item.body;
+    detail.append(summary, meta, source, body); list.appendChild(detail);
+  }
+  const count = document.createElement("p"); count.className = "hint";
+  count.textContent = "显示 " + ((section || {}).rows || []).length + " / 共 " + ((section || {}).total || 0) + " 个实际版本";
+  list.appendChild(count);
+}
+async function loadMediaStory() {
+  clearMediaStory();
+  const view = state.details.media, selected = $("media-story-select").value;
+  if (!view || selected === "" || state.mode !== "admin" || state.page !== "media") return;
+  const story = view.stories.rows[Number(selected)];
+  if (!story) return;
+  const generation = state.generation, pageVersion = state.pageVersion, requestId = state.mediaRequest;
+  const current = () => isCurrent(generation) && state.mode === "admin" && state.page === "media"
+    && pageVersion === state.pageVersion && requestId === state.mediaRequest && selected === $("media-story-select").value;
+  try {
+    const result = await request("POST", "/api/admin/media-story", { organizationPartyId: story.organizationPartyId,
+      storyId: story.storyId, expectedPosition: view.position });
+    if (!current()) return;
+    if (result.status === 401 || result.status === 403) { sessionLost(); return; }
+    if (result.status !== 200 || !result.payload) throw new Error(result.payload && result.payload.message || "稿件读取失败，请刷新重试。");
+    const data = result.payload;
+    if (data.position !== view.position || data.storyId !== story.storyId || data.organizationPartyId !== story.organizationPartyId) throw new Error("稿件截止不一致，请刷新重试。");
+    $("media-story-cut").textContent = cutText(data, "原始版本与实际引用");
+    renderMediaDocuments("media-versions", data.versions);
+    mediaTable("media-citations", data.citations, ["personPartyId", "docId", "version", "index"]);
+    mediaTable("media-roots", data.roots, ["docId", "version"]);
+  } catch (failure) { if (current()) setMessage("media-story-error", failure.message); }
+}
+function clearPersonalMedia() {
+  $("person-media").hidden = true;
+  for (const id of ["person-media-stories", "person-media-reports"]) mediaTable(id, null, []);
+  $("person-media-documents").replaceChildren(); $("person-media-tools").textContent = "";
+}
+function renderPersonalMedia(media) {
+  clearPersonalMedia(); if (!media) return;
+  $("person-media").hidden = false;
+  $("person-media-tools").textContent = "当前人物可用动作：" + (media.tools || []).join("、");
+  mediaTable("person-media-stories", media.stories, ["storyId", "template", "topic", "authorPartyId", "status", "revisionNo", "sourceGroups"]);
+  mediaTable("person-media-reports", media.reports, ["kind", "storyId", "accepted", "reason", "timeMillis"]);
+  renderMediaDocuments("person-media-documents", media.documents);
+}
+async function refreshCapabilities(generation, current) {
+  const result = await request("GET", "/api/admin/capabilities");
+  if (!isCurrent(generation) || state.mode !== "admin" || !current()) return false;
+  if (result.status === 401 || result.status === 403) { sessionLost(); return false; }
+  if (result.status !== 200 || !result.payload) throw new Error("当前档案能力读取失败，请刷新。");
+  const first = state.capabilities === null;
+  const selected = new Set(Array.from(document.querySelectorAll('input[name="live-person"]:checked'), node => node.value));
+  state.capabilities = result.payload;
+  const list = $("live-persons"); list.replaceChildren();
+  const legend = document.createElement("legend"); legend.textContent = "本轮参与人物"; list.appendChild(legend);
+  for (const person of result.payload.persons) {
+    const label = document.createElement("label"), input = document.createElement("input");
+    input.type = "checkbox"; input.name = "live-person"; input.value = person.personPartyId;
+    input.checked = selected.has(person.personPartyId) || (first && person.personPartyId === "alice");
+    label.append(input, document.createTextNode(person.name + " · " + (LIVE_SCENES[person.sceneId] || person.sceneId)));
+    list.appendChild(label);
+  }
+  return true;
+}
+$("media-story-select").addEventListener("change", () => guard(loadMediaStory()));
+
+
 guard(boot());
 
 
@@ -2073,7 +2218,7 @@ guard(boot());
 const LIVE_PHASES = { SCRIPTED: "脚本模式 · 未接模型", IDLE: "等待开始", READY: "等待开始",
   RUNNING: "本轮运行中", STOPPING: "等待已发请求结束", PAUSED: "已暂停处理", FAULT: "需要重启恢复" };
 const LIVE_SCENES = { research: "机构研究", trading: "交易执行", governance: "公司治理（待接入）",
-  media: "媒体社交（待接入）", evaluation: "评估实验（待接入）" };
+  media: "媒体采编", evaluation: "评估实验（待接入）" };
 function stopLivePoll() {
   if (state.liveTimer) clearTimeout(state.liveTimer);
   state.liveTimer = null;
@@ -2119,7 +2264,7 @@ function renderLive(v) {
     cell(tr, b.usedOutputTokens + " / " + b.reservedOutputTokens + " / " + b.capOutputTokens);
   });
   fillTable("live-scenes", v.scenes, (tr, row) => {
-    cell(tr, LIVE_SCENES[row.sceneId] || row.sceneId);
+    cell(tr, (LIVE_SCENES[row.sceneId] || row.sceneId) + (state.capabilities && state.capabilities.supportedScenes.includes(row.sceneId) ? "" : " · 当前档案未接入"));
     cell(tr, row.slotId + " · " + row.model + " · 版本 " + row.revision);
     cell(tr, row.enabled ? "允许" : "关闭");
     cell(tr, row.usedCalls + " / " + row.reservedCalls + " / " + row.capCalls);
@@ -2173,6 +2318,7 @@ async function refreshLive() {
   const generation = state.generation, requestId = state.liveRequest;
   const current = () => isCurrent(generation) && state.mode === "admin" && state.page === "models" && requestId === state.liveRequest;
   try {
+    if (!await refreshCapabilities(generation, current)) return;
     const response = await request("GET", "/api/admin/live");
     if (!current()) return;
     if (response.status === 401 || response.status === 403) { sessionLost(); return; }
