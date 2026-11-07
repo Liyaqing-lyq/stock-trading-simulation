@@ -31,3 +31,5 @@
 真实Hermes405ace续接，仅在`logs/implementation-20261106-continued/media-runtime-author/`私有镜像实施后端：允许新MediaRun、修改RunManifest/WorldRuntime/WorldRoleSession/RoleTradingView/RoleView/PendingTask/DecisionRun/DecisionModel及新增测试；其他源只读。若需额外生产文件先在handoff说明具体原因，由Root接入；不擅改纯核MediaModel/RoleAccess。旧schema12的API二进制兼容由Root真实旧客户端独验。
 
 Root独占主树、Maven、Host/Server/Web/Scenario/App/场景执行器、文档、最终验收与PR。M6b性能作者有独立镜像，两个候选接回时按方法差异合并WorldRuntime，不互相整文件覆盖。禁止真实keys/provider/浏览器、系统Temp、全局memory、其他服务与git操作。所有夹具和临时产物留本私有目录。交接后结束，不追加无界自检。
+
+取消预算最终口径（2026-11-07 Root复现后澄清）：取消控制动作保留正模拟耗时，但不额外预留/扣除组织采编工时。被取消原任务只按实际已过时间收费、释放剩余预留；完全用满预算仍能取消。不存在目标时给可回放业务拒绝，不产生退款。预算不足须角色可见BUDGET回报而非技术失败；逐帧重算、完整DecisionRun链和写中断仍为本阶段必做验收，不因首稿未完成而降级。

@@ -12,7 +12,7 @@
 
 ## 全局约束
 
-当前增量（2026-11-07 12:22）：当前codex/world-performance-history，基底f16cc9c4。M4h.1最终独审199检查/22旧角色及真正旧12新续旧读通过，草稿[PR37](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/37)实际CI42337472698成功，待人工review。M6b[账户表现历史](2026-11-07-performance-history.md)已接主树，1280标准、CSV50/119/7、两组Node/真实GUI、71专项和旧calculate122输出全通过；真实浏览器验证18确认点及资本流/回撤/范围与身份隔离。exec72563正独审105文件候选；最后两行JavaDoc修改需确保重新生成。M4h.2[媒体运行桥](2026-11-07-media-runtime.md)作者405ace exec81622仍在私有后端实施，Root负责Web/合并/验收。本机持续Web18080仍belief candidate3/PID51516，尚未升级M6b；五Key已加载且场景关闭，0新增供应商调用。总体未完成，继续接收性能独审、交付该增量并推进媒体运行桥。
+当前增量（2026-11-07 12:32）：M6b最终candidate3已接收，1280标准/CSV50/119/7/Node/GUI及重新生成JavaDoc通过；Hermes独审1586纯核/127真实运行Host/31HTTP/Node、旧oracle122及105hash通过，两个P3说明问题已关闭。草稿[PR38](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/38)代码e673225、实际CI42338413263成功，依赖PR37，待人工review；最后HTML说明/文档追加CI另记。持续Web18080已升级candidate3/PID53744，原belief档1/0ms、五Key遮罩/场景关闭、0新增调用。M4h.2媒体桥首稿未完成恢复真实性，Root实际两项反例已交405ace exec86185按[运行桥合同](2026-11-07-media-runtime.md)修复，只写私有目录；主树未接桥。下一步收尾性能说明提交、接媒体后端与Web，整体基线不冒称完成。
 
 - 金额 BigDecimal（金额 2 位、成本价 4 位），数量 long；锁顺序引擎锁 → 账户锁，模型、I/O、广播不能持有撮合锁。
 - Java 保留账目、交易、时间、权限和动作裁决；首轮单进程，不引入微服务或任意代码热加载。
