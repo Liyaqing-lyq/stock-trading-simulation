@@ -205,3 +205,21 @@ Root独占主树/Maven；真实作者20261107_041840_ed3b0f仅live-runtime-prepa
 
 场景预算代码a883e99192fd7822e9d5861db5560a86d436075f已建立草稿[PR28](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/28)，base为codex/world-live-decision-core；实际[CI42289821622](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42289821622)已completed/success，已附会话。本地976及Root23/Hermes58通过，仍待人工review、不自动合并。下一按2026-11-07-live-decision-runtime.md实施B2b。作者ed3b0f只读准备exec51627已退出，当前Root独占主树/Maven。
 
+
+### B2b生产写权（当前）
+
+分支codex/world-live-decision-runtime，base cb5afcd；PR28代码/文档CI42289821622与42290156095均success。Root已核23新增测试缺API RED；正式Plan2026-11-07-live-decision-runtime.md。真实Hermes ed3b0f exec26075仅RunManifest/DecisionRun/WorldRuntime及Maven独占；新两测试和其它84生产只读。Root负责文档/私有证据与最终验收，不并发改三生产或跑Maven。afc0c5独审20检查源已准备，尚未新API行为运行。总体仍在实施，真实keys仍仅既有51token一次连通。
+
+### B2b 05:12 接续与真实缺陷
+
+作者ed3b0f第一实施进程已退出。Root修新测试漏Role import、Thread.sleep受检异常声明及cmd:t-1定位三项夹具；作者私有23+原976通过不是正式验收。Root正式25专项已运行：原23通过，新增2项真实生产ERROR（静态DTO非法回执不能提交；含引号失败JSON非法）。第一次追加测试误用Java21 getLast导致release17编译失败已改索引，不计生产缺陷。日志live-runtime-root/formal-new-regressions-red-2.log。
+
+candidate1恢复marketOf读取未初始化state导致NPE，Root第二JVM与真实独审均确证；candidate2改传入snap后Root三个独立JVM8+10+10=28检查通过、旧编译4/3/8客户端JSON指纹保持，探针无网络。candidate2不是最终验收：上述2项仍待修复。Root授权ed3b0f exec70339仅Runtime及Maven，tests只读；afc0c5 exec71686仅candidate2独审私有目录；d39b13 exec11548仅Web详情私有镜像补唯一精度断言。Web首轮95检查94过，1项需诊断，不已接入主树。真实5key仍只此前一次51token连通。
+
+### B2b最终本地验收（05:21）
+
+Root已接回全部主树/Maven。最终candidate3 Runtime6f3f1aa3…a21e532，1002标准/40成交126订单7排名/GUI/JavaDoc通过，Root三JVM28、旧二进制JSONf6f6081b…bc871、真实旧9新time8/旧time9现金4100通过。真实Hermes afc0c5独立87源重编26动态通过，含DTO/安全失败/full taskId改名/纯拒绝批末帧平衡移转。详情docs/05§32。当前发布草稿PR/实际CI待确认，总体仍施工。
+
+B2b作者ed3b0f exec16971现在仅live-web-preparation准备B2c合同，无主树/Maven写权；Web作者d39b13 exec82370仅web-details-preparation/tests私有准备真实详情回归，最终Web5文件105HTTP检查已交；独审89624最终已交并退出。Root不把私有Web候选视为正式交付。B2c草案2026-11-07-live-web-runtime.md已留入口，尚未授权生产；5keys仍仅原51token一次。
+
+B2b代码f56dea4845fbc242ef4bfa2ec18b85b69160001e已建立草稿[PR29](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/29)，base为codex/world-scene-decision-budget；真实[CI42296162891](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42296162891)已completed/success，已附当前会话。1002标准及最终独审26通过，本阶段工程验收完成，等待人工review、不自动合并。下一独立分支集成Web四组只读详情；B2c完成槽仅私有候选准备，不能先称模型已驱动世界。

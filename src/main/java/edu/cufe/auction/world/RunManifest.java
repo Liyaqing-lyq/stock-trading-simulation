@@ -64,6 +64,13 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 在决定档案之上再加现金分红世界桥（M3d D3b 新增的明确组合，scripted 模型）。 */
     public static final String RULES_DIVIDEND_WORLD_EXPERIMENT_V1 = "dividend-world-experiment-v1";
 
+    /** B2b：在分红档案之上接入真实模型持久派发（schema10，live 模型配置）。 */
+    public static final String RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1 =
+            "live-decision-world-experiment-v1";
+
+    /** live 决定档案唯一允许的模型配置版本；与真实 HTTP 提供方严格成对。 */
+    public static final String LIVE_DECISIONS_V1 = "live-decisions-v1";
+
     /** 未接入模型时使用的模型配置版本。 */
     public static final String MODEL_NONE = "none";
 
@@ -160,6 +167,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("dividend");
     }
 
+    /**
+     * 是否启用真实模型持久派发。
+     *
+     * @return 模块表包含 live-decisions 时返回 true
+     */
+    public boolean hasLiveDecisions() {
+        return moduleVersions.containsKey("live-decisions");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -174,7 +190,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -197,21 +214,30 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         Map<String, Integer> expected = new TreeMap<>();
         expected.put("cash", 1);
         expected.put("scheduler", 1);
-        boolean withDividend = RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion);
-        boolean withTrading = RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)
+        boolean withLive = RULES_LIVE_DECISION_WORLD_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withDividend = withLive
+                || RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withTrading = withLive
+                || RULES_ROLE_TRADING_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)
                 || withDividend;
-        boolean withRoles = RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
+        boolean withRoles = withLive
+                || RULES_INFORMED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 || withTrading;
-        boolean withGovernance = RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
+        boolean withGovernance = withLive
+                || RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 || withRoles;
-        boolean withManufacturing = RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
+        boolean withManufacturing = withLive
+                || RULES_STOCK_COMPANY_EXPERIMENT_V1.equals(rulesVersion)
                 || withGovernance;
-        boolean withMatching = RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)
+        boolean withMatching = withLive
+                || RULES_SECURITIES_MATCHING_EXPERIMENT_V1.equals(rulesVersion)
                 || withManufacturing;
-        boolean withSecurities = RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)
+        boolean withSecurities = withLive
+                || RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)
                 || withMatching;
-        boolean withRegistry = RULES_CASH_REGISTRY_WORLD_V1.equals(rulesVersion)
+        boolean withRegistry = withLive
+                || RULES_CASH_REGISTRY_WORLD_V1.equals(rulesVersion)
                 || withSecurities;
         if (withRegistry) {
             expected.put("registry", 1);
@@ -241,6 +267,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         if (withDividend) {
             expected.put("dividend", 1);
         }
+        if (withLive) {
+            expected.put("live-decisions", 1);
+        }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "
                     + expected + "，收到 " + modules);
@@ -258,7 +287,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         }
         dataVersions = Collections.unmodifiableMap(data);
 
-        if (RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)
+        if (withLive) {
+            if (!LIVE_DECISIONS_V1.equals(modelConfigVersion)) {
+                throw new IllegalArgumentException("live 决定档案的模型配置版本必须是 "
+                        + LIVE_DECISIONS_V1 + "，收到 " + modelConfigVersion);
+            }
+        } else if (RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_DIVIDEND_WORLD_EXPERIMENT_V1.equals(rulesVersion)) {
             if (!SCRIPTED_DECISIONS_V1.equals(modelConfigVersion)) {
                 throw new IllegalArgumentException("决定档案的模型配置版本必须是 "

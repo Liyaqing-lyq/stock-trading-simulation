@@ -55,9 +55,9 @@
 
 ### 当前接续
 
-- 当前分支 `codex/world-scene-decision-budget`，基线 `6db6963`。B1草稿PR27代码269e854、CI42285963075实际成功，953标准及Root28/独审57通过。当前实施[B2a场景冻结与可变预留](2026-11-07-scene-decision-budget.md)，尚未启用真实世界模型执行。
+- 当前分支 `codex/world-live-decision-runtime`，基线 `cb5afcd`。B2a草稿PR28代码a883e991及文档cb5afcd的CI42289821622/42290156095实际成功，976标准及Root23/独审58通过。当前实施[B2b持久派发与恢复](2026-11-07-live-decision-runtime.md)，尚未启用真实世界模型执行。
 - [D3c 实际资本流及确认历史表现](2026-11-06-capital-flow-performance.md)最终candidate3本地验收：42专项/858标准、47成交121订单7排名、GUI及JavaDoc01:38:11，Root123资本检查与Decimal通过，原D3b212/旧8/三JVM保持。真实Hermes最终独立20+2及12no-op/12反例通过。完整证据docs/05§27；草稿PR24代码93d4b7a已发布，verify42264571970实际成功，待人工review。
-- B2a新真实Hermes作者（exec75641）仅DecisionModel与Maven独占，新21测试已由Root核准且作者只读；其它86生产不授改。旧aeafaa全部写权释放。afc0c5独审51项仅准备完成，待冻结候选。详见文末新作者写权。
+- Root现独占主树/Maven，B2b最终1002标准及独审26动态通过。真实Hermes ed3b0f仅B2c私有合同准备（exec16971），d39b13仅Web详情私有正式测试准备（exec82370）；afc0c5最终独审已释放。此前生产写权均已结束。
 - 用户确定最终交付为 Web，并授权指定文件五个 key 按场景配置。[Web 与五 key 配置接续单](2026-11-07-web-key-configuration.md)第一阶段已完成：902标准、Root24HTTP、独审64、Postman22请求56断言、真实浏览器登录/推进/配置/查看清除/人物隔离/重启。key-1已单次flash连通成功（46输入5输出51总、931毫秒），无重试，其他4槽未测，账单未知；完整业务页面与真实模型运行继续施工。
 - M6 原离线审计页由用户稍后手动查看，尚待反馈。PR6–22 已由人工账号合并到累计基线 `codex/world-role-trading`，main 尚未汇总全部阶段。新 PR23 仍为草稿，Codex 不自动合并。取消/重新公告、认知媒体、差异公司/银行和长时实验仍未完成，总体基线继续执行。
 
@@ -521,3 +521,28 @@ Root现拥有全部主树/测试/Maven。新作者ed3b0f实施进程75641已退�
 
 场景预算代码a883e99192fd7822e9d5861db5560a86d436075f已建立草稿[PR28](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/28)，base为codex/world-live-decision-core；实际[CI42289821622](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42289821622)已completed/success，已附会话。本地976及Root23/Hermes58通过，仍待人工review、不自动合并。下一按2026-11-07-live-decision-runtime.md实施B2b。作者ed3b0f只读准备exec51627已退出，当前Root独占主树/Maven。
 
+
+## B2b正式测试先行写权（2026-11-07 04:42）
+
+分支codex/world-live-decision-runtime base cb5afcd。B2a PR28代码CI42289821622实际success，文档CI42290156095待核。正式Plan为2026-11-07-live-decision-runtime.md。作者ed3b0f exec6182仅WorldRuntimeLiveDecisionTest/DecisionRunDispatchTest新两类及Maven独占，87生产只读；Root不并发Maven。独审afc0c5 exec15390仅live-runtime-independent私有准备，禁止主树/Maven。
+
+Root另用B2a冻结类编译实际旧DecisionRun4/Request3/Call8客户端，class BDCA1248…8E1BF，完整JSON SHA f6f6081b7270fad7670f80c84cfedaa4203cf9c319f97a2fc43d302ef32bc871、ROUNDTRIP true。后续直接同class连新类，不能重编冒充旧二进制。Root三JVM派发探针已准备，API未实现，尚未运行，不记通过。
+
+### B2b Root测试核准与生产写权
+
+作者测试exec6182与独审准备exec73284均已退出。Root修正新增测试的JSON层级、实际变异计数、零预算旧档对照、非空派发历史保留、run/scene并发隔离，新增未派发旧回执和同批守恒资金搬移/互斥事件反例；当前17Runtime+6Dispatch=23，真实缺API RED为live-runtime-root/formal-root-corrected-red.log。原976未改，87生产此前保持。
+
+现作者ed3b0f exec26075仅RunManifest/DecisionRun/WorldRuntime及Maven独占（100轮3600秒）；两个新测试只读，其余生产含DecisionModel只读。Root不可并发改这三生产或跑Maven。独审afc0c5已交真实Runtime13+恢复7探针，只在旧冻结类编译证明缺新API，尚未行为运行；冻结候选后再授独审。Root三JVM/旧编译客户端证据保持。
+
+作者首轮日志曾出现/tmp/red1.txt重定向，但handoff称未写Temp；Root已要求据实际日志更正，未授权扫描/清理外部临时目录。后续只用项目私有目录。B2a PR28文档cb5afcd的CI42290156095也已实际success。无新增真实key请求，总体Web基线继续。
+
+### 并行Web只读页面候选（私有）
+
+另开真实Hermes Web上下文（exec78088，session待退出日志），只拥有web-details-preparation私有镜像：以B2a冻结87源准备公司经营/治理、人物任职、信息阅读、账户表现与历史页面。禁止主树/Maven/target/Temp/keys/网络；仅可运行自己的回环dummy验证。用户最终Web目标不变，私有候选尚未集成，不能记功能完成。它不会与ed3b0f的三世界生产文件/Maven写权重叠；B2b验收后再核对合入页面，B2c真实runner仍另接。
+
+### B2b 最终本地验收
+
+- [x] schema10严格档案与持久一次派发、完整原命令逐帧审计及失败JSON；26新增/1002标准、40成交126订单7排名、GUI/JavaDoc。
+- [x] Root三JVM28、真旧二进制4/3/8 JSON不变、旧schema9新time8/旧time9续写；真实Hermes独立26动态检查通过，最终Runtime6f3f1aa3…a21e532。证据docs/05§32。
+- [x] 草稿PR29代码f56dea4及实际CI42296162891成功；仍待人工review，AI不代替人工合入。
+- 下一：Web四组只读业务详情私有候选105检查与正式测试集成；[B2c真实Web闭环准备](2026-11-07-live-web-runtime.md)明确固定首次接收、期限竞态和有界轮次，当前未授生产。总体基线继续。
