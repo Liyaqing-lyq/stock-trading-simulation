@@ -3459,6 +3459,16 @@ public final class WorldRuntime implements AutoCloseable {
                 ? "QUEUED" : "QUEUE_FULL";
     }
 
+    /**
+     * 读取live完成槽占用量，用于宿主在创建新决定之前检查容量。
+     * 超时已结算但尚未返回、或已登记但尚未持久归档的槽仍计入；不暴露候选或到达时点。
+     *
+     * @return 完成槽占用量；scripted或关闭后为0，不能代替实际网络请求计数
+     */
+    public synchronized int liveCompletionSlots() {
+        return liveInbox == null ? 0 : liveInbox.size();
+    }
+
     /** @return 旧scripted队列长度；live使用独立完成槽，此值不代表其待处理或在途数量 */
     public synchronized int queuedDecisionCallbacks() {
         return decisionQueue == null ? 0 : decisionQueue.size();

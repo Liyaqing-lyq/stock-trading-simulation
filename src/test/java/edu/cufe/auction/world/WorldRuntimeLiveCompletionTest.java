@@ -640,6 +640,31 @@ class WorldRuntimeLiveCompletionTest {
         }
     }
 
+    @Test
+    @DisplayName("宿主只读完成槽计数区分逻辑结算与物理返回，未归档迟到前保持占额")
+    void liveCompletionSlotsRemainOccupiedUntilLateAck() throws Exception {
+        Clock clock = new Clock();
+        try (WorldRuntime rt = openLive(dataDir().resolve("slot-observer.journal"),
+                liveConfig(1, 1_000L, 1), clock, 1)) {
+            assertEquals(0, rt.liveCompletionSlots());
+            rt.beginDecisionSession("session");
+            rt.openDecisions("open", List.of(request(ALICE, "a", "research")));
+            DecisionRun.Call call = rt.dispatchLiveDecision("dispatch", "a").call();
+            assertEquals(1, rt.liveCompletionSlots());
+            clock.advanceMillis(1_000L);
+            assertEquals(1, rt.expireDecisionTimeouts());
+            assertEquals(0, rt.outstandingLiveDispatches());
+            assertEquals(1, rt.liveCompletionSlots(), "超时记账不释放还未返回的物理完成槽");
+            assertEquals(WorldRuntime.CompletionOffer.QUEUED,
+                    rt.offerLiveDecisionCompletion(business(call, "{\"tool\":\"role.wait\"}", 10, 5)));
+            assertEquals(1, rt.liveCompletionSlots(), "登记但尚未归档仍占槽");
+            assertEquals(1, rt.drainDecisionCallbacks());
+            assertEquals(0, rt.liveCompletionSlots());
+            assertEquals(DecisionModel.Status.EXPIRED, decision(rt, "a").status());
+            assertNull(rt.snapshot().decisions().orElseThrow().actionRef("a"));
+        }
+    }
+
     // ---------------------------------------------------------------- 夹具
 
     private static Path dataDir() throws IOException {
