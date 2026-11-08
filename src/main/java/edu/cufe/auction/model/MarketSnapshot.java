@@ -17,6 +17,7 @@ public final class MarketSnapshot {
     private final BigDecimal previousClose;
     private final BigDecimal lowerLimit;
     private final BigDecimal upperLimit;
+    private final BigDecimal tickSize;
     private final BigDecimal bestBid;
     private final BigDecimal bestAsk;
     private final long cumulativeVolume;
@@ -51,11 +52,28 @@ public final class MarketSnapshot {
                           BigDecimal lowerLimit, BigDecimal upperLimit,
                           BigDecimal bestBid, BigDecimal bestAsk, long cumulativeVolume,
                           List<PriceLevel> bids, List<PriceLevel> asks, long timestampMillis) {
+        this(symbol, lastPrice, previousClose, lowerLimit, upperLimit, new BigDecimal("0.01"),
+                bestBid, bestAsk, cumulativeVolume, bids, asks, timestampMillis);
+    }
+
+    /**
+     * 构造带涨跌停价和最小价格变动单位的行情快照。
+     *
+     * @param tickSize 最小价格变动单位，必须大于 0
+     */
+    public MarketSnapshot(String symbol, BigDecimal lastPrice, BigDecimal previousClose,
+                          BigDecimal lowerLimit, BigDecimal upperLimit, BigDecimal tickSize,
+                          BigDecimal bestBid, BigDecimal bestAsk, long cumulativeVolume,
+                          List<PriceLevel> bids, List<PriceLevel> asks, long timestampMillis) {
+        if (tickSize == null || tickSize.signum() <= 0) {
+            throw new IllegalArgumentException("tickSize 必须大于 0");
+        }
         this.symbol = symbol;
         this.lastPrice = lastPrice;
         this.previousClose = previousClose;
         this.lowerLimit = lowerLimit;
         this.upperLimit = upperLimit;
+        this.tickSize = tickSize;
         this.bestBid = bestBid;
         this.bestAsk = bestAsk;
         this.cumulativeVolume = cumulativeVolume;
@@ -87,6 +105,11 @@ public final class MarketSnapshot {
     /** @return 涨停价；未配置交易制度时为 null */
     public BigDecimal getUpperLimit() {
         return upperLimit;
+    }
+
+    /** @return 最小价格变动单位 */
+    public BigDecimal getTickSize() {
+        return tickSize;
     }
 
     /** @return 买一价 */

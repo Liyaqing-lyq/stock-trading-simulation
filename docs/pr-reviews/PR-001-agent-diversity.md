@@ -19,6 +19,12 @@
 
 原有 agent、撮合、账户、行情、CSV 与 GUI 代码未改动行为。
 
+2026-11-08 复审修复了新增 agent 与价格制度的衔接问题：报价按行情快照携带的标的
+`tickSize` 量化，而不是固定保留两位小数或按 `0.01` 元计算；所有策略报价同时夹在当日
+涨跌停内。做市买单和卖单分别验证是否仍为被动报价；涨停买一附近无法保持被动的一侧跳过，
+避免价格被夹到同一涨停价后主动成交。`MarketSnapshot` 新增带 `tickSize` 的构造器，
+并保留旧构造器兼容既有调用方。
+
 ## 关联评分项
 
 - [x] 核心：撮合 / 多标的 / 账户 / GUI / CSV / 异常校验（本次未改动，仅回归验证）
@@ -49,16 +55,27 @@
 合入上游最新 `main`（`fdbe62f`，独立 121 项测试）后的完整测试：
 
 ```
-[INFO] Tests run: 128, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 139, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
-新增测试：
+新增/补充测试：
 
 - `StrategyAgentsTest`（6 项）：价值型低估买入 / 高估卖出 / 锚附近不交易；逆势型跌破均线买入 /
   高于均线卖出；做市商双边报价不穿越对手价且库存偏高时整体下移；
 - `NewAgentTypesIntegrationTest`（1 项）：真起线程、真进撮合，制造 -6% 价格冲击后，
   断言三类 agent 都真的下单、市场产生成交、所有账户现金与可卖数量非负。
+- `StrategyAgentPriceComplianceTest`（11 项）：使用真实 `MatchingEngine` 覆盖非 `0.01` 元 tick、
+  价值型买卖估值边界、逆势型无对手盘时贴近涨停的回退报价、做市商在 `0.05` 元 tick 下的双边受理，
+  涨停买一附近不提交穿越买一的卖单，以及三类 agent 的非正数量、非正窗口、负价差和空阈值构造校验。
+
+价格合规回归测试做过反向验证：把价值型估值锚报价临时改回固定两位小数后，
+`valueAgentRoundsFairValueToConfiguredTick` 会被真实撮合引擎以 `INVALID_PRICE_TICK` 拒绝并失败；
+恢复按标的 tick 量化后重新通过。做市测试 `marketMakerDoesNotCrossBestBidAtUpperLimit`
+在修复前实际成交 100 股，断言 `expected 0 but was 100`；修复后卖单被跳过、成交量为 0。
+
+连续两次 `bash scripts/verify.sh --with-gui` 完整通过：黑盒模拟分别为 39 笔 / 203 条和
+41 笔 / 209 条（成交 / 订单），排行榜口径均为 10 行，GUI 均实际启动成功。
 
 真实运行（`ConsoleApp 12`，默认配置 10 个 agent）：
 
@@ -74,7 +91,7 @@ GUI 实启截图可见排行榜中的 `价值型-1 / 逆势型-1 / 做市商-1`�
 
 - [ ] 新 agent 是否都订阅了行情（`SimulationRunner` 统一订阅 `MarketDataListener`）
 - [ ] 报价刷新是否真的回收冻结额度（做市商每轮按标的撤单重挂）
-- [ ] 做市报价是否可能穿越对手价（已夹到 `bestAsk - 0.01` / `bestBid + 0.01`）
+- [x] 做市报价是否可能穿越对手价（两侧分别验证被动性；无法保持被动的一侧跳过）
 - [ ] 价值型是否可能以高于估值/低于估值的价格成交（买单上限为锚价、卖单下限为锚价）
 - [ ] 逆势型的采样窗口是否按决策周期而非行情快照（§5.5 记录了首版失败原因）
 - [ ] 新配置缺省时（`agent.*.count` 缺失）是否保持 0 个，不影响既有测试

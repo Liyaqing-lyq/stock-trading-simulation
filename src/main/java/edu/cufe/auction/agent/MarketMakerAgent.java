@@ -9,6 +9,7 @@ import edu.cufe.auction.model.Side;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 做市商 agent：围绕中间价双边报价，赚取买卖价差，并为市场提供持续流动性。
@@ -30,9 +31,7 @@ import java.util.Map;
 public final class MarketMakerAgent extends AbstractTradingAgent {
 
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
-    /** A 股最小价格变动单位（元）。 */
-    private static final BigDecimal TICK = new BigDecimal("0.01");
-
+    /** 围绕中间价报价时使用的单边价差百分比。 */
     private final BigDecimal halfSpreadPercent;
     private final BigDecimal maxSkewPercent;
     private final long quoteQuantity;
@@ -54,9 +53,16 @@ public final class MarketMakerAgent extends AbstractTradingAgent {
                             BigDecimal halfSpreadPercent, BigDecimal maxSkewPercent, long quoteQuantity,
                             Map<String, Long> inventoryTargets) {
         super(agentId, displayName, AgentType.MARKET_MAKER, account, gateway);
-        this.halfSpreadPercent = halfSpreadPercent;
-        this.maxSkewPercent = maxSkewPercent;
-        this.quoteQuantity = quoteQuantity;
+        this.halfSpreadPercent = requireNonNegative(halfSpreadPercent, "halfSpreadPercent");
+        this.maxSkewPercent = requireNonNegative(maxSkewPercent, "maxSkewPercent");
+        this.quoteQuantity = requirePositive(quoteQuantity, "quoteQuantity");
+        Objects.requireNonNull(inventoryTargets, "inventoryTargets");
+        inventoryTargets.forEach((symbol, target) -> {
+            if (symbol == null || symbol.isBlank() || target == null || target < 0) {
+                throw new IllegalArgumentException(
+                        "inventoryTargets 的标的不能为空，目标库存不能为负数");
+            }
+        });
         this.inventoryTargets = Map.copyOf(inventoryTargets);
     }
 
@@ -73,36 +79,45 @@ public final class MarketMakerAgent extends AbstractTradingAgent {
 
             BigDecimal skew = inventorySkewPercent(symbol);
             BigDecimal bid = mid.multiply(HUNDRED.subtract(halfSpreadPercent.add(skew)))
-                    .divide(HUNDRED, 2, RoundingMode.HALF_UP);
+                    .divide(HUNDRED, 8, RoundingMode.HALF_UP);
             BigDecimal ask = mid.multiply(HUNDRED.add(halfSpreadPercent.subtract(skew)))
-                    .divide(HUNDRED, 2, RoundingMode.HALF_UP);
+                    .divide(HUNDRED, 8, RoundingMode.HALF_UP);
+            bid = normalizePrice(snapshot, bid, RoundingMode.HALF_UP);
+            ask = normalizePrice(snapshot, ask, RoundingMode.HALF_UP);
+            if (bid == null || ask == null) {
+                continue;
+            }
 
             // 不穿越对手价：做市报价必须是被动单
             if (snapshot.getBestAsk() != null) {
-                BigDecimal cap = snapshot.getBestAsk().subtract(TICK);
+                BigDecimal cap = snapshot.getBestAsk().subtract(snapshot.getTickSize());
                 if (bid.compareTo(cap) > 0) {
                     bid = cap;
                 }
             }
             if (snapshot.getBestBid() != null) {
-                BigDecimal floor = snapshot.getBestBid().add(TICK);
+                BigDecimal floor = snapshot.getBestBid().add(snapshot.getTickSize());
                 if (ask.compareTo(floor) < 0) {
                     ask = floor;
                 }
             }
-            bid = clampToLimits(snapshot, bid);
-            ask = clampToLimits(snapshot, ask);
-            if (bid == null || ask == null || bid.compareTo(ask) >= 0) {
+            bid = normalizePrice(snapshot, bid, RoundingMode.HALF_UP);
+            ask = normalizePrice(snapshot, ask, RoundingMode.HALF_UP);
+            boolean passiveBid = bid != null
+                    && (snapshot.getBestAsk() == null || bid.compareTo(snapshot.getBestAsk()) < 0);
+            boolean passiveAsk = ask != null
+                    && (snapshot.getBestBid() == null || ask.compareTo(snapshot.getBestBid()) > 0);
+            if (passiveBid && passiveAsk && bid.compareTo(ask) >= 0) {
                 continue;
             }
 
             long target = inventoryTargets.getOrDefault(symbol, 0L);
             long position = getAccount().getQuantity(symbol);
             // 库存上限：目标库存的 1.5 倍，避免单边囤货
-            if (target <= 0 || position < target + target / 2) {
+            if (passiveBid && (target <= 0 || position < target + target / 2)) {
                 quote(symbol, Side.BUY, bid);
             }
-            if (getAccount().getAvailableQuantity(symbol) >= quoteQuantity) {
+            if (passiveAsk && getAccount().getAvailableQuantity(symbol) >= quoteQuantity) {
                 quote(symbol, Side.SELL, ask);
             }
         }
@@ -131,31 +146,12 @@ public final class MarketMakerAgent extends AbstractTradingAgent {
     private BigDecimal midPrice(MarketSnapshot snapshot) {
         if (snapshot.getBestBid() != null && snapshot.getBestAsk() != null) {
             return snapshot.getBestBid().add(snapshot.getBestAsk())
-                    .divide(BigDecimal.valueOf(2), 2, RoundingMode.HALF_UP);
+                    .divide(BigDecimal.valueOf(2), 8, RoundingMode.HALF_UP);
         }
         if (snapshot.getLastPrice() != null) {
             return snapshot.getLastPrice();
         }
         return snapshot.getPreviousClose();
-    }
-
-    /**
-     * 按下单价格夹到当日涨跌停区间内，并按 0.01 元取整。
-     *
-     * @param snapshot 行情快照
-     * @param price    原始价格
-     * @return 合法价格；非正数返回 null
-     */
-    private BigDecimal clampToLimits(MarketSnapshot snapshot, BigDecimal price) {
-        BigDecimal value = price;
-        if (snapshot.getLowerLimit() != null && value.compareTo(snapshot.getLowerLimit()) < 0) {
-            value = snapshot.getLowerLimit();
-        }
-        if (snapshot.getUpperLimit() != null && value.compareTo(snapshot.getUpperLimit()) > 0) {
-            value = snapshot.getUpperLimit();
-        }
-        value = value.setScale(2, RoundingMode.HALF_UP);
-        return value.signum() > 0 ? value : null;
     }
 
     /**

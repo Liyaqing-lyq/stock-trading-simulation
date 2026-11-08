@@ -63,9 +63,9 @@ public final class ContrarianAgent extends AbstractTradingAgent {
     public ContrarianAgent(String agentId, String displayName, Account account, OrderGateway gateway,
                            int windowSize, BigDecimal deviationPercent, long orderQuantity) {
         super(agentId, displayName, AgentType.CONTRARIAN, account, gateway);
-        this.windowSize = windowSize;
-        this.deviationPercent = deviationPercent;
-        this.orderQuantity = orderQuantity;
+        this.windowSize = (int) requirePositive(windowSize, "windowSize");
+        this.deviationPercent = requireNonNegative(deviationPercent, "deviationPercent");
+        this.orderQuantity = requirePositive(orderQuantity, "orderQuantity");
     }
 
     @Override
@@ -95,12 +95,18 @@ public final class ContrarianAgent extends AbstractTradingAgent {
                     .divide(average, 4, RoundingMode.HALF_UP);
             if (gap.compareTo(deviationPercent.negate()) <= 0) {
                 BigDecimal price = aggressivePrice(snapshot, Side.BUY);
+                if (price == null) {
+                    continue;
+                }
                 long quantity = Math.min(orderQuantity, affordable(symbol, price));
                 if (quantity > 0) {
                     submit(OrderRequest.limit(getAgentId(), symbol, Side.BUY, price, quantity));
                 }
             } else if (gap.compareTo(deviationPercent) >= 0) {
                 BigDecimal price = aggressivePrice(snapshot, Side.SELL);
+                if (price == null) {
+                    continue;
+                }
                 long quantity = Math.min(orderQuantity, getAccount().getAvailableQuantity(symbol));
                 if (quantity > 0) {
                     submit(OrderRequest.limit(getAgentId(), symbol, Side.SELL, price, quantity));
@@ -114,18 +120,19 @@ public final class ContrarianAgent extends AbstractTradingAgent {
      *
      * @param snapshot 行情快照
      * @param side     方向
-     * @return 限价（两位小数）
+     * @return 符合标的 tick 与涨跌停约束的限价；无法生成时返回 null
      */
     private BigDecimal aggressivePrice(MarketSnapshot snapshot, Side side) {
         BigDecimal counterParty = side == Side.BUY ? snapshot.getBestAsk() : snapshot.getBestBid();
         if (counterParty != null && counterParty.signum() > 0) {
-            return counterParty.setScale(2, RoundingMode.HALF_UP);
+            return normalizePrice(snapshot, counterParty, RoundingMode.HALF_UP);
         }
         BigDecimal last = snapshot.getLastPrice();
         if (side == Side.SELL) {
-            return last.divide(FALLBACK_OFFSET, 2, RoundingMode.HALF_UP);
+            return normalizePrice(snapshot,
+                    last.divide(FALLBACK_OFFSET, 8, RoundingMode.HALF_UP), RoundingMode.FLOOR);
         }
-        return last.multiply(FALLBACK_OFFSET).setScale(2, RoundingMode.HALF_UP);
+        return normalizePrice(snapshot, last.multiply(FALLBACK_OFFSET), RoundingMode.CEILING);
     }
 
     /**

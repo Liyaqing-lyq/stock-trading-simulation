@@ -508,8 +508,10 @@ public final class MatchingEngine implements OrderGateway {
         InstrumentProfile profile = instrumentProfiles.get(book.getSymbol());
         BigDecimal lowerLimit = profile == null ? null : profile.getLowerLimit();
         BigDecimal upperLimit = profile == null ? null : profile.getUpperLimit();
+        BigDecimal tickSize = profile == null
+                ? new BigDecimal("0.01") : profile.getTickSize();
         return new MarketSnapshot(book.getSymbol(), book.getLastPrice(),
-                referencePrices.get(book.getSymbol()), lowerLimit, upperLimit,
+                referencePrices.get(book.getSymbol()), lowerLimit, upperLimit, tickSize,
                 s.getBestBid(), s.getBestAsk(),
                 book.getCumulativeVolume(), s.getBids(), s.getAsks(), System.currentTimeMillis());
     }

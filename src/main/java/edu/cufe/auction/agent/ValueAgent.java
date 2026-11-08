@@ -49,8 +49,8 @@ public final class ValueAgent extends AbstractTradingAgent {
     public ValueAgent(String agentId, String displayName, Account account, OrderGateway gateway,
                       BigDecimal thresholdPercent, long orderQuantity) {
         super(agentId, displayName, AgentType.VALUE, account, gateway);
-        this.thresholdPercent = thresholdPercent;
-        this.orderQuantity = orderQuantity;
+        this.thresholdPercent = requireNonNegative(thresholdPercent, "thresholdPercent");
+        this.orderQuantity = requirePositive(orderQuantity, "orderQuantity");
     }
 
     @Override
@@ -85,9 +85,10 @@ public final class ValueAgent extends AbstractTradingAgent {
     private void buy(String symbol, MarketSnapshot snapshot, BigDecimal anchor) {
         BigDecimal price = snapshot.getBestAsk();
         if (price == null || price.compareTo(anchor) > 0) {
-            price = anchor;
+            price = normalizePrice(snapshot, anchor, RoundingMode.DOWN);
+        } else {
+            price = normalizePrice(snapshot, price, RoundingMode.HALF_UP);
         }
-        price = clampToLimits(snapshot, price);
         if (price == null) {
             return;
         }
@@ -113,9 +114,10 @@ public final class ValueAgent extends AbstractTradingAgent {
     private void sell(String symbol, MarketSnapshot snapshot, BigDecimal anchor) {
         BigDecimal price = snapshot.getBestBid();
         if (price == null || price.compareTo(anchor) < 0) {
-            price = anchor;
+            price = normalizePrice(snapshot, anchor, RoundingMode.CEILING);
+        } else {
+            price = normalizePrice(snapshot, price, RoundingMode.HALF_UP);
         }
-        price = clampToLimits(snapshot, price);
         if (price == null) {
             return;
         }
@@ -126,22 +128,4 @@ public final class ValueAgent extends AbstractTradingAgent {
         submit(OrderRequest.limit(getAgentId(), symbol, Side.SELL, price, quantity));
     }
 
-    /**
-     * 把价格夹到当日涨跌停区间内，并按 A 股最小价格变动（0.01 元）取整。
-     *
-     * @param snapshot 行情快照
-     * @param price    原始价格
-     * @return 合法价格；非正数返回 null
-     */
-    private BigDecimal clampToLimits(MarketSnapshot snapshot, BigDecimal price) {
-        BigDecimal value = price;
-        if (snapshot.getLowerLimit() != null && value.compareTo(snapshot.getLowerLimit()) < 0) {
-            value = snapshot.getLowerLimit();
-        }
-        if (snapshot.getUpperLimit() != null && value.compareTo(snapshot.getUpperLimit()) > 0) {
-            value = snapshot.getUpperLimit();
-        }
-        value = value.setScale(2, RoundingMode.HALF_UP);
-        return value.signum() > 0 ? value : null;
-    }
 }

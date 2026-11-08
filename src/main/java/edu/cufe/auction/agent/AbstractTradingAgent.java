@@ -11,6 +11,7 @@ import edu.cufe.auction.model.Side;
 import edu.cufe.auction.model.Trade;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -352,6 +353,78 @@ public abstract class AbstractTradingAgent implements TradingAgent, MarketDataLi
             cancelOpenOrders(order -> order.orderId() == oldest);
         }
         return false;
+    }
+
+    /**
+     * 把价格量化到最小变动价位网格。
+     *
+     * @param price    原始价格
+     * @param tickSize 最小价格变动单位
+     * @param mode     量化方向
+     * @return 量化后的价格；原价为空时返回 null
+     */
+    protected static BigDecimal roundPriceToTick(
+            BigDecimal price, BigDecimal tickSize, RoundingMode mode) {
+        if (price == null) {
+            return null;
+        }
+        if (tickSize == null || tickSize.signum() <= 0) {
+            throw new IllegalArgumentException("tickSize 必须大于 0");
+        }
+        return price.divide(tickSize, 0, mode).multiply(tickSize);
+    }
+
+    /**
+     * 把价格量化到行情快照的 tick，并夹到当日涨跌停区间。
+     *
+     * @param snapshot 行情快照
+     * @param price    原始价格
+     * @param mode     量化方向
+     * @return 合法价格；非正数返回 null
+     */
+    protected static BigDecimal normalizePrice(
+            MarketSnapshot snapshot, BigDecimal price, RoundingMode mode) {
+        BigDecimal value = roundPriceToTick(price, snapshot.getTickSize(), mode);
+        if (value == null) {
+            return null;
+        }
+        if (snapshot.getLowerLimit() != null
+                && value.compareTo(snapshot.getLowerLimit()) < 0) {
+            value = snapshot.getLowerLimit();
+        }
+        if (snapshot.getUpperLimit() != null
+                && value.compareTo(snapshot.getUpperLimit()) > 0) {
+            value = snapshot.getUpperLimit();
+        }
+        return value.signum() > 0 ? value : null;
+    }
+
+    /**
+     * 校验价格类参数非空且非负。
+     *
+     * @param value 参数值
+     * @param name  参数名
+     * @return 原参数值
+     */
+    protected static BigDecimal requireNonNegative(BigDecimal value, String name) {
+        if (value == null || value.signum() < 0) {
+            throw new IllegalArgumentException(name + " 不能为空或负数");
+        }
+        return value;
+    }
+
+    /**
+     * 校验数量类参数为正数。
+     *
+     * @param value 参数值
+     * @param name  参数名
+     * @return 原参数值
+     */
+    protected static long requirePositive(long value, String name) {
+        if (value <= 0) {
+            throw new IllegalArgumentException(name + " 必须大于 0");
+        }
+        return value;
     }
 
     /**
