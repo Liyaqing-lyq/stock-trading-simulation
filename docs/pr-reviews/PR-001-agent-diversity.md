@@ -46,8 +46,10 @@
 
 环境：Windows 11 / JDK 21.0.12 / Maven 3.9.9。
 
+合入上游最新 `main`（`fdbe62f`，独立 121 项测试）后的完整测试：
+
 ```
-[INFO] Tests run: 48, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 128, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
