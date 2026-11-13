@@ -84,6 +84,8 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_MEDIA = 13;
     /** schema14：在媒体档案之上再加双边采访预约协调子集。 */
     private static final int STATE_SCHEMA_INTERVIEW = 14;
+    /** schema15：在采访预约之上启用逐轮访谈与真实阅读。 */
+    private static final int STATE_SCHEMA_INTERVIEW_DIALOGUE = 15;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -130,6 +132,8 @@ public final class WorldRuntime implements AutoCloseable {
     private final MediaRun.Config mediaConfig;
     /** 采访协调开局配置；只有 interview-coordination-experiment-v1（schema14）档案非空。 */
     private final InterviewRun.Config interviewConfig;
+    /** schema15 逐轮访谈配置；旧档为 null。 */
+    private final InterviewDialogue.Config dialogueConfig;
     /** live 完成槽：构造时自动建立，scripted 为 null；不公开。 */
     private final LiveCompletionInbox liveInbox;
     /** 有界回调队列：异步线程只 offer，不读写世界状态。 */
@@ -629,6 +633,22 @@ public final class WorldRuntime implements AutoCloseable {
                  LiveCompletionInbox injectedInbox, MediaRun.Config media,
                  InterviewRun.Config interview)
             throws IOException {
+        this(file, manifest, openings, registry, manufacturing, charter, roles, information,
+                decisions, injectedInbox, media, interview, null);
+    }
+
+    /**
+     * schema15 完整构造：在采访预约之上再启用逐轮访谈。
+     *
+     * @param dialogue 逐轮访谈配置；旧档必须为 null
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                 OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                 BoardModel.Charter charter, RoleRun.Config roles,
+                 InformationRun.Config information, DecisionModel.Config decisions,
+                 LiveCompletionInbox injectedInbox, MediaRun.Config media,
+                 InterviewRun.Config interview, InterviewDialogue.Config dialogue)
+            throws IOException {
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         boolean liveProfile = decisions != null && decisions.profile() != null;
         if (liveProfile && !manifest.hasLiveDecisions()) {
@@ -776,6 +796,19 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未启用采访模块的运行不接受采访配置："
                     + manifest.rulesVersion());
         }
+        if (manifest.hasDialogue()) {
+            if (!manifest.hasInterviews()) {
+                throw new IllegalArgumentException("逐轮访谈必须建立在采访预约档案之上："
+                        + manifest.rulesVersion());
+            }
+            if (dialogue == null) {
+                throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                        + " 必须提供逐轮访谈配置");
+            }
+        } else if (dialogue != null) {
+            throw new IllegalArgumentException("未启用逐轮访谈的运行不接受对话配置："
+                    + manifest.rulesVersion());
+        }
         if (manifest.hasDecisions() && (!manifest.hasTrading() || !manifest.hasRoles()
                 || !manifest.hasInformation())) {
             throw new IllegalArgumentException("决定档案必须建立在四岗交易与阅读档案之上："
@@ -813,6 +846,7 @@ public final class WorldRuntime implements AutoCloseable {
         this.decisionConfig = decisions;
         this.mediaConfig = media;
         this.interviewConfig = interview;
+        this.dialogueConfig = dialogue;
         this.liveInbox = decisions != null && decisions.live()
                 ? (injectedInbox != null ? injectedInbox
                         : new LiveCompletionInbox(decisions.limits().maxInFlight()))
@@ -2254,7 +2288,9 @@ public final class WorldRuntime implements AutoCloseable {
                          PendingTask.INTERVIEW_START_GATE_V1,
                          PendingTask.INTERVIEW_MISS_GATE_V1,
                          PendingTask.INTERVIEW_END_GATE_V1,
-                         PendingTask.INTERVIEW_TTL_GATE_V1 -> completeInterviewTask(next);
+                         PendingTask.INTERVIEW_TTL_GATE_V1,
+                         PendingTask.INTERVIEW_SPEAK_V1,
+                         PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1 -> completeInterviewTask(next);
                     case PendingTask.ROLE_TRADING_SWEEP_V1 -> completeRoleSweep(next);
                     case PendingTask.ROLE_TRADING_EXPIRE_V1 -> completeRoleExpire(next);
                     case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> completeAppointmentEnd(next);
@@ -3370,7 +3406,9 @@ public final class WorldRuntime implements AutoCloseable {
             List<String> tools = allowedToolsOf(view);
             String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
                     pendingActionsAt(state, run, request.personPartyId()), tools, decisionConfig,
-                    toolContractVersion());
+                    toolContractVersion(),
+                    manifest.hasDialogue()
+                            ? interviewInput(state, request.personPartyId(), cutoffTime) : null);
             if (decisionConfig.live()
                     && informationConfig != null && informationConfig.recallPolicy() != null) {
                 // 新档：先量实际字符/字节，超限在构造 ProviderPlan 之前就明确失败，整批不提交
@@ -4758,12 +4796,28 @@ public final class WorldRuntime implements AutoCloseable {
                         recorded.cutoffPosition(), recorded.barrierAtMillis(), kind,
                         mapper.writeValueAsString(draft));
             }
+            case RoleTradingView.TOOL_INTERVIEW_SPEAK -> {
+                kind = PendingTask.INTERVIEW_SPEAK_V1;
+                WorldRoleSession.DialogueSpeakDraft draft =
+                        strict(WorldRoleSession.DialogueSpeakDraft.class, args);
+                InterviewModel.Invite invite = interviewInvite(base, draft.requestId());
+                if (invite == null) {
+                    throw new IOException(InterviewModel.REASON_UNKNOWN);
+                }
+                String organization = originalInterview != null
+                        ? originalInterview.organizationPartyId() : invite.organizationPartyId();
+                body = new InterviewTaskBody(organization, recorded.cutoffTimeMillis(),
+                        recorded.cutoffPosition(), recorded.barrierAtMillis(), kind,
+                        mapper.writeValueAsString(draft));
+            }
             default -> throw new IOException("未知业务工具：" + tool);
         }
         long dueMillis = DecisionModel.actionDueMillis(model, recorded.actionId());
         if (InterviewRun.KINDS.contains(kind)) {
             InterviewTaskBody interviewTask = (InterviewTaskBody) body;
-            long duration = base.interviews().actionMillis(kind);
+            long duration = PendingTask.INTERVIEW_SPEAK_V1.equals(kind)
+                    ? requireDialogueConfig().speakMillis()
+                    : base.interviews().actionMillis(kind);
             if (dueMillis != recorded.barrierAtMillis() + duration) {
                 throw new IOException("采访动作耗时必须等于冻结时长：" + kind + " -> " + duration);
             }
@@ -5341,7 +5395,9 @@ public final class WorldRuntime implements AutoCloseable {
             List<String> tools = allowedToolsOf(view);
             String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
                     pendingActionsAt(previous, run, request.personPartyId()), tools,
-                    decisionConfig, toolContractVersion());
+                    decisionConfig, toolContractVersion(),
+                    manifest.hasDialogue()
+                            ? interviewInput(previous, request.personPartyId(), cutoffTime) : null);
             DecisionModel.ProviderPlan plan = new DecisionModel.ProviderPlan(request.route(),
                     input.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
             DecisionModel.OpenRequest openRequest = new DecisionModel.OpenRequest(model.runId(),
@@ -5690,7 +5746,10 @@ public final class WorldRuntime implements AutoCloseable {
         }
         String regenerated = DecisionRun.inputText(view, decision.wakeReason(),
                 decision.cutoffTimeMillis(), pendingActionsAt(previous, run,
-                        decision.personPartyId()), tools, decisionConfig, toolContractVersion());
+                        decision.personPartyId()), tools, decisionConfig, toolContractVersion(),
+                manifest.hasDialogue()
+                        ? interviewInput(previous, decision.personPartyId(),
+                        decision.cutoffTimeMillis()) : null);
         if (!regenerated.equals(decision.inputText())) {
             throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());
         }
@@ -7399,6 +7458,24 @@ public final class WorldRuntime implements AutoCloseable {
                         + state.policy().mediaOrganizationPartyId());
             }
         }
+        if (manifest.hasDialogue()) {
+            if (after.dialogues() != null) {
+                if (candidate.information() == null) {
+                    throw new IOException("逐轮访谈档案缺少资料状态");
+                }
+                for (InterviewModel.State state : after.states()) {
+                    try {
+                        InterviewDialogue.validate(after.dialoguesOf(
+                                        state.policy().mediaOrganizationPartyId()), state,
+                                candidate.information().information(), requireDialogueConfig());
+                    } catch (IllegalArgumentException invalid) {
+                        throw new IOException("对话状态与真实文档/会话不一致", invalid);
+                    }
+                }
+            }
+        } else if (after.dialogues() != null) {
+            throw new IOException("旧采访档案不得包含逐轮对话状态");
+        }
         InterviewRun before = previous == null ? expectedOpen : previous.interviews();
         if (before == null) {
             throw new IOException("采访子集的上一帧缺失");
@@ -7418,6 +7495,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         completed.sort(Comparator.comparingLong(PendingTask::dueTimeMillis)
                 .thenComparing(PendingTask::taskId));
+        completed.removeIf(task -> PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1.equals(task.kind())
+                && task.dueTimeMillis() > candidate.timeMillis());
         InterviewRun expectedRun = before;
         InformationRun expectedInformation = previous == null ? candidate.information()
                 : previous.information();
@@ -7509,6 +7588,9 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (PendingTask.INTERVIEW_END_V1.equals(kind)) {
             return RoleTradingView.TOOL_INTERVIEW_END;
+        }
+        if (PendingTask.INTERVIEW_SPEAK_V1.equals(kind)) {
+            return RoleTradingView.TOOL_INTERVIEW_SPEAK;
         }
         return null;
     }
@@ -7604,7 +7686,9 @@ public final class WorldRuntime implements AutoCloseable {
         if (config.policyOf(body.organizationPartyId()) == null) {
             throw new IOException("采访待办指向未配置的组织：" + task.taskId());
         }
-        long duration = candidate.interviews().actionMillis(task.kind());
+        long duration = PendingTask.INTERVIEW_SPEAK_V1.equals(task.kind())
+                ? requireDialogueConfig().speakMillis()
+                : candidate.interviews().actionMillis(task.kind());
         if (body.startedAtMillis() < 0
                 || task.dueTimeMillis() != body.startedAtMillis() + duration) {
             throw new IOException("采访待办时长与冻结配置不一致：" + task.taskId());
@@ -7625,6 +7709,49 @@ public final class WorldRuntime implements AutoCloseable {
     private PendingTask derivedGate(WorldState previous, PendingTask task) {
         InterviewRun run = previous.interviews();
         if (run == null) {
+            return null;
+        }
+        if (PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1.equals(task.kind())) {
+            InterviewTaskBody body = interviewBody(task);
+            if (body == null || previous.information() == null) {
+                return null;
+            }
+            for (InterviewModel.State state : run.states()) {
+                if (!state.policy().mediaOrganizationPartyId()
+                        .equals(body.organizationPartyId())) {
+                    continue;
+                }
+                for (InterviewModel.Session session : state.sessions()) {
+                    if (!session.open() || !session.sessionId().equals(body.body())) {
+                        continue;
+                    }
+                    InterviewDialogue.State dialogue = run.dialoguesOf(
+                            body.organizationPartyId());
+                    List<InterviewDialogue.Turn> turns = dialogue.turnsOf(session.sessionId());
+                    long baseline = turns.isEmpty() ? session.startedAtMillis()
+                            : publishedAt(previous, turns.get(turns.size() - 1));
+                    if (baseline < 0) {
+                        return null;
+                    }
+                    long due = baseline + requireDialogueConfig().replyDeadlineMillis();
+                    InterviewTaskBody expectedBody = new InterviewTaskBody(
+                            body.organizationPartyId(), body.observedAtMillis(), -1L,
+                            body.startedAtMillis(), "deadline", session.sessionId());
+                    PendingTask expected = new PendingTask(
+                            dialogueDeadlineTaskId(session.sessionId(), due), due,
+                            WorldScheduler.Phase.RULES,
+                            PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1,
+                            mapperWrite(new RoleActionPayload(
+                                    "dialogue-deadline:" + dialogueDeadlineTaskId(
+                                            session.sessionId(), due),
+                                    dialogueDeadlineTaskId(session.sessionId(), due),
+                                    dialogueDeadlineTaskId(session.sessionId(), due),
+                                    session.sessionId(), due, Map.of(),
+                                    PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1,
+                                    mapperWrite(expectedBody), -1L)));
+                    return expected;
+                }
+            }
             return null;
         }
         String suffix = task.taskId().substring(task.taskId().lastIndexOf(':') + 1);
@@ -7708,6 +7835,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         completed.sort(Comparator.comparingLong(PendingTask::dueTimeMillis)
                 .thenComparing(PendingTask::taskId));
+        completed.removeIf(task -> PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1.equals(task.kind())
+                && task.dueTimeMillis() > candidate.timeMillis());
 
         // 2）从上一帧与真实待办请求重算这些完成
         MediaRun expectedRun = before;
@@ -8349,9 +8478,24 @@ public final class WorldRuntime implements AutoCloseable {
         String person = session.personPartyId();
         InterviewRun run = requireInterviewRun();
         long now = state.timeMillis();
+        if (PendingTask.INTERVIEW_SPEAK_V1.equals(kind)) {
+            WorldRoleSession.DialogueSpeakDraft speak = (WorldRoleSession.DialogueSpeakDraft) draft;
+            InterviewModel.State stateBefore = run.stateOf(
+                    interviewOrganizationForDraft(run, session.personPartyId(), kind, draft, now));
+            InterviewModel.Session target = stateBefore == null ? null
+                    : sessionById(stateBefore, "SESSION-" + speak.requestId());
+            InterviewModel.Invite invite = stateBefore == null ? null
+                    : findInvite(stateBefore, speak.requestId());
+            if (target == null || invite == null || !target.open()
+                    || (!invite.fromPartyId().equals(session.personPartyId())
+                    && !invite.toPartyId().equals(session.personPartyId()))) {
+                throw new IllegalArgumentException("不是本人正在进行的访谈会话");
+            }
+        }
         String draftJson = mapper.writeValueAsString(draft);
         String organization = interviewOrganizationForDraft(run, person, kind, draft, now);
-        long duration = run.actionMillis(kind);
+        long duration = PendingTask.INTERVIEW_SPEAK_V1.equals(kind)
+                ? requireDialogueConfig().speakMillis() : run.actionMillis(kind);
         if (dueMillis != now + duration) {
             throw new IllegalArgumentException("采访动作到期必须等于当前时点加冻结时长："
                     + kind + " -> " + duration);
@@ -8404,6 +8548,13 @@ public final class WorldRuntime implements AutoCloseable {
         }
         return false;
     }
+    /** schema15 对话配置；旧档调用即失败。 */
+    private InterviewDialogue.Config requireDialogueConfig() {
+        if (dialogueConfig == null) {
+            throw new IllegalArgumentException("当前档案未启用逐轮访谈");
+        }
+        return dialogueConfig;
+    }
 
     /** 解析动作所属机构：邀请用记者唯一机构，其余用原请求的机构。 */
     private String interviewOrganizationForDraft(InterviewRun run, String person, String kind,
@@ -8420,6 +8571,8 @@ public final class WorldRuntime implements AutoCloseable {
             requestId = respond.requestId();
         } else if (draft instanceof WorldRoleSession.InterviewRequestDraft request) {
             requestId = request.requestId();
+        } else if (draft instanceof WorldRoleSession.DialogueSpeakDraft speak) {
+            requestId = speak.requestId();
         } else {
             throw new IllegalArgumentException("未知采访参数：" + kind);
         }
@@ -8451,7 +8604,7 @@ public final class WorldRuntime implements AutoCloseable {
                 || (base.information() != null && hasActiveReading(person))) {
             throw new IllegalArgumentException("本人正在阅读资料，不能同时发起采访动作");
         }
-        if (hasActiveInterview(person, base)) {
+        if (!PendingTask.INTERVIEW_SPEAK_V1.equals(kind) && hasActiveInterview(person, base)) {
             throw new IllegalArgumentException("本人正在进行采访会话");
         }
     }
@@ -8539,11 +8692,38 @@ public final class WorldRuntime implements AutoCloseable {
         long charge = 0L;
         MediaRun media = base.media();
         InformationRun information = base.information();
+        InterviewDialogue.State dialogue = before.dialoguesOf(organization);
         if (media == null) {
             throw new IOException("当前运行没有媒体工时账，不能结算采访：" + task.taskId());
         }
         boolean journalistCharge = false;
-        if (InterviewRun.GATE_KINDS.contains(task.kind())) {
+        if (PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1.equals(task.kind())) {
+            InterviewModel.Session session = sessionById(stateBefore, body.body());
+            if (session == null || !session.open()) {
+                accepted = true;
+                reason = InterviewModel.REASON_OK;
+            } else {
+                InterviewModel.Invite invite = findInvite(stateBefore, session.requestId());
+                Optional<InterviewDialogue.CloseReason> due = invite == null
+                        ? Optional.empty()
+                        : InterviewDialogue.dueReason(dialogue,
+                        information.information(), stateBefore, requireDialogueConfig(),
+                        session.sessionId(), now);
+                if (invite != null && due.isPresent()) {
+                    requestId = invite.requestId();
+                    InterviewModel.Context context = interviewContext(base, invite.fromPartyId(),
+                            organization, now);
+                    InterviewModel.Outcome ended = InterviewModel.end(stateBefore, context,
+                            invite.fromPartyId(), session.sessionId(), now);
+                    after = ended.state();
+                    accepted = ended.accepted();
+                    reason = ended.reason();
+                } else {
+                    accepted = true;
+                    reason = InterviewModel.REASON_OK;
+                }
+            }
+        } else if (InterviewRun.GATE_KINDS.contains(task.kind())) {
             InterviewModel.Outcome outcome = InterviewModel.expire(stateBefore, now);
             after = outcome.state();
             reason = InterviewModel.REASON_OK;
@@ -8641,6 +8821,43 @@ public final class WorldRuntime implements AutoCloseable {
                     accepted = outcome.accepted();
                     reason = outcome.reason();
                 }
+                case PendingTask.INTERVIEW_SPEAK_V1 -> {
+                    WorldRoleSession.DialogueSpeakDraft draft = mapper.readValue(body.body(),
+                            WorldRoleSession.DialogueSpeakDraft.class);
+                    requestId = draft.requestId();
+                    String sessionId = "SESSION-" + requestId;
+                    InterviewModel.Session session = sessionById(stateBefore, sessionId);
+                    InterviewModel.Invite invite = findInvite(stateBefore, requestId);
+                    if (session == null || invite == null || !session.open()) {
+                        accepted = false;
+                        reason = InterviewModel.REASON_STATE;
+                        break;
+                    }
+                    long startedAt = now - requireDialogueConfig().speakMillis();
+                    String turnId = dialogueTurnId(task.taskId());
+                    InterviewDialogue.Outcome sent = InterviewDialogue.send(dialogue,
+                            information.information(), stateBefore,
+                            interviewContext(base, invite.fromPartyId(), organization, now),
+                            requireDialogueConfig(), person,
+                            new InterviewDialogue.SpeakRequest(turnId, sessionId, draft.title(),
+                                    draft.body(), draft.readDurationMillis(), startedAt), now);
+                    accepted = sent.accepted();
+                    reason = sent.reason();
+                    if (accepted) {
+                        dialogue = sent.dialogue();
+                        information = information.withInformation(sent.information());
+                        if (dialogue.turnsOf(sessionId).size()
+                                >= requireDialogueConfig().maxTurns()) {
+                            InterviewModel.Context context = interviewContext(base,
+                                    invite.fromPartyId(), organization, now);
+                            InterviewModel.Outcome ended = InterviewModel.end(stateBefore, context,
+                                    invite.fromPartyId(), sessionId, now);
+                            after = ended.state();
+                            accepted = ended.accepted();
+                            reason = ended.reason();
+                        }
+                    }
+                }
                 default -> throw new IOException("未登记的采访任务：" + task.kind());
             }
         }
@@ -8661,8 +8878,24 @@ public final class WorldRuntime implements AutoCloseable {
             }
             charge = span;
         }
+        // 结束的会话在同一帧登记对话关闭原因（只在真实 Session 已结束后）。
+        if (dialogueConfig != null) {
+            for (InterviewModel.Session session : after.sessions()) {
+                if (session.open() || dialogue.closeOf(session.sessionId()).isPresent()) {
+                    continue;
+                }
+                InterviewDialogue.CloseOutcome closed = InterviewDialogue.close(dialogue,
+                        information.information(), after, dialogueConfig, session.sessionId(), now);
+                if (closed.accepted()) {
+                    dialogue = closed.dialogue();
+                }
+            }
+        }
         // 会话结算：ACTIVE → COMPLETED/ENDED_EARLY 时写一条实际区间的 Work
         InterviewRun run = before.withState(organization, after);
+        if (dialogueConfig != null) {
+            run = run.withDialogues(organization, dialogue);
+        }
         MediaRun settled = media;
         for (InterviewModel.Invite invite : after.invites()) {
             if (invite.status() != InterviewModel.Status.COMPLETED
@@ -8696,8 +8929,126 @@ public final class WorldRuntime implements AutoCloseable {
         }
         // 门任务：只从真实状态派生，不能伪造
         pending.addAll(gatesFor(after, before.config(), base, now));
+        if (dialogueConfig != null) {
+            pending.addAll(refreshDialogueGates(pending, base, information, after, dialogue, now));
+        }
         return new InterviewFrame(accepted, reason, run, information, settled,
                 List.copyOf(pending), List.copyOf(removed));
+    }
+
+    /** 期限门：先移除本组织旧门，再按真实前轮/当前轮次派生新门。 */
+    private List<PendingTask> refreshDialogueGates(List<PendingTask> pending, WorldState base,
+                                                   InformationRun information,
+                                                   InterviewModel.State state,
+                                                   InterviewDialogue.State dialogue, long now) {
+        String organization = state.policy().mediaOrganizationPartyId();
+        Map<String, String> expectedIds = new TreeMap<>();
+        Map<String, Long> expectedDue = new TreeMap<>();
+        if (information != null) {
+            for (InterviewModel.Session session : state.sessions()) {
+                if (!session.open()) {
+                    continue;
+                }
+                List<InterviewDialogue.Turn> turns = dialogue.turnsOf(session.sessionId());
+                long baseline = turns.isEmpty() ? session.startedAtMillis()
+                        : publishedAt(information.information(), turns.get(turns.size() - 1));
+                if (baseline < 0) {
+                    continue;
+                }
+                long due = baseline + requireDialogueConfig().replyDeadlineMillis();
+                expectedIds.put(session.sessionId(),
+                        dialogueDeadlineTaskId(session.sessionId(), due));
+                expectedDue.put(session.sessionId(), due);
+            }
+        }
+        pending.removeIf(task -> {
+            if (!PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1.equals(task.kind())) {
+                return false;
+            }
+            InterviewTaskBody body = interviewBody(task);
+            if (body == null || !organization.equals(body.organizationPartyId())) {
+                return false;
+            }
+            String expected = expectedIds.get(body.body());
+            return expected == null || !expected.equals(task.taskId());
+        });
+        List<PendingTask> fresh = new ArrayList<>();
+        for (Map.Entry<String, String> entry : expectedIds.entrySet()) {
+            String sessionId = entry.getKey();
+            String taskId = entry.getValue();
+            boolean present = pending.stream().anyMatch(task -> task.taskId().equals(taskId));
+            if (present || takenTaskId(base, taskId)) {
+                continue;
+            }
+            long due = expectedDue.get(sessionId);
+            InterviewTaskBody body = new InterviewTaskBody(organization, base.timeMillis(), -1L,
+                    now, "deadline", sessionId);
+            fresh.add(new PendingTask(taskId, due, WorldScheduler.Phase.RULES,
+                    PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1,
+                    mapperWrite(new RoleActionPayload("dialogue-deadline:" + taskId, taskId,
+                            taskId, sessionId, due, Map.of(),
+                            PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1,
+                            mapperWrite(body), -1L))));
+        }
+        return fresh;
+    }
+
+    private InterviewTaskBody interviewBody(PendingTask task) {
+        try {
+            RoleActionPayload payload = mapper.readValue(task.payload(), RoleActionPayload.class);
+            return mapper.readValue(payload.body(), InterviewTaskBody.class);
+        } catch (IOException unreadable) {
+            return null;
+        }
+    }
+
+    private String mapperWrite(Object value) {
+        try {
+            return mapper.writeValueAsString(value);
+        } catch (IOException failure) {
+            throw new IllegalStateException("采访任务参数无法序列化", failure);
+        }
+    }
+
+    private long publishedAt(WorldState base, InterviewDialogue.Turn turn) {
+        return base.information() == null ? -1L
+                : publishedAt(base.information().information(), turn);
+    }
+
+    private static long publishedAt(InformationModel.State information,
+                                    InterviewDialogue.Turn turn) {
+        if (information == null) {
+            return -1L;
+        }
+        for (InformationModel.Document document : information.documents()) {
+            if (document.docId().equals(turn.docId())) {
+                InformationModel.DocumentVersion version = document.at(turn.docVersion());
+                return version == null ? -1L : version.publishedAt();
+            }
+        }
+        return -1L;
+    }
+
+    /** 轮次标识由内部任务标识派生，模型不能指定。 */
+    private static String dialogueTurnId(String taskId) {
+        return "dialogue-turn:" + taskId.length() + ":" + taskId;
+    }
+
+    private static String dialogueDeadlineTaskId(String sessionId, long due) {
+        return "dialogue-deadline:" + sessionId.length() + ":" + sessionId + ":" + due;
+    }
+
+    private static InterviewModel.Session sessionById(InterviewModel.State state,
+                                                      String sessionId) {
+        if (state == null || sessionId == null || sessionId.isBlank()) {
+            return null;
+        }
+        for (InterviewModel.Session session : state.sessions()) {
+            if (session.sessionId().equals(sessionId)) {
+                return session;
+            }
+        }
+        return null;
     }
 
     private static InterviewModel.Invite findInvite(InterviewModel.State state, String requestId) {
@@ -11735,6 +12086,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 工具合同版本：信念档案使用 v2，旧档案保持 v1 逐字不变。 */
     private String toolContractVersion() {
+        if (manifest.hasDialogue()) {
+            return DecisionRun.TOOL_CONTRACT_VERSION_V3;
+        }
         return manifest.hasBelief() ? DecisionRun.TOOL_CONTRACT_VERSION_V2
                 : DecisionRun.TOOL_CONTRACT_VERSION;
     }
@@ -11763,6 +12117,11 @@ public final class WorldRuntime implements AutoCloseable {
             return frame;
         }
         throw new IllegalArgumentException("观察位置不存在：" + position);
+    }
+
+    /** @return 当前采访子集（只读）；未启用返回 null */
+    public synchronized InterviewRun interviews() {
+        return state.interviews();
     }
 
     /** @return 当前信念子集 */
@@ -11804,6 +12163,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasDialogue()) {
+            return STATE_SCHEMA_INTERVIEW_DIALOGUE;
+        }
         if (manifest.hasInterviews()) {
             return STATE_SCHEMA_INTERVIEW;
         }
@@ -13646,10 +14008,161 @@ public final class WorldRuntime implements AutoCloseable {
                 }
             }
         }
+        List<String> tools = new ArrayList<>(roleTools(appointments, manifest.hasBelief(),
+                manifest.hasMedia(), manifest.hasInterviews()));
+        if (manifest.hasDialogue() && isDialogueParticipant(snap, person)) {
+            tools.add(RoleTradingView.TOOL_INTERVIEW_SPEAK);
+        }
         return new RoleTradingView(session.observedAt(), now, person, profile, appointments,
-                research, targets, children, notices,
-                roleTools(appointments, manifest.hasBelief(), manifest.hasMedia(),
-                        manifest.hasInterviews()), mediaStories);
+                research, targets, children, notices, tools, mediaStories);
+    }
+
+    /** schema15 本人员工采访观察：只含本人参与的邀请/会话/轮次与真实已读联系入口。 */
+    private JsonNode interviewInput(WorldState snap, String person, long now) {
+        if (snap.interviews() == null || snap.information() == null) {
+            return null;
+        }
+        InterviewRun run = snap.interviews();
+        InformationModel.State information = snap.information().information();
+        var root = mapper.createObjectNode();
+        var inviteNodes = root.putArray("invites");
+        var sessionNodes = root.putArray("sessions");
+        var contactNodes = root.putArray("contacts");
+        for (InterviewModel.State state : run.states()) {
+            String organization = state.policy().mediaOrganizationPartyId();
+            InterviewDialogue.State dialogue = run.dialoguesOf(organization);
+            for (InterviewModel.Invite invite : state.invites()) {
+                if (!invite.fromPartyId().equals(person) && !invite.toPartyId().equals(person)) {
+                    continue;
+                }
+                var node = inviteNodes.addObject();
+                node.put("requestId", invite.requestId());
+                node.put("organizationPartyId", invite.organizationPartyId());
+                node.put("fromPartyId", invite.fromPartyId());
+                node.put("toPartyId", invite.toPartyId());
+                node.put("topic", invite.topic());
+                node.put("status", invite.status().name());
+                node.put("windowStartMillis", invite.windowStartMillis());
+                node.put("windowEndMillis", invite.windowEndMillis());
+                node.put("durationMillis", invite.durationMillis());
+                node.put("startMillis", invite.startMillis());
+                node.put("scheduledEndMillis", invite.scheduledEnd());
+                node.put("expiresAtMillis", invite.expiresAtMillis());
+                node.put("sessionId", "SESSION-" + invite.requestId());
+            }
+            for (InterviewModel.Session session : state.sessions()) {
+                InterviewModel.Invite invite = findInvite(state, session.requestId());
+                if (invite == null || (!invite.fromPartyId().equals(person)
+                        && !invite.toPartyId().equals(person))) {
+                    continue;
+                }
+                var node = sessionNodes.addObject();
+                node.put("sessionId", session.sessionId());
+                node.put("requestId", session.requestId());
+                node.put("startedAtMillis", session.startedAtMillis());
+                node.put("endedAtMillis", session.endedAtMillis());
+                List<InterviewDialogue.Turn> turns = dialogue.turnsOf(session.sessionId());
+                long deadline = -1L;
+                if (session.open()) {
+                    long baseline = turns.isEmpty() ? session.startedAtMillis()
+                            : publishedAt(information, turns.get(turns.size() - 1));
+                    if (baseline >= 0) {
+                        deadline = baseline + requireDialogueConfig().replyDeadlineMillis();
+                    }
+                }
+                node.put("replyDeadlineMillis", deadline);
+                var turnNodes = node.putArray("turns");
+                for (InterviewDialogue.Turn turn : turns) {
+                    var item = turnNodes.addObject();
+                    item.put("turnId", turn.turnId());
+                    item.put("sequence", turn.sequence());
+                    item.put("speakerPartyId", turn.speakerPartyId());
+                    item.put("docId", turn.docId());
+                    item.put("docVersion", turn.docVersion());
+                    long published = publishedAt(information, turn);
+                    item.put("publishedAtMillis", published);
+                    item.put("readByMe", InformationModel.canCite(information, person,
+                            turn.docId(), turn.docVersion(), now));
+                }
+            }
+        }
+        for (InterviewRun.ContactEntry entry : run.config().contacts()) {
+            if (InformationModel.canCite(information, person, entry.docId(), entry.version(), now)
+                    && recalledFor(information, person, entry.docId(), entry.version(), now)) {
+                var node = contactNodes.addObject();
+                node.put("targetPartyId", entry.targetPartyId());
+                node.put("channel", entry.channel());
+                node.put("description", entry.description());
+                node.put("docId", entry.docId());
+                node.put("version", entry.version());
+                node.put("read", true);
+            }
+        }
+        return root;
+    }
+
+    private boolean recalledFor(InformationModel.State information, String person, String docId,
+                                long version, long now) {
+        if (informationConfig == null || informationConfig.recallPolicy() == null) {
+            return false;
+        }
+        for (CognitionRecall.Item item : CognitionRecall.recall(information, person, now,
+                informationConfig.recallPolicy()).selected()) {
+            if (item.observation().docId().equals(docId)
+                    && item.observation().version() == version) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 本人是否为某个 ACTIVE 逐轮访谈会话的参与者。 */
+    private boolean isDialogueParticipant(WorldState base, String person) {
+        if (base == null || base.interviews() == null) {
+            return false;
+        }
+        for (InterviewModel.State state : base.interviews().states()) {
+            for (InterviewModel.Session session : state.sessions()) {
+                if (!session.open()) {
+                    continue;
+                }
+                InterviewModel.Invite invite = findInvite(state, session.requestId());
+                if (invite != null && (invite.fromPartyId().equals(person)
+                        || invite.toPartyId().equals(person))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 该阅读是否为本人在 ACTIVE 会话中对方发来的某一轮正文。 */
+    private boolean isDialogueTurnRead(WorldState base, String person, Object body) {
+        if (base.interviews() == null || !(body instanceof RoleReadBody read)) {
+            return false;
+        }
+        for (InterviewModel.State state : base.interviews().states()) {
+            InterviewDialogue.State dialogue = base.interviews().dialoguesOf(
+                    state.policy().mediaOrganizationPartyId());
+            for (InterviewModel.Session session : state.sessions()) {
+                if (!session.open()) {
+                    continue;
+                }
+                InterviewModel.Invite invite = findInvite(state, session.requestId());
+                if (invite == null || (!invite.fromPartyId().equals(person)
+                        && !invite.toPartyId().equals(person))) {
+                    continue;
+                }
+                for (InterviewDialogue.Turn turn : dialogue.turnsOf(session.sessionId())) {
+                    if (!turn.speakerPartyId().equals(person)
+                            && turn.docId().equals(read.docId())
+                            && turn.docVersion() == read.version()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /** 使用原观察任职裁剪权限，身份、个人账户及组织账户登记保持同一来源。 */
@@ -13789,7 +14302,8 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("本人还有未完成的媒体工作，不能同时开始阅读");
         }
         if (manifest.hasInterviews() && PendingTask.ROLE_TRADING_READ_V1.equals(kind)
-                && hasActiveInterview(session.personPartyId(), state)) {
+                && hasActiveInterview(session.personPartyId(), state)
+                && !isDialogueTurnRead(state, session.personPartyId(), body)) {
             throw new IllegalArgumentException("本人正在进行采访会话，不能同时开始阅读");
         }
         String internalCommand = roleCommandId(session.personPartyId(), clientCommandId);

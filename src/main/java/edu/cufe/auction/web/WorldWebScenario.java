@@ -1,12 +1,15 @@
 package edu.cufe.auction.web;
 
+import edu.cufe.auction.world.BeliefModel;
 import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.CashLedger;
 import edu.cufe.auction.world.CognitionRecall;
 import edu.cufe.auction.world.DecisionModel;
+import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.InformationRun;
 import edu.cufe.auction.world.InterviewModel;
 import edu.cufe.auction.world.InterviewRun;
+import edu.cufe.auction.world.InterviewDialogue;
 import edu.cufe.auction.world.ManufacturingModel;
 import edu.cufe.auction.world.ManufacturingRun;
 import edu.cufe.auction.world.MediaModel;
@@ -382,6 +385,76 @@ public final class WorldWebScenario {
         return new WorldWebHost.Opened(runtime, manifest.runId());
     }
 
+    /** @return schema15 逐轮访谈档案；与既有档案并存，不隐式迁移 */
+    public static RunManifest dialogueManifest() {
+        Map<String, Integer> modules = new TreeMap<>(interviewManifest().moduleVersions());
+        modules.put("dialogue", 1);
+        return new RunManifest("web-dialogue", 11L,
+                RunManifest.RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1, modules,
+                Map.of("profile", "web-interview-dialogue-v1"),
+                RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    /** @return 逐轮访谈实验配置（模拟毫秒，不是现实常数） */
+    public static InterviewDialogue.Config dialogueConfig() {
+        return new InterviewDialogue.Config(8, 60_000L, 1_000L, COGNITION_POLICY);
+    }
+
+    /**
+     * 打开 schema15 逐轮访谈档案：真实排程发布模拟联系资料，不预写、不代读。
+     *
+     * @param journal 日志文件
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldWebHost.Opened openInterviewDialogue(Path journal) throws Exception {
+        OpeningRegistry base = registry();
+        List<OpeningRegistry.Party> parties = new ArrayList<>(base.parties());
+        List<OpeningRegistry.PropertyOwner> owners = new ArrayList<>(base.owners());
+        for (String organization : List.of("wire", "investigative")) {
+            parties.add(new OpeningRegistry.Party(organization,
+                    OpeningRegistry.PartyKind.ORGANIZATION,
+                    organization.equals("wire") ? "快讯社（实验）" : "调查社（实验）"));
+            owners.add(new OpeningRegistry.PropertyOwner(organization,
+                    OpeningRegistry.OwnerKind.ORGANIZATION, organization));
+        }
+        Map<String, String> names = Map.of("rita", "快讯记者", "ed", "快讯编辑",
+                "sam", "调查记者", "bea", "调查编辑");
+        for (String person : MEDIA_PERSONS) {
+            parties.add(new OpeningRegistry.Party(person, OpeningRegistry.PartyKind.PERSON,
+                    names.get(person)));
+            owners.add(new OpeningRegistry.PropertyOwner(person,
+                    OpeningRegistry.OwnerKind.PERSON, person));
+        }
+        OpeningRegistry registry = new OpeningRegistry(parties, owners, base.securities(),
+                base.allocations());
+        List<RoleAccess.Appointment> appointments = new ArrayList<>(roles().appointments());
+        long end = 30L * 86_400_000L;
+        for (int i = 0; i < MEDIA_PERSONS.size(); i++) {
+            appointments.add(new RoleAccess.Appointment("MEDIA-" + i, MEDIA_PERSONS.get(i),
+                    i < 2 ? "wire" : "investigative",
+                    i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
+                    0L, end, null));
+        }
+        List<String> readers = new ArrayList<>(information().readers());
+        readers.addAll(MEDIA_PERSONS);
+        InformationRun.Config info = new InformationRun.Config(readers, COGNITION_POLICY,
+                new BeliefModel.Policy(200, 8, end, 20, 200, 3, end));
+        RunManifest manifest = dialogueManifest();
+        WorldRuntime runtime = new WorldRuntime(journal, manifest, openings(), registry,
+                new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
+                        "SUP", "CUS", "OPS"), SYMBOL), charter(),
+                new RoleRun.Config(roles().mandates(), appointments), info,
+                dialogueDecisionConfig(), null, mediaConfig(), interviewConfig(),
+                dialogueConfig());
+        runtime.schedulePublishDocument("dialogue-contact-publish", "dialogue-contact-task",
+                1_000L, INTERVIEW_CONTACT_DOC, INVESTOR,
+                InformationModel.Audience.publicAudience(),
+                "模拟公开联系说明（实验）", "公开模拟联系说明：工作时段可预约采访。",
+                "实验模拟，不是现实联系方式", 5_000L, List.of());
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
     /** @return schema14 双边采访预约协调档案；与既有档案并存，不隐式迁移 */
     public static RunManifest interviewManifest() {
         Map<String, Integer> modules = new TreeMap<>(mediaManifest().moduleVersions());
@@ -491,6 +564,16 @@ public final class WorldWebScenario {
         return new DecisionModel.Config(base.providerKind(), base.providerId(),
                 base.pricingVersion(), base.thinkMillisByWake(), actions, base.limits(),
                 new DecisionModel.Budget(base.budget().runCap(), caps), base.profile());
+    }
+
+    /** @return schema15 决定配置：在采访配置上补逐轮发言时长，旧 14 不出现 */
+    public static DecisionModel.Config dialogueDecisionConfig() {
+        DecisionModel.Config base = interviewDecisionConfig();
+        Map<String, Long> actions = new TreeMap<>(base.actionMillisByTool());
+        actions.put(RoleTradingView.TOOL_INTERVIEW_SPEAK, dialogueConfig().speakMillis());
+        return new DecisionModel.Config(base.providerKind(), base.providerId(),
+                base.pricingVersion(), base.thinkMillisByWake(), actions, base.limits(),
+                base.budget(), base.profile());
     }
 
     /** @return 既有角色与新增采编人物的有界模型配置，启动不调用提供方 */

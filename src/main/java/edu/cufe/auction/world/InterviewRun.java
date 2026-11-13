@@ -33,24 +33,36 @@ import java.util.TreeMap;
  * @param coordinations 协调结果，按任务标识索引
  */
 public record InterviewRun(Config config, List<InterviewModel.State> states,
-                           Map<String, Coordination> coordinations) {
+                           Map<String, Coordination> coordinations,
+                           @JsonInclude(JsonInclude.Include.NON_NULL)
+                           Map<String, InterviewDialogue.State> dialogues) {
+
+    /** 旧 14 档案构造：没有逐轮对话状态。 */
+    public InterviewRun(Config config, List<InterviewModel.State> states,
+                        Map<String, Coordination> coordinations) {
+        this(config, states, coordinations, null);
+    }
 
     /** 本子集登记的全部任务种类。 */
     public static final Set<String> KINDS = Set.of(
             PendingTask.INTERVIEW_INVITE_V1, PendingTask.INTERVIEW_RESPOND_V1,
             PendingTask.INTERVIEW_CANCEL_V1, PendingTask.INTERVIEW_END_V1,
+            PendingTask.INTERVIEW_SPEAK_V1,
             PendingTask.INTERVIEW_START_GATE_V1, PendingTask.INTERVIEW_MISS_GATE_V1,
-            PendingTask.INTERVIEW_END_GATE_V1, PendingTask.INTERVIEW_TTL_GATE_V1);
+            PendingTask.INTERVIEW_END_GATE_V1, PendingTask.INTERVIEW_TTL_GATE_V1,
+            PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1);
 
     /** 由人物命令发起的四种动作。 */
     public static final Set<String> COMMAND_KINDS = Set.of(
             PendingTask.INTERVIEW_INVITE_V1, PendingTask.INTERVIEW_RESPOND_V1,
-            PendingTask.INTERVIEW_CANCEL_V1, PendingTask.INTERVIEW_END_V1);
+            PendingTask.INTERVIEW_CANCEL_V1, PendingTask.INTERVIEW_END_V1,
+            PendingTask.INTERVIEW_SPEAK_V1);
 
     /** 由真实先前状态派生的系统门任务。 */
     public static final Set<String> GATE_KINDS = Set.of(
             PendingTask.INTERVIEW_START_GATE_V1, PendingTask.INTERVIEW_MISS_GATE_V1,
-            PendingTask.INTERVIEW_END_GATE_V1, PendingTask.INTERVIEW_TTL_GATE_V1);
+            PendingTask.INTERVIEW_END_GATE_V1, PendingTask.INTERVIEW_TTL_GATE_V1,
+            PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1);
 
     /**
      * 冻结配置：每机构纯核策略、四个动作的模拟耗时与有出处的联系入口。
@@ -201,6 +213,18 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
         if (byOrganization.size() != config.policies().size()) {
             throw new IllegalArgumentException("采访状态必须覆盖全部配置组织");
         }
+        Map<String, InterviewDialogue.State> dialogueMap = null;
+        if (dialogues != null) {
+            dialogueMap = new TreeMap<>();
+            for (Map.Entry<String, InterviewDialogue.State> entry : dialogues.entrySet()) {
+                if (!byOrganization.containsKey(entry.getKey())) {
+                    throw new IllegalArgumentException("对话状态引用未配置组织：" + entry.getKey());
+                }
+                dialogueMap.put(entry.getKey(), Objects.requireNonNull(entry.getValue(), "对话状态"));
+            }
+            dialogueMap = Collections.unmodifiableMap(dialogueMap);
+        }
+        dialogues = dialogueMap;
         Map<String, Coordination> resultMap = new LinkedHashMap<>(
                 Objects.requireNonNull(coordinations, "协调结果"));
         Map<String, Coordination> sorted = new TreeMap<>(resultMap);
@@ -260,7 +284,7 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
         for (int index = 0; index < copy.size(); index++) {
             if (copy.get(index).policy().mediaOrganizationPartyId().equals(organizationPartyId)) {
                 copy.set(index, next);
-                return new InterviewRun(config, copy, coordinations);
+                return new InterviewRun(config, copy, coordinations, dialogues);
             }
         }
         throw new IllegalArgumentException("未配置的媒体组织：" + organizationPartyId);
@@ -284,7 +308,25 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
         }
         Map<String, Coordination> copy = new TreeMap<>(coordinations);
         copy.put(result.taskId(), result);
-        return new InterviewRun(config, states, copy);
+        return new InterviewRun(config, states, copy, dialogues);
+    }
+
+    /** 替换某组织的对话状态；未配置组织拒绝。 */
+    public InterviewRun withDialogues(String organizationPartyId, InterviewDialogue.State next) {
+        Objects.requireNonNull(next, "对话状态");
+        if (stateOf(organizationPartyId) == null) {
+            throw new IllegalArgumentException("未配置的媒体组织：" + organizationPartyId);
+        }
+        Map<String, InterviewDialogue.State> copy = new TreeMap<>(
+                dialogues == null ? Map.of() : dialogues);
+        copy.put(organizationPartyId, next);
+        return new InterviewRun(config, states, coordinations, copy);
+    }
+
+    /** @param organizationPartyId 媒体组织 @return 该组织对话状态；没有返回空状态 */
+    public InterviewDialogue.State dialoguesOf(String organizationPartyId) {
+        return dialogues == null ? InterviewDialogue.open()
+                : dialogues.getOrDefault(organizationPartyId, InterviewDialogue.open());
     }
 
     /**

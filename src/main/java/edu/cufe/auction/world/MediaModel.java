@@ -91,6 +91,9 @@ public final class MediaModel {
     public static final String REASON_EVIDENCE = "EVIDENCE";
     /** 媒体来源谱系缺失、冲突或不是已确认的公开版本。 */
     public static final String REASON_EVIDENCE_PROVENANCE = "EVIDENCE_PROVENANCE";
+
+    /** 别名指向的根不在本版证据展开结果内。 */
+    public static final String REASON_ALIAS_ROOT = "ALIAS_ROOT";
     /** 证据版本本人没有真实读完。 */
     public static final String REASON_EVIDENCE_NOT_READ = "EVIDENCE_NOT_READ";
     /** 证据不是公开资料。 */
@@ -432,6 +435,43 @@ public final class MediaModel {
     }
 
     /**
+     * 私有证据上下文：作者实际读过的非公开引用、既有证据状态与新别名。
+     *
+     * @param privateEvidence 私有证据（作者本人真实读过且仍可回忆）
+     * @param evidence        既有别名与身份共享，新结果在其基础上追加
+     * @param aliases         本版要绑定的别名
+     */
+    public record EvidenceContext(List<ReadingRef> privateEvidence, MediaEvidence.State evidence,
+                                  List<MediaEvidence.AliasBinding> aliases) {
+
+        /** 校验字段并冻结。 */
+        public EvidenceContext {
+            privateEvidence = List.copyOf(privateEvidence == null ? List.of() : privateEvidence);
+            evidence = evidence == null ? MediaEvidence.empty() : evidence;
+            aliases = List.copyOf(aliases == null ? List.of() : aliases);
+        }
+
+        /** 无私有证据、无别名的旧路径上下文。 */
+        public static EvidenceContext none() {
+            return new EvidenceContext(List.of(), MediaEvidence.empty(), List.of());
+        }
+    }
+
+    /**
+     * 私有证据提交的三态结果。
+     *
+     * @param accepted    是否成功
+     * @param reason      原因码
+     * @param state       媒体状态
+     * @param information 信息状态
+     * @param evidence    追加别名后的证据状态
+     */
+    public record EvidenceBridgeOutcome(boolean accepted, String reason, State state,
+                                        InformationModel.State information,
+                                        MediaEvidence.State evidence) {
+    }
+
+    /**
      * 提出选题。
      *
      * @param storyId   新稿件标识
@@ -663,6 +703,34 @@ public final class MediaModel {
     public static BridgeOutcome submit(State state, Policy policy, RoleAccess.State access,
                                        InformationModel.State information, String author,
                                        SubmitRequest request, List<State> mediaContext) {
+        return toBridge(submitWithEvidence(state, policy, access, information, author, request,
+                mediaContext, EvidenceContext.none()));
+    }
+
+    /**
+     * 新 schema 专用重载：允许作者以本人实际读过且仍可回忆的<b>私有</b>资料作证据，
+     * 并接收每稿每版的展示别名，返回媒体/信息/证据三态。
+     *
+     * <p>公开证据沿用旧规则且允许为空；私有证据不经任何 PUBLIC 中间文档。根仍写入既有
+     * {@code Story.roots} 与版本化 {@code Lineage}，人物与公开投影不读取它们。</p>
+     *
+     * @param state        当前媒体状态
+     * @param policy       冻结策略
+     * @param access       当前授权
+     * @param information  当前信息状态
+     * @param author       作者（受信上下文）
+     * @param request      提交请求（公开证据）
+     * @param mediaContext 其他媒体已确认状态
+     * @param context      私有证据、既有证据状态与新别名
+     * @return 三态结果；失败时三态与入参一致
+     */
+    public static EvidenceBridgeOutcome submitWithEvidence(State state, Policy policy,
+                                                           RoleAccess.State access,
+                                                           InformationModel.State information,
+                                                           String author, SubmitRequest request,
+                                                           List<State> mediaContext,
+                                                           EvidenceContext context) {
+        Objects.requireNonNull(context, "证据上下文");
         requireState(state);
         requirePolicy(policy);
         requireAccess(access);
@@ -670,57 +738,71 @@ public final class MediaModel {
         requireText(author, "作者");
         Objects.requireNonNull(request, "提交请求");
         if (!frozen(state, policy)) {
-            return bridgeReject(state, information, REASON_POLICY_MISMATCH);
+            return evidenceReject(state, information, context.evidence(), REASON_POLICY_MISMATCH);
         }
         if (!windowOk(request.startedAtMillis(), request.completedAtMillis(), policy.writeMillis())) {
-            return bridgeReject(state, information, REASON_TIME);
+            return evidenceReject(state, information, context.evidence(), REASON_TIME);
         }
         if (!authorized(access, author, Action.WRITE_STORY, policy, request.startedAtMillis())
                 || !authorized(access, author, Action.WRITE_STORY, policy,
                 request.completedAtMillis())) {
-            return bridgeReject(state, information, REASON_NOT_AUTHORIZED);
+            return evidenceReject(state, information, context.evidence(), REASON_NOT_AUTHORIZED);
         }
         Story story = findStory(state, request.storyId());
         if (story == null || !story.authorPartyId().equals(author)) {
-            return bridgeReject(state, information, REASON_NOT_AUTHORIZED);
+            return evidenceReject(state, information, context.evidence(), REASON_NOT_AUTHORIZED);
         }
         if (story.status() != Status.DRAFT && story.status() != Status.RETURNED) {
-            return bridgeReject(state, information, REASON_STATE);
+            return evidenceReject(state, information, context.evidence(), REASON_STATE);
         }
         if (request.expectedRevision() != story.revisionNo()) {
-            return bridgeReject(state, information, REASON_VERSION);
+            return evidenceReject(state, information, context.evidence(), REASON_VERSION);
         }
         if (request.startedAtMillis() < story.updatedAtMillis()
                 || request.completedAtMillis() < watermark(state)) {
-            return bridgeReject(state, information, REASON_TIME);
+            return evidenceReject(state, information, context.evidence(), REASON_TIME);
         }
         Integer minGroups = policy.enabledTemplates().get(story.template());
         if (minGroups == null) {
-            return bridgeReject(state, information, REASON_TEMPLATE_NOT_ENABLED);
+            return evidenceReject(state, information, context.evidence(),
+                    REASON_TEMPLATE_NOT_ENABLED);
         }
         String problem = evidenceProblem(information, policy, author, request.evidence(),
-                request.completedAtMillis());
+                context.privateEvidence(), request.completedAtMillis());
         if (problem != null) {
-            return bridgeReject(state, information, problem);
+            return evidenceReject(state, information, context.evidence(), problem);
         }
         List<Ref> roots;
         try {
-            roots = rootsFor(state, mediaContext, information, request.evidence());
+            roots = rootsFor(state, mediaContext, information, request.evidence(),
+                    context.privateEvidence(), context.evidence(), true);
         } catch (IllegalArgumentException invalidProvenance) {
-            return bridgeReject(state, information, REASON_EVIDENCE_PROVENANCE);
+            return evidenceReject(state, information, context.evidence(),
+                    REASON_EVIDENCE_PROVENANCE);
         }
         int groups = sourceGroups(information, roots);
         if (groups < 1) {
-            return bridgeReject(state, information, REASON_EVIDENCE);
+            return evidenceReject(state, information, context.evidence(), REASON_EVIDENCE);
         }
         if (groups < minGroups) {
-            return bridgeReject(state, information, REASON_INSUFFICIENT_SOURCES);
+            return evidenceReject(state, information, context.evidence(),
+                    REASON_INSUFFICIENT_SOURCES);
+        }
+        MediaEvidence.State nextEvidence;
+        try {
+            nextEvidence = MediaEvidence.appendAliases(context.evidence(), story.storyId(),
+                    story.revisionNo() + 1, roots, context.aliases());
+        } catch (IllegalArgumentException invalidAlias) {
+            return evidenceReject(state, information, context.evidence(), REASON_ALIAS_ROOT);
         }
 
+        List<ReadingRef> allEvidence = new ArrayList<>(request.evidence());
+        allEvidence.addAll(context.privateEvidence());
         InformationModel.VersionDraft draft = new InformationModel.VersionDraft(
                 request.title(), request.body(),
                 "作者来源描述（自由文字，未经程序核验）：" + request.publicSourceDescription(),
-                request.completedAtMillis(), policy.draftReadMillis(), sourceIdsOf(request.evidence()));
+                request.completedAtMillis(), policy.draftReadMillis(),
+                sourceIdsOf(allEvidence));
         InformationModel.State next;
         long version;
         try {
@@ -734,17 +816,29 @@ public final class MediaModel {
                 version = story.draftVersion() + 1;
             }
         } catch (IllegalArgumentException rejected) {
-            return bridgeReject(state, information, REASON_STATE);
+            return evidenceReject(state, information, context.evidence(), REASON_STATE);
         }
 
         Story updated = new Story(story.storyId(), story.template(), story.authorPartyId(),
                 story.topic(), Status.SUBMITTED, story.revisionNo() + 1, story.draftDocId(),
-                version, story.publicDocId(), story.publicVersion(), request.evidence(), roots,
+                version, story.publicDocId(), story.publicVersion(), allEvidence, roots,
                 groups, null, -1L, 0, story.createdAtMillis(), request.completedAtMillis());
         State nextState = append(state, updated, new Revision(story.storyId(),
                 updated.revisionNo(), Status.SUBMITTED, author, request.completedAtMillis(),
                 story.draftDocId(), version, "SUBMITTED"));
-        return new BridgeOutcome(true, REASON_OK, nextState, next);
+        return new EvidenceBridgeOutcome(true, REASON_OK, nextState, next, nextEvidence);
+    }
+
+    /** 旧入口的适配：证据分量只在私有路径使用。 */
+    private static BridgeOutcome toBridge(EvidenceBridgeOutcome outcome) {
+        return new BridgeOutcome(outcome.accepted(), outcome.reason(), outcome.state(),
+                outcome.information());
+    }
+
+    /** 证据路径的业务拒绝：三态原样返回，不产生部分写入。 */
+    private static EvidenceBridgeOutcome evidenceReject(State state, InformationModel.State information,
+                                                        MediaEvidence.State evidence, String reason) {
+        return new EvidenceBridgeOutcome(false, reason, state, information, evidence);
     }
 
     /**
@@ -1101,14 +1195,34 @@ public final class MediaModel {
         return story == null ? null : story.authorPartyId();
     }
 
-    /** 证据校验：返回 null 表示通过。 */
+    /** 证据校验：返回 null 表示通过。旧入口只允许公开证据。 */
     private static String evidenceProblem(InformationModel.State information, Policy policy,
                                           String author, List<ReadingRef> evidence, long now) {
-        if (evidence.isEmpty()) {
+        return evidenceProblem(information, policy, author, evidence, List.of(), now);
+    }
+
+    /**
+     * 证据校验（含私有证据）：公开证据必须 PUBLIC；私有证据必须非 PUBLIC，且作者真实读过、
+     * 版本一致、序号一致、当前可回忆。两者合并后不得为空。
+     */
+    private static String evidenceProblem(InformationModel.State information, Policy policy,
+                                          String author, List<ReadingRef> evidence,
+                                          List<ReadingRef> privateEvidence, long now) {
+        List<ReadingRef> privateRefs = privateEvidence == null ? List.of() : privateEvidence;
+        if (evidence.isEmpty() && privateRefs.isEmpty()) {
             return REASON_EVIDENCE;
         }
         Set<String> seen = new LinkedHashSet<>();
         for (ReadingRef ref : evidence) {
+            if (ref == null || !author.equals(ref.personPartyId()) || ref.version() < 1
+                    || ref.index() < 1) {
+                return REASON_EVIDENCE;
+            }
+            if (!seen.add(ref.docId() + '\u0000' + ref.version())) {
+                return REASON_EVIDENCE;
+            }
+        }
+        for (ReadingRef ref : privateRefs) {
             if (ref == null || !author.equals(ref.personPartyId()) || ref.version() < 1
                     || ref.index() < 1) {
                 return REASON_EVIDENCE;
@@ -1124,6 +1238,7 @@ public final class MediaModel {
             recalled.add(item.observation().docId() + '\u0000' + item.observation().version());
         }
         for (ReadingRef ref : evidence) {
+            // 旧次序：先判公开性，再判是否读过；拒绝码会被旧档案引用，不能换
             Document document = documentOf(information, ref.docId());
             if (document == null) {
                 return REASON_EVIDENCE_NOT_READ;
@@ -1131,24 +1246,133 @@ public final class MediaModel {
             if (document.audience().kind() != AudienceKind.PUBLIC) {
                 return REASON_EVIDENCE_NOT_PUBLIC;
             }
-            if (!InformationModel.canCite(information, author, ref.docId(), ref.version(), now)) {
-                return REASON_EVIDENCE_NOT_READ;
+            String problem = citationProblem(information, author, ref, recalled, now);
+            if (problem != null) {
+                return problem;
             }
-            if (ordinalOf(information, author, ref.docId(), ref.version()) != ref.index()) {
-                return REASON_EVIDENCE_INDEX;
+        }
+        for (ReadingRef ref : privateRefs) {
+            String problem = citationProblem(information, author, ref, recalled, now);
+            if (problem != null) {
+                return problem;
             }
-            if (!recalled.contains(ref.docId() + '\u0000' + ref.version())) {
-                return REASON_EVIDENCE_NOT_RECALLABLE;
+            if (documentOf(information, ref.docId()).audience().kind() == AudienceKind.PUBLIC) {
+                return REASON_EVIDENCE;
             }
         }
         return null;
     }
 
-    /** 从受信的各媒体状态建立版本索引；只接纳已经发布且完全展开的公开根。 */
+    /** 单条引用的通用校验：存在、已读、序号一致、可回忆。 */
+    private static String citationProblem(InformationModel.State information, String author,
+                                          ReadingRef ref, Set<String> recalled, long now) {
+        Document document = documentOf(information, ref.docId());
+        if (document == null || document.at(ref.version()) == null) {
+            return REASON_EVIDENCE_NOT_READ;
+        }
+        if (!InformationModel.canCite(information, author, ref.docId(), ref.version(), now)) {
+            return REASON_EVIDENCE_NOT_READ;
+        }
+        if (ordinalOf(information, author, ref.docId(), ref.version()) != ref.index()) {
+            return REASON_EVIDENCE_INDEX;
+        }
+        if (!recalled.contains(ref.docId() + '\u0000' + ref.version())) {
+            return REASON_EVIDENCE_NOT_RECALLABLE;
+        }
+        return null;
+    }
+
+    /** 身份共享文档到真实根的绑定视图（不新增谱系表，只读既有 shares）。 */
+    private record IdentityBinding(String sharingDocId, long sharingVersion, Ref root) {
+    }
+
+    /**
+     * 包内入口：沿既有绑定把引用解析成真实根，供证据侧复用，不复制解析实现。
+     *
+     * @param shares      证据状态（可为空）
+     * @param information 当前信息状态
+     * @param ref         待解析引用（可能是共享文档）
+     * @return 真实根
+     * @throws IllegalArgumentException 绑定缺失、版本不符、成环或时间不合法
+     */
+    static Ref canonicalRoot(MediaEvidence.State shares, InformationModel.State information,
+                             Ref ref) {
+        return resolveShared(bindingsOf(shares), information, ref);
+    }
+
+    private static Map<String, IdentityBinding> bindingsOf(MediaEvidence.State shares) {
+        Map<String, IdentityBinding> map = new HashMap<>();
+        if (shares == null) {
+            return map;
+        }
+        for (MediaEvidence.IdentityShare share : shares.shares()) {
+            map.put(share.sharingDocId(), new IdentityBinding(share.sharingDocId(),
+                    share.sharingVersion(), share.root()));
+        }
+        return map;
+    }
+
+    /**
+     * 沿共享绑定递归回到真实根：共享文档本身不是独立事实源。
+     *
+     * <p>要求绑定版本与所引版本一致、根早于共享文档、无环；遇到不一致直接判为谱系问题。</p>
+     */
+    private static Ref resolveShared(Map<String, IdentityBinding> bindings,
+                                     InformationModel.State information, Ref ref) {
+        Set<String> seen = new LinkedHashSet<>();
+        Ref current = ref;
+        while (true) {
+            IdentityBinding binding = bindings.get(current.docId());
+            if (binding == null) {
+                if (MediaEvidence.isShareDocument(current.docId())) {
+                    throw new IllegalArgumentException("身份共享文档缺少真实绑定");
+                }
+                return current;
+            }
+            if (binding.sharingVersion() != current.version()) {
+                throw new IllegalArgumentException("共享文档版本与绑定不一致");
+            }
+            if (!seen.add(current.docId())) {
+                throw new IllegalArgumentException("共享绑定成环");
+            }
+            DocumentVersion shareVersion = versionOf(information, current.docId(),
+                    current.version());
+            DocumentVersion rootVersion = versionOf(information, binding.root().docId(),
+                    binding.root().version());
+            if (shareVersion == null || rootVersion == null
+                    || rootVersion.publishedAt() > shareVersion.publishedAt()) {
+                throw new IllegalArgumentException("共享绑定时间不一致");
+            }
+            current = binding.root();
+        }
+    }
+
+    /** 从受信的各媒体状态建立版本索引；公开根必须已确认。 */
     private static List<Ref> rootsFor(State state, List<State> mediaContext,
-                                     InformationModel.State information, List<ReadingRef> evidence) {
+                                      InformationModel.State information, List<ReadingRef> evidence) {
+        return rootsFor(state, mediaContext, information, evidence, List.of(),
+                MediaEvidence.empty(), false);
+    }
+
+    /**
+     * 根解析（新 schema 能力显式传入）。
+     *
+     * <p>公开证据仍须是公开资料或本人读过的私有引用；但从<b>已发表文章</b>谱系继承来的根
+     * 是否允许非 PUBLIC，由 {@code inheritPrivate} 决定：新证据路径为 true（转述者无需读过原私证），
+     * 旧 {@code submit} 为 false（严格旧行为）。身份共享文档不被当作独立事实源：引用它时沿
+     * {@link MediaEvidence.State} 的真实 binding 递归回到原始根，避免两位分享者被算成两个来源。</p>
+     */
+    private static List<Ref> rootsFor(State state, List<State> mediaContext,
+                                      InformationModel.State information, List<ReadingRef> evidence,
+                                      List<ReadingRef> privateEvidence, MediaEvidence.State shares,
+                                      boolean inheritPrivate) {
         List<State> contexts = new ArrayList<>(Objects.requireNonNull(mediaContext, "媒体来源上下文"));
         contexts.add(state);
+        Set<String> privateKeys = new LinkedHashSet<>();
+        for (ReadingRef ref : privateEvidence == null ? List.<ReadingRef>of() : privateEvidence) {
+            privateKeys.add(ref.docId() + '\u0000' + ref.version());
+        }
+        Map<String, IdentityBinding> bindings = bindingsOf(shares);
         Set<String> organizations = new LinkedHashSet<>();
         Map<Ref, Lineage> catalog = new HashMap<>();
         for (State source : contexts) {
@@ -1170,25 +1394,38 @@ public final class MediaModel {
             }
         }
         List<Ref> roots = new ArrayList<>();
-        for (ReadingRef ref : evidence) {
+        List<ReadingRef> allRefs = new ArrayList<>(evidence);
+        allRefs.addAll(privateEvidence == null ? List.<ReadingRef>of() : privateEvidence);
+        for (ReadingRef ref : allRefs) {
+            boolean fromPrivate = privateKeys.contains(ref.docId() + '\u0000' + ref.version());
             Lineage lineage = catalog.get(new Ref(ref.docId(), ref.version()));
             if (lineage == null) {
                 if (ref.docId().startsWith(PUBLIC_PREFIX)) {
                     throw new IllegalArgumentException("媒体成稿缺少已确认谱系");
                 }
-                roots.add(new Ref(ref.docId(), ref.version()));
+                Document document = documentOf(information, ref.docId());
+                if (document == null || document.at(ref.version()) == null) {
+                    throw new IllegalArgumentException("证据文档不存在");
+                }
+                if (!fromPrivate && document.audience().kind() != AudienceKind.PUBLIC) {
+                    throw new IllegalArgumentException("公开证据必须是公开资料");
+                }
+                roots.add(resolveShared(bindings, information, new Ref(ref.docId(), ref.version())));
             } else {
                 DocumentVersion cited = versionOf(information, ref.docId(), ref.version());
                 for (Ref root : lineage.roots()) {
                     Document document = documentOf(information, root.docId());
                     DocumentVersion original = versionOf(information, root.docId(), root.version());
                     if (document == null || original == null || cited == null
-                            || document.audience().kind() != AudienceKind.PUBLIC
                             || original.publishedAt() > cited.publishedAt()
                             || root.docId().startsWith(PUBLIC_PREFIX) || catalog.containsKey(root)) {
-                        throw new IllegalArgumentException("媒体来源根未展开、非公开或晚于成稿");
+                        throw new IllegalArgumentException("媒体来源根未展开或晚于成稿");
                     }
-                    roots.add(root);
+                    if (!fromPrivate && !inheritPrivate
+                            && document.audience().kind() != AudienceKind.PUBLIC) {
+                        throw new IllegalArgumentException("媒体来源根不是公开资料");
+                    }
+                    roots.add(resolveShared(bindings, information, root));
                 }
             }
         }

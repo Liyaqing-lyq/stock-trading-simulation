@@ -2,9 +2,9 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 当前接续入口（2026-11-07，预约运行桥合成）
+## 当前接续入口（2026-11-13，b/c整合中）
 
-先读 `logs/implementation-20261106-continued/interview-runtime-root/current.md`。a最终运行桥、Root Web4、b纯核及回归已接主树；Hermes87718唯一正式验收，17570准备b/schema15接口。已证实新档Web缺联系资料发布和普通受访者live入口，必须补齐后才可称完整Web采访可用。以下为历史记录，不反复加载或重跑。
+先读 `logs/implementation-20261106-continued/interview-runtime-root/current.md`，再读 `docs/CURRENT_IMPLEMENTATION.md`。主树bccd085/PR41已正式1389及CI通过；当前codex/world-interview-dialogue已接独审通过的b后台3及6测，尚未组合正式验证。Web final2与c纯核4正在差量独审，准确会话见current.md顶部。PR41实时已合并，Root未操作合并。持久Web旧记录18080/media，本轮未核存活；总体基线未完成。以下旧时间段仅为历史，不重复读取/运行。
 
 ## 最新执行偏好（用户本轮明确要求，2026-11-07）
 

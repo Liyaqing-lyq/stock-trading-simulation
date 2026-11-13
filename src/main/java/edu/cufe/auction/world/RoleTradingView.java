@@ -116,6 +116,9 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     /** 采访工具：结束进行中的会话。 */
     public static final String TOOL_INTERVIEW_END = "interview.end";
 
+    /** 逐轮访谈：发送一轮（schema15；仅 ACTIVE 会话参与者可见）。 */
+    public static final String TOOL_INTERVIEW_SPEAK = "interview.speak";
+
     /** 冻结全部集合。 */
     public RoleTradingView {
         if (observedAtMillis < 0 || timeMillis < 0) {

@@ -437,6 +437,313 @@ defineCase("personal-interview-tools-from-media", async () => {
   return "tools=" + JSON.stringify(tools) + " 面板可见";
 });
 
+// ---------------------------------------------------------------- 逐轮访谈（schema15）
+function dialogueSection(rows) {
+  return { total: rows.length, rows };
+}
+
+function adminDialogueView() {
+  return {
+    runId: "run-1", position: "12", timeMillis: "9000", available: true,
+    sessions: dialogueSection([{ sessionId: "SESSION-4:rita:q1", requestId: "4:rita:q1",
+      organizationPartyId: "wire", startedAtMillis: "1000", endedAtMillis: "9000", open: false }]),
+    turns: dialogueSection([
+      { sessionId: "SESSION-4:rita:q1", sequence: "1", turnId: "t1", speakerPartyId: "rita",
+        peerPartyId: "investor", docId: "dialogue-turn:17:SESSION-4:rita:q1:1", docVersion: "1",
+        publishedAtMillis: "2000", speakerRead: false, peerRead: true, title: "Q1", body: "问题" },
+      { sessionId: "SESSION-4:rita:q1", sequence: "2", turnId: "t2", speakerPartyId: "investor",
+        peerPartyId: "rita", docId: "dialogue-turn:17:SESSION-4:rita:q1:2", docVersion: "1",
+        publishedAtMillis: "3000", speakerRead: false, peerRead: false, title: "A1", body: "回答" }
+    ]),
+    closes: dialogueSection([{ sessionId: "SESSION-4:rita:q1", reason: "CLOSED_BY_PARTY" }]),
+    reports: dialogueSection([{ taskId: "task-1", personPartyId: "rita",
+      kind: "INTERVIEW_INVITE_V1", accepted: true, reason: "OK", requestId: "4:rita:q1",
+      timeMillis: "1500" }]),
+    notes: ["测试备注"]
+  };
+}
+
+defineCase("admin-dialogue-rendered-and-cleared", async () => {
+  let dialogue = adminDialogueView();
+  const world = makeWorld(async (method, url) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/admin/interview") return { status: 200, payload: adminInterviewView() };
+    if (url === "/api/admin/dialogue") return { status: 200, payload: dialogue };
+    if (url === "/api/session/logout") return { status: 200, payload: {} };
+    return { status: 200, payload: {} };
+  }, "dialogue-admin");
+  await bootSettled(world);
+  world.context.showMode("admin");
+  world.state.page = "interview";
+  await world.context.loadDetail("interview");
+
+  assert.equal(world.rows("dialogue-turns"), 2, "上帝审计必须渲染真实轮次");
+  assert.equal(world.rows("dialogue-closes"), 1, "关闭原因必须渲染");
+  assert.equal(world.rows("dialogue-reports"), 1, "采访动作回执必须渲染");
+  assert.ok(world.state.dialogue, "审计结果必须进入 cache");
+  assert.ok(world.$("dialogue-note").textContent.includes("测试备注"), "备注来自服务器");
+
+  await world.context.logout();
+  for (const id of ["dialogue-turns", "dialogue-closes", "dialogue-reports", "dialogue-sessions"]) {
+    assert.equal(world.rows(id), 0, "登出必须清空 " + id);
+  }
+  assert.equal(world.state.dialogue, null, "登出必须清空对话 cache");
+  assert.equal(world.$("dialogue-note").textContent, "", "登出必须清空说明文案");
+
+  // 重新渲染后离页也要清空
+  world.context.showMode("admin");
+  world.state.page = "interview";
+  dialogue = adminDialogueView();
+  await world.context.loadDetail("interview");
+  assert.equal(world.rows("dialogue-turns"), 2, "前置：重新渲染");
+  world.context.selectPage("overview", false);
+  assert.equal(world.rows("dialogue-turns"), 0, "离页必须清空轮次表");
+  assert.equal(world.state.dialogue, null, "离页必须清空对话 cache");
+  return "上帝审计渲染并在登出/离页清空";
+});
+
+function personDialogueView() {
+  return {
+    personPartyId: "rita", timeMillis: "9000", available: true,
+    sessions: dialogueSection([{ sessionId: "SESSION-4:rita:q1", requestId: "4:rita:q1",
+      peerPartyId: "investor", startedAtMillis: "1000", endedAtMillis: "9000", open: false,
+      closeReason: "CLOSED_BY_PARTY" }]),
+    turns: dialogueSection([
+      { sessionId: "SESSION-4:rita:q1", sequence: "1", turnId: "t1", speakerPartyId: "rita",
+        mine: true, docId: "dialogue-turn:17:SESSION-4:rita:q1:1", docVersion: "1",
+        readByMe: false, readByPeer: true, publishedAtMillis: "2000", title: "", body: "" },
+      { sessionId: "SESSION-4:rita:q1", sequence: "2", turnId: "t2", speakerPartyId: "investor",
+        mine: false, docId: "dialogue-turn:17:SESSION-4:rita:q1:2", docVersion: "1",
+        readByMe: true, readByPeer: false, publishedAtMillis: "3000", title: "A1", body: "回答正文" }
+    ]),
+    notes: ["个人备注"]
+  };
+}
+
+function rowCells(world, tableId, index) {
+  const body = world.$(tableId).querySelector("tbody");
+  return (body.children[index] || { children: [] }).children.map(cell => cell.textContent);
+}
+
+defineCase("person-dialogue-hides-unread-body", async () => {
+  let sessionPerson = null;
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("rita") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "rita",
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") return { status: 200, payload: personDialogueView() };
+    return { status: 200, payload: {} };
+  }, "dialogue-person");
+  await bootSettled(world);
+  await world.context.switchPerson("rita");
+
+  assert.equal(world.rows("person-dialogue-turns"), 2, "本人轮次必须渲染");
+  const own = rowCells(world, "person-dialogue-turns", 0);
+  const peer = rowCells(world, "person-dialogue-turns", 1);
+  assert.ok(!own.includes("回答正文"), "未读轮次不得显示正文");
+  assert.ok(!own.includes("A1"), "未读轮次不得显示标题");
+  assert.ok(peer.includes("回答正文"), "已读轮次显示正文");
+  assert.ok(peer.includes("A1"), "已读轮次显示标题");
+  assert.equal(world.rows("person-dialogue-sessions"), 1, "本人会话表渲染");
+
+  world.context.showMode("login");
+  assert.equal(world.rows("person-dialogue-turns"), 0, "切身份必须清空本人轮次");
+  assert.equal(world.rows("person-dialogue-sessions"), 0, "切身份必须清空本人会话");
+  assert.equal(world.state.personDialogue, null, "切身份必须清空本人对话 cache");
+  return "未读正文不展示，切身份清空";
+});
+
+defineCase("person-dialogue-late-response-discarded", async () => {
+  let release = null;
+  let sessionPerson = null;
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("rita") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "rita",
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") {
+      return new Promise(resolve => { release = resolve; });
+    }
+    return { status: 200, payload: {} };
+  }, "dialogue-late");
+  await bootSettled(world);
+  const running = world.context.switchPerson("rita");
+  await waitFor(() => release !== null, "对话请求已发出");
+  world.context.showMode("login");
+  release({ status: 200, payload: personDialogueView() });
+  await running;
+  assert.equal(world.rows("person-dialogue-turns"), 0, "迟到回应不得写入已切走的身份");
+  assert.equal(world.state.personDialogue, null, "迟到回应不得写回 cache");
+  return "代次变化后迟到回应被丢弃";
+});
+
+// 独立复核补充用例：未读正文的前端掩蔽、离页/切身份迟到响应、失败不污染。
+// 追加在作者 12 条断言之后，不改原用例；用法同 test-interview-view.cjs。
+"use strict";
+
+// 用例 A：服务器泄漏未读正文时，前端仍不得显示（判别 renderPersonalDialogue 的 readByMe 掩蔽）
+defineCase("person-dialogue-masks-unread-body-if-server-leaks", async () => {
+  let sessionPerson = null;
+  const leaked = {
+    personPartyId: "rita", timeMillis: "9000", available: true,
+    sessions: dialogueSection([{ sessionId: "SESSION-4:rita:q1", requestId: "4:rita:q1",
+      peerPartyId: "investor", startedAtMillis: "1000", endedAtMillis: "9000", open: false,
+      closeReason: "CLOSED_BY_PARTY" }]),
+    turns: dialogueSection([
+      { sessionId: "SESSION-4:rita:q1", sequence: "1", turnId: "t1", speakerPartyId: "rita",
+        mine: true, docId: "dialogue-turn:17:SESSION-4:rita:q1:1", docVersion: "1",
+        readByMe: false, readByPeer: true, publishedAtMillis: "2000",
+        title: "泄漏标题", body: "泄漏正文" },
+      { sessionId: "SESSION-4:rita:q1", sequence: "2", turnId: "t2", speakerPartyId: "investor",
+        mine: false, docId: "dialogue-turn:17:SESSION-4:rita:q1:2", docVersion: "1",
+        readByMe: true, readByPeer: false, publishedAtMillis: "3000", title: "A1", body: "回答正文" }
+    ]),
+    notes: []
+  };
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("rita") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "rita",
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") return { status: 200, payload: leaked };
+    return { status: 200, payload: {} };
+  }, "indep-leak");
+  await bootSettled(world);
+  await world.context.switchPerson("rita");
+
+  assert.equal(world.rows("person-dialogue-turns"), 2, "两条轮次都要渲染行");
+  const own = rowCells(world, "person-dialogue-turns", 0);
+  const peer = rowCells(world, "person-dialogue-turns", 1);
+  assert.ok(!own.includes("泄漏正文"), "服务器泄漏的未读正文不得上屏，实际=" + JSON.stringify(own));
+  assert.ok(!own.includes("泄漏标题"), "服务器泄漏的未读标题不得上屏，实际=" + JSON.stringify(own));
+  assert.ok(own.includes("未读"), "未读轮次仍要标出未读");
+  assert.ok(peer.includes("回答正文") && peer.includes("A1"), "已读轮次照常显示正文");
+  return "前端按 readByMe 自行掩蔽未读正文/标题";
+});
+
+// 用例 B：管理员离页后迟到的 /api/admin/dialogue 响应不得回写（判别 page/pageVersion 守卫）
+defineCase("admin-dialogue-late-after-leave-page-discarded", async () => {
+  let release = null;
+  const world = makeWorld(async (method, url) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/admin/interview") return { status: 200, payload: adminInterviewView() };
+    if (url === "/api/admin/dialogue") return new Promise(resolve => { release = resolve; });
+    return { status: 200, payload: {} };
+  }, "indep-admin-late");
+  await bootSettled(world);
+  world.context.showMode("admin");
+  world.state.page = "interview";
+  const loading = world.context.loadDetail("interview");
+  await waitFor(() => release !== null, "对话审计请求已发出");
+
+  world.context.selectPage("overview", false);
+  assert.equal(world.state.page, "overview", "前置：已离页");
+  release({ status: 200, payload: adminDialogueView() });
+  await loading;
+  await tick();
+  for (const id of ["dialogue-sessions", "dialogue-turns", "dialogue-closes", "dialogue-reports"]) {
+    assert.equal(world.rows(id), 0, "离页后迟到回应不得写入 " + id);
+  }
+  assert.equal(world.state.dialogue, null, "离页后迟到回应不得写回 cache");
+  return "离页后迟到审计响应被丢弃";
+});
+
+// 用例 C：切到新身份并渲染完成后，旧身份的迟到对话响应不得覆盖（判别代次守卫本身）
+defineCase("person-dialogue-late-after-identity-switch-discarded", async () => {
+  let sessionPerson = null;
+  let releaseRita = null;
+  const bobView = {
+    personPartyId: "bob", timeMillis: "9000", available: true,
+    sessions: dialogueSection([{ sessionId: "SESSION-9:bob:q2", requestId: "9:bob:q2",
+      peerPartyId: "investor", startedAtMillis: "1000", endedAtMillis: "9000", open: true,
+      closeReason: "" }]),
+    turns: dialogueSection([{ sessionId: "SESSION-9:bob:q2", sequence: "1", turnId: "b1",
+      speakerPartyId: "bob", mine: true, docId: "dialogue-turn:17:SESSION-9:bob:q2:1",
+      docVersion: "1", readByMe: true, readByPeer: false, publishedAtMillis: "2000",
+      title: "B1", body: "bob 正文" }]),
+    notes: []
+  };
+  const views = { rita: personView("rita"), bob: personView("bob") };
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: views[sessionPerson] };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: sessionPerson,
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") {
+      if (sessionPerson === "rita") return new Promise(resolve => { releaseRita = resolve; });
+      return { status: 200, payload: bobView };
+    }
+    return { status: 200, payload: {} };
+  }, "indep-switch-late");
+  await bootSettled(world);
+
+  const first = world.context.switchPerson("rita");
+  await waitFor(() => releaseRita !== null, "rita 的对话请求已发出");
+  await world.context.switchPerson("bob");
+  assert.equal(world.rows("person-dialogue-turns"), 1, "前置：bob 的对话已渲染");
+  const before = world.cellTexts();
+
+  releaseRita({ status: 200, payload: personDialogueView() });
+  await first;
+  assert.equal(world.state.mode, "person", "仍在人物视角");
+  assert.equal(world.state.personDialogue && world.state.personDialogue.personPartyId, "bob",
+    "cache 必须仍是 bob，实际=" + JSON.stringify(world.state.personDialogue && world.state.personDialogue.personPartyId));
+  assert.equal(world.rows("person-dialogue-turns"), 1, "rita 的 2 条轮次不得覆盖 bob 的 1 条");
+  assert.deepEqual(world.cellTexts(), before, "旧身份迟到响应不得改动任何单元格");
+  return "同 mode 下代次变化，rita 迟到响应被丢弃";
+});
+
+// 用例 D：本人对话接口失败时不得留下脏行、不得抛错，且不影响后续成功渲染
+defineCase("person-dialogue-failure-keeps-panel-clean", async () => {
+  let sessionPerson = null;
+  let fail = true;
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("rita") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "rita",
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") {
+      return fail ? { status: 500, payload: { error: "WORLD_IO" } }
+        : { status: 200, payload: personDialogueView() };
+    }
+    return { status: 200, payload: {} };
+  }, "indep-failure");
+  await bootSettled(world);
+  await world.context.switchPerson("rita");
+  assert.equal(world.rows("person-dialogue-turns"), 0, "失败时不得渲染轮次");
+  assert.equal(world.rows("person-dialogue-sessions"), 0, "失败时不得渲染会话");
+  assert.equal(world.state.personDialogue, null, "失败时不得写 cache");
+  assert.equal(world.state.mode, "person", "500 不等于会话失效，不得跳登录");
+  assert.equal(world.$("person-name").textContent, "rita", "失败不得清掉身份标记");
+
+  fail = false;
+  world.context.showMode("login");
+  await world.context.switchPerson("rita");
+  assert.equal(world.rows("person-dialogue-turns"), 2, "恢复后应正常渲染");
+  return "500 不渲染不跳转，恢复后正常";
+});
+
 // ---------------------------------------------------------------- 运行
 (async () => {
   const results = [];

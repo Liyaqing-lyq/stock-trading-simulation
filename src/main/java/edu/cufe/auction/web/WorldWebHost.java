@@ -9,6 +9,9 @@ import edu.cufe.auction.world.DividendModel;
 import edu.cufe.auction.world.LiveCompletionInbox;
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.InformationRun;
+import edu.cufe.auction.world.InterviewDialogue;
+import edu.cufe.auction.world.InterviewModel;
+import edu.cufe.auction.world.InterviewRun;
 import edu.cufe.auction.world.ManufacturingModel;
 import edu.cufe.auction.world.ManufacturingRun;
 import edu.cufe.auction.world.MediaModel;
@@ -156,7 +159,7 @@ public final class WorldWebHost implements AutoCloseable {
     /** 场景路由；只有 live Host 组合才非空。 */
     private final SceneRoutes routes;
     /** 提供方适配器；只有 live Host 组合才非空。 */
-    private final LiveDecisionProvider provider;
+    private final DecisionProvider provider;
     /** 有界 worker 池；非 live 组合为 null，不创建任何线程。 */
     private final ExecutorService workers;
     /** 物理在途：只在 worker 真正持有该次调用时占位；value 为场景标识，用于同场景物理并发。 */
@@ -193,6 +196,32 @@ public final class WorldWebHost implements AutoCloseable {
      * @param provider 同步提供方适配器；非 live 传 null
      */
     public WorldWebHost(IOSupplier supplier, SceneRoutes routes, LiveDecisionProvider provider) {
+        this(supplier, routes, (DecisionProvider) provider);
+    }
+
+    /**
+     * 决定提供方 seam：生产用 {@link LiveDecisionProvider}；进程内测试可注入脚本实现，
+     * 由真实 {@link DecisionRun.Call} 输入文本分派，不联网。
+     */
+    public interface DecisionProvider {
+        /**
+         * 计算一次冻结调用。
+         *
+         * @param call          冻结调用（含真实 inputText 与路由计划）
+         * @param timeoutMillis 墙钟上限
+         * @return 完成回执
+         */
+        LiveCompletionInbox.Completion evaluate(DecisionRun.Call call, long timeoutMillis);
+    }
+
+    /**
+     * 提供方无关构造：测试注入 {@link DecisionProvider}；其余行为与生产构造一致。
+     *
+     * @param supplier 可信工厂
+     * @param routes   场景路由
+     * @param provider 提供方（可为脚本实现）
+     */
+    public WorldWebHost(IOSupplier supplier, SceneRoutes routes, DecisionProvider provider) {
         if (supplier == null) {
             throw new IllegalArgumentException("宿主参数不合法");
         }
@@ -2198,7 +2227,42 @@ public final class WorldWebHost implements AutoCloseable {
                                 partyName(registry, appointment.personPartyId()), "media"));
             }
         }
+        // schema15：已配置联系目标与真实预约参与者（含尚未接受）走 media 技术路由；
+        // 仅自然人，不授予媒体任职或媒体工具，既有 research/trading 路由优先。
+        var interviews = runtime.interviews();
+        if (interviews != null) {
+            for (var entry : interviews.config().contacts()) {
+                addDialoguePerson(people, registry, entry.targetPartyId());
+            }
+            for (var state : interviews.states()) {
+                for (var session : state.sessions()) {
+                    if (!session.open()) {
+                        continue;
+                    }
+                    var invite = state.invites().stream()
+                            .filter(i -> i.requestId().equals(session.requestId()))
+                            .findFirst().orElse(null);
+                    if (invite != null) {
+                        addDialoguePerson(people, registry, invite.fromPartyId());
+                        addDialoguePerson(people, registry, invite.toPartyId());
+                    }
+                }
+            }
+        }
         return List.copyOf(people.values());
+    }
+
+    private void addDialoguePerson(Map<String, LivePerson> people, OpeningRegistry registry,
+                                   String person) {
+        if (person == null) {
+            return;
+        }
+        boolean natural = registry.parties().stream()
+                .anyMatch(p -> p.partyId().equals(person)
+                        && p.kind() == OpeningRegistry.PartyKind.PERSON);
+        if (natural) {
+            people.putIfAbsent(person, new LivePerson(person, partyName(registry, person), "media"));
+        }
     }
 
     /** 媒体上帝审计视图：所有分区来自同一确认截止，条数真实且明确限制展示量。 */
@@ -2230,6 +2294,218 @@ public final class WorldWebHost implements AutoCloseable {
      */
     public WorldRuntime.InterviewView interviewView(String personId) throws Exception {
         return call(() -> readyNow().interviewView(personId));
+    }
+
+    /** 上帝视角一条真实轮次；阅读状态来自真实完成阅读，不看声明或回执。 */
+    public record DialogueTurnRow(String sessionId, long sequence, String turnId,
+                                  String speakerPartyId, String peerPartyId, String docId,
+                                  long docVersion, long publishedAtMillis,
+                                  boolean speakerRead, boolean peerRead,
+                                  String title, String body) { }
+
+    /** 上帝视角的对话关闭原因（只存不能从会话终态推断的部分）。 */
+    public record DialogueCloseRow(String sessionId, String reason) { }
+
+    /** 逐轮对话审计视图：轮次、关闭原因、双方实际阅读状态与采访动作回执。 */
+    public record DialogueAuditView(String runId, String position, String timeMillis,
+                                    boolean available, Section sessions, Section turns,
+                                    Section closes, Section reports,
+                                    java.util.List<String> notes) { }
+
+    /** 本人逐轮访谈投影：只含本人参与的会话；未读轮次不返回正文。 */
+    public record DialoguePersonView(String personPartyId, String timeMillis, boolean available,
+                                     Section sessions, Section turns,
+                                     java.util.List<String> notes) { }
+
+    /**
+     * 上帝视角逐轮访谈审计：真实轮次、关闭原因、双方实际阅读状态。
+     *
+     * @return 同一确认截止的对话审计
+     * @throws Exception 世界读取失败
+     */
+    public DialogueAuditView dialogueAudit() throws Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            var snapshot = current.snapshot();
+            List<Map<String, Object>> sessions = new ArrayList<>();
+            List<Map<String, Object>> turns = new ArrayList<>();
+            List<Map<String, Object>> closes = new ArrayList<>();
+            List<Map<String, Object>> reports = new ArrayList<>();
+            var interviews = current.interviews();
+            if (interviews == null || snapshot.information().isEmpty()) {
+                return new DialogueAuditView(runId, num(snapshot.position()),
+                        num(snapshot.timeMillis()), false, bounded(sessions), bounded(turns),
+                        bounded(closes), bounded(reports),
+                        java.util.List.of("当前档案未启用逐轮访谈。"));
+            }
+            for (InterviewRun.Coordination coordination : interviews.coordinations().values()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("taskId", coordination.taskId());
+                row.put("personPartyId", coordination.personPartyId());
+                row.put("kind", coordination.kind());
+                row.put("accepted", coordination.accepted());
+                row.put("reason", coordination.reason());
+                row.put("requestId", coordination.requestId());
+                row.put("timeMillis", num(coordination.timeMillis()));
+                reports.add(row);
+            }
+            InformationModel.State info = snapshot.information().orElseThrow().information();
+            long now = snapshot.timeMillis();
+            for (InterviewModel.State state : interviews.states()) {
+                InterviewDialogue.State dialogue = interviews.dialoguesOf(
+                        state.policy().mediaOrganizationPartyId());
+                for (InterviewModel.Session session : state.sessions()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("sessionId", session.sessionId());
+                    row.put("requestId", session.requestId());
+                    row.put("startedAtMillis", num(session.startedAtMillis()));
+                    row.put("endedAtMillis", num(session.endedAtMillis()));
+                    row.put("open", session.open());
+                    row.put("organizationPartyId", state.policy().mediaOrganizationPartyId());
+                    sessions.add(row);
+                }
+                for (InterviewDialogue.Turn turn : dialogue.turns()) {
+                    String[] pair = peersOf(state, turn.sessionId());
+                    boolean speakerRed = pair != null
+                            && InformationModel.canCite(info, turn.speakerPartyId(),
+                                    turn.docId(), turn.docVersion(), now);
+                    boolean peerRead = pair != null
+                            && InformationModel.canCite(info, otherOf(pair, turn.speakerPartyId()),
+                                    turn.docId(), turn.docVersion(), now);
+                    InformationModel.DocumentVersion version = versionOf(info, turn.docId(),
+                            turn.docVersion());
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("sessionId", turn.sessionId());
+                    row.put("sequence", num(turn.sequence()));
+                    row.put("turnId", turn.turnId());
+                    row.put("speakerPartyId", turn.speakerPartyId());
+                    row.put("peerPartyId", pair == null ? "" : otherOf(pair, turn.speakerPartyId()));
+                    row.put("docId", turn.docId());
+                    row.put("docVersion", num(turn.docVersion()));
+                    row.put("publishedAtMillis", version == null ? "" : num(version.publishedAt()));
+                    row.put("speakerRead", speakerRed);
+                    row.put("peerRead", peerRead);
+                    row.put("title", version == null ? "" : version.title());
+                    row.put("body", version == null ? "" : version.body());
+                    turns.add(row);
+                }
+                for (InterviewDialogue.DialogueClose close : dialogue.closes()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("sessionId", close.sessionId());
+                    row.put("reason", close.reason().name());
+                    closes.add(row);
+                }
+            }
+            return new DialogueAuditView(runId, num(snapshot.position()), num(snapshot.timeMillis()),
+                    true, bounded(sessions), bounded(turns), bounded(closes), bounded(reports),
+                    java.util.List.of("轮次正文只来自真实 DIRECT 文档；阅读状态取完成的阅读记录。",
+                            "回执表来自真实采访命令的结果，不做推断。",
+                            "关闭原因记录触发结束的真实规则，不推断模型动机。"));
+        });
+    }
+
+    /**
+     * 本人逐轮访谈投影：只含本人参与会话；未实际读完的轮次只给投递元数据。
+     *
+     * @param personId 已认证人物
+     * @return 本人投影
+     * @throws Exception 世界读取失败
+     */
+    public DialoguePersonView dialogueView(String personId) throws Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            var snapshot = current.snapshot();
+            List<Map<String, Object>> sessions = new ArrayList<>();
+            List<Map<String, Object>> turns = new ArrayList<>();
+            var interviews = current.interviews();
+            if (interviews == null || snapshot.information().isEmpty()) {
+                return new DialoguePersonView(personId, num(snapshot.timeMillis()), false,
+                        bounded(sessions), bounded(turns),
+                        java.util.List.of("当前档案未启用逐轮访谈。"));
+            }
+            InformationModel.State info = snapshot.information().orElseThrow().information();
+            long now = snapshot.timeMillis();
+            for (InterviewModel.State state : interviews.states()) {
+                InterviewDialogue.State dialogue = interviews.dialoguesOf(
+                        state.policy().mediaOrganizationPartyId());
+                for (InterviewModel.Session session : state.sessions()) {
+                    String[] pair = peersOf(state, session.sessionId());
+                    if (pair == null || (!pair[0].equals(personId) && !pair[1].equals(personId))) {
+                        continue;
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("sessionId", session.sessionId());
+                    row.put("requestId", session.requestId());
+                    row.put("peerPartyId", otherOf(pair, personId));
+                    row.put("startedAtMillis", num(session.startedAtMillis()));
+                    row.put("endedAtMillis", num(session.endedAtMillis()));
+                    row.put("open", session.open());
+                    row.put("closeReason", dialogue.closeOf(session.sessionId())
+                            .map(close -> close.reason().name()).orElse(""));
+                    sessions.add(row);
+                    for (InterviewDialogue.Turn turn : dialogue.turnsOf(session.sessionId())) {
+                        boolean mine = InformationModel.canCite(info, personId, turn.docId(),
+                                turn.docVersion(), now);
+                        boolean peerRead = InformationModel.canCite(info,
+                                otherOf(pair, personId), turn.docId(), turn.docVersion(), now);
+                        InformationModel.DocumentVersion version = versionOf(info, turn.docId(),
+                                turn.docVersion());
+                        Map<String, Object> item = new LinkedHashMap<>();
+                        item.put("sessionId", turn.sessionId());
+                        item.put("sequence", num(turn.sequence()));
+                        item.put("turnId", turn.turnId());
+                        item.put("speakerPartyId", turn.speakerPartyId());
+                        item.put("mine", turn.speakerPartyId().equals(personId));
+                        item.put("docId", turn.docId());
+                        item.put("docVersion", num(turn.docVersion()));
+                        item.put("readByMe", mine);
+                        item.put("readByPeer", peerRead);
+                        item.put("publishedAtMillis", version == null ? "" : num(version.publishedAt()));
+                        item.put("title", mine && version != null ? version.title() : "");
+                        item.put("body", mine && version != null ? version.body() : "");
+                        turns.add(item);
+                    }
+                }
+            }
+            return new DialoguePersonView(personId, num(snapshot.timeMillis()), true,
+                    bounded(sessions), bounded(turns),
+                    java.util.List.of("只显示本人参与的会话；未实际读完的轮次只给投递元数据。",
+                            "正文来自真实文档，不随声明或模型文本生成。"));
+        });
+    }
+
+    /** 会话双方：优先从邀请取 from/to，退回会话本身。 */
+    private static String[] peersOf(InterviewModel.State state, String sessionId) {
+        for (InterviewModel.Session session : state.sessions()) {
+            if (!session.sessionId().equals(sessionId)) {
+                continue;
+            }
+            for (InterviewModel.Invite invite : state.invites()) {
+                if (invite.requestId().equals(session.requestId())) {
+                    return new String[] {invite.fromPartyId(), invite.toPartyId()};
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String otherOf(String[] pair, String person) {
+        return pair[0].equals(person) ? pair[1] : pair[0];
+    }
+
+    private static InformationModel.DocumentVersion versionOf(InformationModel.State info,
+                                                              String docId, long version) {
+        for (InformationModel.Document document : info.documents()) {
+            if (!document.docId().equals(docId)) {
+                continue;
+            }
+            for (InformationModel.DocumentVersion candidate : document.versions()) {
+                if (candidate.version() == version) {
+                    return candidate;
+                }
+            }
+        }
+        return null;
     }
 
     /**

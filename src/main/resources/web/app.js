@@ -26,7 +26,9 @@ const state = {
   performanceRequest: 0,
   performanceHistory: null,
   mediaRequest: 0,
-  capabilities: null
+  capabilities: null,
+  dialogue: null,
+  personDialogue: null
 };
 
 const ADMIN_TABLES = ["accounts", "owners", "pending", "trades", "dividends", "keys"];
@@ -519,6 +521,7 @@ async function refreshPerson() {
   });
   $("person-catalog").textContent = view.catalog === 0
     ? "当前没有可见资料。" : "共 " + view.catalog + " 条可见目录项。";
+  await renderPersonalDialogue(generation);
 }
 
 async function switchPerson(personId) {
@@ -603,7 +606,7 @@ const pages = {
   people: ["人物视角", "以各自的权限观察世界，保留信息边界。"],
   models: ["模型运行", "让人物依据自己的观察完成一次判断，查看实际输入与回报。"],
   settings: ["模型与密钥", "为五类场景配置模型、密钥槽位和调用预算。"],
-  interview: ["采访预约", "上帝视角查看双边预约、实际区间与机构工时；逐轮访谈尚未接入。"]
+  interview: ["采访预约", "查看采访预约、逐轮对话、实际阅读与机构工时。"]
 };
 function selectPage(page, refresh = true) {
   if (!pages[page]) return;
@@ -1133,6 +1136,7 @@ async function loadDetail(page) {
   }
   state.details[page] = result.payload;
   renderDetail(page, result.payload);
+  if (page === "interview") await loadDialogue(generation, pageVersion);
 }
 
 function renderDetail(page, view) {
@@ -2379,7 +2383,73 @@ function clearInterviewDom() {
   for (const id of ["interview-invites-empty", "interview-sessions-empty", "interview-works-empty"]) {
     $(id).textContent = "";
   }
+  for (const id of ["dialogue-sessions", "dialogue-turns", "dialogue-closes", "dialogue-reports"]) {
+    fillTable(id, [], () => undefined);
+  }
+  if ($("dialogue-note")) $("dialogue-note").textContent = "";
+  state.dialogue = null;
   delete state.details.interview;
+}
+
+/** 逐轮访谈审计：轮次、关闭原因与双方真实阅读状态。 */
+async function loadDialogue(generation, pageVersion) {
+  let result;
+  try {
+    result = await request("GET", "/api/admin/dialogue");
+  } catch (failure) {
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "admin"
+      || pageVersion !== state.pageVersion || state.page !== "interview") return;
+  if (result.status === 401 || result.status === 403) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) return;
+  state.dialogue = result.payload;
+  renderDialogue(result.payload);
+}
+
+function renderDialogue(view) {
+  const sessions = (view && view.sessions) || [];
+  const turns = (view && view.turns) || [];
+  const closes = (view && view.closes) || [];
+  fillSection("dialogue-sessions-empty", "dialogue-sessions-count", sessions);
+  fillTable("dialogue-sessions", sessions.rows || [], (tr, row) => {
+    cell(tr, row.sessionId);
+    cell(tr, row.requestId);
+    cell(tr, row.organizationPartyId);
+    cell(tr, row.startedAtMillis, "num");
+    cell(tr, row.endedAtMillis, "num");
+    cell(tr, row.open ? "是" : "否");
+  });
+  fillTable("dialogue-turns", turns.rows || [], (tr, row) => {
+    cell(tr, row.sessionId);
+    cell(tr, row.sequence, "num");
+    cell(tr, row.speakerPartyId);
+    cell(tr, row.peerPartyId);
+    cell(tr, row.turnId);
+    cell(tr, row.docId);
+    cell(tr, row.docVersion, "num");
+    cell(tr, row.publishedAtMillis, "num");
+    cell(tr, row.speakerRead ? "已读" : "未读");
+    cell(tr, row.peerRead ? "已读" : "未读");
+    cell(tr, row.title);
+    cell(tr, row.body);
+  });
+  fillTable("dialogue-closes", closes.rows || [], (tr, row) => {
+    cell(tr, row.sessionId);
+    cell(tr, row.reason);
+  });
+  const reports = (view && view.reports) || [];
+  fillTable("dialogue-reports", reports.rows || [], (tr, row) => {
+    cell(tr, row.taskId);
+    cell(tr, row.personPartyId);
+    cell(tr, row.kind);
+    cell(tr, row.accepted ? "已接受" : "已拒绝");
+    cell(tr, row.reason);
+    cell(tr, row.requestId);
+    cell(tr, row.timeMillis, "num");
+  });
+  $("dialogue-note").textContent = (view && view.notes ? view.notes.join(" ") : "")
+    + (view && view.available ? "" : " 当前档案未启用逐轮访谈。");
 }
 
 function windowText(start, end) {
@@ -2436,12 +2506,56 @@ function renderInterviewAudit(view) {
 function clearPersonalInterview() {
   const panel = $("person-interview");
   if (panel) panel.hidden = true;
-  for (const id of ["person-interview-invites", "person-interview-contacts"]) {
+  for (const id of ["person-interview-invites", "person-interview-contacts",
+    "person-dialogue-sessions", "person-dialogue-turns"]) {
     fillTable(id, [], () => undefined);
   }
   $("person-interview-tools").textContent = "";
   $("person-interview-invites-empty").textContent = "";
   $("person-interview-contacts-empty").textContent = "";
+  if ($("person-dialogue-note")) $("person-dialogue-note").textContent = "";
+  state.personDialogue = null;
+}
+
+/** 本人逐轮访谈：未读轮次只有元数据，正文为空（服务器已裁剪）。 */
+async function renderPersonalDialogue(generation) {
+  let result;
+  try {
+    result = await request("GET", "/api/me/dialogue");
+  } catch (failure) {
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (result.status === 401) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) return;
+  const view = result.payload;
+  state.personDialogue = view;
+  const sessions = (view.sessions && view.sessions.rows) || [];
+  const turns = (view.turns && view.turns.rows) || [];
+  fillTable("person-dialogue-sessions", sessions, (tr, row) => {
+    cell(tr, row.sessionId);
+    cell(tr, row.peerPartyId);
+    cell(tr, row.startedAtMillis, "num");
+    cell(tr, row.endedAtMillis, "num");
+    cell(tr, row.open ? "是" : "否");
+    cell(tr, row.closeReason || "—");
+  });
+  fillTable("person-dialogue-turns", turns, (tr, row) => {
+    cell(tr, row.sessionId);
+    cell(tr, row.sequence, "num");
+    cell(tr, row.mine ? "本人" : "对方");
+    cell(tr, row.docId);
+    cell(tr, row.docVersion, "num");
+    cell(tr, row.readByMe ? "已读" : "未读");
+    cell(tr, row.readByPeer ? "已读" : "未读");
+    cell(tr, row.readByMe ? row.title : "");
+    cell(tr, row.readByMe ? row.body : "");
+  });
+  const panel = $("person-interview");
+  if (panel && view.available && (sessions.length || turns.length)) panel.hidden = false;
+  if ($("person-dialogue-note")) {
+    $("person-dialogue-note").textContent = (view.notes || []).join(" ");
+  }
 }
 
 async function renderPersonalInterview(tools, generation) {

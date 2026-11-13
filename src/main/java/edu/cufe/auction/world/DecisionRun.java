@@ -57,6 +57,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
 
     /** 信念档案的工具合同版本（新增三个认知工具）。 */
     public static final String TOOL_CONTRACT_VERSION_V2 = "role-decision-tools-v2";
+    /** schema15：逐轮访谈工具参数的完整合同。 */
+    public static final String TOOL_CONTRACT_VERSION_V3 = "role-decision-tools-v3";
 
     /** 决定动作内部命令前缀。 */
     private static final String PREFIX_COMMAND = "dec";
@@ -308,11 +310,27 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
     public static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
                                    List<PendingAction> pending, List<String> tools,
                                    DecisionModel.Config config, String toolContractVersion) {
+        return inputText(view, wakeReason, cutoffTimeMillis, pending, tools, config,
+                toolContractVersion, null);
+    }
+
+    /**
+     * 带本人员工采访观察的输入文本；null 或非 v3 时与旧输入逐字一致。
+     *
+     * @param interview v3 的确定性本人采访投影；旧档传 null
+     */
+    public static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
+                                   List<PendingAction> pending, List<String> tools,
+                                   DecisionModel.Config config, String toolContractVersion,
+                                   com.fasterxml.jackson.databind.JsonNode interview) {
         Objects.requireNonNull(view, "观察视图");
         Objects.requireNonNull(config, "冻结配置");
         Objects.requireNonNull(toolContractVersion, "工具合同版本");
         ObjectNode root = MAPPER.createObjectNode();
         root.put("toolContractVersion", toolContractVersion);
+        if (TOOL_CONTRACT_VERSION_V3.equals(toolContractVersion) && interview != null) {
+            root.set("interview", interview);
+        }
         root.put("person", view.personPartyId());
         root.put("wakeReason", wakeReason);
         root.put("observedAt", cutoffTimeMillis);
@@ -565,7 +583,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             Long millis = config.actionMillisByTool().get(tool);
             node.put("actionMillis", millis == null ? 0L : millis);
             ArrayNode parameters = node.putArray("parameters");
-            for (String[] field : toolParameters(tool)) {
+            for (String[] field : toolParameters(tool, toolContractVersion)) {
                 ObjectNode parameter = parameters.addObject();
                 parameter.put("name", field[0]);
                 parameter.put("type", field[1]);
@@ -666,9 +684,50 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
      * @return 有序字段列表；未知工具返回空表
      */
     public static List<String[]> toolParameters(String tool) {
+        return toolParameters(tool, TOOL_CONTRACT_VERSION);
+    }
+
+    /**
+     * 按工具合同版本返回参数：v3 才补充采访工具字段，旧 1–14 输入保持原样。
+     *
+     * @param tool 工具名
+     * @param version 工具合同版本
+     * @return 有序字段列表
+     */
+    public static List<String[]> toolParameters(String tool, String version) {
         if (tool == null) {
             return List.of();
         }
+        if (TOOL_CONTRACT_VERSION_V3.equals(version)) {
+            switch (tool) {
+                case RoleTradingView.TOOL_INTERVIEW_INVITE -> {
+                    return List.of(new String[]{"requestClientId", "string"},
+                            new String[]{"toPartyId", "string"}, new String[]{"topic", "string"},
+                            new String[]{"windowStartMillis", "long"},
+                            new String[]{"windowEndMillis", "long"},
+                            new String[]{"durationMillis", "long"});
+                }
+                case RoleTradingView.TOOL_INTERVIEW_RESPOND -> {
+                    return List.of(new String[]{"requestId", "string"},
+                            new String[]{"accept", "boolean"}, new String[]{"startMillis", "long"});
+                }
+                case RoleTradingView.TOOL_INTERVIEW_CANCEL,
+                     RoleTradingView.TOOL_INTERVIEW_END -> {
+                    return List.<String[]>of(new String[]{"requestId", "string"});
+                }
+                case RoleTradingView.TOOL_INTERVIEW_SPEAK -> {
+                    return List.of(new String[]{"requestId", "string"},
+                            new String[]{"title", "string"}, new String[]{"body", "string"},
+                            new String[]{"readDurationMillis", "long"});
+                }
+                default -> {
+                }
+            }
+        }
+        return toolParametersV1(tool);
+    }
+
+    private static List<String[]> toolParametersV1(String tool) {
         return switch (tool) {
             case RoleTradingView.TOOL_READING_START -> List.of(
                     new String[]{"docId", "string"}, new String[]{"version", "long"});
