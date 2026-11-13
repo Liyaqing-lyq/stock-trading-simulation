@@ -442,13 +442,21 @@ public final class MediaModel {
      * @param aliases         本版要绑定的别名
      */
     public record EvidenceContext(List<ReadingRef> privateEvidence, MediaEvidence.State evidence,
-                                  List<MediaEvidence.AliasBinding> aliases) {
+                                  List<MediaEvidence.AliasBinding> aliases,
+                                  MediaEvidence.State ledger) {
 
         /** 校验字段并冻结。 */
         public EvidenceContext {
             privateEvidence = List.copyOf(privateEvidence == null ? List.of() : privateEvidence);
             evidence = evidence == null ? MediaEvidence.empty() : evidence;
             aliases = List.copyOf(aliases == null ? List.of() : aliases);
+            ledger = ledger == null ? evidence : ledger;
+        }
+
+        /** 三参构造：绑定账本与持久状态同一份（单机构即如此）。 */
+        public EvidenceContext(List<ReadingRef> privateEvidence, MediaEvidence.State evidence,
+                               List<MediaEvidence.AliasBinding> aliases) {
+            this(privateEvidence, evidence, aliases, evidence);
         }
 
         /** 无私有证据、无别名的旧路径上下文。 */
@@ -775,7 +783,7 @@ public final class MediaModel {
         List<Ref> roots;
         try {
             roots = rootsFor(state, mediaContext, information, request.evidence(),
-                    context.privateEvidence(), context.evidence(), true);
+                    context.privateEvidence(), context.ledger(), true);
         } catch (IllegalArgumentException invalidProvenance) {
             return evidenceReject(state, information, context.evidence(),
                     REASON_EVIDENCE_PROVENANCE);

@@ -744,6 +744,160 @@ defineCase("person-dialogue-failure-keeps-panel-clean", async () => {
   return "500 不渲染不跳转，恢复后正常";
 });
 
+// ---------------------------------------------------------------- 证据与共享（schema16）
+function evidenceSection(rows) {
+  return { total: rows.length, rows };
+}
+
+function adminEvidenceView() {
+  return {
+    runId: "run-1", position: "20", timeMillis: "9000", available: true,
+    roots: evidenceSection([{ organizationPartyId: "wire", docId: "doc:private", version: "1",
+      aliasCount: "1", shareCount: "1" }]),
+    aliases: evidenceSection([{ organizationPartyId: "wire", storyId: "m:4:rita:story-1",
+      revisionNo: "1", docId: "doc:private", version: "1", publicLabel: "受访者A",
+      publicDocId: "story-public-1", publicVersion: "1" }]),
+    shares: evidenceSection([{ organizationPartyId: "wire", shareId: "share-1",
+      docId: "doc:private", version: "1", recipientPartyId: "investor",
+      sharingDocId: "share-doc-1", sharingVersion: "1", recipientRead: false }]),
+    notes: ["证据备注"]
+  };
+}
+
+function personEvidenceView(extra = {}) {
+  return Object.assign({
+    personPartyId: "rita", timeMillis: "9000", available: true,
+    labels: evidenceSection([{ storyId: "m:4:rita:story-1", publicDocId: "story-public-1",
+      publicVersion: "1", labelledRootDocId: "doc:private", publicLabel: "受访者A" }]),
+    shares: evidenceSection([{ shareId: "share-1", sharingDocId: "share-doc-1",
+      sharingVersion: "1", sharedRootDocId: "doc:private", sharedRootVersion: "1",
+      title: "来源说明", body: "这是共享说明" }]),
+    notes: ["个人证据备注"]
+  }, extra);
+}
+
+defineCase("admin-evidence-rendered-and-cleared", async () => {
+  const world = makeWorld(async (method, url) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/admin/view") return { status: 200, payload: {
+      runId: "run-1", timeMillis: 9000, position: 20, phase: "IDLE", paused: false,
+      providerKind: "SCRIPTED", barrierPending: false, pendingCount: 0, deliveredCount: 0,
+      accounts: [], owners: [], pending: [], trades: [], dividendReports: [],
+      valuationsAvailable: true } };
+    if (url === "/api/admin/keys") return { status: 200, payload: { slots: [] } };
+    if (url === "/api/admin/routes") return { status: 200,
+      payload: { revision: 1, baseUrl: "x", connected: false, routes: [] } };
+    if (url === "/api/admin/capabilities") return { status: 200, payload: {
+      supportedScenes: [], persons: [], mediaAvailable: false, position: "20",
+      timeMillis: "9000" } };
+    if (url === "/api/admin/evidence") return { status: 200, payload: adminEvidenceView() };
+    if (url === "/api/session/logout") return { status: 200, payload: {} };
+    return { status: 200, payload: {} };
+  }, "evidence-admin");
+  await bootSettled(world);
+  world.context.showMode("admin");
+  world.context.selectPage("evidence", true);
+  try {
+    await waitFor(() => world.rows("evidence-roots") === 1, "证据页渲染");
+  } catch (failure) {
+    throw new Error("证据页未渲染，calls=" + JSON.stringify(world.calls)
+      + " page=" + world.state.page + " cache=" + JSON.stringify(world.state.evidence));
+  }
+
+  assert.equal(world.rows("evidence-aliases"), 1, "别名表必须渲染");
+  assert.equal(world.rows("evidence-shares"), 1, "共享表必须渲染");
+  assert.equal(world.rows("evidence-shares") >= 1
+    && world.$("evidence-shares").querySelector("tbody").children[0]
+      .children[7].textContent, "未读", "共享记录必须显示接收者未读");
+  assert.ok(world.$("evidence-note").textContent.includes("证据备注"), "备注来自服务器");
+
+  world.context.selectPage("overview", false);
+  for (const id of ["evidence-roots", "evidence-aliases", "evidence-shares"]) {
+    assert.equal(world.rows(id), 0, "离页必须清空 " + id);
+  }
+  assert.equal(world.state.evidence, null, "离页必须清空证据 cache");
+
+  world.context.selectPage("evidence", false);
+  await world.context.loadEvidence(world.state.generation, world.state.pageVersion);
+  assert.equal(world.rows("evidence-roots"), 1, "前置：重新渲染");
+  await world.context.logout();
+  assert.equal(world.rows("evidence-roots"), 0, "登出必须清空证据根");
+  assert.equal(world.state.evidence, null, "登出必须清空证据 cache");
+  return "证据页渲染并在离页/登出清空";
+});
+
+defineCase("person-evidence-shows-only-read-share", async () => {
+  let sessionPerson = null;
+  let showEvidence = true;
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      sessionPerson = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: sessionPerson } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("rita") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "rita",
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") return { status: 200, payload: { personPartyId: "rita",
+      timeMillis: "9000", available: true, sessions: evidenceSection([]),
+      turns: evidenceSection([]), notes: [] } };
+    if (url === "/api/me/evidence") return { status: 200, payload: showEvidence
+      ? personEvidenceView() : personEvidenceView({ labels: evidenceSection([]), shares: evidenceSection([]) }) };
+    return { status: 200, payload: {} };
+  }, "evidence-person");
+  await bootSettled(world);
+  await world.context.switchPerson("rita");
+
+  assert.equal(world.rows("person-evidence-shares"), 1, "本人已读共享必须渲染");
+  assert.equal(world.rows("person-evidence-labels"), 1, "本人已读公开标签必须渲染");
+  const shareCells = world.$("person-evidence-shares").querySelector("tbody").children[0]
+    .children.map(cell => cell.textContent);
+  assert.ok(shareCells.includes("来源说明"), "共享必须显示说明标题，实际=" + shareCells);
+  assert.ok(shareCells.includes("这是共享说明"), "必须显示实际读到的说明正文");
+  assert.ok(!shareCells.includes("doc:private"), "说明不额外披露后台私证编号");
+
+  showEvidence = false;
+  await world.context.renderPersonalEvidence(world.state.generation);
+  assert.equal(world.rows("person-evidence-shares"), 0, "后来变空时清空共享");
+  assert.equal(world.rows("person-evidence-labels"), 0, "后来变空时清空标签");
+  assert.equal(world.$("person-evidence").hidden, true, "后来变空时隐藏面板");
+
+  showEvidence = true;
+  await world.context.renderPersonalEvidence(world.state.generation);
+  assert.equal(world.rows("person-evidence-shares"), 1, "切身份前恢复非空状态");
+
+  world.context.showMode("login");
+  assert.equal(world.rows("person-evidence-shares"), 0, "切身份必须清空本人共享");
+  assert.equal(world.rows("person-evidence-labels"), 0, "切身份必须清空本人标签");
+  assert.equal(world.state.personEvidence, null, "切身份必须清空本人证据 cache");
+  return "只显示已读共享与标签，切身份清空";
+});
+
+defineCase("person-evidence-empty-hides-panel", async () => {
+  const empty = personEvidenceView({ labels: evidenceSection([]),
+    shares: evidenceSection([]) });
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      return { status: 200,
+        payload: { personId: JSON.parse(options.body).personId } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("rita") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "rita",
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") return { status: 200, payload: { personPartyId: "rita",
+      timeMillis: "9000", available: true, sessions: evidenceSection([]),
+      turns: evidenceSection([]), notes: [] } };
+    if (url === "/api/me/evidence") return { status: 200, payload: empty };
+    return { status: 200, payload: {} };
+  }, "evidence-empty");
+  await bootSettled(world);
+  await world.context.switchPerson("rita");
+  assert.equal(world.rows("person-evidence-shares"), 0, "没有共享时不得有空行");
+  assert.equal(world.$("person-evidence").hidden, true, "没有内容时不得显示证据面板");
+  return "无共享时不出行也不显示面板";
+});
+
 // ---------------------------------------------------------------- 运行
 (async () => {
   const results = [];

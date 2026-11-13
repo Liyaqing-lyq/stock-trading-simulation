@@ -28,7 +28,9 @@ const state = {
   mediaRequest: 0,
   capabilities: null,
   dialogue: null,
-  personDialogue: null
+  personDialogue: null,
+  evidence: null,
+  personEvidence: null
 };
 
 const ADMIN_TABLES = ["accounts", "owners", "pending", "trades", "dividends", "keys"];
@@ -165,6 +167,7 @@ function clearAdminDom() {
 function clearPersonDom() {
   clearPersonalMedia();
   clearPersonalInterview();
+  clearPersonalEvidence();
   $("person-name").textContent = "—";
   $("person-summary").replaceChildren();
   for (const id of PERSON_TABLES) {
@@ -256,6 +259,9 @@ async function refreshAdmin() {
   }
   if (state.page === "market" && current()) {
     await loadMarketHistory(generation, pageVersion);
+  }
+  if (state.page === "evidence" && current()) {
+    await loadEvidence(generation, pageVersion);
   }
 }
 
@@ -522,6 +528,7 @@ async function refreshPerson() {
   $("person-catalog").textContent = view.catalog === 0
     ? "当前没有可见资料。" : "共 " + view.catalog + " 条可见目录项。";
   await renderPersonalDialogue(generation);
+  await renderPersonalEvidence(generation);
 }
 
 async function switchPerson(personId) {
@@ -606,7 +613,8 @@ const pages = {
   people: ["人物视角", "以各自的权限观察世界，保留信息边界。"],
   models: ["模型运行", "让人物依据自己的观察完成一次判断，查看实际输入与回报。"],
   settings: ["模型与密钥", "为五类场景配置模型、密钥槽位和调用预算。"],
-  interview: ["采访预约", "查看采访预约、逐轮对话、实际阅读与机构工时。"]
+  interview: ["采访预约", "查看采访预约、逐轮对话、实际阅读与机构工时。"],
+  evidence: ["证据与共享", "查看真实证据根、公开标签与实际共享；共享不等于已读。"]
 };
 function selectPage(page, refresh = true) {
   if (!pages[page]) return;
@@ -615,6 +623,7 @@ function selectPage(page, refresh = true) {
   if (state.page === "market" && page !== "market") clearMarketDom();
   if (state.page === "media" && page !== "media") clearMediaDom();
   if (state.page === "interview" && page !== "interview") clearInterviewDom();
+  if (state.page === "evidence" && page !== "evidence") clearEvidenceDom();
   if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
   state.page = page;
   state.pageVersion += 1;
@@ -1082,6 +1091,7 @@ function label(group, value) {
 function clearDetailDom() {
   clearMediaDom();
   clearInterviewDom();
+  clearEvidenceDom();
   state.details = {};
   clearRecall();
   clearBeliefs();
@@ -2450,6 +2460,107 @@ function renderDialogue(view) {
   });
   $("dialogue-note").textContent = (view && view.notes ? view.notes.join(" ") : "")
     + (view && view.available ? "" : " 当前档案未启用逐轮访谈。");
+}
+
+function clearEvidenceDom() {
+  for (const id of ["evidence-roots", "evidence-aliases", "evidence-shares"]) {
+    fillTable(id, [], () => undefined);
+  }
+  if ($("evidence-note")) $("evidence-note").textContent = "";
+  state.evidence = null;
+}
+
+/** 管理员证据审计：真实根、公开标签与实际共享。 */
+async function loadEvidence(generation, pageVersion) {
+  let result;
+  try {
+    result = await request("GET", "/api/admin/evidence");
+  } catch (failure) {
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "admin"
+      || pageVersion !== state.pageVersion || state.page !== "evidence") return;
+  if (result.status === 401 || result.status === 403) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) return;
+  state.evidence = result.payload;
+  renderEvidence(result.payload);
+}
+
+function renderEvidence(view) {
+  const roots = (view && view.roots && view.roots.rows) || [];
+  const aliases = (view && view.aliases && view.aliases.rows) || [];
+  const shares = (view && view.shares && view.shares.rows) || [];
+  fillTable("evidence-roots", roots, (tr, row) => {
+    cell(tr, row.organizationPartyId);
+    cell(tr, row.docId);
+    cell(tr, row.version, "num");
+    cell(tr, row.aliasCount, "num");
+    cell(tr, row.shareCount, "num");
+  });
+  fillTable("evidence-aliases", aliases, (tr, row) => {
+    cell(tr, row.organizationPartyId);
+    cell(tr, row.storyId);
+    cell(tr, row.revisionNo, "num");
+    cell(tr, row.docId);
+    cell(tr, row.version, "num");
+    cell(tr, row.publicLabel);
+    cell(tr, row.publicDocId || "—");
+  });
+  fillTable("evidence-shares", shares, (tr, row) => {
+    cell(tr, row.organizationPartyId);
+    cell(tr, row.shareId);
+    cell(tr, row.docId);
+    cell(tr, row.version, "num");
+    cell(tr, row.recipientPartyId);
+    cell(tr, row.sharingDocId);
+    cell(tr, row.sharingVersion, "num");
+    cell(tr, row.recipientRead ? "已读" : "未读");
+  });
+  $("evidence-note").textContent = (view && view.notes ? view.notes.join(" ") : "")
+    + (view && view.available ? "" : " 当前档案未启用证据模块。");
+}
+
+function clearPersonalEvidence() {
+  if ($("person-evidence")) $("person-evidence").hidden = true;
+  for (const id of ["person-evidence-labels", "person-evidence-shares"]) {
+    if ($(id)) fillTable(id, [], () => undefined);
+  }
+  if ($("person-evidence-note")) $("person-evidence-note").textContent = "";
+  state.personEvidence = null;
+}
+
+/** 本人证据：只渲染本人实际读到的公开标签与共享说明。 */
+async function renderPersonalEvidence(generation) {
+  let result;
+  try {
+    result = await request("GET", "/api/me/evidence");
+  } catch (failure) {
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (result.status === 401) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) return;
+  const view = result.payload;
+  state.personEvidence = view;
+  const labels = (view.labels && view.labels.rows) || [];
+  const shares = (view.shares && view.shares.rows) || [];
+  fillTable("person-evidence-labels", labels, (tr, row) => {
+    cell(tr, row.storyId);
+    cell(tr, row.publicDocId);
+    cell(tr, row.publicVersion, "num");
+    cell(tr, row.publicLabel);
+  });
+  fillTable("person-evidence-shares", shares, (tr, row) => {
+    cell(tr, row.title);
+    cell(tr, row.body);
+    cell(tr, row.sharingDocId);
+    cell(tr, row.sharingVersion, "num");
+  });
+  const panel = $("person-evidence");
+  if (panel) panel.hidden = !(view.available && (labels.length || shares.length));
+  if ($("person-evidence-note")) {
+    $("person-evidence-note").textContent = (view.notes || []).join(" ");
+  }
 }
 
 function windowText(start, end) {

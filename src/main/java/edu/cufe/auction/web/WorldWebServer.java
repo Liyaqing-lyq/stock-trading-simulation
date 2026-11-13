@@ -245,7 +245,8 @@ public final class WorldWebServer implements AutoCloseable {
             }
             if (("/api/admin/media".equals(path) || "/api/admin/capabilities".equals(path)
                     || "/api/admin/interview".equals(path)
-                    || "/api/admin/dialogue".equals(path))
+                    || "/api/admin/dialogue".equals(path)
+                    || "/api/admin/evidence".equals(path))
                     && "GET".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> mediaOverview(exchange, path));
                 return;
@@ -310,6 +311,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requirePerson(exchange, session.get(), () -> dialogueMe(exchange, session.get()));
                 return;
             }
+            if ("/api/me/evidence".equals(path) && "GET".equals(method)) {
+                requirePerson(exchange, session.get(), () -> evidenceMe(exchange, session.get()));
+                return;
+            }
             send(exchange, 404, error("NOT_FOUND", "没有这个接口"));
         } catch (StopHandling stop) {
             return;
@@ -353,6 +358,12 @@ public final class WorldWebServer implements AutoCloseable {
             return true;
         }
         if ("/api/me/dialogue".equals(path) && "GET".equals(method)) {
+            return true;
+        }
+        if ("/api/me/evidence".equals(path) && "GET".equals(method)) {
+            return true;
+        }
+        if ("/api/admin/evidence".equals(path) && "GET".equals(method)) {
             return true;
         }
         if ("/api/admin/interview".equals(path) && "GET".equals(method)) {
@@ -672,6 +683,7 @@ public final class WorldWebServer implements AutoCloseable {
             view = path.equals("/api/admin/media") ? host.mediaAudit()
                     : path.equals("/api/admin/interview") ? host.interviewAudit()
                     : path.equals("/api/admin/dialogue") ? host.dialogueAudit()
+                    : path.equals("/api/admin/evidence") ? host.evidenceAudit()
                     : host.liveCapabilities();
         } catch (WorldWebHost.BusyException busy) {
             throw busy;
@@ -978,6 +990,27 @@ public final class WorldWebServer implements AutoCloseable {
         Object view;
         try {
             view = host.dialogueView(session.personId());
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /**
+     * 本人证据投影：只返回本人实际读到的公开标签与共享说明。
+     *
+     * @param exchange 请求
+     * @param session  已认证人物会话
+     * @throws IOException                写回失败
+     * @throws WorldWebHost.BusyException 写入队列已满
+     */
+    private void evidenceMe(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        Object view;
+        try {
+            view = host.evidenceView(session.personId());
         } catch (WorldWebHost.BusyException busy) {
             throw busy;
         } catch (Exception failure) {

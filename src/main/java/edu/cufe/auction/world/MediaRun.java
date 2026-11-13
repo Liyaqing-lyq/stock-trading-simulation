@@ -54,9 +54,12 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
     /** 取消本人未完成的媒体工作。 */
     public static final String KIND_CANCEL = PendingTask.MEDIA_WORK_CANCEL_V1;
 
+    /** 证据共享：结构计费按真实跨度，冻结值由运行层用 EvidenceRun.Config 核对。 */
+    public static final String KIND_EVIDENCE_SHARE = PendingTask.MEDIA_EVIDENCE_SHARE_V1;
+
     /** 本桥登记的全部媒体任务种类。 */
     public static final Set<String> KINDS = Set.of(KIND_PROPOSE, KIND_SUBMIT, KIND_REVIEW,
-            KIND_PUBLISH, KIND_CORRECTION, KIND_CANCEL);
+            KIND_PUBLISH, KIND_CORRECTION, KIND_CANCEL, KIND_EVIDENCE_SHARE);
 
     /** 采访协调种类（schema14 才可能出现）：只进同一工时账，不进媒体故事流。 */
     public static final Set<String> INTERVIEW_KINDS = Set.of(
@@ -78,7 +81,7 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
      */
     public static boolean knownKind(String kind) {
         return kind != null && (KINDS.contains(kind) || INTERVIEW_KINDS.contains(kind)
-                || KIND_INTERVIEW_SESSION.equals(kind));
+                || KIND_INTERVIEW_SESSION.equals(kind) || KIND_EVIDENCE_SHARE.equals(kind));
     }
 
     /**
@@ -298,7 +301,8 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
             }
             long span = work.completedAtMillis() - work.startedAtMillis();
             boolean interview = INTERVIEW_KINDS.contains(work.kind())
-                    || KIND_INTERVIEW_SESSION.equals(work.kind());
+                    || KIND_INTERVIEW_SESSION.equals(work.kind())
+                    || KIND_EVIDENCE_SHARE.equals(work.kind());
             // 采访种类不接受冻结时长查表：计费上界就是它自己占用的真实跨度，
             // 由运行层用原命令/会话事实重算，Work 不能自报一个更短的时长。
             long allowed = interview ? span

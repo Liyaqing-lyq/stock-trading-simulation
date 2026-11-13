@@ -1,5 +1,7 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.Collections;
@@ -564,10 +566,20 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
      * @param title                   标题
      * @param body                    正文
      * @param publicSourceDescription 公开来源描述
-     * @param evidence                本人范围证据
+     * @param evidence                本人范围证据（公开与本人真实读过的非公开材料同列）
+     * @param aliases                 本版展示别名；只给根与标签，旧档案省略
      */
     public record MediaSubmitDraft(String storyId, int expectedRevision, String title, String body,
-                                   String publicSourceDescription, List<MediaCitation> evidence) {
+                                   String publicSourceDescription, List<MediaCitation> evidence,
+                                   @JsonInclude(JsonInclude.Include.NON_EMPTY)
+                                   List<AliasDraft> aliases) {
+
+        /** 旧六参构造：没有别名，序列化与旧 schema 逐字一致。 */
+        public MediaSubmitDraft(String storyId, int expectedRevision, String title, String body,
+                                String publicSourceDescription, List<MediaCitation> evidence) {
+            this(storyId, expectedRevision, title, body, publicSourceDescription, evidence,
+                    List.of());
+        }
 
         /** 校验字段并冻结证据。 */
         public MediaSubmitDraft {
@@ -576,8 +588,54 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
             requireText(body, "稿件正文");
             Objects.requireNonNull(publicSourceDescription, "公开来源描述");
             evidence = List.copyOf(Objects.requireNonNull(evidence, "证据"));
+            aliases = List.copyOf(aliases == null ? List.of() : aliases);
             if (expectedRevision < 0) {
                 throw new IllegalArgumentException("期望提交次数不能为负：" + expectedRevision);
+            }
+        }
+    }
+
+    /**
+     * 一条展示别名：只给真实根与公开标签。
+     *
+     * <p>稿件与提交次数由真实投稿派生（本版真实证据展开出的根），模型不能指定别稿或旧版本。</p>
+     *
+     * @param rootDocId   真实根资料
+     * @param rootVersion 根版本
+     * @param label       公开标签
+     */
+    public record AliasDraft(String rootDocId, long rootVersion, String label) {
+
+        /** 校验字段。 */
+        public AliasDraft {
+            requireText(rootDocId, "别名根资料");
+            requireText(label, "公开标签");
+            if (rootVersion < 1) {
+                throw new IllegalArgumentException("别名根版本必须从 1 开始：" + rootVersion);
+            }
+        }
+    }
+
+    /**
+     * 身份共享：把本人真实读过的材料以身份说明共享给指定接收者。
+     *
+     * @param rootDocId        本人实际读到的根（可以是他人共享过来的身份材料，按绑定链归原根）
+     * @param rootVersion      该根版本
+     * @param recipientPartyId 真实接收者
+     * @param note             可选补充说明
+     */
+    public record MediaShareDraft(String rootDocId, long rootVersion, String recipientPartyId,
+                                  String note) {
+
+        /** 校验字段。 */
+        public MediaShareDraft {
+            requireText(rootDocId, "共享根资料");
+            requireText(recipientPartyId, "接收者");
+            if (rootVersion < 1) {
+                throw new IllegalArgumentException("共享根版本必须从 1 开始：" + rootVersion);
+            }
+            if (note == null) {
+                note = "";
             }
         }
     }
@@ -815,6 +873,24 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
     public String submitStory(String clientCommandId, String clientTaskId, long dueMillis,
                               MediaSubmitDraft draft) throws IOException {
         return runtime.scheduleMediaStory(this, PendingTask.MEDIA_STORY_SUBMIT_V1,
+                clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 以真实身份材料共享给指定接收者；稿件与提交次数不参与，人物由会话绑定。
+     *
+     * <p>共享是真实媒体动作：占用冻结的共享工时，失败按现有媒体路径记为业务拒绝。</p>
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           共享参数
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String shareEvidence(String clientCommandId, String clientTaskId, long dueMillis,
+                                MediaShareDraft draft) throws IOException {
+        return runtime.scheduleMediaStory(this, PendingTask.MEDIA_EVIDENCE_SHARE_V1,
                 clientCommandId, clientTaskId, dueMillis, draft);
     }
 

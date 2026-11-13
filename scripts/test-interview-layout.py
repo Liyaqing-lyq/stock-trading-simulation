@@ -71,4 +71,18 @@ for table_id, columns in {"person-dialogue-sessions": 6, "person-dialogue-turns"
     assert table[0] == "table" and inside(table, "id", "person-interview"), table_id
     descendants = [node for node in layout.nodes if inside(node, "id", table_id)]
     assert sum(node[0] == "th" for node in descendants) == columns, table_id
+
+# 证据与共享（schema16）：管理三表在 admin 的证据面板内；人物两表在 person 证据卡内
+for table_id, columns in {"evidence-roots": 5, "evidence-aliases": 7,
+                          "evidence-shares": 8}.items():
+    table = layout.unique("id", table_id)
+    assert table[0] == "table" and inside(table, "data-panel", "evidence"), table_id
+    descendants = [node for node in layout.nodes if inside(node, "id", table_id)]
+    assert sum(node[0] == "th" for node in descendants) == columns, table_id
+    assert sum(node[0] == "tbody" for node in descendants) == 1, table_id
+for table_id, columns in {"person-evidence-labels": 4, "person-evidence-shares": 4}.items():
+    table = layout.unique("id", table_id)
+    assert table[0] == "table" and inside(table, "id", "person-evidence"), table_id
+    descendants = [node for node in layout.nodes if inside(node, "id", table_id)]
+    assert sum(node[0] == "th" for node in descendants) == columns, table_id
 print("INTERVIEW_LAYOUT=PASS")

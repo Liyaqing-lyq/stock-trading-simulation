@@ -4,7 +4,7 @@
 
 ## 当前接续入口（2026-11-13，b/c整合中）
 
-先读 `logs/implementation-20261106-continued/interview-runtime-root/current.md`，再读 `docs/CURRENT_IMPLEMENTATION.md`。主树bccd085/PR41已正式1389及CI通过；当前codex/world-interview-dialogue已接独审通过的b后台3及6测，尚未组合正式验证。Web final2与c纯核4正在差量独审，准确会话见current.md顶部。PR41实时已合并，Root未操作合并。持久Web旧记录18080/media，本轮未核存活；总体基线未完成。以下旧时间段仅为历史，不重复读取/运行。
+先读 `logs/implementation-20261106-continued/interview-runtime-root/current.md`，再读 `docs/CURRENT_IMPLEMENTATION.md`。schema16后端2、Web Root候选4与工程纯核2已接主树，本次正式1468项及CSV/Web/GUI/JavaDoc通过（docs05§47），待本阶段PR/CI与浏览器交付。此前已发布2f24e22/草稿PR43/CI43392262590；18080当前仍旧schema15独立副本，更新结果以后续current.md为准。用户要求持续按Plan完成最高质量Web初版，真实Hermes承担实现/反例检查，Root负责裁定和验收；总体基线未完成。一对一消息纯核在隔离独审，不纳入本次正式数字。以下旧时间段仅为历史。
 
 ## 最新执行偏好（用户本轮明确要求，2026-11-07）
 

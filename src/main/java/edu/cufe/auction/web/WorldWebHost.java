@@ -7,7 +7,9 @@ import edu.cufe.auction.world.DecisionModel;
 import edu.cufe.auction.world.DecisionRun;
 import edu.cufe.auction.world.DividendModel;
 import edu.cufe.auction.world.LiveCompletionInbox;
+import edu.cufe.auction.world.EvidenceRun;
 import edu.cufe.auction.world.InformationModel;
+import edu.cufe.auction.world.MediaEvidence;
 import edu.cufe.auction.world.InformationRun;
 import edu.cufe.auction.world.InterviewDialogue;
 import edu.cufe.auction.world.InterviewModel;
@@ -2506,6 +2508,218 @@ public final class WorldWebHost implements AutoCloseable {
             }
         }
         return null;
+    }
+
+    /** 管理员看到的一条真实证据根（去重后的 docId/版本）。 */
+    public record EvidenceRootRow(String organizationPartyId, String docId, long version,
+                                  int aliasCount, int shareCount) { }
+
+    /** 管理员看到的展示别名：公开标签与它真实绑定的根。 */
+    public record EvidenceAliasRow(String organizationPartyId, String storyId, int revisionNo,
+                                   String docId, long version, String publicLabel,
+                                   String publicDocId, long publicVersion) { }
+
+    /** 管理员看到的一条身份共享；接收者是否真的读完单独由阅读记录给出。 */
+    public record EvidenceShareRow(String organizationPartyId, String shareId, String docId,
+                                   long version, String recipientPartyId, String sharingDocId,
+                                   long sharingVersion, boolean recipientRead) { }
+
+    /** 证据审计视图：实际根、别名与共享绑定；三者在同一确认截止下读取。 */
+    public record EvidenceAuditView(String runId, String position, String timeMillis,
+                                    boolean available, Section roots, Section aliases,
+                                    Section shares, java.util.List<String> notes) { }
+
+    /** 人物证据视图：只含本人实际读到的公开标签，以及本人实际读完的共享说明。 */
+    public record EvidencePersonView(String personPartyId, String timeMillis, boolean available,
+                                     Section labels, Section shares,
+                                     java.util.List<String> notes) { }
+
+        /** 资料版本键：用类型而不是 `docId#version` 字符串解码，避免合法含 # 的标识被误拆。 */
+    private record DocRef(String docId, long version) { }
+
+    /** 本人当前可回忆的已读资料；走既有阅读/回忆投影，因此遗忘后不再出现。 */
+    private static java.util.Set<DocRef> recallable(WorldRuntime current, String person) {
+        java.util.Set<DocRef> refs = new java.util.LinkedHashSet<>();
+        for (RoleView.Experience experience : current.roleView(person).observations()) {
+            refs.add(new DocRef(experience.ref().docId(), experience.ref().version()));
+        }
+        return refs;
+    }
+
+    /** 某次提交对应的真实发表记录；未发表返回 null，不假设提交次数等于公开版本。 */
+    private static MediaModel.Revision publishedRevision(MediaRun media, String organization,
+                                                         String storyId, int revisionNo) {
+        if (media == null) {
+            return null;
+        }
+        for (MediaModel.State state : media.states()) {
+            if (!state.policy().mediaOrganizationPartyId().equals(organization)) {
+                continue;
+            }
+            for (MediaModel.Revision revision : state.revisions()) {
+                if (revision.storyId().equals(storyId) && revision.revisionNo() == revisionNo
+                        && revision.status() == MediaModel.Status.PUBLISHED) {
+                    return revision;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 上帝视角证据审计：真实根、别名绑定与身份共享。
+     *
+     * @return 同一确认截止的证据审计
+     * @throws Exception 世界读取失败
+     */
+    public EvidenceAuditView evidenceAudit() throws Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            var snapshot = current.snapshot();
+            List<Map<String, Object>> roots = new ArrayList<>();
+            List<Map<String, Object>> aliases = new ArrayList<>();
+            List<Map<String, Object>> shares = new ArrayList<>();
+            if (snapshot.evidence().isEmpty() || snapshot.information().isEmpty()) {
+                return new EvidenceAuditView(runId, num(snapshot.position()),
+                        num(snapshot.timeMillis()), false, bounded(roots), bounded(aliases),
+                        bounded(shares), java.util.List.of("当前档案未启用证据模块。"));
+            }
+            EvidenceRun run = snapshot.evidence().orElseThrow();
+            MediaRun media = snapshot.media().orElse(null);
+            java.util.Map<DocRef, int[]> rootCounts = new LinkedHashMap<>();
+            java.util.Map<DocRef, String> rootOrg = new LinkedHashMap<>();
+            for (var entry : run.states().entrySet()) {
+                String organization = entry.getKey();
+                MediaEvidence.State state = entry.getValue();
+                for (MediaEvidence.AliasBinding alias : state.aliases()) {
+                    MediaModel.Revision published = publishedRevision(media, organization,
+                            alias.storyId(), alias.revisionNo());
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("organizationPartyId", organization);
+                    row.put("storyId", alias.storyId());
+                    row.put("revisionNo", alias.revisionNo());
+                    row.put("docId", alias.root().docId());
+                    row.put("version", alias.root().version());
+                    row.put("publicLabel", alias.publicLabel());
+                    row.put("published", published != null);
+                    row.put("publicDocId", published == null ? "" : published.docId());
+                    row.put("publicVersion", published == null ? "" : published.docVersion());
+                    aliases.add(row);
+                    countRoot(rootCounts, new DocRef(alias.root().docId(), alias.root().version()),
+                            1, 0, rootOrg, organization);
+                }
+                for (MediaEvidence.IdentityShare share : state.shares()) {
+                    boolean read = recallable(current, share.recipientPartyId())
+                            .contains(new DocRef(share.sharingDocId(), share.sharingVersion()));
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("organizationPartyId", organization);
+                    row.put("shareId", share.shareId());
+                    row.put("docId", share.root().docId());
+                    row.put("version", share.root().version());
+                    row.put("recipientPartyId", share.recipientPartyId());
+                    row.put("sharingDocId", share.sharingDocId());
+                    row.put("sharingVersion", share.sharingVersion());
+                    row.put("recipientRead", read);
+                    shares.add(row);
+                    countRoot(rootCounts, new DocRef(share.root().docId(), share.root().version()),
+                            0, 1, rootOrg, organization);
+                }
+            }
+            for (var entry : rootCounts.entrySet()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("organizationPartyId", rootOrg.getOrDefault(entry.getKey(), ""));
+                row.put("docId", entry.getKey().docId());
+                row.put("version", entry.getKey().version());
+                row.put("aliasCount", entry.getValue()[0]);
+                row.put("shareCount", entry.getValue()[1]);
+                roots.add(row);
+            }
+            return new EvidenceAuditView(runId, num(snapshot.position()), num(snapshot.timeMillis()),
+                    true, bounded(roots), bounded(aliases), bounded(shares),
+                    java.util.List.of("别名只在其提交被真实发表后才有公开文章与版本。",
+                            "共享接收者是否已读按该人当前可回忆的阅读记录判定。",
+                            "别名是公开标签，不等同于对正文的自动审查。"));
+        });
+    }
+
+    /**
+     * 本人证据投影：只给本人当前可回忆的公开标签与实际读完的共享说明。
+     *
+     * <p>标签映射走既有发表记录（提交次 → 公开文档与版本），不假设两者相等；
+     * 未发表的重投/修订不产生公开标签。私证根标识不进入本投影。</p>
+     *
+     * @param personId 已认证人物
+     * @return 本人投影
+     * @throws Exception 世界读取失败
+     */
+    public EvidencePersonView evidenceView(String personId) throws Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            var snapshot = current.snapshot();
+            List<Map<String, Object>> labels = new ArrayList<>();
+            List<Map<String, Object>> shares = new ArrayList<>();
+            if (snapshot.evidence().isEmpty() || snapshot.information().isEmpty()
+                    || snapshot.media().isEmpty()) {
+                return new EvidencePersonView(personId, num(snapshot.timeMillis()), false,
+                        bounded(labels), bounded(shares),
+                        java.util.List.of("当前档案未启用证据模块。"));
+            }
+            EvidenceRun run = snapshot.evidence().orElseThrow();
+            InformationModel.State info = snapshot.information().orElseThrow().information();
+            MediaRun media = snapshot.media().orElseThrow();
+            java.util.Set<DocRef> readable = recallable(current, personId);
+            for (var entry : run.states().entrySet()) {
+                String organization = entry.getKey();
+                for (MediaEvidence.AliasBinding alias : entry.getValue().aliases()) {
+                    MediaModel.Revision published = publishedRevision(media, organization,
+                            alias.storyId(), alias.revisionNo());
+                    if (published == null) {
+                        continue; // 该次提交未发表：旧标签不冒充已公开
+                    }
+                    DocRef publicRef = new DocRef(published.docId(), published.docVersion());
+                    if (!readable.contains(publicRef)) {
+                        continue; // 未实际读到并仍可回忆，不出现（不泄存在性）
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("storyId", alias.storyId());
+                    row.put("publicDocId", published.docId());
+                    row.put("publicVersion", published.docVersion());
+                    row.put("publicLabel", alias.publicLabel());
+                    labels.add(row);
+                }
+                for (MediaEvidence.IdentityShare share : entry.getValue().shares()) {
+                    if (!share.recipientPartyId().equals(personId)) {
+                        continue;
+                    }
+                    if (!readable.contains(new DocRef(share.sharingDocId(),
+                            share.sharingVersion()))) {
+                        continue; // 未读或已遗忘的共享不出现
+                    }
+                    InformationModel.DocumentVersion version = versionOf(info,
+                            share.sharingDocId(), share.sharingVersion());
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("shareId", share.shareId());
+                    row.put("sharingDocId", share.sharingDocId());
+                    row.put("sharingVersion", share.sharingVersion());
+                    row.put("title", version == null ? "" : version.title());
+                    row.put("body", version == null ? "" : version.body());
+                    shares.add(row);
+                }
+            }
+            return new EvidencePersonView(personId, num(snapshot.timeMillis()), true,
+                    bounded(labels), bounded(shares),
+                    java.util.List.of("只显示本人当前可回忆的公开标签与共享说明；未读或已遗忘不出现。",
+                            "共享说明只展示实际读到的正文，不授予原始资料的访问权。"));
+        });
+    }
+
+    private static void countRoot(java.util.Map<DocRef, int[]> counts, DocRef key, int aliases,
+                                  int shares, java.util.Map<DocRef, String> org,
+                                  String organization) {
+        int[] row = counts.computeIfAbsent(key, ignored -> new int[2]);
+        row[0] += aliases;
+        row[1] += shares;
+        org.putIfAbsent(key, organization);
     }
 
     /**

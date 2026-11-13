@@ -1,3 +1,5 @@
+当前质量门槛补充：[初版可信性验收](../../design/初版可信性验收.md)（用户2026-11-13追加要求，不增加原基线范围）。
+
 # 股票世界持续实施 Plan
 
 当前进度优先读[实施看板](../../CURRENT_IMPLEMENTATION.md)。以下含历史记录，不据旧时间段覆盖最新验收与未完成项。
@@ -594,8 +596,11 @@ B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://
 - [x] [M4h.2采编运行桥与Web](2026-11-07-media-runtime.md)：最终候选9实际41专项、1321标准、CSV48/124/7、Node/GUI/JavaDoc、三JVM/旧12/真实Web及39独审通过，草稿PR39实际CI42342978816成功，仍待人工review；媒体新档已上线本机18080，五场景关闭、0新增官方调用。
 - [x] [M6b账户表现历史](2026-11-07-performance-history.md)：正式1280标准及独审通过，草稿PR38最终CI42338910895成功；持续Web18080已升级，仍待人工review。完整历史回放与总体基线未完成。
 - [x] [M4i.1双边采访协调纯核](2026-11-07-interview-coordination.md)：最终主树2ba8fc7f…，29新JUnit，正式1350/CSV48/125/7/Node/GUI/JavaDoc通过，e7852d独立109检查通过。首稿18个真实失败、v2新增5失败已修；旧作者JavaDoc零警告误报已据原始日志纠正。纯核本地验收，草稿PR/人工review另记，尚未接世界/Web。
-- [ ] [M4i.2a预约运行与Web](2026-11-07-interview-runtime.md)：运行桥及只读Web已接主树，独审41正常链/旧13与12/跨JVM/真实写故障/复合篡改、正式1389/CSV45-123-7/Web/GUI/JavaDoc通过（docs05§44）。仍缺新档联系资料发布与普通受访者live入口，随schema15补齐再勾完成；持续18080未升级。
-- [ ] [M4i.2b逐轮访谈](2026-11-07-interview-dialogue.md)：intake-2纯核17JUnit+56独立断言通过并接主树；schema15运行/双方实际阅读/Web接线由Hermes在私有镜像实施，尚未接收。c匿名证据沿既有Story/Lineage方案，其他社交工作待实施。
+- [x] [M4i.2a预约运行与Web](2026-11-07-interview-runtime.md)：schema15已补新档联系资料与普通受访者入口；2f24e22/PR43、正式1428与CI43392262590通过，持续Web18080已升级。浏览器新档与HTTP完整动作链的证据范围分别见docs05§45；人工review另列。
+- [x] [M4i.2b逐轮访谈](2026-11-07-interview-dialogue.md)：纯核与schema15运行/双方实际阅读/Web已整合，输入驱动10动作HTTP及正式组合通过，2f24e22/PR43；详见docs05§45，不把脚本Provider测试称真实模型自主实验。
+- [x] [M4i.2c匿名证据运行桥](2026-11-13-evidence-runtime.md)：后端2/Web候选4已整合，正式1468及独审输入/故障/旧档/权限/版本链通过，详见docs05§47；浏览器交付与PR人工review另记。
+- [x] [M5a工程回款纯核](2026-11-13-engineering-core.md)：候选2修复验收游标、拆单尾差、终止在途；25专项、独立320前缀和正式组合通过。未接世界经营/银行/Web，不视为公司全链完成。
+- [ ] [M4j.1一对一消息纯核](2026-11-13-social-messaging-core.md)：隔离候选27专项通过，独审中；尚未主树接入或接世界/Web。
 - [ ] 媒体/传播、多公司银行、图表/历史与长跑验收继续，不以局部纯核冒称总体基线完成。真实供应商0新增，原51token唯一连通证据保持。
 
 信念纯核代码e6a81adfaf3b24c86e507cf32e9c54aac0ed6be1已发布草稿[PR35](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/35)，base codex/world-cognition-runtime；实际[CI42327343664](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42327343664) completed/success。1156标准、98纯核独审+24配置独审及Root实际退避中断通过，工程阶段验收完成，仍待人工review、不自动合并。

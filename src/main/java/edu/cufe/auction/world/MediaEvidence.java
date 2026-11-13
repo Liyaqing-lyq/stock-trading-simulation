@@ -272,6 +272,29 @@ public final class MediaEvidence {
     public static ShareOutcome share(State evidence, MediaModel.State media, MediaModel.Policy policy,
                                      RoleAccess.State access, InformationModel.State information,
                                      String sharer, ShareRequest request) {
+        return share(evidence, evidence, media, policy, access, information, sharer, request);
+    }
+
+    /**
+     * 带独立绑定账本的共享：本机构只持久自己的共享，但解析原根时可以用全部分支的绑定。
+     *
+     * <p>典型情形是身份材料跨机构转发：收件人在另一家媒体读到共享文档后再次共享，
+     * 该文档的绑定记在分享者所在机构，解析时必须能跨机构回溯到同一原根。</p>
+     *
+     * @param evidence    本机构证据状态（新绑定追加在此）
+     * @param ledger      绑定账本（只用于解析真实根）
+     * @param media       当前媒体状态
+     * @param policy      冻结策略
+     * @param access      当前授权
+     * @param information 当前信息状态
+     * @param sharer      分享者（受信上下文）
+     * @param request     共享请求
+     * @return 证据与信息的新状态；拒绝时两者与入参一致
+     */
+    public static ShareOutcome share(State evidence, State ledger, MediaModel.State media,
+                                     MediaModel.Policy policy, RoleAccess.State access,
+                                     InformationModel.State information, String sharer,
+                                     ShareRequest request) {
         Objects.requireNonNull(media, "媒体状态");
         Objects.requireNonNull(policy, "冻结策略");
         Objects.requireNonNull(access, "授权状态");
@@ -280,7 +303,7 @@ public final class MediaEvidence {
         requireText(sharer, "分享者");
         State base = evidence == null ? empty() : evidence;
         String shareId = shareId(sharer, request.clientCommandId());
-        String expectedBody = derivedBody(information, base, request);
+        String expectedBody = derivedBody(information, ledger == null ? base : ledger, request);
         for (IdentityShare existing : base.shares()) {
             if (!existing.shareId().equals(shareId)) {
                 continue;
