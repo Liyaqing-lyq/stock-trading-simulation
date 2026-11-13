@@ -2844,7 +2844,8 @@ public final class WorldWebHost implements AutoCloseable {
                     num(snapshot.timeMillis()), true, run.state().clock(),
                     bounded(messages), bounded(blocks),
                     bounded(reports), bounded(contacts),
-                    java.util.List.of("送达状态与拒因来自真实报告；收件人是否已读按其可回忆的阅读记录。",
+                    java.util.List.of("送达状态与拒因来自真实报告；收件人是否已读按历史真实阅读判定，"
+                                    + "与当前能否回忆正文/地址无关。",
                             "未送达对外统一 UNDELIVERED，管理端保留真实原因。"));
         });
     }
@@ -2914,7 +2915,8 @@ public final class WorldWebHost implements AutoCloseable {
             }
             return new SocialPersonView(personId, num(snapshot.timeMillis()), true,
                     bounded(inbox), bounded(outbox), bounded(contacts),
-                    java.util.List.of("只显示本人已送达信封、发件结果与合法联系人；正文需本人实际读完。"));
+                    java.util.List.of("只显示本人已送达信封、发件结果与合法联系人；"
+                            + "已读按历史真实阅读判定，正文仅在当前可回忆时显示。"));
         });
     }
 

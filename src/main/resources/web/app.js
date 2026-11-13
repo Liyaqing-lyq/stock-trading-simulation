@@ -622,7 +622,7 @@ const pages = {
   settings: ["模型与密钥", "为五类场景配置模型、密钥槽位和调用预算。"],
   interview: ["采访预约", "查看采访预约、逐轮对话、实际阅读与机构工时。"],
   evidence: ["证据与共享", "查看真实证据根、公开标签与实际共享；共享不等于已读。"],
-  social: ["消息", "查看真实送达、未送达原因与实际阅读；未送达不显示原因。"]
+  social: ["消息", "管理员审计真实送达与真实原因；人物只看到允许的状态与本人已读结果。"]
 };
 function selectPage(page, refresh = true) {
   if (!pages[page]) return;
@@ -2717,9 +2717,11 @@ async function renderPersonalSocial(generation) {
     cell(tr, row.description);
   });
   const panel = $("person-social");
-  if (panel) panel.hidden = !(view.available && (inbox.length || outbox.length || contacts.length));
+  if (panel) panel.hidden = !view.available;
   if ($("person-social-note")) {
-    $("person-social-note").textContent = (view.notes || []).join(" ");
+    const empty = view.available && !inbox.length && !outbox.length && !contacts.length;
+    $("person-social-note").textContent = (view.notes || []).join(" ")
+      + (empty ? " 尚无消息，也尚无可联系的人。" : "");
   }
 }
 
