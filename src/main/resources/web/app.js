@@ -30,6 +30,8 @@ const state = {
   dialogue: null,
   personDialogue: null,
   evidence: null,
+  social: null,
+  personSocial: null,
   personEvidence: null
 };
 
@@ -168,6 +170,7 @@ function clearPersonDom() {
   clearPersonalMedia();
   clearPersonalInterview();
   clearPersonalEvidence();
+  clearPersonalSocial();
   $("person-name").textContent = "—";
   $("person-summary").replaceChildren();
   for (const id of PERSON_TABLES) {
@@ -262,6 +265,9 @@ async function refreshAdmin() {
   }
   if (state.page === "evidence" && current()) {
     await loadEvidence(generation, pageVersion);
+  }
+  if (state.page === "social" && current()) {
+    await loadSocial(generation, pageVersion);
   }
 }
 
@@ -529,6 +535,7 @@ async function refreshPerson() {
     ? "当前没有可见资料。" : "共 " + view.catalog + " 条可见目录项。";
   await renderPersonalDialogue(generation);
   await renderPersonalEvidence(generation);
+  await renderPersonalSocial(generation);
 }
 
 async function switchPerson(personId) {
@@ -614,7 +621,8 @@ const pages = {
   models: ["模型运行", "让人物依据自己的观察完成一次判断，查看实际输入与回报。"],
   settings: ["模型与密钥", "为五类场景配置模型、密钥槽位和调用预算。"],
   interview: ["采访预约", "查看采访预约、逐轮对话、实际阅读与机构工时。"],
-  evidence: ["证据与共享", "查看真实证据根、公开标签与实际共享；共享不等于已读。"]
+  evidence: ["证据与共享", "查看真实证据根、公开标签与实际共享；共享不等于已读。"],
+  social: ["消息", "查看真实送达、未送达原因与实际阅读；未送达不显示原因。"]
 };
 function selectPage(page, refresh = true) {
   if (!pages[page]) return;
@@ -624,6 +632,7 @@ function selectPage(page, refresh = true) {
   if (state.page === "media" && page !== "media") clearMediaDom();
   if (state.page === "interview" && page !== "interview") clearInterviewDom();
   if (state.page === "evidence" && page !== "evidence") clearEvidenceDom();
+  if (state.page === "social" && page !== "social") clearSocialDom();
   if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
   state.page = page;
   state.pageVersion += 1;
@@ -1092,6 +1101,7 @@ function clearDetailDom() {
   clearMediaDom();
   clearInterviewDom();
   clearEvidenceDom();
+  clearSocialDom();
   state.details = {};
   clearRecall();
   clearBeliefs();
@@ -2560,6 +2570,156 @@ async function renderPersonalEvidence(generation) {
   if (panel) panel.hidden = !(view.available && (labels.length || shares.length));
   if ($("person-evidence-note")) {
     $("person-evidence-note").textContent = (view.notes || []).join(" ");
+  }
+}
+
+/** 消息状态的中文口径：未送达对外不区分原因。 */
+function socialStatus(status) {
+  if (status === "QUEUED") return "待投递";
+  if (status === "DELIVERED") return "已送达";
+  return "未送达";
+}
+
+function clearSocialDom() {
+  for (const id of ["social-messages", "social-blocks", "social-reports", "social-contacts"]) {
+    if ($(id)) fillTable(id, [], () => undefined);
+  }
+  if ($("social-note")) $("social-note").textContent = "";
+  state.social = null;
+}
+
+/** 管理员消息审计：真实送达、真实原因与收件人阅读状态。 */
+async function loadSocial(generation, pageVersion) {
+  let result;
+  try {
+    result = await request("GET", "/api/admin/social");
+  } catch (failure) {
+    if (isCurrent(generation) && state.mode === "admin"
+        && pageVersion === state.pageVersion && state.page === "social") {
+      clearSocialDom();
+      $("social-note").textContent = "读取失败，请稍后刷新重试。";
+    }
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "admin"
+      || pageVersion !== state.pageVersion || state.page !== "social") return;
+  if (result.status === 401 || result.status === 403) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) {
+    clearSocialDom();
+    $("social-note").textContent = "读取失败（" + result.status + "），请稍后刷新重试。";
+    return;
+  }
+  state.social = result.payload;
+  renderSocial(result.payload);
+}
+
+function renderSocial(view) {
+  const messages = (view && view.messages && view.messages.rows) || [];
+  const blocks = (view && view.blocks && view.blocks.rows) || [];
+  const reports = (view && view.reports && view.reports.rows) || [];
+  const contacts = (view && view.contacts && view.contacts.rows) || [];
+  fillTable("social-messages", messages, (tr, row) => {
+    cell(tr, row.messageId);
+    cell(tr, row.from);
+    cell(tr, row.to);
+    cell(tr, row.channel);
+    cell(tr, socialStatus(row.status));
+    cell(tr, row.title);
+    cell(tr, row.sentAt, "num");
+    cell(tr, row.dueAt, "num");
+    cell(tr, row.readByReceiver ? "已读" : "未读");
+    cell(tr, row.rejectReason || "—");
+  });
+  fillTable("social-blocks", blocks, (tr, row) => {
+    cell(tr, row.ownerPartyId);
+    cell(tr, row.targetPartyId);
+    cell(tr, row.since, "num");
+    cell(tr, row.commandId);
+  });
+  fillTable("social-reports", reports, (tr, row) => {
+    cell(tr, row.taskId);
+    cell(tr, row.person);
+    cell(tr, row.kind);
+    cell(tr, row.accepted ? "已接受" : "已拒绝");
+    cell(tr, row.reason);
+    cell(tr, row.messageId);
+    cell(tr, row.atMillis, "num");
+  });
+  fillTable("social-contacts", contacts, (tr, row) => {
+    cell(tr, row.targetPartyId);
+    cell(tr, row.channel);
+    cell(tr, row.description);
+    cell(tr, row.docId);
+    cell(tr, row.version, "num");
+  });
+  $("social-note").textContent = (view && view.notes ? view.notes.join(" ") : "")
+    + (view && view.available ? "" : " 当前档案未启用消息模块。");
+}
+
+function clearPersonalSocial() {
+  if ($("person-social")) $("person-social").hidden = true;
+  for (const id of ["person-social-inbox", "person-social-outbox", "person-social-contacts"]) {
+    if ($(id)) fillTable(id, [], () => undefined);
+  }
+  if ($("person-social-note")) $("person-social-note").textContent = "";
+  state.personSocial = null;
+}
+
+/** 本人消息：已送达信封（正文需本人读完）、发件结果与合法联系人。 */
+async function renderPersonalSocial(generation) {
+  let result;
+  try {
+    result = await request("GET", "/api/me/social");
+  } catch (failure) {
+    if (isCurrent(generation) && state.mode === "person") {
+      clearPersonalSocial();
+      if ($("person-social")) {
+        $("person-social").hidden = false;
+        $("person-social-note").textContent = "读取失败，请稍后刷新重试。";
+      }
+    }
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (result.status === 401) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) {
+    clearPersonalSocial();
+    if ($("person-social")) {
+      $("person-social").hidden = false;
+      $("person-social-note").textContent = "读取失败（" + result.status + "），请稍后刷新重试。";
+    }
+    return;
+  }
+  const view = result.payload;
+  state.personSocial = view;
+  const inbox = (view.inbox && view.inbox.rows) || [];
+  const outbox = (view.outbox && view.outbox.rows) || [];
+  const contacts = (view.contacts && view.contacts.rows) || [];
+  fillTable("person-social-inbox", inbox, (tr, row) => {
+    cell(tr, row.from);
+    cell(tr, row.channel);
+    cell(tr, row.title);
+    cell(tr, row.deliveredAt, "num");
+    cell(tr, row.read ? "已读" : "未读");
+    cell(tr, !row.read ? "" : (row.bodyAvailable === false
+      ? "已读，当前无法回忆正文" : row.body));
+  });
+  fillTable("person-social-outbox", outbox, (tr, row) => {
+    cell(tr, row.to);
+    cell(tr, row.channel);
+    cell(tr, row.sentAt, "num");
+    cell(tr, row.dueAt, "num");
+    cell(tr, socialStatus(row.status));
+  });
+  fillTable("person-social-contacts", contacts, (tr, row) => {
+    cell(tr, row.targetPartyId);
+    cell(tr, row.channel);
+    cell(tr, row.description);
+  });
+  const panel = $("person-social");
+  if (panel) panel.hidden = !(view.available && (inbox.length || outbox.length || contacts.length));
+  if ($("person-social-note")) {
+    $("person-social-note").textContent = (view.notes || []).join(" ");
   }
 }
 

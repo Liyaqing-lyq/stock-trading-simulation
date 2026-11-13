@@ -70,7 +70,9 @@ public final class RoleAccess {
         /** 记者：提出选题并提交组织草稿，不能批准或发布。 */
         JOURNALIST,
         /** 编辑：实际读完本次草稿后批准/退回并发布，不能自己写稿。 */
-        EDITOR
+        EDITOR,
+        /** 公司经理：只读本公司账、请求公司经营、批供应商付款、申请减值核销。 */
+        COMPANY_MANAGER
     }
 
     /** 需要判定的动作；与四岗及媒体两岗的对应关系见 {@link #rolePermits}。 */
@@ -94,7 +96,15 @@ public final class RoleAccess {
         /** 审阅组织草稿：批准或退回（编辑）。 */
         REVIEW_STORY,
         /** 发布已批准草稿（编辑）。 */
-        PUBLISH_STORY
+        PUBLISH_STORY,
+        /** 读取本公司台账（公司经理）。 */
+        READ_COMPANY_LEDGER,
+        /** 请求公司经营动作：接受机会/投入/申请开票与催收/申请终止（公司经理）。 */
+        REQUEST_COMPANY_OPERATIONS,
+        /** 批准供应商付款（公司经理）。 */
+        APPROVE_SUPPLIER_PAYMENT,
+        /** 申请减值或核销（公司经理，需外部证据）。 */
+        REQUEST_IMPAIRMENT_OR_WRITEOFF
     }
 
     /** 判定结果；对外只有许可与拒绝两种，拒绝不区分原因以免泄露存在性。 */
@@ -836,6 +846,12 @@ public final class RoleAccess {
                 return action == Action.READ_ORGANIZATION_FILE
                         || action == Action.REVIEW_STORY
                         || action == Action.PUBLISH_STORY;
+            case COMPANY_MANAGER:
+                return action == Action.READ_ORGANIZATION_FILE
+                        || action == Action.READ_COMPANY_LEDGER
+                        || action == Action.REQUEST_COMPANY_OPERATIONS
+                        || action == Action.APPROVE_SUPPLIER_PAYMENT
+                        || action == Action.REQUEST_IMPAIRMENT_OR_WRITEOFF;
             default:
                 return false;
         }

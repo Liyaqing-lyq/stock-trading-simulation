@@ -88,6 +88,8 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_INTERVIEW_DIALOGUE = 15;
     /** schema16：在对话之上接入匿名私有证据与身份共享。 */
     private static final int STATE_SCHEMA_EVIDENCE = 16;
+    /** schema17：一对一消息（社交）子集；工程模块 18 后继。 */
+    private static final int STATE_SCHEMA_SOCIAL = 17;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -138,6 +140,12 @@ public final class WorldRuntime implements AutoCloseable {
     private final InterviewDialogue.Config dialogueConfig;
     /** schema16 证据配置；旧档为 null。 */
     private final EvidenceRun.Config evidenceConfig;
+    /** schema17 社交纯核配置；旧档为 null。 */
+    private final SocialMessageModel.Config socialConfig;
+    /** schema17 屏蔽/解除屏蔽的模拟工时；旧档为 0。 */
+    private final long socialBlockMillis;
+    /** schema17 受信联系入口；旧档为空表。 */
+    private final List<InterviewRun.ContactEntry> socialContacts;
     /** live 完成槽：构造时自动建立，scripted 为 null；不公开。 */
     private final LiveCompletionInbox liveInbox;
     /** 有界回调队列：异步线程只 offer，不读写世界状态。 */
@@ -216,7 +224,8 @@ public final class WorldRuntime implements AutoCloseable {
                            Set<String> usedTaskIds,
                            Optional<DividendModel.State> dividends,
                            Optional<MediaRun> media,
-                           Optional<EvidenceRun> evidence) {
+                           Optional<EvidenceRun> evidence,
+                           Optional<SocialRun> social) {
         /** 兼容构造：证据子集为空（schema ≤15）。 */
         public Snapshot(long position, long timeMillis, String lastPhase,
                         Map<String, CashLedger.CashAccount> accounts,
@@ -234,7 +243,28 @@ public final class WorldRuntime implements AutoCloseable {
                         Optional<MediaRun> media) {
             this(position, timeMillis, lastPhase, accounts, securities, exchange, manufacturing,
                     governance, roles, information, trading, decisions, pending, delivered,
-                    usedTaskIds, dividends, media, Optional.empty());
+                    usedTaskIds, dividends, media, Optional.empty(), Optional.empty());
+        }
+
+        /** 兼容构造：社交子集为空（schema ≤16）。 */
+        public Snapshot(long position, long timeMillis, String lastPhase,
+                        Map<String, CashLedger.CashAccount> accounts,
+                        Optional<SecuritiesLedger.State> securities,
+                        Optional<WorldExchange.State> exchange,
+                        Optional<ManufacturingRun> manufacturing,
+                        Optional<BoardRun> governance,
+                        Optional<RoleRun> roles,
+                        Optional<InformationRun> information,
+                        Optional<RoleTradingRun> trading,
+                        Optional<DecisionRun> decisions,
+                        List<PendingTask> pending, List<Notice> delivered,
+                        Set<String> usedTaskIds,
+                        Optional<DividendModel.State> dividends,
+                        Optional<MediaRun> media,
+                        Optional<EvidenceRun> evidence) {
+            this(position, timeMillis, lastPhase, accounts, securities, exchange, manufacturing,
+                    governance, roles, information, trading, decisions, pending, delivered,
+                    usedTaskIds, dividends, media, evidence, Optional.empty());
         }
         /** 旧 16 参构造：保持源码兼容，媒体子集为空。 */
         public Snapshot(long position, long timeMillis, String lastPhase,
@@ -456,7 +486,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               InterviewRun interviews,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              EvidenceRun evidence) {
+                              EvidenceRun evidence,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              SocialRun social) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -693,7 +725,32 @@ public final class WorldRuntime implements AutoCloseable {
                  InterviewRun.Config interview, InterviewDialogue.Config dialogue,
                  EvidenceRun.Config evidence)
             throws IOException {
+        this(file, manifest, openings, registry, manufacturing, charter, roles, information,
+                decisions, injectedInbox, media, interview, dialogue, evidence, null, 0L,
+                List.of());
+    }
+
+    /**
+     * schema17 完整构造：在证据档之上启用一对一消息。
+     *
+     * @param social        社交纯核配置；旧档必须为 null
+     * @param blockMillis   屏蔽/解除屏蔽的模拟工时；旧档传 0
+     * @param contacts      受信联系入口；旧档传空表
+     * @throws IOException 打开日志失败
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                 OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                 BoardModel.Charter charter, RoleRun.Config roles,
+                 InformationRun.Config information, DecisionModel.Config decisions,
+                 LiveCompletionInbox injectedInbox, MediaRun.Config media,
+                 InterviewRun.Config interview, InterviewDialogue.Config dialogue,
+                 EvidenceRun.Config evidence, SocialMessageModel.Config social,
+                 long socialBlockMillis, List<InterviewRun.ContactEntry> contacts)
+            throws IOException {
         this.evidenceConfig = evidence;
+        this.socialConfig = social;
+        this.socialBlockMillis = socialBlockMillis;
+        this.socialContacts = contacts == null ? List.of() : List.copyOf(contacts);
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         boolean liveProfile = decisions != null && decisions.profile() != null;
         if (liveProfile && !manifest.hasLiveDecisions()) {
@@ -865,6 +922,30 @@ public final class WorldRuntime implements AutoCloseable {
             }
         } else if (evidence != null) {
             throw new IllegalArgumentException("未启用证据模块的运行不接受证据配置："
+                    + manifest.rulesVersion());
+        }
+        if (manifest.hasSocial()) {
+            if (!manifest.hasEvidence()) {
+                throw new IllegalArgumentException("社交档案必须建立在证据档（含媒体/采访/对话）之上："
+                        + manifest.rulesVersion());
+            }
+            if (social == null) {
+                throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                        + " 必须提供社交开局配置");
+            }
+            if (socialBlockMillis < 1) {
+                throw new IllegalArgumentException("社交屏蔽工时必须为正：" + socialBlockMillis);
+            }
+            // 开局即用完整 registry 构造一次受信上下文：保留系统标识、登记人物与入口在这里就被核过
+            try {
+                new SocialMessageModel.Context(registry, information == null ? null
+                        : information.recallPolicy(), social, this.socialContacts);
+            } catch (IllegalArgumentException invalid) {
+                throw new IllegalArgumentException("社交受信上下文不合法：" + invalid.getMessage(),
+                        invalid);
+            }
+        } else if (social != null || socialBlockMillis != 0 || !this.socialContacts.isEmpty()) {
+            throw new IllegalArgumentException("未启用社交模块的运行不接受社交配置："
                     + manifest.rulesVersion());
         }
         if (manifest.hasDecisions() && (!manifest.hasTrading() || !manifest.hasRoles()
@@ -2340,6 +2421,11 @@ public final class WorldRuntime implements AutoCloseable {
                          PendingTask.MEDIA_STORY_CORRECTION_V1,
                          PendingTask.MEDIA_WORK_CANCEL_V1,
                          PendingTask.MEDIA_EVIDENCE_SHARE_V1 -> completeMediaTask(next);
+                    case PendingTask.SOCIAL_BEGIN_V1,
+                         PendingTask.SOCIAL_FINISH_V1,
+                         PendingTask.SOCIAL_DELIVER_V1,
+                         PendingTask.SOCIAL_BLOCK_V1,
+                         PendingTask.SOCIAL_UNBLOCK_V1 -> completeSocialTask(next);
                     case PendingTask.INTERVIEW_INVITE_V1,
                          PendingTask.INTERVIEW_RESPOND_V1,
                          PendingTask.INTERVIEW_CANCEL_V1,
@@ -2475,7 +2561,7 @@ public final class WorldRuntime implements AutoCloseable {
                 Optional.ofNullable(state.decisions()),
                 state.pending(), state.delivered(), state.usedTaskIds(),
                 Optional.ofNullable(state.dividends()), Optional.ofNullable(state.media()),
-                Optional.ofNullable(state.evidence()));
+                Optional.ofNullable(state.evidence()), Optional.ofNullable(state.social()));
     }
 
     /**
@@ -3081,7 +3167,14 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 一次已排定的动作：任务种类、参数正文、内部标识与到期，全部可由决定原文重算。 */
     private record PlacedAction(String actionId, String tool, String kind, String taskId,
-                                String commandId, long dueMillis, String payloadJson) {
+                                String commandId, long dueMillis, String payloadJson,
+                                SocialRun social, String businessReject) {
+
+        /** 旧七参：非社交动作，不携带社交状态与业务拒绝。 */
+        PlacedAction(String actionId, String tool, String kind, String taskId, String commandId,
+                     long dueMillis, String payloadJson) {
+            this(actionId, tool, kind, taskId, commandId, dueMillis, payloadJson, null, null);
+        }
     }
 
     /** 决定审计事件类型：只出现在已确认批次里，不进入状态快照。 */
@@ -3407,6 +3500,11 @@ public final class WorldRuntime implements AutoCloseable {
             requireText(request.personPartyId(), "人物");
             requireText(request.actionId(), "动作标识");
             requireText(request.wakeReason(), "唤醒原因");
+            if (manifest.hasSocial() && state.social() != null
+                    && !socialPendingOf(request.personPartyId(), state.pending()).isEmpty()) {
+                throw new IllegalArgumentException(
+                        "本人还有未完成的社交动作，不能开始新的决定：" + request.personPartyId());
+            }
             if (decisionConfig.live() && request.route() == null) {
                 throw new IllegalArgumentException("live 请求必须提供场景路由："
                         + request.actionId());
@@ -3674,35 +3772,54 @@ public final class WorldRuntime implements AutoCloseable {
                             state.position() + 1L, marks));
         }
 
-        DecisionRun withRef = withState.withActionRef(new DecisionRun.ActionRef(
-                placed.actionId(), placed.taskId(), placed.tool(), placed.dueMillis()));
+        DecisionRun withRef = withState;
+        SocialRun socialAfter = placed.social() != null ? placed.social() : state.social();
+        boolean socialRejected = placed.businessReject() != null;
         List<PendingTask> pending = new ArrayList<>(state.pending());
-        pending.add(new PendingTask(placed.taskId(), placed.dueMillis(),
-                WorldScheduler.Phase.COMPLETION, placed.kind(), placed.payloadJson()));
         Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
-        used.add(placed.taskId());
         Map<String, String> contents = new TreeMap<>(state.commandContents());
-        contents.put(placed.commandId(), placed.payloadJson());
-        contents.put(internalCommand, content);
         Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
-        outcomes.put(placed.commandId(), "SCHEDULED:" + placed.actionId());
-        outcomes.put(internalCommand, "RECORDED");
+        if (!socialRejected) {
+            withRef = withState.withActionRef(new DecisionRun.ActionRef(
+                    placed.actionId(), placed.taskId(), placed.tool(), placed.dueMillis()));
+            pending.add(new PendingTask(placed.taskId(), placed.dueMillis(),
+                    WorldScheduler.Phase.COMPLETION, placed.kind(), placed.payloadJson()));
+            used.add(placed.taskId());
+            contents.put(placed.commandId(), placed.payloadJson());
+            outcomes.put(placed.commandId(), "SCHEDULED:" + placed.actionId());
+        } else {
+            // 业务拒绝：保留模型 INTENT 与原回执，仅在派发事实上补独立拒绝结果
+            withRef = withState.withDispatchRejection(reply.attemptId(), placed.businessReject());
+            contents.put(placed.commandId(), placed.payloadJson());
+            outcomes.put(placed.commandId(), "SOCIAL_REJECTED:" + placed.businessReject());
+        }
+        contents.put(internalCommand, content);
+        outcomes.put(internalCommand, socialRejected
+                ? "SOCIAL_REJECTED:" + placed.businessReject() : "RECORDED");
         WorldState world = next(state.timeMillis(), state.lastPhase(), state.accounts(), pending,
                 state.delivered(), used, contents, outcomes, state.securities(), state.exchange(),
                 state.manufacturing(), state.governance(), state.roles(), state.information(),
-                state.trading(), withRef);
-        DecisionAudit scheduled = replyAudit(run, recorded, settled, "RECORDED", world.position(),
+                state.trading(), withRef, socialAfter);
+        String outcome = socialRejected ? "SOCIAL_REJECTED:" + placed.businessReject()
+                : "RECORDED";
+        DecisionAudit scheduled = replyAudit(run, recorded, settled, outcome, world.position(),
                 marks);
         if (scheduled.position() != world.position()) {
             throw new IllegalStateException("审计位置与提交位置不一致");
         }
         List<WorldEvent> events = new ArrayList<>();
-        events.add(new WorldEvent("dec-scheduled:" + placed.taskId(),
-                "DECISION_ACTION_SCHEDULED_V1", placed.payloadJson()));
+        if (!socialRejected) {
+            events.add(new WorldEvent("dec-scheduled:" + placed.taskId(),
+                    "DECISION_ACTION_SCHEDULED_V1", placed.payloadJson()));
+        } else {
+            // 拒绝仍是模型回执批次，不是技术失败，也不伪造观望回执
+            events.add(new WorldEvent("dec-replete:" + reply.attemptId(),
+                    "DECISION_REPLIED_V1", outcome));
+        }
         events.add(auditEvent(scheduled));
-        commitAndApply(internalCommand, content, "RECORDED", events, world);
+        commitAndApply(internalCommand, content, outcome, events, world);
         decisionInFlight.remove(reply.attemptId());
-        return "RECORDED";
+        return outcome;
     }
 
     /** 旧代次回执：只在归档里追加一条，模型状态与经济一律不变；审计与归档同批。 */
@@ -4759,6 +4876,27 @@ public final class WorldRuntime implements AutoCloseable {
                 body = new MediaTaskBody(organization, recorded.cutoffTimeMillis(), recorded.cutoffPosition(), recorded.barrierAtMillis(), false,
                         mapper.writeValueAsString(draft));
             }
+            case RoleTradingView.TOOL_SOCIAL_SEND -> {
+                if (!manifest.hasSocial()) {
+                    throw new IOException("未知业务工具：" + tool);
+                }
+                kind = PendingTask.SOCIAL_BEGIN_V1;
+                WorldRoleSession.SocialSendDraft draft =
+                        strict(WorldRoleSession.SocialSendDraft.class, args);
+                body = draft;
+            }
+            case RoleTradingView.TOOL_SOCIAL_BLOCK, RoleTradingView.TOOL_SOCIAL_UNBLOCK -> {
+                if (!manifest.hasSocial()) {
+                    throw new IOException("未知业务工具：" + tool);
+                }
+                kind = RoleTradingView.TOOL_SOCIAL_BLOCK.equals(tool)
+                        ? PendingTask.SOCIAL_BLOCK_V1 : PendingTask.SOCIAL_UNBLOCK_V1;
+                SocialTargetDraft draft =
+                        strict(SocialTargetDraft.class, args);
+                body = new SocialTaskPayload(binding.personPartyId(),
+                        DecisionRun.actionCommandId(recorded.actionId()), null,
+                        draft.targetPartyId());
+            }
             case RoleTradingView.TOOL_MEDIA_EVIDENCE_SHARE -> {
                 if (!manifest.hasEvidence()) {
                     throw new IOException("未知业务工具：" + tool);
@@ -4938,12 +5076,34 @@ public final class WorldRuntime implements AutoCloseable {
         String taskId = forcedTaskId != null ? forcedTaskId : freeTaskId(base,
                 DecisionRun.actionTaskId(recorded.actionId()));
         String commandId = DecisionRun.actionCommandId(recorded.actionId());
+        SocialRun socialAfter = null;
+        String socialReject = null;
+        if (SocialRun.KINDS.contains(kind)) {
+            if (base.social() == null) {
+                throw new IOException("旧档案不得使用社交工具：" + kind);
+            }
+            if (PendingTask.SOCIAL_BEGIN_V1.equals(kind)) {
+                // 回执到达 ≠ 可以开始写作：只落意图与排程，到 beginAt（barrier 或当时世界时刻）才 begin
+                long beginAt = recorded.barrierAtMillis();
+                // 开始帧到期就是 beginAt（零工时门）；写完帧在 begin 成功后按正工时另排
+                WorldRoleSession.SocialSendDraft draft = (WorldRoleSession.SocialSendDraft) body;
+                body = new SocialTaskPayload(binding.personPartyId(), commandId, null, null,
+                        mapper.writeValueAsString(draft));
+                dueMillis = beginAt;
+            } else {
+                long duration = socialBlockMillis;
+                if (dueMillis != recorded.barrierAtMillis() + duration) {
+                    throw new IOException("社交动作耗时必须等于冻结时长：" + kind + " -> "
+                            + duration);
+                }
+            }
+        }
         RoleActionPayload payload = new RoleActionPayload(commandId, recorded.actionId(),
                 recorded.actionId(), binding.personPartyId(), dueMillis,
                 new TreeMap<>(binding.appointments()), kind, mapper.writeValueAsString(body),
                 manifest.hasBelief() ? recorded.cutoffPosition() : null);
         return new PlacedAction(recorded.actionId(), tool, kind, taskId, commandId, dueMillis,
-                mapper.writeValueAsString(payload));
+                mapper.writeValueAsString(payload), socialAfter, socialReject);
     }
 
     /** 从回执外壳取 args 对象；外壳已由纯核验证。 */
@@ -5101,8 +5261,16 @@ public final class WorldRuntime implements AutoCloseable {
             }
             if (decision.status() == DecisionModel.Status.RECORDED
                     && decision.outcome() == DecisionModel.Outcome.INTENT
-                    && !run.actionRefs().containsKey(decision.actionId())) {
+                    && !run.actionRefs().containsKey(decision.actionId())
+                    && (run.dispatch(decision.lastAttempt().attemptId()) == null
+                    || run.dispatch(decision.lastAttempt().attemptId()).businessReject() == null)) {
                 throw new IOException("已记录意图缺少动作引用：" + decision.actionId());
+            }
+            if (decision.outcome() == DecisionModel.Outcome.INTENT
+                    && run.dispatch(decision.lastAttempt().attemptId()) != null
+                    && run.dispatch(decision.lastAttempt().attemptId()).businessReject() != null
+                    && run.actionRefs().containsKey(decision.actionId())) {
+                throw new IOException("业务拒绝的意图不得同时引用动作任务：" + decision.actionId());
             }
             if (decision.outcome() != DecisionModel.Outcome.INTENT
                     && run.actionRefs().containsKey(decision.actionId())) {
@@ -5162,7 +5330,13 @@ public final class WorldRuntime implements AutoCloseable {
                             && coordination.personPartyId().equals(decision.personPartyId())
                             && coordination.kind().equals(replanned.kind())
                             && coordination.timeMillis() == ref.dueMillis();
-                    if (!interviewDone) {
+                    SocialRun.SocialReport socialReport = candidate.social() == null ? null
+                            : candidate.social().reportOf(ref.taskId());
+                    boolean socialDone = socialReport != null
+                            && socialReport.person().equals(decision.personPartyId())
+                            && socialReport.kind().equals(replanned.kind())
+                            && socialReport.atMillis() == ref.dueMillis();
+                    if (!interviewDone && !socialDone) {
                         throw new IOException("已记录意图缺少待办或准确完成回报：" + ref.actionId());
                     }
                 }
@@ -5208,15 +5382,39 @@ public final class WorldRuntime implements AutoCloseable {
             if (!positions.add(fact.dispatchPosition())) {
                 throw new IOException("同一提交位置出现多条派发事实：" + fact.dispatchPosition());
             }
-            if (before != null && before.dispatch(fact.attemptId()) != null
-                    && !before.dispatch(fact.attemptId()).equals(fact)) {
-                throw new IOException("派发事实被改写：" + fact.attemptId());
+            if (before != null && before.dispatch(fact.attemptId()) != null) {
+                DecisionRun.Dispatch old = before.dispatch(fact.attemptId());
+                // schema17：允许在原字段逐字不变的前提下补一次业务拒绝，其余一律不得改写
+                boolean rejectionOnly = !old.equals(fact)
+                        && old.businessReject() == null
+                        && fact.businessReject() != null
+                        && old.attemptId().equals(fact.attemptId())
+                        && old.actionId().equals(fact.actionId())
+                        && old.attemptNo() == fact.attemptNo()
+                        && old.recoveryGeneration() == fact.recoveryGeneration()
+                        && old.planDigest().equals(fact.planDigest())
+                        && old.inputDigest().equals(fact.inputDigest())
+                        && old.dispatchPosition() == fact.dispatchPosition()
+                        && old.dispatchTimeMillis() == fact.dispatchTimeMillis()
+                        && old.authorizedAtEpochMillis() == fact.authorizedAtEpochMillis();
+                if (!old.equals(fact) && !rejectionOnly) {
+                    throw new IOException("派发事实被改写：" + fact.attemptId());
+                }
             }
         }
         if (before != null && before.dispatches() != null) {
             for (DecisionRun.Dispatch fact : before.dispatches().values()) {
-                if (!fact.equals(run.dispatch(fact.attemptId()))) {
-                    throw new IOException("历史派发事实被删除或改写：" + fact.attemptId());
+                DecisionRun.Dispatch now = run.dispatch(fact.attemptId());
+                if (now == null) {
+                    throw new IOException("历史派发事实被删除： " + fact.attemptId());
+                }
+                DecisionRun.Dispatch base = new DecisionRun.Dispatch(fact.attemptId(),
+                        fact.actionId(), fact.attemptNo(), fact.recoveryGeneration(),
+                        fact.planDigest(), fact.inputDigest(), fact.dispatchPosition(),
+                        fact.dispatchTimeMillis(), fact.authorizedAtEpochMillis(),
+                        now.businessReject());
+                if (!base.equals(now)) {
+                    throw new IOException("历史派发事实被改写：" + fact.attemptId());
                 }
             }
         }
@@ -5225,7 +5423,14 @@ public final class WorldRuntime implements AutoCloseable {
     /** 一次决定批次的期望候选：决定子集与操作规定的四类元数据。 */
     private record DecisionBatch(DecisionRun decisions, List<PendingTask> pending,
                                  Set<String> usedTaskIds, Map<String, String> commandContents,
-                                 Map<String, String> commandOutcomes, String outcome) {
+                                 Map<String, String> commandOutcomes, String outcome, SocialRun social) {
+
+        /** 旧六参：社交状态沿用上一帧。 */
+        DecisionBatch(DecisionRun decisions, List<PendingTask> pending,
+                      Set<String> usedTaskIds, Map<String, String> commandContents,
+                      Map<String, String> commandOutcomes, String outcome) {
+            this(decisions, pending, usedTaskIds, commandContents, commandOutcomes, outcome, null);
+        }
     }
 
     private static DecisionBatch batchWithCommand(WorldState previous, DecisionRun decisions,
@@ -5300,6 +5505,11 @@ public final class WorldRuntime implements AutoCloseable {
                 || !expected.commandOutcomes().equals(candidate.commandOutcomes())
                 || !expected.outcome().equals(commit.result())) {
             throw new IOException("决定批次与从原命令重建的转换不一致");
+        }
+        SocialRun expectedSocial = expected.social() == null ? previous.social()
+                : expected.social();
+        if (!java.util.Objects.equals(expectedSocial, candidate.social())) {
+            throw new IOException("决定批次的社交子集与逐帧重算不一致");
         }
         if (candidate.timeMillis() != previous.timeMillis()
                 || !candidate.lastPhase().equals(previous.lastPhase())
@@ -5542,6 +5752,23 @@ public final class WorldRuntime implements AutoCloseable {
             } catch (IOException | RuntimeException failure) {
                 dtoFailure = failure;
             }
+            if (!requireIntent && placed != null && placed.businessReject() != null) {
+                // 模型 send 意图被真实业务拒绝：保留 INTENT 与原回执，无任务，拒绝进派发事实
+                String outcome = "SOCIAL_REJECTED:" + placed.businessReject();
+                if (!outcome.equals(commit.result()) || !outcome.equals(event.payload())) {
+                    throw new IOException("社交业务拒绝批次原文或回报与重建不一致");
+                }
+                DecisionRun rejectedRun = withState.withDispatchRejection(reply.attemptId(),
+                        placed.businessReject());
+                Map<String, String> contents = new TreeMap<>(previous.commandContents());
+                contents.put(placed.commandId(), placed.payloadJson());
+                contents.put(commit.commandId(), commit.commandContent());
+                Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+                outcomes.put(placed.commandId(), outcome);
+                outcomes.put(commit.commandId(), outcome);
+                return new DecisionBatch(rejectedRun, previous.pending(), previous.usedTaskIds(),
+                        contents, outcomes, outcome, placed.social());
+            }
             if (!requireIntent) {
                 // DECISION_REPLIED_V1 承载 INTENT 只在静态 DTO 校验真实失败时合法：
                 // 用同一 planAction 判定，失败才按原 rejectReply 重建技术失败，合法意图不得冒充失败。
@@ -5564,6 +5791,23 @@ public final class WorldRuntime implements AutoCloseable {
             if (placed == null) {
                 throw new IOException("业务计划批次的 DTO 校验失败", dtoFailure);
             }
+            if (placed.businessReject() != null) {
+                // 模型 send 意图被真实业务拒绝：保留 INTENT 与原回执，无任务，拒绝进派发事实
+                String outcome = "SOCIAL_REJECTED:" + placed.businessReject();
+                if (!outcome.equals(commit.result()) || !outcome.equals(event.payload())) {
+                    throw new IOException("社交业务拒绝批次原文或回报与重建不一致");
+                }
+                DecisionRun rejectedRun = withState.withDispatchRejection(reply.attemptId(),
+                        placed.businessReject());
+                Map<String, String> contents = new TreeMap<>(previous.commandContents());
+                contents.put(placed.commandId(), placed.payloadJson());
+                contents.put(commit.commandId(), commit.commandContent());
+                Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+                outcomes.put(placed.commandId(), outcome);
+                outcomes.put(commit.commandId(), outcome);
+                return new DecisionBatch(rejectedRun, previous.pending(), previous.usedTaskIds(),
+                        contents, outcomes, outcome, placed.social());
+            }
             DecisionRun withRef = withState.withActionRef(new DecisionRun.ActionRef(
                     placed.actionId(), placed.taskId(), placed.tool(), placed.dueMillis()));
             List<PendingTask> pending = new ArrayList<>(previous.pending());
@@ -5582,7 +5826,7 @@ public final class WorldRuntime implements AutoCloseable {
                 throw new IOException("业务计划批次原文或回报与重建不一致");
             }
             return new DecisionBatch(withRef, List.copyOf(pending), used, contents, outcomes,
-                    "RECORDED");
+                    "RECORDED", placed.social());
         }
         if (requireIntent) {
             throw new IOException("业务计划批次必须是 INTENT");
@@ -6804,10 +7048,11 @@ public final class WorldRuntime implements AutoCloseable {
         List<WorldEvent> events = new ArrayList<>();
         try {
             if (PendingTask.ROLE_APPOINT_V1.equals(task.kind())) {
+                RoleAccess.Role role = RoleAccess.Role.valueOf(payload.role());
+                requireLegacyRole(role);
                 access = RoleAccess.appoint(registry, access, payload.appointmentId(),
                         payload.personPartyId(), payload.organizationPartyId(),
-                        RoleAccess.Role.valueOf(payload.role()), payload.startsAt(),
-                        payload.endsAt(), now);
+                        role, payload.startsAt(), payload.endsAt(), now);
             } else {
                 access = RoleAccess.revoke(access, payload.appointmentId(), now);
                 // 提前撤任：当批撤销该任职发出的活动子单，保留已成交
@@ -7497,6 +7742,7 @@ public final class WorldRuntime implements AutoCloseable {
         validateDecisions(candidate, previous);
         validateBeliefs(candidate, previous, commit);
         validateMedia(candidate, previous, commit);
+        validateSocial(candidate, previous, commit);
         validateInterviews(candidate, previous, commit);
     }
 
@@ -7637,7 +7883,8 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.commandContents(), previous.commandOutcomes(), previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
-                previous.dividends(), previous.beliefs(), media, run, previous.evidence());
+                previous.dividends(), previous.beliefs(), media, run, previous.evidence(),
+                previous.social());
     }
 
     /** 决定来源：按任务标识在已接收决定动作引用里查找同一任务。 */
@@ -8197,7 +8444,8 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.commandContents(), previous.commandOutcomes(), previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
-                previous.dividends(), previous.beliefs(), run, previous.interviews(), evidence);
+                previous.dividends(), previous.beliefs(), run, previous.interviews(), evidence,
+                previous.social());
     }
 
     /**
@@ -8237,6 +8485,253 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (!opening && !expected.states().keySet().equals(actual.states().keySet())) {
             throw new IOException("证据子集机构集合被改动");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // schema17 社交子集恢复校验：逐帧重演 finish/deliver/block/unblock
+    // ------------------------------------------------------------------
+
+    /** 逐帧重算的工作副本：只替换社交与资料分量。 */
+    private static WorldState socialStep(WorldState previous, SocialRun social,
+                                         InformationRun information, List<PendingTask> pending) {
+        return new WorldState(previous.schemaVersion(), previous.runId(), previous.position(),
+                previous.timeMillis(), previous.lastPhase(), previous.accounts(),
+                List.copyOf(pending), previous.delivered(), previous.usedTaskIds(),
+                previous.commandContents(), previous.commandOutcomes(), previous.securities(),
+                previous.exchange(), previous.manufacturing(), previous.governance(),
+                previous.roles(), information, previous.trading(), previous.decisions(),
+                previous.dividends(), previous.beliefs(), previous.media(), previous.interviews(),
+                previous.evidence(), social);
+    }
+
+    /**
+     * 社交子集恢复校验：开局逐字段核冻结配置，之后真实重演各完成帧并比较状态、
+     * 资料、待办与原命令/事件，而不是只核摘要。
+     */
+    private void validateSocial(WorldState candidate, WorldState previous, WorldCommit commit)
+            throws IOException {
+        if (!manifest.hasSocial()) {
+            if (candidate.social() != null) {
+                throw new IOException("旧档案不得包含社交子集状态");
+            }
+            for (PendingTask task : candidate.pending()) {
+                if (SocialRun.KINDS.contains(task.kind())) {
+                    throw new IOException("旧档案不得包含社交待办：" + task.taskId());
+                }
+            }
+            return;
+        }
+        SocialRun after = candidate.social();
+        if (after == null) {
+            throw new IOException("社交档案缺少社交子集状态");
+        }
+        if (socialConfig == null || !socialConfig.equals(after.config())) {
+            throw new IOException("社交配置与冻结开局不一致");
+        }
+        if (after.blockMillis() != socialBlockMillis) {
+            throw new IOException("社交屏蔽工时与冻结开局不一致");
+        }
+        if (!after.contacts().equals(socialContacts)) {
+            throw new IOException("受信联系入口被改动");
+        }
+        SocialRun before = previous == null ? null : previous.social();
+        if (before == null) {
+            SocialRun expected = SocialRun.open(socialConfig, socialBlockMillis, socialContacts);
+            if (!expected.equals(after)) {
+                throw new IOException("社交开局子集与冻结配置不一致");
+            }
+            return;
+        }
+        // 1）本帧完成的社交任务 = 上一帧有、本帧没有
+        List<PendingTask> completed = new ArrayList<>();
+        for (PendingTask task : before.state() == null ? List.<PendingTask>of() : previous.pending()) {
+            if (!SocialRun.KINDS.contains(task.kind())) {
+                continue;
+            }
+            boolean stillPending = false;
+            for (PendingTask now : candidate.pending()) {
+                if (now.taskId().equals(task.taskId())) {
+                    stillPending = true;
+                    break;
+                }
+            }
+            if (!stillPending) {
+                completed.add(task);
+            }
+        }
+        completed.sort(Comparator.comparingLong(PendingTask::dueTimeMillis)
+                .thenComparing(PendingTask::taskId));
+        // 2）从上一帧与真实待办重算
+        SocialRun expectedSocial = before;
+        InformationRun expectedInformation = previous.information();
+        List<PendingTask> expectedPending = new ArrayList<>(previous.pending());
+        for (PendingTask task : completed) {
+            WorldState step = socialStep(previous, expectedSocial, expectedInformation,
+                    expectedPending);
+            SocialFrame frame;
+            try {
+                frame = computeSocialFrame(step, task);
+            } catch (RuntimeException invalid) {
+                throw new IOException("社交帧重算失败：" + task.taskId(), invalid);
+            }
+            expectedSocial = frame.social();
+            expectedInformation = frame.information();
+            expectedPending = frame.pending();
+        }
+        if (!expectedSocial.equals(after)) {
+            // 不按命令名前缀信任任何校验；只有"本帧确实改了决定子集"才视为决定层已用
+            // planAction/原回执重建比较过社交分量（否则 validateDecisionFrame 会先拒绝）。
+            boolean decisionsChanged = !java.util.Objects.equals(previous.decisions(),
+                    candidate.decisions());
+            if (!decisionsChanged) {
+                // 没有决定变化：本帧必须能从原命令/本帧任务重算出同一社交状态
+                SocialRun replay = replaySocialScheduling(previous, candidate, commit);
+                if (!replay.equals(after)) {
+                    throw new IOException("社交子集与逐帧重算不一致：expected="
+                            + expectedSocial + " actual=" + after);
+                }
+                expectedSocial = replay;
+            }
+        }
+        if (!completed.isEmpty() && !expectedInformation.equals(candidate.information())) {
+            throw new IOException("资料子集与社交逐帧重算不一致");
+        }
+        // 3）社交待办：必须等于重算结果或本批真实排程事件
+        Map<String, PendingTask> expectedById = new TreeMap<>();
+        for (PendingTask task : expectedPending) {
+            if (SocialRun.KINDS.contains(task.kind())) {
+                expectedById.put(task.taskId(), task);
+            }
+        }
+        Map<String, PendingTask> actualById = new TreeMap<>();
+        for (PendingTask task : candidate.pending()) {
+            if (SocialRun.KINDS.contains(task.kind())) {
+                actualById.put(task.taskId(), task);
+            }
+        }
+        for (Map.Entry<String, PendingTask> entry : actualById.entrySet()) {
+            PendingTask expectedTask = expectedById.get(entry.getKey());
+            if (expectedTask != null) {
+                if (!expectedTask.equals(entry.getValue())) {
+                    throw new IOException("在途社交任务被改写：" + entry.getKey());
+                }
+                continue;
+            }
+            requireSocialSchedulingRequest(previous, candidate, commit, entry.getValue());
+        }
+        for (String expectedId : expectedById.keySet()) {
+            if (!actualById.containsKey(expectedId)) {
+                throw new IOException("社交待办被删除或漏排：" + expectedId);
+            }
+        }
+    }
+
+    /** 排程批的社交重算：只从本批原命令重放 begin，其它动作不改社交状态。 */
+    private SocialRun replaySocialScheduling(WorldState previous, WorldState candidate,
+                                             WorldCommit commit) throws IOException {
+        SocialRun before = previous.social();
+        String content = candidate.commandContents().get(commit.commandId());
+        if (content == null) {
+            content = commit.commandContent();
+        }
+        RoleActionPayload payload;
+        try {
+            payload = mapper.readValue(content, RoleActionPayload.class);
+        } catch (IOException unreadable) {
+            throw new IOException("社交排程命令无法解析", unreadable);
+        }
+        if (!PendingTask.SOCIAL_FINISH_V1.equals(payload.kind())) {
+            if (!before.equals(candidate.social())) {
+                throw new IOException("屏蔽类动作不得在排程批改动社交状态");
+            }
+            return before;
+        }
+        WorldRoleSession.SocialSendDraft draft;
+        try {
+            draft = mapper.readValue(payload.body(), WorldRoleSession.SocialSendDraft.class);
+        } catch (IOException unreadable) {
+            throw new IOException("社交写信参数无法解析", unreadable);
+        }
+        SocialMessageModel.BeginOutcome begin = SocialMessageModel.beginSend(before.state(),
+                previous.information().information(),
+                before.context(registry, requireSocialRecall()), payload.personPartyId(),
+                payload.commandId(), draft.toPartyId(), draft.channel(), draft.title(),
+                draft.body(), previous.timeMillis());
+        SocialRun replay = before.withState(begin.state());
+        if (begin.status() != SocialMessageModel.BeginStatus.STARTED) {
+            String reason = socialReason(begin.status());
+            replay = replay.withReport(new SocialRun.SocialReport(
+                    "social-begin:" + payload.commandId(), payload.personPartyId(),
+                    PendingTask.SOCIAL_FINISH_V1, false, reason, "", previous.timeMillis(),
+                    previous.position() + 1));
+        }
+        return replay;
+    }
+
+    /** 新增社交待办必须能回到本批真实命令与排程事件。 */
+    private void requireSocialSchedulingRequest(WorldState previous, WorldState candidate,
+                                                WorldCommit commit, PendingTask task)
+            throws IOException {
+        String json = mapper.writeValueAsString(task);
+        boolean scheduled = false;
+        boolean decisionScheduled = false;
+        for (WorldEvent event : commit.events()) {
+            if ("TASK_SCHEDULED_V1".equals(event.type()) && event.payload().equals(json)) {
+                scheduled = true;
+            }
+            if ("DECISION_ACTION_SCHEDULED_V1".equals(event.type())
+                    && event.payload().equals(task.payload())) {
+                // 决定意图批次用该事件承载同一个任务正文；仍需下面的原命令绑定
+                decisionScheduled = true;
+            }
+        }
+        if (!scheduled && !decisionScheduled) {
+            throw new IOException("社交待办缺少真实排程请求：" + task.taskId());
+        }
+        if (task.phase() != WorldScheduler.Phase.COMPLETION) {
+            throw new IOException("社交待办必须落在 COMPLETION 阶段：" + task.taskId());
+        }
+        String recorded = candidate.commandContents().get(commit.commandId());
+        if (recorded == null) {
+            recorded = commit.commandContent();
+        }
+        boolean samePayload = decisionScheduled || task.payload().equals(recorded);
+        if (!samePayload) {
+            try {
+                RoleActionPayload wrapped = mapper.readValue(recorded, RoleActionPayload.class);
+                if (task.payload().equals(wrapped.body())) {
+                    samePayload = true;
+                } else {
+                    // 会话路径：命令原文保存业务草稿，待办保存含派生标识的完整 payload
+                    SocialTaskPayload body = socialBody(task);
+                    if (body == null || body.payload() == null) {
+                        SocialTargetDraft target = mapper.readValue(
+                                wrapped.body(), SocialTargetDraft.class);
+                        samePayload = body != null
+                                && body.targetPartyId().equals(target.targetPartyId())
+                                && body.person().equals(wrapped.personPartyId())
+                                && body.commandId().equals(wrapped.commandId());
+                    } else {
+                        WorldRoleSession.SocialSendDraft draft = mapper.readValue(wrapped.body(),
+                                WorldRoleSession.SocialSendDraft.class);
+                        samePayload = body.payload().to().equals(draft.toPartyId())
+                                && body.payload().channel().equals(draft.channel())
+                                && body.payload().title().equals(draft.title())
+                                && body.payload().body().equals(draft.body())
+                                && body.person().equals(wrapped.personPartyId())
+                                && body.commandId().equals(wrapped.commandId());
+                    }
+                }
+            } catch (IOException unreadable) {
+                throw new IOException("社交排程命令无法解析", unreadable);
+            }
+        }
+        if (!samePayload) {
+            throw new IOException("社交待办参数与本批命令不一致：" + task.taskId());
+        }
+        if (previous.commandContents().containsKey(commit.commandId())) {
+            throw new IOException("社交排程命令不得复用已记录命令：" + commit.commandId());
         }
     }
 
@@ -8785,6 +9280,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (hasPendingReading(person, base.pending())
                 || (base.information() != null && hasActiveReading(person))) {
             throw new IllegalArgumentException("本人正在阅读资料，不能同时发起采访动作");
+        }
+        if (manifest.hasSocial() && base.social() != null
+                && !socialPendingOf(person, base.pending()).isEmpty()) {
+            throw new IllegalArgumentException("本人还有未完成的社交动作，不能同时发起采访动作");
         }
         if (!PendingTask.INTERVIEW_SPEAK_V1.equals(kind) && hasActiveInterview(person, base)) {
             throw new IllegalArgumentException("本人正在进行采访会话");
@@ -10146,6 +10645,10 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("董事会章程与开局绑定不一致");
         }
         for (BoardModel.Meeting meeting : run.board().meetings().values()) {
+            if (meeting.topic() == BoardModel.Topic.MANAGER_APPOINTMENT) {
+                throw new IOException("当前规则档案不得包含公司经理任免议题："
+                        + meeting.meetingId());
+            }
             if (expectedSchema() <= STATE_SCHEMA_DECISIONS
                     && meeting.topic() == BoardModel.Topic.DIVIDEND_AUTHORIZATION) {
                 throw new IOException("旧规则档案不得包含分红治理议题：" + meeting.meetingId());
@@ -11303,7 +11806,8 @@ public final class WorldRuntime implements AutoCloseable {
                 used, previous.commandContents(), previous.commandOutcomes(), previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 information, previous.trading(), previous.decisions(), previous.dividends(),
-                previous.beliefs(), previous.media(), previous.interviews(), previous.evidence());
+                previous.beliefs(), previous.media(), previous.interviews(), previous.evidence(),
+                previous.social());
         List<WorldEvent> events = List.of(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()), new WorldEvent("information-report:" + task.taskId(), "INFORMATION_REPORT_V1",
                 mapper.writeValueAsString(report)));
@@ -11428,7 +11932,7 @@ public final class WorldRuntime implements AutoCloseable {
                 used, contents, outcomes, previous.securities(), previous.exchange(), previous.manufacturing(),
                 previous.governance(), previous.roles(), previous.information(), previous.trading(),
                 previous.decisions(), previous.dividends(), previous.beliefs(),
-                previous.media(), previous.interviews(), previous.evidence());
+                previous.media(), previous.interviews(), previous.evidence(), previous.social());
         List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + added.taskId(), "TASK_SCHEDULED_V1",
                 mapper.writeValueAsString(added)));
         List<WorldEvent> actual = commit.events().stream()
@@ -12034,6 +12538,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** schema 1..12 仅支持四岗；媒体岗位只在 schema13 媒体档案显式放开。 */
     private void requireLegacyRole(RoleAccess.Role role) {
+        if (role == RoleAccess.Role.COMPANY_MANAGER) {
+            throw new IllegalArgumentException("当前规则档案尚未启用公司经理岗位：" + role);
+        }
         if (manifest.hasMedia()) {
             return;
         }
@@ -12250,7 +12757,9 @@ public final class WorldRuntime implements AutoCloseable {
                 manifest.hasEvidence() ? EvidenceRun.open(evidenceConfig,
                         mediaConfig == null ? List.of() : mediaConfig.policies().stream()
                                 .map(MediaModel.Policy::mediaOrganizationPartyId).distinct().toList())
-                        : null);
+                        : null,
+                manifest.hasSocial() ? SocialRun.open(socialConfig, socialBlockMillis,
+                        socialContacts) : null);
     }
 
     /**
@@ -12272,6 +12781,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 工具合同版本：证据档案 v4、对话档案 v3、信念档案 v2，旧档案保持 v1 逐字不变。 */
     private String toolContractVersion() {
+        if (manifest.hasSocial()) {
+            return DecisionRun.TOOL_CONTRACT_VERSION_V5;
+        }
         if (manifest.hasEvidence()) {
             return DecisionRun.TOOL_CONTRACT_VERSION_V4;
         }
@@ -12352,6 +12864,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasSocial()) {
+            return STATE_SCHEMA_SOCIAL;
+        }
         if (manifest.hasEvidence()) {
             return STATE_SCHEMA_EVIDENCE;
         }
@@ -12592,10 +13107,56 @@ public final class WorldRuntime implements AutoCloseable {
                             MediaRun media,
                             InterviewRun interviews,
                             EvidenceRun evidence) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, trading, decisions, dividends, beliefs, media, interviews,
+                evidence, state.social());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading,
+                            DecisionRun decisions,
+                            SocialRun social) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, trading, decisions, state.dividends(), state.beliefs(),
+                state.media(), state.interviews(), state.evidence(), social);
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading,
+                            DecisionRun decisions,
+                            DividendModel.State dividends,
+                            BeliefRun beliefs,
+                            MediaRun media,
+                            InterviewRun interviews,
+                            EvidenceRun evidence,
+                            SocialRun social) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                roles, information, trading, decisions, dividends, beliefs, media, interviews, evidence);
+                roles, information, trading, decisions, dividends, beliefs, media, interviews,
+                evidence, social);
     }
 
     // ==================================================================
@@ -13023,7 +13584,8 @@ public final class WorldRuntime implements AutoCloseable {
                 accounts, pending, delivered, used, contents, outcomes, previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 previous.information(), previous.trading(), previous.decisions(),
-                previous.dividends(), previous.beliefs(), previous.media(), previous.interviews(), previous.evidence());
+                previous.dividends(), previous.beliefs(), previous.media(), previous.interviews(), previous.evidence(),
+                previous.social());
     }
 
     private void requireCashBatch(WorldCommit commit, WorldState candidate, WorldState expected,
@@ -13219,6 +13781,9 @@ public final class WorldRuntime implements AutoCloseable {
                                                     List<String> attendeeSeatIds,
                                                     List<String> recusedSeatIds,
                                                     BoardModel.Topic topic) throws IOException {
+        if (topic == BoardModel.Topic.MANAGER_APPOINTMENT) {
+            throw new IllegalArgumentException("当前规则档案尚未启用公司经理任免议题：" + topic);
+        }
         if (topic == BoardModel.Topic.BUDGET) {
             return scheduleBoardMeeting(commandId, taskId, dueTimeMillis, chairSeatId, meetingId,
                     materialDeadline, opensAt, closesAt, attendeeSeatIds, recusedSeatIds);
@@ -14227,12 +14792,15 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         List<String> tools = new ArrayList<>(roleTools(appointments, manifest.hasBelief(),
-                manifest.hasMedia(), manifest.hasInterviews(), manifest.hasEvidence()));
+                manifest.hasMedia(), manifest.hasInterviews(), manifest.hasEvidence(),
+                manifest.hasSocial()));
         if (manifest.hasDialogue() && isDialogueParticipant(snap, person)) {
             tools.add(RoleTradingView.TOOL_INTERVIEW_SPEAK);
         }
+        SocialRun.SocialView socialView = manifest.hasSocial() && snap.social() != null
+                ? socialViewAt(snap, person, now) : null;
         return new RoleTradingView(session.observedAt(), now, person, profile, appointments,
-                research, targets, children, notices, tools, mediaStories);
+                research, targets, children, notices, tools, mediaStories, socialView);
     }
 
     /** schema15 本人员工采访观察：只含本人参与的邀请/会话/轮次与真实已读联系入口。 */
@@ -14399,7 +14967,8 @@ public final class WorldRuntime implements AutoCloseable {
 
     private static List<String> roleTools(List<RoleTradingView.Appointment> appointments,
                                           boolean beliefEnabled, boolean mediaEnabled,
-                                          boolean interviewEnabled, boolean evidenceEnabled) {
+                                          boolean interviewEnabled, boolean evidenceEnabled,
+                                          boolean socialEnabled) {
         boolean researcher = false;
         boolean manager = false;
         boolean risk = false;
@@ -14460,6 +15029,12 @@ public final class WorldRuntime implements AutoCloseable {
             if (journalist || editor) {
                 tools.add(RoleTradingView.TOOL_MEDIA_CANCEL);
             }
+        }
+        if (socialEnabled) {
+            // 任何登记普通人可用，不依赖基金/记者岗位；可达性由纯核按真实联系入口判定
+            tools.add(RoleTradingView.TOOL_SOCIAL_SEND);
+            tools.add(RoleTradingView.TOOL_SOCIAL_BLOCK);
+            tools.add(RoleTradingView.TOOL_SOCIAL_UNBLOCK);
         }
         if (interviewEnabled) {
             // 回应/取消/结束对任何登记人物开放；只有发起邀请需要记者岗位（由运行时再次判权）
@@ -14522,6 +15097,11 @@ public final class WorldRuntime implements AutoCloseable {
         if (manifest.hasMedia() && PendingTask.ROLE_TRADING_READ_V1.equals(kind)
                 && !mediaPendingOf(session.personPartyId(), state.pending()).isEmpty()) {
             throw new IllegalArgumentException("本人还有未完成的媒体工作，不能同时开始阅读");
+        }
+        if (manifest.hasSocial() && PendingTask.ROLE_TRADING_READ_V1.equals(kind)
+                && state.social() != null
+                && !socialPendingOf(session.personPartyId(), state.pending()).isEmpty()) {
+            throw new IllegalArgumentException("本人还有未完成的社交动作，不能同时开始阅读");
         }
         if (manifest.hasInterviews() && PendingTask.ROLE_TRADING_READ_V1.equals(kind)
                 && hasActiveInterview(session.personPartyId(), state)
@@ -14725,6 +15305,547 @@ public final class WorldRuntime implements AutoCloseable {
                         observed == null ? -1L : observed, now, false, "{}"));
     }
 
+    // ------------------------------------------------------------------
+    // schema17 一对一消息：排程、完成帧、报告与投影
+    // ------------------------------------------------------------------
+
+    /** 社交任务的 journal 正文：正文实体只在 PendingPayload 里，且只存在于未完成/待投递任务。 */
+    private record SocialTaskPayload(String person, String commandId,
+                                     SocialMessageModel.PendingPayload payload,
+                                     String targetPartyId, String draftJson) {
+
+        /** 旧四参：没有待开始草稿（会话路径/屏蔽类）。 */
+        SocialTaskPayload(String person, String commandId, SocialMessageModel.PendingPayload payload,
+                          String targetPartyId) {
+            this(person, commandId, payload, targetPartyId, null);
+        }
+    }
+
+    /** 社交子集未启用即拒绝（旧 ≤16）。 */
+    private void requireSocialEnabled() {
+        if (!manifest.hasSocial() || state.social() == null) {
+            throw new IllegalStateException("当前运行未启用社交模块：" + manifest.rulesVersion());
+        }
+    }
+
+    private SocialRun requireSocialRun() {
+        return requireSocialRun(state);
+    }
+
+    private SocialRun requireSocialRun(WorldState base) {
+        if (!manifest.hasSocial() || base.social() == null) {
+            throw new IllegalStateException("当前运行未启用社交模块：" + manifest.rulesVersion());
+        }
+        return base.social();
+    }
+
+    /** 回忆参数：社交档必须建立在带回忆配置的信息模块之上。 */
+    private CognitionRecall.Policy requireSocialRecall() {
+        if (informationConfig == null || informationConfig.recallPolicy() == null) {
+            throw new IllegalStateException("社交档需要信息模块的回忆参数");
+        }
+        return informationConfig.recallPolicy();
+    }
+
+    /** 纯核状态名投影成报告原因码（大写原样，便于审计对账）。 */
+    private static String socialReason(Enum<?> status) {
+        return status == null ? "UNKNOWN" : status.name();
+    }
+
+    /**
+     * 本人未完成的社交动作（按到期、标识排序）。
+     *
+     * <p>BEGIN 也计入：从意图被接受起到 barrier 真正开始写作之间，本人处于"已定动作、
+     * 正在思考"状态，不得再开第二个动作；投递是系统动作，不计。</p>
+     */
+    private List<PendingTask> socialPendingOf(String person, List<PendingTask> pending) {
+        List<PendingTask> mine = new ArrayList<>();
+        for (PendingTask task : pending) {
+            if (!SocialRun.KINDS.contains(task.kind())
+                    || PendingTask.SOCIAL_DELIVER_V1.equals(task.kind())) {
+                continue;
+            }
+            SocialTaskPayload body = socialBody(task);
+            if (body != null && body.person().equals(person)) {
+                mine.add(task);
+            }
+        }
+        mine.sort(Comparator.comparingLong(PendingTask::dueTimeMillis)
+                .thenComparing(PendingTask::taskId));
+        return mine;
+    }
+
+    /**
+     * 开始写信前的全世界单焦点重核：豁免自身这一条 BEGIN，其余本人社交动作/阅读/采编/采访
+     * 任一在途即 BUSY。别人同刻不受影响；本任务自身不会把自己判成 BUSY。
+     */
+    private String socialBeginConflict(WorldState base, PendingTask self, String person) {
+        for (PendingTask task : base.pending()) {
+            if (task.taskId().equals(self.taskId())
+                    || !SocialRun.KINDS.contains(task.kind())
+                    || PendingTask.SOCIAL_DELIVER_V1.equals(task.kind())) {
+                continue;
+            }
+            SocialTaskPayload other = socialBody(task);
+            if (other != null && other.person().equals(person)) {
+                return "BUSY";
+            }
+        }
+        if (hasPendingReading(person, base.pending())) {
+            return "BUSY";
+        }
+        if (base.information() != null) {
+            for (InformationModel.Reading reading
+                    : base.information().information().active()) {
+                if (reading.personPartyId().equals(person)) {
+                    return "BUSY";
+                }
+            }
+        }
+        if (manifest.hasMedia() && base.media() != null
+                && !mediaPendingOf(person, base.pending()).isEmpty()) {
+            return "BUSY";
+        }
+        if (manifest.hasInterviews() && hasActiveInterview(person, base)) {
+            return "BUSY";
+        }
+        return null;
+    }
+
+    /** 社交读侧：既接受直接任务正文，也接受经角色动作外壳包装的正文。 */
+    private SocialTaskPayload socialBody(PendingTask task) {
+        try {
+            return mapper.readValue(task.payload(), SocialTaskPayload.class);
+        } catch (IOException direct) {
+            try {
+                RoleActionPayload wrapped = mapper.readValue(task.payload(),
+                        RoleActionPayload.class);
+                return mapper.readValue(wrapped.body(), SocialTaskPayload.class);
+            } catch (IOException unreadable) {
+                return null;
+            }
+        }
+    }
+
+    /**
+     * 全世界单焦点：本人只要有未完成的社交动作，就不能同时阅读、采编、采访或再发社交。
+     * 自己的本次派发不在待办里，因此不会被自身预算/预留误判 BUSY。
+     */
+    private void requireSocialFocusFree(String person, WorldState base) {
+        if (!socialPendingOf(person, base.pending()).isEmpty()) {
+            throw new IllegalArgumentException("本人已有未完成的社交动作");
+        }
+        if (hasPendingReading(person, base.pending())
+                || (base.information() != null && hasActiveReading(person))) {
+            throw new IllegalArgumentException("本人正在阅读资料，不能同时发私人消息");
+        }
+        if (manifest.hasMedia() && !mediaPendingOf(person, base.pending()).isEmpty()) {
+            throw new IllegalArgumentException("本人还有未完成的媒体工作，不能同时发私人消息");
+        }
+        if (manifest.hasInterviews() && hasActiveInterview(person, base)) {
+            throw new IllegalArgumentException("本人正在进行采访会话，不能同时发私人消息");
+        }
+    }
+
+    /**
+     * 写信：本批原子开始写作（占本人正工时、落 Draft）并排完成结算任务。
+     *
+     * <p>业务拒绝（不可达/忙碌等）不建 Draft、不占工时、不建任务，返回原因码并留下报告。</p>
+     */
+    String scheduleSocialSend(WorldRoleSession session, String clientCommandId,
+                              String clientTaskId, long dueMillis,
+                              WorldRoleSession.SocialSendDraft draft) throws IOException {
+        requireSocialEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        Objects.requireNonNull(session, "会话");
+        Objects.requireNonNull(draft, "消息内容");
+        String person = session.personPartyId();
+        SocialRun run = requireSocialRun();
+        long now = state.timeMillis();
+        long duration = socialConfig.sendMillis();
+        String internalCommand = roleCommandId(person, clientCommandId);
+        String internalTask = roleTaskId(person, clientTaskId);
+        String bodyJson = mapper.writeValueAsString(draft);
+        String existing = state.commandContents().get(internalCommand);
+        if (existing != null) {
+            RoleActionPayload stored = mapper.readValue(existing, RoleActionPayload.class);
+            if (!PendingTask.SOCIAL_FINISH_V1.equals(stored.kind())
+                    || !stored.body().equals(bodyJson)
+                    || !stored.clientTaskId().equals(clientTaskId)
+                    || stored.dueMillis() != dueMillis) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(internalCommand);
+        }
+        if (dueMillis != now + duration) {
+            throw new IllegalArgumentException("写信到期必须等于当前时点加冻结写信工时："
+                    + duration);
+        }
+        requireSocialFocusFree(person, state);
+        SocialMessageModel.Context context = run.context(registry, requireSocialRecall());
+        SocialMessageModel.BeginOutcome begin = SocialMessageModel.beginSend(run.state(),
+                state.information().information(), context, person, internalCommand,
+                draft.toPartyId(), draft.channel(), draft.title(), draft.body(), now);
+        SocialRun socialAfter = run.withState(begin.state());
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        List<WorldEvent> events = new ArrayList<>();
+        String result;
+        if (begin.status() == SocialMessageModel.BeginStatus.STARTED) {
+            PendingTask task = new PendingTask(internalTask, dueMillis,
+                    WorldScheduler.Phase.COMPLETION, PendingTask.SOCIAL_FINISH_V1,
+                    mapper.writeValueAsString(new SocialTaskPayload(person, internalCommand,
+                            begin.payload(), null)));
+            pending.add(task);
+            events.add(new WorldEvent("schedule:" + internalTask, "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(task)));
+            result = "SCHEDULED:" + clientTaskId;
+        } else {
+            String reason = socialReason(begin.status());
+            socialAfter = socialAfter.withReport(new SocialRun.SocialReport(
+                    "social-begin:" + internalCommand, person, PendingTask.SOCIAL_FINISH_V1, false,
+                    reason, "", now, state.position() + 1));
+            result = reason;
+        }
+        RoleActionPayload payload = new RoleActionPayload(internalCommand, clientCommandId,
+                clientTaskId, person, dueMillis, new TreeMap<>(session.appointments()),
+                PendingTask.SOCIAL_FINISH_V1, bodyJson, session.observedPosition());
+        String content = mapper.writeValueAsString(payload);
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(internalCommand, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        outcomes.put(internalCommand, result);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        if (begin.status() == SocialMessageModel.BeginStatus.STARTED) {
+            used.add(internalTask);
+        }
+        WorldState candidate = next(now, state.lastPhase(), state.accounts(), pending,
+                state.delivered(), used, contents, outcomes, state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), state.information(),
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(),
+                state.media(), state.interviews(), state.evidence(), socialAfter);
+        commitAndApply(internalCommand, content, result, events, candidate);
+        return result;
+    }
+
+    /**
+     * 屏蔽/解除屏蔽：只排正工时任务，到期帧才改本人偏好。
+     */
+    String scheduleSocialBlock(WorldRoleSession session, String clientCommandId,
+                               String clientTaskId, long dueMillis, String targetPartyId,
+                               boolean unblock) throws IOException {
+        requireSocialEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        Objects.requireNonNull(session, "会话");
+        requireText(targetPartyId, "屏蔽目标");
+        String person = session.personPartyId();
+        String kind = unblock ? PendingTask.SOCIAL_UNBLOCK_V1 : PendingTask.SOCIAL_BLOCK_V1;
+        long now = state.timeMillis();
+        long duration = socialBlockMillis;
+        String internalCommand = roleCommandId(person, clientCommandId);
+        String internalTask = roleTaskId(person, clientTaskId);
+        String existing = state.commandContents().get(internalCommand);
+        if (existing != null) {
+            RoleActionPayload stored = mapper.readValue(existing, RoleActionPayload.class);
+            if (!kind.equals(stored.kind()) || !stored.clientTaskId().equals(clientTaskId)
+                    || stored.dueMillis() != dueMillis) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(internalCommand);
+        }
+        if (dueMillis != now + duration) {
+            throw new IllegalArgumentException("屏蔽动作到期必须等于当前时点加冻结屏蔽工时："
+                    + duration);
+        }
+        requireSocialFocusFree(person, state);
+        SocialTaskPayload body = new SocialTaskPayload(person, internalCommand, null,
+                targetPartyId);
+        PendingTask task = new PendingTask(internalTask, dueMillis,
+                WorldScheduler.Phase.COMPLETION, kind, mapper.writeValueAsString(body));
+        RoleActionPayload payload = new RoleActionPayload(internalCommand, clientCommandId,
+                clientTaskId, person, dueMillis, new TreeMap<>(session.appointments()), kind,
+                mapper.writeValueAsString(new SocialTargetDraft(targetPartyId)),
+                session.observedPosition());
+        String content = mapper.writeValueAsString(payload);
+        String result = "SCHEDULED:" + clientTaskId;
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.add(task);
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(internalCommand, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        outcomes.put(internalCommand, result);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(internalTask);
+        WorldState candidate = next(now, state.lastPhase(), state.accounts(), pending,
+                state.delivered(), used, contents, outcomes, state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), state.information(),
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(),
+                state.media(), state.interviews(), state.evidence(), state.social());
+        commitAndApply(internalCommand, content, result,
+                List.of(new WorldEvent("schedule:" + internalTask, "TASK_SCHEDULED_V1",
+                        mapper.writeValueAsString(task))), candidate);
+        return result;
+    }
+
+    /** 屏蔽类动作的业务参数（会话与工具共用）。 */
+    private record SocialTargetDraft(String targetPartyId) {
+    }
+
+    /** 一帧社交完成的完整结果：纯计算，不提交。 */
+    private record SocialFrame(boolean accepted, String reason, SocialRun social,
+                               InformationRun information, List<PendingTask> pending,
+                               PendingTask scheduled, String messageId, long atMillis) {
+    }
+
+    /** 完成一个社交任务：社交、资料与待办放进同一个候选一次提交。 */
+    private void completeSocialTask(PendingTask task) throws IOException {
+        SocialFrame frame = computeSocialFrame(state, task);
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.add(new WorldEvent("social-task:" + task.taskId(), "SOCIAL_TASK_V1",
+                mapper.writeValueAsString(task)));
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        if (frame.scheduled() != null) {
+            events.add(new WorldEvent("schedule:" + frame.scheduled().taskId(),
+                    "TASK_SCHEDULED_V1", mapper.writeValueAsString(frame.scheduled())));
+            used.add(frame.scheduled().taskId());
+        }
+        WorldState candidate = next(frame.atMillis(), task.phase().name(), state.accounts(),
+                frame.pending(), state.delivered(), used, state.commandContents(),
+                state.commandOutcomes(), state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), frame.information(),
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(),
+                state.media(), state.interviews(), state.evidence(), frame.social());
+        commitAndApply("task:" + task.taskId(), task.payload(), frame.reason(), events, candidate);
+    }
+
+    /** 从给定基准状态重算一次社交完成；不做任何 I/O 提交。 */
+    private SocialFrame computeSocialFrame(WorldState base, PendingTask task) throws IOException {
+        SocialRun run = requireSocialRun(base);
+        SocialTaskPayload body = socialBody(task);
+        if (body == null) {
+            throw new IOException("社交任务正文无法解析：" + task.taskId());
+        }
+        String person = body.person();
+        String commandId = body.commandId();
+        // 执行时点 = max(到期, 当前世界时间)：只吸收"世界已经走过到期"，绝不写未来
+        long now = Math.max(task.dueTimeMillis(), base.timeMillis());
+        SocialMessageModel.Context context = run.context(registry, requireSocialRecall());
+        InformationModel.State info = base.information().information();
+        InformationRun infoRun = base.information();
+        SocialRun after = run;
+        List<PendingTask> pending = new ArrayList<>(base.pending());
+        pending.remove(task);
+        PendingTask scheduled = null;
+        boolean accepted = false;
+        String reason;
+        String messageId = body.payload() == null ? "" : body.payload().messageId();
+        switch (task.kind()) {
+            case PendingTask.SOCIAL_BEGIN_V1 -> {
+                if (body.draftJson() == null) {
+                    throw new IOException("社交开始帧缺少草稿：" + task.taskId());
+                }
+                WorldRoleSession.SocialSendDraft draft = mapper.readValue(body.draftJson(),
+                        WorldRoleSession.SocialSendDraft.class);
+                // 开始帧按当时的全世界单焦点重核（豁免自身这一条），失败留报告、不建 Draft
+                String busy = socialBeginConflict(base, task, person);
+                if (busy != null) {
+                    accepted = false;
+                    reason = busy;
+                    messageId = "";
+                    break;
+                }
+                SocialMessageModel.BeginOutcome outcome = SocialMessageModel.beginSend(
+                        run.state(), info, context, person, commandId, draft.toPartyId(),
+                        draft.channel(), draft.title(), draft.body(), now);
+                after = after.withState(outcome.state());
+                accepted = outcome.status() == SocialMessageModel.BeginStatus.STARTED;
+                reason = socialReason(outcome.status());
+                if (accepted) {
+                    messageId = outcome.payload().messageId();
+                    String finishTaskId = freeTaskId(base, task.taskId() + ":finish");
+                    scheduled = new PendingTask(finishTaskId, now + socialConfig.sendMillis(),
+                            WorldScheduler.Phase.COMPLETION, PendingTask.SOCIAL_FINISH_V1,
+                            mapper.writeValueAsString(new SocialTaskPayload(person, commandId,
+                                    outcome.payload(), null)));
+                    pending.add(scheduled);
+                } else {
+                    messageId = "";
+                }
+            }
+            case PendingTask.SOCIAL_FINISH_V1 -> {
+                SocialMessageModel.FinishOutcome outcome = SocialMessageModel.finishSend(
+                        run.state(), info, context, person, finishCommandId(commandId), messageId,
+                        now);
+                after = after.withState(outcome.state());
+                accepted = outcome.status() == SocialMessageModel.FinishStatus.QUEUED;
+                reason = socialReason(outcome.status());
+                if (accepted) {
+                    SocialMessageModel.Message message = messageOf(outcome.state(), messageId);
+                    if (message == null) {
+                        throw new IOException("写完的消息缺少元数据：" + messageId);
+                    }
+                    String deliverTaskId = freeTaskId(base, task.taskId() + ":deliver");
+                    scheduled = new PendingTask(deliverTaskId, message.dueAt(),
+                            WorldScheduler.Phase.COMPLETION, PendingTask.SOCIAL_DELIVER_V1,
+                            mapper.writeValueAsString(new SocialTaskPayload(person,
+                                    deliverCommandId(body.payload().messageId()), body.payload(),
+                                    null)));
+                    pending.add(scheduled);
+                }
+            }
+            case PendingTask.SOCIAL_DELIVER_V1 -> {
+                SocialMessageModel.DeliverOutcome outcome = SocialMessageModel.deliver(
+                        run.state(), info, context, commandId, body.payload(), now);
+                after = after.withState(outcome.social());
+                accepted = outcome.status() == SocialMessageModel.DeliverStatus.DELIVERED
+                        || outcome.status() == SocialMessageModel.DeliverStatus.REPLAYED;
+                reason = socialReason(outcome.status());
+                if (outcome.status() == SocialMessageModel.DeliverStatus.DELIVERED
+                        || outcome.status() == SocialMessageModel.DeliverStatus.REPLAYED) {
+                    infoRun = infoRun.withInformation(outcome.information());
+                }
+            }
+            case PendingTask.SOCIAL_BLOCK_V1, PendingTask.SOCIAL_UNBLOCK_V1 -> {
+                if (PendingTask.SOCIAL_BLOCK_V1.equals(task.kind())) {
+                    SocialMessageModel.BlockOutcome outcome = SocialMessageModel.block(
+                            run.state(), registry, person, commandId, body.targetPartyId(), now);
+                    after = after.withState(outcome.state());
+                    accepted = outcome.status() == SocialMessageModel.BlockStatus.BLOCKED
+                            || outcome.status() == SocialMessageModel.BlockStatus.ALREADY_BLOCKED;
+                    reason = socialReason(outcome.status());
+                } else {
+                    SocialMessageModel.UnblockOutcome outcome = SocialMessageModel.unblock(
+                            run.state(), registry, person, commandId, body.targetPartyId(), now);
+                    after = after.withState(outcome.state());
+                    accepted = outcome.status() == SocialMessageModel.UnblockStatus.UNBLOCKED
+                            || outcome.status() == SocialMessageModel.UnblockStatus.NOT_BLOCKED;
+                    reason = socialReason(outcome.status());
+                }
+                messageId = "";
+            }
+            default -> throw new IllegalStateException("未登记的社交任务：" + task.kind());
+        }
+        after = after.withReport(new SocialRun.SocialReport(task.taskId(), person, task.kind(),
+                accepted, reason, messageId, now, base.position() + 1));
+        return new SocialFrame(accepted, reason, after, infoRun, List.copyOf(pending), scheduled,
+                messageId, now);
+    }
+
+    /**
+     * 写完结算的命令标识：放在纯核外部命令无法构造的保留域里（用户命令一律经
+     * {@code roleT:} / {@code dec:} 命名空间），因此不存在 clientCommandId 能与之碰撞。
+     */
+    private static String finishCommandId(String sendCommandId) {
+        return "social:finish:" + sendCommandId;
+    }
+
+    /** 投递命令标识：同一保留域，系统投递主体下确定性标识。 */
+    private static String deliverCommandId(String messageId) {
+        return "social:deliver:" + messageId;
+    }
+
+    /** 按标识取消息元数据。 */
+    private static SocialMessageModel.Message messageOf(SocialMessageModel.State social,
+                                                        String messageId) {
+        for (SocialMessageModel.Message message : social.messages()) {
+            if (message.messageId().equals(messageId)) {
+                return message;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 当前社交子集（只读）：管理端审计用，含报告与 position。
+     *
+     * @return 社交子集；未启用为 null
+     * @throws IOException 读取失败
+     */
+    public synchronized SocialRun socialRun() throws IOException {
+        requireOpen();
+        return state.social();
+    }
+
+    /**
+     * 人物可见社交投影：只本人 inbox/outbox 与受信联系入口，不含正文与他人消息。
+     *
+     * @param personPartyId 人物
+     * @return 投影；未启用时返回空投影
+     * @throws IOException 读取失败
+     */
+    public synchronized SocialRun.SocialView socialView(String personPartyId) throws IOException {
+        requireOpen();
+        requireText(personPartyId, "人物");
+        if (!manifest.hasSocial() || state.social() == null) {
+            return new SocialRun.SocialView(personPartyId, List.of(), List.of(), List.of(),
+                    java.util.Set.of());
+        }
+        // 与 roleView 共用同一按实际阅读/回忆时点计算的投影，避免两套权限口径
+        return socialViewAt(state, personPartyId, state.timeMillis());
+    }
+
+    /**
+     * 人物社交投影（唯一实现）：contacts 只保留本人当前真实读完且可回忆的入口，
+     * readMessageIds 只标记本人实际读过的来信；不含他人消息与正文。
+     */
+    private SocialRun.SocialView socialViewAt(WorldState snap, String person, long now) {
+        SocialRun social = snap.social();
+        if (social == null) {
+            return new SocialRun.SocialView(person, List.of(), List.of(), List.of(),
+                    java.util.Set.of());
+        }
+        List<SocialMessageModel.EnvelopeView> inbox = SocialMessageModel.inbox(social.state(),
+                person);
+        List<SocialMessageModel.OutboxView> outbox = SocialMessageModel.outbox(social.state(),
+                person);
+        InformationModel.State info = snap.information() == null ? null
+                : snap.information().information();
+        java.util.Set<String> read = new LinkedHashSet<>();
+        for (SocialMessageModel.EnvelopeView envelope : inbox) {
+            if (info != null && InformationModel.canCite(info, person, envelope.docId(),
+                    envelope.version(), now)) {
+                read.add(envelope.messageId());
+            }
+        }
+        // 与纯核 recallable 同口径（衰减阈值，不看 maxItems），且不含对方屏蔽条件
+        List<InterviewRun.ContactEntry> reachable = social == null || info == null ? List.of()
+                : SocialMessageModel.recallableContacts(social.state(), info,
+                        social.context(registry, requireSocialRecall()), person, now);
+        return new SocialRun.SocialView(person, inbox, outbox, reachable, read);
+    }
+
+    /**
+     * 仅本人可用的已读来信正文（只读查询）：实际收件 + 已送达 + 真实完成阅读 + 仍可回忆。
+     *
+     * <p>无资格/未知/已遗忘返回空；不产生阅读、不推进世界、不改变模型输入窗口。
+     * 供 Host 在同一 writer 串行调用。</p>
+     *
+     * @param personPartyId 人物
+     * @param messageId     消息标识
+     * @return 正文；无资格为空
+     * @throws IOException 读取失败
+     */
+    public synchronized java.util.Optional<String> recalledSocialBody(String personPartyId,
+                                                                     String messageId)
+            throws IOException {
+        requireOpen();
+        requireText(personPartyId, "人物");
+        requireText(messageId, "消息标识");
+        if (!manifest.hasSocial() || state.social() == null || state.information() == null) {
+            return java.util.Optional.empty();
+        }
+        SocialRun social = state.social();
+        return SocialMessageModel.recalledBody(social.state(),
+                state.information().information(),
+                social.context(registry, requireSocialRecall()), personPartyId, messageId,
+                state.timeMillis());
+    }
+
     /** 本人在冻结媒体组织里唯一的媒体岗位所属组织；没有或不唯一返回 null。 */
     private String mediaOrganizationOf(WorldState base, String person, long now) {
         String found = null;
@@ -14865,6 +15986,10 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (hasPendingReading(person, pending) || hasActiveReading(person)) {
             throw new IllegalArgumentException("本人正在阅读资料，不能同时开展媒体工作");
+        }
+        if (manifest.hasSocial() && state.social() != null
+                && !socialPendingOf(person, pending).isEmpty()) {
+            throw new IllegalArgumentException("本人还有未完成的社交动作，不能同时开展媒体工作");
         }
         if (hasActiveInterview(person, state)) {
             throw new IllegalArgumentException("本人正在进行采访会话，不能同时开展媒体工作");

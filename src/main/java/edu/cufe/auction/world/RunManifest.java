@@ -89,6 +89,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** schema16：在逐轮访谈之上启用匿名私有证据与身份共享。 */
     public static final String RULES_MEDIA_EVIDENCE_EXPERIMENT_V1 =
             "media-evidence-experiment-v1";
+    /** schema17：在证据档之上启用一对一消息（社交）。 */
+    public static final String RULES_SOCIAL_EXPERIMENT_V1 = "social-messaging-experiment-v1";
     public static final String RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1 =
             "interview-dialogue-experiment-v1";
 
@@ -250,6 +252,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("evidence");
     }
 
+    /**
+     * 是否启用一对一消息（社交）子集（schema17）。
+     *
+     * <p>只有该模块存在时才允许出现社交状态、社交任务与 v5 工具合同；旧 ≤16 档案永远返回 false。</p>
+     *
+     * @return 模块表包含 social 时返回 true
+     */
+    public boolean hasSocial() {
+        return moduleVersions.containsKey("social");
+    }
+
     /** @return 是否启用 schema15 逐轮访谈 */
     public boolean hasDialogue() {
         return moduleVersions.containsKey("dialogue");
@@ -276,7 +289,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -301,6 +315,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         expected.put("scheduler", 1);
         boolean withMedia = RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion);
         boolean withBelief = withMedia || RULES_COGNITION_BELIEF_EXPERIMENT_V1.equals(rulesVersion);
@@ -376,12 +391,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             expected.put("interview", 1);
         }
         if (RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)) {
+                || RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("interview", 1);
             expected.put("dialogue", 1);
         }
-        if (RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)) {
+        if (RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("evidence", 1);
+        }
+        if (RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)) {
+            expected.put("social", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "

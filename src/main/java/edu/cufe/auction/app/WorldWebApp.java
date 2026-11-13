@@ -43,7 +43,7 @@ public final class WorldWebApp {
     /**
      * 启动并阻塞，直至进程结束或启动失败。
      *
-     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief或media，均可省略
+     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence或social，均可省略
      * @throws Exception 启动失败（凭据、目录、端口、世界）
      */
     public static void main(String[] args) throws Exception {
@@ -57,9 +57,10 @@ public final class WorldWebApp {
         String mode = args.length > 3 ? args[3] : "live";
         if (!mode.equals("live") && !mode.equals("scripted") && !mode.equals("cognition")
                 && !mode.equals("belief") && !mode.equals("media") && !mode.equals("interview")
-                && !mode.equals("dialogue") && !mode.equals("evidence")) {
+                && !mode.equals("dialogue") && !mode.equals("evidence")
+                && !mode.equals("social")) {
             throw new IllegalArgumentException(
-                    "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue或evidence");
+                    "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、evidence或social");
         }
         boolean live = mode.equals("live");
         boolean cognition = mode.equals("cognition");
@@ -68,6 +69,7 @@ public final class WorldWebApp {
         boolean interview = mode.equals("interview");
         boolean dialogue = mode.equals("dialogue");
         boolean evidence = mode.equals("evidence");
+        boolean social = mode.equals("social");
 
         Files.createDirectories(workDir);
 
@@ -81,7 +83,11 @@ public final class WorldWebApp {
         }
 
         SceneRoutes routes = SceneRoutes.open(workDir);
-        WorldWebHost host = evidence
+        WorldWebHost host = social
+                ? new WorldWebHost(() -> WorldWebScenario.openSocial(
+                        workDir.resolve("world-social.journal")),
+                        routes, new LiveDecisionProvider(keys))
+                : evidence
                 ? new WorldWebHost(() -> WorldWebScenario.openEvidence(
                         workDir.resolve("world-evidence.journal")),
                         routes, new LiveDecisionProvider(keys))
@@ -138,7 +144,16 @@ public final class WorldWebApp {
         System.out.println("场景配置：" + workDir.resolve(SceneRoutes.FILE_NAME).toAbsolutePath()
                 .normalize());
         System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
-        System.out.println(media
+        System.out.println(social
+                ? "模式：一对一消息实验（schema17，独立 world-social.journal）；未自动调用模型。"
+                        + "请在页面核对场景配置并明确开始一轮。"
+                : evidence
+                ? "模式：证据与共享实验（schema16，独立 world-evidence.journal）；未自动调用模型。"
+                : dialogue
+                ? "模式：逐轮采访实验（schema15，独立 world-dialogue.journal）；未自动调用模型。"
+                : interview
+                ? "模式：采访预约实验（schema14，独立 world-interview.journal）；未自动调用模型。"
+                : media
                 ? "模式：采编实验（schema13，独立 world-media.journal）；未自动调用模型。"
                 : belief
                 ? "模式：判断与学习实验（schema12，独立 world-belief.journal）；未自动调用模型。"

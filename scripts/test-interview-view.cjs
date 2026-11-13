@@ -898,6 +898,266 @@ defineCase("person-evidence-empty-hides-panel", async () => {
   return "无共享时不出行也不显示面板";
 });
 
+// ---------------------------------------------------------------- 消息（schema17）
+function socialSection(rows) {
+  return { total: rows.length, rows };
+}
+
+function adminSocialView() {
+  return {
+    runId: "run-1", position: "20", timeMillis: "9000", available: true,
+    messages: socialSection([
+      { messageId: "m1", from: "nina", to: "omar", channel: "私信", status: "DELIVERED",
+        title: "约个时间", sentAt: "1", dueAt: "2", statusAt: "2", readByReceiver: true,
+        rejectReason: "" },
+      { messageId: "m2", from: "nina", to: "omar", channel: "私信", status: "BLOCKED",
+        title: "第二封", sentAt: "3", dueAt: "4", statusAt: "4", readByReceiver: false,
+        rejectReason: "BLOCKED" }
+    ]),
+    blocks: socialSection([{ ownerPartyId: "omar", targetPartyId: "nina", since: "5",
+      commandId: "c1" }]),
+    reports: socialSection([{ taskId: "t1", person: "nina", kind: "SOCIAL_DELIVER_V1",
+      accepted: true, reason: "DELIVERED", messageId: "m1", atMillis: "2" }]),
+    contacts: socialSection([{ targetPartyId: "nina", channel: "私信", description: "d",
+      docId: "doc", version: "1" }]),
+    notes: ["消息备注"]
+  };
+}
+
+function personSocialView(extra = {}) {
+  return Object.assign({
+    personPartyId: "omar", timeMillis: "9000", available: true,
+    inbox: socialSection([{ messageId: "m1", from: "nina", channel: "私信", title: "约个时间",
+      docId: "doc", version: "1", deliveredAt: "2", read: true, body: "<b>x</b> 正文" },
+      { messageId: "m2", from: "nina", channel: "私信", title: "第二封",
+        docId: "doc2", version: "1", deliveredAt: "4", read: false, body: "" }]),
+    outbox: socialSection([{ messageId: "m3", to: "nina", channel: "私信", sentAt: "6",
+      dueAt: "7", status: "UNDELIVERED" }]),
+    contacts: socialSection([{ targetPartyId: "nina", channel: "私信", description: "d",
+      docId: "doc", version: "1" }]),
+    notes: ["个人消息备注"]
+  }, extra);
+}
+
+defineCase("admin-social-rendered-and-cleared", async () => {
+  const world = makeWorld(async (method, url) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/admin/view") return { status: 200, payload: {
+      runId: "run-1", timeMillis: 9000, position: 20, phase: "IDLE", paused: false,
+      providerKind: "SCRIPTED", barrierPending: false, pendingCount: 0, deliveredCount: 0,
+      accounts: [], owners: [], pending: [], trades: [], dividendReports: [],
+      valuationsAvailable: true } };
+    if (url === "/api/admin/keys") return { status: 200, payload: { slots: [] } };
+    if (url === "/api/admin/routes") return { status: 200,
+      payload: { revision: 1, baseUrl: "x", connected: false, routes: [] } };
+    if (url === "/api/admin/capabilities") return { status: 200, payload: {
+      supportedScenes: [], persons: [], mediaAvailable: false, position: "20",
+      timeMillis: "9000" } };
+    if (url === "/api/admin/social") return { status: 200, payload: adminSocialView() };
+    if (url === "/api/session/logout") return { status: 200, payload: {} };
+    return { status: 200, payload: {} };
+  }, "social-admin");
+  await bootSettled(world);
+  world.context.showMode("admin");
+  world.context.selectPage("social", true);
+  await waitFor(() => world.rows("social-messages") === 2, "消息页渲染");
+
+  const first = rowCells(world, "social-messages", 0);
+  const second = rowCells(world, "social-messages", 1);
+  assert.ok(first.includes("已送达"), "状态必须用中文口径，实际=" + first);
+  assert.ok(first.includes("已读"), "收件人已读必须显示");
+  assert.ok(second.includes("未送达"), "BLOCKED 对外必须显示未送达，实际=" + second);
+  assert.ok(second.includes("BLOCKED"), "管理员可看真实原因");
+  assert.equal(world.rows("social-blocks"), 1, "屏蔽记录必须渲染");
+  assert.equal(world.rows("social-reports"), 1, "报告必须渲染");
+  assert.ok(world.$("social-note").textContent.includes("消息备注"), "备注来自服务器");
+
+  world.context.selectPage("overview", false);
+  for (const id of ["social-messages", "social-blocks", "social-reports", "social-contacts"]) {
+    assert.equal(world.rows(id), 0, "离页必须清空 " + id);
+  }
+  assert.equal(world.state.social, null, "离页必须清空消息 cache");
+
+  world.context.selectPage("social", false);
+  await world.context.loadSocial(world.state.generation, world.state.pageVersion);
+  assert.equal(world.rows("social-messages"), 2, "前置：重新渲染");
+  await world.context.logout();
+  assert.equal(world.rows("social-messages"), 0, "登出必须清空消息表");
+  assert.equal(world.state.social, null, "登出必须清空消息 cache");
+  return "消息页渲染并在离页/登出清空";
+});
+
+defineCase("person-social-only-read-body-and-xss-text", async () => {
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      return { status: 200, payload: { personId: JSON.parse(options.body).personId } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("omar") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "omar",
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") return { status: 200, payload: { personPartyId: "omar",
+      timeMillis: "9000", available: true, sessions: socialSection([]),
+      turns: socialSection([]), notes: [] } };
+    if (url === "/api/me/evidence") return { status: 200, payload: { personPartyId: "omar",
+      timeMillis: "9000", available: true, labels: socialSection([]),
+      shares: socialSection([]), notes: [] } };
+    if (url === "/api/me/social") return { status: 200, payload: personSocialView() };
+    return { status: 200, payload: {} };
+  }, "social-person");
+  await bootSettled(world);
+  await world.context.switchPerson("omar");
+
+  assert.equal(world.rows("person-social-inbox"), 2, "收件箱必须渲染两封");
+  const readRow = rowCells(world, "person-social-inbox", 0);
+  const unreadRow = rowCells(world, "person-social-inbox", 1);
+  assert.ok(readRow.includes("已读"), "已读行必须显示已读");
+  assert.ok(readRow.includes("<b>x</b> 正文"), "已读正文按原文显示");
+  const bodyCell = world.$("person-social-inbox").querySelector("tbody")
+    .children[0].children[5];
+  assert.equal(bodyCell.children.length, 0, "正文必须是纯文本，不得插入子元素");
+  assert.ok(unreadRow.includes("未读"), "未读行必须显示未读");
+  assert.ok(!unreadRow.includes("正文"), "未读不得显示正文");
+  const outRow = rowCells(world, "person-social-outbox", 0);
+  assert.ok(outRow.includes("未送达"), "未送达必须用统一口径");
+  assert.ok(!outRow.includes("BLOCKED"), "人物不得看到屏蔽状态");
+
+  world.context.showMode("login");
+  assert.equal(world.rows("person-social-inbox"), 0, "切身份必须清空本人收件箱");
+  assert.equal(world.rows("person-social-outbox"), 0, "切身份必须清空本人发件箱");
+  assert.equal(world.state.personSocial, null, "切身份必须清空本人消息 cache");
+  return "只读正文可见、未读不显示、XSS 文本化、切身份清空";
+});
+
+defineCase("person-social-late-response-discarded", async () => {
+  let release = null;
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      return { status: 200, payload: { personId: JSON.parse(options.body).personId } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("omar") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "omar",
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") return { status: 200, payload: { personPartyId: "omar",
+      timeMillis: "9000", available: true, sessions: socialSection([]),
+      turns: socialSection([]), notes: [] } };
+    if (url === "/api/me/evidence") return { status: 200, payload: { personPartyId: "omar",
+      timeMillis: "9000", available: true, labels: socialSection([]),
+      shares: socialSection([]), notes: [] } };
+    if (url === "/api/me/social") {
+      return new Promise(resolve => { release = resolve; });
+    }
+    return { status: 200, payload: {} };
+  }, "social-late");
+  await bootSettled(world);
+  const running = world.context.switchPerson("omar");
+  await waitFor(() => release !== null, "消息请求已发出");
+  world.context.showMode("login");
+  release({ status: 200, payload: personSocialView() });
+  await running;
+  assert.equal(world.rows("person-social-inbox"), 0, "迟到回应不得写入已切走的身份");
+  assert.equal(world.state.personSocial, null, "迟到回应不得写回 cache");
+  return "代次变化后迟到消息响应被丢弃";
+});
+
+// ---------------------------------------------------------------- 消息失败与回忆窗口（W5/W2）
+defineCase("admin-social-failure-clears-old-rows", async () => {
+  let fail = false;
+  const world = makeWorld(async (method, url) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/admin/view") return { status: 200, payload: {
+      runId: "run-1", timeMillis: 9000, position: 20, phase: "IDLE", paused: false,
+      providerKind: "SCRIPTED", barrierPending: false, pendingCount: 0, deliveredCount: 0,
+      accounts: [], owners: [], pending: [], trades: [], dividendReports: [],
+      valuationsAvailable: true } };
+    if (url === "/api/admin/keys") return { status: 200, payload: { slots: [] } };
+    if (url === "/api/admin/routes") return { status: 200,
+      payload: { revision: 1, baseUrl: "x", connected: false, routes: [] } };
+    if (url === "/api/admin/capabilities") return { status: 200, payload: {
+      supportedScenes: [], persons: [], mediaAvailable: false, position: "20",
+      timeMillis: "9000" } };
+    if (url === "/api/admin/social") {
+      return fail ? { status: 503, payload: { error: "BUSY" } }
+        : { status: 200, payload: adminSocialView() };
+    }
+    return { status: 200, payload: {} };
+  }, "social-fail-admin");
+  await bootSettled(world);
+  world.context.showMode("admin");
+  world.context.selectPage("social", true);
+  await waitFor(() => world.rows("social-messages") === 2, "前置渲染");
+  fail = true;
+  await world.context.loadSocial(world.state.generation, world.state.pageVersion);
+  assert.equal(world.rows("social-messages"), 0, "失败后不得保留旧消息行");
+  assert.equal(world.rows("social-reports"), 0, "失败后不得保留旧报告行");
+  assert.equal(world.state.social, null, "失败后不得保留旧 cache");
+  assert.ok(world.$("social-note").textContent.includes("读取失败"),
+    "必须显示加载失败提示，实际=" + world.$("social-note").textContent);
+  return "管理员消息刷新失败清表并提示";
+});
+
+defineCase("person-social-failure-clears-and-explains", async () => {
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      return { status: 200, payload: { personId: JSON.parse(options.body).personId } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("omar") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "omar",
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") return { status: 200, payload: { personPartyId: "omar",
+      timeMillis: "9000", available: true, sessions: socialSection([]),
+      turns: socialSection([]), notes: [] } };
+    if (url === "/api/me/evidence") return { status: 200, payload: { personPartyId: "omar",
+      timeMillis: "9000", available: true, labels: socialSection([]),
+      shares: socialSection([]), notes: [] } };
+    if (url === "/api/me/social") return { status: 500, payload: { error: "WORLD_IO" } };
+    return { status: 200, payload: {} };
+  }, "social-fail-person");
+  await bootSettled(world);
+  await world.context.switchPerson("omar");
+  assert.equal(world.rows("person-social-inbox"), 0, "失败不得留下旧收件箱");
+  assert.equal(world.rows("person-social-outbox"), 0, "失败不得留下旧发件箱");
+  assert.equal(world.state.personSocial, null, "失败不得写 cache");
+  assert.equal(world.$("person-social").hidden, false, "失败要显示面板说明");
+  assert.ok(world.$("person-social-note").textContent.includes("读取失败"),
+    "必须有失败提示，实际=" + world.$("person-social-note").textContent);
+  return "人物消息失败清表并提示";
+});
+
+defineCase("person-social-read-but-not-recallable", async () => {
+  const view = personSocialView({ inbox: socialSection([{ messageId: "m1", from: "nina",
+    channel: "私信", title: "约个时间", docId: "doc", version: "1", deliveredAt: "2",
+    read: true, bodyAvailable: false, body: "" }]), outbox: socialSection([]),
+    contacts: socialSection([]) });
+  const world = makeWorld(async (method, url, options) => {
+    if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
+    if (url === "/api/session/person") {
+      return { status: 200, payload: { personId: JSON.parse(options.body).personId } };
+    }
+    if (url === "/api/me/view") return { status: 200, payload: personView("omar") };
+    if (url === "/api/me/interview") return { status: 200, payload: { personPartyId: "omar",
+      invites: [], sessions: [], contacts: [] } };
+    if (url === "/api/me/dialogue") return { status: 200, payload: { personPartyId: "omar",
+      timeMillis: "9000", available: true, sessions: socialSection([]),
+      turns: socialSection([]), notes: [] } };
+    if (url === "/api/me/evidence") return { status: 200, payload: { personPartyId: "omar",
+      timeMillis: "9000", available: true, labels: socialSection([]),
+      shares: socialSection([]), notes: [] } };
+    if (url === "/api/me/social") return { status: 200, payload: view };
+    return { status: 200, payload: {} };
+  }, "social-recall-window");
+  await bootSettled(world);
+  await world.context.switchPerson("omar");
+  const row = rowCells(world, "person-social-inbox", 0);
+  assert.ok(row.includes("已读"), "已读状态不得因回忆回落显示未读");
+  assert.ok(row.includes("已读，当前无法回忆正文"),
+    "必须区分已读但不可回忆，实际=" + row);
+  assert.ok(!row.includes("未读"), "不得说成未读");
+  return "已读但不可回忆有明确文案";
+});
+
 // ---------------------------------------------------------------- 运行
 (async () => {
   const results = [];
