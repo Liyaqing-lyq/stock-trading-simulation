@@ -127,6 +127,7 @@ if node --check src/main/resources/web/app.js > "$LOG/web-chart.log" 2>&1 \
     && node scripts/test-market-chart.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node scripts/test-performance-chart.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node scripts/test-interview-view.cjs >> "$LOG/web-chart.log" 2>&1 \
+    && node src/test/js/engineering-form-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && PYTHONIOENCODING=utf-8 python scripts/test-interview-layout.py >> "$LOG/web-chart.log" 2>&1; then
   ok "Web 图表、采访身份隔离与页面结构"
 else

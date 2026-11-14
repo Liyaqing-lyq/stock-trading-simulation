@@ -141,6 +141,40 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
 
     /** 逐轮访谈：发送一轮（schema15；仅 ACTIVE 会话参与者可见）。 */
     public static final String TOOL_INTERVIEW_SPEAK = "interview.speak";
+    /** schema18b 董事工具。 */
+    public static final String TOOL_BOARD_CONVENE = "board.convene";
+    public static final String TOOL_BOARD_ATTEND = "board.attend";
+    public static final String TOOL_BOARD_MATERIAL = "board.addMaterial";
+    public static final String TOOL_BOARD_VOTE = "board.vote";
+    public static final String TOOL_BOARD_PROPOSE_BUDGET = "board.proposeBudget";
+    public static final String TOOL_BOARD_PROPOSE_APPOINTMENT = "board.proposeAppointment";
+    public static final String TOOL_BOARD_PROPOSE_WAIVER = "board.proposeWaiver";
+    public static final String TOOL_BOARD_IMPLEMENT = "board.implement";
+    /** schema18b 经理工具。 */
+    public static final String TOOL_ENGINEERING_SIGN = "engineering.sign";
+    public static final String TOOL_ENGINEERING_START_WORK = "engineering.startWork";
+    public static final String TOOL_ENGINEERING_INVOICE = "engineering.invoice";
+    public static final String TOOL_ENGINEERING_TERMINATE = "engineering.terminate";
+    public static final String TOOL_ENGINEERING_PAY_SUPPLIER = "engineering.paySupplier";
+    public static final String TOOL_ENGINEERING_IMPAIR = "engineering.impair";
+    public static final String TOOL_ENGINEERING_WRITE_OFF = "engineering.writeOff";
+    public static final String TOOL_ENGINEERING_RECOVER = "engineering.recover";
+    /** 18b 客户请求与精确豁免执行（只有经理可用，授权引用由董事会签发）。 */
+    public static final String TOOL_ENGINEERING_REQUEST_ACCEPTANCE = "engineering.requestAcceptance";
+    public static final String TOOL_ENGINEERING_REQUEST_PAYMENT = "engineering.requestPayment";
+    public static final String TOOL_ENGINEERING_REQUEST_RETENTION = "engineering.requestRetention";
+    public static final String TOOL_ENGINEERING_WAIVE = "engineering.waive";
+
+    /** 周期工具：经理真实准备本期待披露材料（BOARD 私稿）。 */
+    public static final String TOOL_PERIODIC_PREPARE = "periodic.prepare";
+    /** 周期工具：董事按五维提交本席评分。 */
+    public static final String TOOL_PERIODIC_SCORE = "periodic.score";
+    /** 周期工具：董事批准确切草稿版本。 */
+    public static final String TOOL_PERIODIC_APPROVE = "periodic.approve";
+    /** 周期工具：经理为指定发布人签发一次披露授权。 */
+    public static final String TOOL_PERIODIC_AUTHORIZE = "periodic.authorize";
+    /** 周期工具：被指定发布人消费授权并发布 PUBLIC 财报。 */
+    public static final String TOOL_PERIODIC_PUBLISH = "periodic.publish";
 
     /** 冻结全部集合。 */
     public RoleTradingView {

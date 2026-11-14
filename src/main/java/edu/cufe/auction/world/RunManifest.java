@@ -91,6 +91,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             "media-evidence-experiment-v1";
     /** schema17：在证据档之上启用一对一消息（社交）。 */
     public static final String RULES_SOCIAL_EXPERIMENT_V1 = "social-messaging-experiment-v1";
+    /** schema18：在社交全链之上接入按公司的工程经营与董事会（不迁移旧档）。 */
+    public static final String RULES_ENGINEERING_WORLD_EXPERIMENT_V1 =
+            "engineering-world-experiment-v1";
     public static final String RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1 =
             "interview-dialogue-experiment-v1";
 
@@ -263,6 +266,18 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("social");
     }
 
+    /**
+     * 是否启用 schema18 按公司的工程经营与董事会子集。
+     *
+     * <p>只有该模块存在时才允许出现工程状态、工程董事会与 schema18 开局键；旧 ≤17 档案永远返回
+     * false，因此旧校验路径与旧档字节不受影响。</p>
+     *
+     * @return 模块表包含 engineering 时返回 true
+     */
+    public boolean hasEngineering() {
+        return moduleVersions.containsKey("engineering");
+    }
+
     /** @return 是否启用 schema15 逐轮访谈 */
     public boolean hasDialogue() {
         return moduleVersions.containsKey("dialogue");
@@ -290,7 +305,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -313,11 +329,16 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         Map<String, Integer> expected = new TreeMap<>();
         expected.put("cash", 1);
         expected.put("scheduler", 1);
-        boolean withMedia = RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion)
+        boolean withEngineering = RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withSocial = withEngineering || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withEvidence = withSocial
+                || RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withDialogue = withEvidence
                 || RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withInterview = withDialogue
+                || RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withMedia = withInterview
+                || RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion);
         boolean withBelief = withMedia || RULES_COGNITION_BELIEF_EXPERIMENT_V1.equals(rulesVersion);
         boolean withCognition = withBelief
                 || RULES_COGNITION_RECALL_EXPERIMENT_V1.equals(rulesVersion);
@@ -392,16 +413,19 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         }
         if (RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)) {
+                || withSocial) {
             expected.put("interview", 1);
             expected.put("dialogue", 1);
         }
         if (RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)) {
+                || withSocial) {
             expected.put("evidence", 1);
         }
-        if (RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)) {
+        if (withSocial) {
             expected.put("social", 1);
+        }
+        if (withEngineering) {
+            expected.put("engineering", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "

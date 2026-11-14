@@ -71,6 +71,24 @@ public final class WorldWebServer implements AutoCloseable {
     private static final Set<String> ROUTE_REPLACE_FIELDS = Set.of("expectedRevision", "routes");
     private static final Set<String> ROUTE_FIELDS = Set.of("scene", "slotId", "model", "enabled",
             "maxCalls", "maxTotalTokens", "maxOutputTokens", "maxConcurrency");
+    /** 工程页公司选择：只接受一个公司标识。 */
+    private static final Set<String> ENGINEERING_COMPANY_FIELDS = Set.of("companyId");
+    /** 工程命令：字段全部显式列出，未知字段直接 400。 */
+    private static final Set<String> ENGINEERING_ACTION_FIELDS = Set.of("expectedPosition",
+            "commandId", "taskId", "dueTimeMillis", "companyId", "tool", "contractId", "workId",
+            "trancheIndex", "units", "amount", "purpose", "authorizationRef", "meetingId",
+            "materialId", "docId", "docVersion", "vote", "recused", "appointmentId",
+            "appointPersonId", "appointRole", "appointAction", "effectiveAt", "endsAt",
+            "waiverId", "customerPartyId", "laborLimit", "procurementLimit", "period",
+            "materialDeadline", "opensAt", "closesAt", "durationMillis", "draftId",
+            "draftVersion", "publisherPersonId", "expiresAt", "authorizationId", "note",
+            "metrics");
+    /** 阅读命令：阅读者只由会话决定，body 不接收人物字段。 */
+    private static final Set<String> READ_FIELDS = Set.of("expectedPosition", "commandId",
+            "taskId", "dueTimeMillis", "docId", "version");
+    /** 金额只接受最多两位小数的规范十进制。 */
+    private static final java.util.regex.Pattern MONEY_TEXT =
+            java.util.regex.Pattern.compile("-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?");
 
     /** 严格读取器：重复键、尾随内容、浮点精度全部不放过。 */
     private static final ObjectMapper STRICT = JsonMapper.builder()
@@ -304,6 +322,22 @@ public final class WorldWebServer implements AutoCloseable {
                 requirePerson(exchange, session.get(), () -> personView(exchange, session.get()));
                 return;
             }
+            if ("/api/admin/engineering".equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> engineeringAdmin(exchange));
+                return;
+            }
+            if ("/api/me/engineering".equals(path) && "GET".equals(method)) {
+                requirePerson(exchange, session.get(), () -> engineeringMe(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/engineering/action".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> engineeringAction(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/read".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> readAction(exchange, session.get()));
+                return;
+            }
             if ("/api/me/interview".equals(path) && "GET".equals(method)) {
                 requirePerson(exchange, session.get(), () -> interviewMe(exchange, session.get()));
                 return;
@@ -417,6 +451,14 @@ public final class WorldWebServer implements AutoCloseable {
         }
         if (path.startsWith("/api/admin/keys/") && path.endsWith("/reveal")
                 && "POST".equals(method)) {
+            return true;
+        }
+        if ("/api/admin/engineering".equals(path) && "POST".equals(method)) {
+            return true;
+        }
+        if (("/api/me/engineering".equals(path) && "GET".equals(method))
+                || ("/api/me/engineering/action".equals(path) && "POST".equals(method))
+                || ("/api/me/read".equals(path) && "POST".equals(method))) {
             return true;
         }
         return "/api/me/view".equals(path) && "GET".equals(method);
@@ -1050,6 +1092,270 @@ public final class WorldWebServer implements AutoCloseable {
             throw new WorldIoFailure();
         }
         send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    // ---------------------------------------------------------------- 工程（18c 第一切片）
+
+    /** 管理端工程视图：选择一家公司，一个只读请求返回同一快照的全部区块。 */
+    private void engineeringAdmin(HttpExchange exchange) throws IOException,
+            WorldWebHost.BusyException {
+        JsonNode body = jsonBody(exchange, ENGINEERING_COMPANY_FIELDS);
+        JsonNode company = body.get("companyId");
+        if (company == null || !company.isTextual()) {
+            send(exchange, 400, error("INVALID", "companyId 必须是字符串；空串表示按候选取首个"));
+            return;
+        }
+        Object view;
+        try {
+            view = host.engineeringView(company.textValue());
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "没有这家公司" : invalid.getMessage()));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /** 个人工程视图：actor 只由会话人物决定。 */
+    private void engineeringMe(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        Object view;
+        try {
+            view = host.personEngineering(session.personId());
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "请求参数不合法" : invalid.getMessage()));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /** 个人工程动作：解析严格字段，岗位与状态由宿主在同一次世界读取里核对。 */
+    private void engineeringAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        WorldWebHost.EngineeringCommand command;
+        try {
+            command = engineeringCommand(jsonBody(exchange, ENGINEERING_ACTION_FIELDS));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "请求参数不合法" : invalid.getMessage()));
+            return;
+        }
+        Object view;
+        try {
+            view = host.scheduleEngineering(session.personId(), command);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, "{\"error\":\"POSITION_MISMATCH\",\"message\":\"记录已变化，请刷新\","
+                    + "\"position\":\"" + mismatch.position() + "\"}");
+            return;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "请求参数不合法" : invalid.getMessage()));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    private WorldWebHost.EngineeringCommand engineeringCommand(JsonNode body) {
+        Long expected = strictLong(body.get("expectedPosition"));
+        Long due = strictLong(body.get("dueTimeMillis"));
+        if (expected == null || expected < 0) {
+            throw new IllegalArgumentException("expectedPosition 必须是规范整数");
+        }
+        if (due == null || due < 0) {
+            throw new IllegalArgumentException("dueTimeMillis 必须是规范整数");
+        }
+        String commandId = requiredText(body, "commandId");
+        String taskId = requiredText(body, "taskId");
+        String companyId = requiredText(body, "companyId");
+        String tool = requiredText(body, "tool");
+        String amount = moneyText(body, "amount");
+        String labor = moneyText(body, "laborLimit");
+        String procurement = moneyText(body, "procurementLimit");
+        int tranche = (int) boundedLong(body, "trancheIndex", 0L, 0L, Integer.MAX_VALUE);
+        long units = boundedLong(body, "units", 0L, 0L, Long.MAX_VALUE / 2);
+        long docVersion = boundedLong(body, "docVersion", 1L, 1L, Long.MAX_VALUE / 2);
+        long period = boundedLong(body, "period", 0L, 0L, Long.MAX_VALUE / 2);
+        long effectiveAt = boundedLong(body, "effectiveAt", 0L, 0L, Long.MAX_VALUE / 2);
+        long endsAt = boundedLong(body, "endsAt", 0L, 0L, Long.MAX_VALUE / 2);
+        long materialDeadline = boundedLong(body, "materialDeadline", 0L, 0L, Long.MAX_VALUE / 2);
+        long opensAt = boundedLong(body, "opensAt", 0L, 0L, Long.MAX_VALUE / 2);
+        long closesAt = boundedLong(body, "closesAt", 0L, 0L, Long.MAX_VALUE / 2);
+        Long duration = body.hasNonNull("durationMillis")
+                ? Long.valueOf(boundedLong(body, "durationMillis", 0L, 0L, Long.MAX_VALUE / 2))
+                : null;
+        boolean recused = false;
+        JsonNode recuseNode = body.get("recused");
+        if (recuseNode != null && !recuseNode.isNull()) {
+            if (!recuseNode.isBoolean()) {
+                throw new IllegalArgumentException("recused 必须是布尔值");
+            }
+            recused = recuseNode.booleanValue();
+        }
+        return new WorldWebHost.EngineeringCommand(expected, commandId, taskId, due, companyId,
+                tool, optionalText(body, "contractId", ""), optionalText(body, "workId", ""),
+                tranche, units, amount, optionalText(body, "purpose", ""),
+                optionalText(body, "authorizationRef", ""), optionalText(body, "meetingId", ""),
+                optionalText(body, "materialId", ""), optionalText(body, "docId", ""),
+                docVersion, optionalText(body, "vote", ""), recused,
+                optionalText(body, "appointmentId", ""),
+                optionalText(body, "appointPersonId", ""),
+                optionalText(body, "appointRole", ""), optionalText(body, "appointAction", ""),
+                effectiveAt, endsAt, optionalText(body, "waiverId", ""),
+                optionalText(body, "customerPartyId", ""), labor, procurement, period,
+                materialDeadline, opensAt, closesAt, duration,
+                optionalText(body, "draftId", ""),
+                boundedLong(body, "draftVersion", 0L, 0L, Long.MAX_VALUE / 2),
+                optionalText(body, "publisherPersonId", ""),
+                boundedLong(body, "expiresAt", 0L, 0L, Long.MAX_VALUE / 2),
+                optionalText(body, "authorizationId", ""),
+                optionalText(body, "note", ""),
+                periodicMetricInputs(body));
+    }
+
+    /** 周期评分输入：严格数组；维度/证据必填，分数保留原字符串交给运行层校验精度。 */
+    private static List<WorldWebHost.PeriodicMetricInput> periodicMetricInputs(JsonNode body) {
+        JsonNode node = body.get("metrics");
+        if (node == null || node.isNull()) {
+            return List.of();
+        }
+        if (!node.isArray()) {
+            throw new IllegalArgumentException("metrics 必须是数组");
+        }
+        List<WorldWebHost.PeriodicMetricInput> metrics = new ArrayList<>();
+        for (JsonNode item : node) {
+            if (!item.isObject()) {
+                throw new IllegalArgumentException("metrics 的每一项必须是对象");
+            }
+            JsonNode dimension = item.get("dimension");
+            JsonNode score = item.get("score");
+            JsonNode sourceRef = item.get("sourceRef");
+            if (dimension == null || !dimension.isTextual() || dimension.textValue().isBlank()) {
+                throw new IllegalArgumentException("评分维度不能为空");
+            }
+            String scoreText;
+            if (score == null || score.isNull()) {
+                throw new IllegalArgumentException("评分分数不能为空");
+            } else if (score.isTextual()) {
+                scoreText = score.textValue();
+            } else if (score.isNumber()) {
+                scoreText = score.asText();
+            } else {
+                throw new IllegalArgumentException("评分分数必须是数字");
+            }
+            if (scoreText.isBlank()) {
+                throw new IllegalArgumentException("评分分数不能为空");
+            }
+            if (sourceRef == null || !sourceRef.isTextual()
+                    || sourceRef.textValue().isBlank()) {
+                throw new IllegalArgumentException("评分证据引用不能为空");
+            }
+            metrics.add(new WorldWebHost.PeriodicMetricInput(dimension.textValue(), scoreText,
+                    sourceRef.textValue()));
+        }
+        return List.copyOf(metrics);
+    }
+
+    /** 个人阅读排程：阅读者取会话；到期后由信息模块复核正文受众与已读完成。 */
+    private void readAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        WorldWebHost.ReadingCommand command;
+        try {
+            command = readCommand(jsonBody(exchange, READ_FIELDS));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "请求参数不合法" : invalid.getMessage()));
+            return;
+        }
+        Object view;
+        try {
+            view = host.scheduleReading(session.personId(), command);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, "{\"error\":\"POSITION_MISMATCH\",\"message\":\"记录已变化，请刷新\","
+                    + "\"position\":\"" + mismatch.position() + "\"}");
+            return;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "请求参数不合法" : invalid.getMessage()));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    private WorldWebHost.ReadingCommand readCommand(JsonNode body) {
+        Long expected = strictLong(body.get("expectedPosition"));
+        Long due = strictLong(body.get("dueTimeMillis"));
+        Long version = strictLong(body.get("version"));
+        if (expected == null || expected < 0) {
+            throw new IllegalArgumentException("expectedPosition 必须是规范整数");
+        }
+        if (due == null || due < 0) {
+            throw new IllegalArgumentException("dueTimeMillis 必须是规范整数");
+        }
+        if (version == null || version < 1) {
+            throw new IllegalArgumentException("version 必须是从 1 开始的整数");
+        }
+        return new WorldWebHost.ReadingCommand(expected, requiredText(body, "commandId"),
+                requiredText(body, "taskId"), due, requiredText(body, "docId"), version);
+    }
+
+    private static String requiredText(JsonNode body, String field) {
+        JsonNode node = body.get(field);
+        if (node == null || !node.isTextual() || node.textValue().isBlank()) {
+            throw new IllegalArgumentException(field + " 必须是非空字符串");
+        }
+        return node.textValue();
+    }
+
+    private static String optionalText(JsonNode body, String field, String fallback) {
+        JsonNode node = body.get(field);
+        if (node == null || node.isNull()) {
+            return fallback;
+        }
+        if (!node.isTextual()) {
+            throw new IllegalArgumentException(field + " 必须是字符串");
+        }
+        return node.textValue();
+    }
+
+    private static String moneyText(JsonNode body, String field) {
+        String value = optionalText(body, field, "");
+        if (value.isEmpty()) {
+            return value;
+        }
+        if (!MONEY_TEXT.matcher(value).matches()) {
+            throw new IllegalArgumentException(field + " 必须是最多两位小数的规范十进制");
+        }
+        return value;
+    }
+
+    private static long boundedLong(JsonNode body, String field, long fallback, long min,
+            long max) {
+        JsonNode node = body.get(field);
+        if (node == null || node.isNull()) {
+            return fallback;
+        }
+        Long value = strictLong(node);
+        if (value == null || value < min || value > max) {
+            throw new IllegalArgumentException(field + " 必须是范围内的规范整数");
+        }
+        return value;
     }
 
     private void personView(HttpExchange exchange, WebSessions.Session session)

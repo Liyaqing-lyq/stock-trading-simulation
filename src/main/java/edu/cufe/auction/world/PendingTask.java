@@ -105,6 +105,31 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
 
     /** 自动子任务：对期间证据评分（客观考核，不是多数表决）。 */
     public static final String BOARD_REVIEW_V1 = "BOARD_REVIEW_V1";
+    /**
+     * schema18b：正工时人物动作的真实 BEGIN 屏障（到期=真实开始，携带原动作 payload）。
+     *
+     * <p>接单/排程只落意图与屏障；屏障到期才复核权限/岗位/对象/焦点并排真正的
+     * {@link #ENGINEERING_BOARD_V1}/{@link #BOARD_ATTEND_V1}/{@link #ENGINEERING_ACTION_V1} 完成帧。
+     * 屏障被判业务拒绝时不留完成帧，也不占焦点。</p>
+     */
+    public static final String ENGINEERING_BEGIN_V1 = "ENGINEERING_BEGIN_V1";
+    /** schema18b：按公司董事动作（含自动 OPEN/CLOSE 日程）。 */
+    public static final String ENGINEERING_BOARD_V1 = "ENGINEERING_BOARD_V1";
+    /** schema18b：董事本人异步参与登记（正耗时）。 */
+    public static final String BOARD_ATTEND_V1 = "BOARD_ATTEND_V1";
+    /** schema18c：周期期末采样（真实的期间汇总、快照与会议日程）。 */
+    public static final String PERIOD_CAPTURE_V1 = "PERIOD_CAPTURE_V1";
+    /** schema18c：周期评分窗口关闭，逐席聚合已合法提交的评分。 */
+    public static final String PERIOD_CLOSE_V1 = "PERIOD_CLOSE_V1";
+    /** schema18c：披露截止，未发布才记 MISSED，与评分缺失解耦。 */
+    public static final String PERIOD_DISCLOSURE_DEADLINE_V1 = "PERIOD_DISCLOSURE_DEADLINE_V1";
+    /** schema18c：人物周期动作（准备/评分/批准/授权/发布）的完成帧。 */
+    public static final String ENGINEERING_PERIODIC_V1 = "ENGINEERING_PERIODIC_V1";
+
+    /** schema18b：公司经理经营动作（签约/开工/开票/终止/付款等）。 */
+    public static final String ENGINEERING_ACTION_V1 = "ENGINEERING_ACTION_V1";
+    /** schema18b：冻结客户响应事件（验收/拒验/延迟/付款/逾期）。 */
+    public static final String CUSTOMER_EVENT_V1 = "CUSTOMER_EVENT_V1";
 
     /** 受信管理夹具：到期建立一条任职（RULES）。 */
     public static final String ROLE_APPOINT_V1 = "ROLE_APPOINT_V1";
@@ -305,7 +330,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                     throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }
             }
-            case MANUFACTURING_PERIOD_CLOSE_V1, BOARD_OPEN_V1,
+            case BOARD_OPEN_V1,
                  DIVIDEND_REGISTER_V1, DIVIDEND_BOOK_EX_V1,
                  ROLE_APPOINT_V1, ROLE_REVOKE_V1,
                  ROLE_TRADING_SWEEP_V1, ROLE_TRADING_EXPIRE_V1,
@@ -315,6 +340,14 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  INTERVIEW_DIALOGUE_DEADLINE_V1 -> {
                 if (phase != WorldScheduler.Phase.RULES) {
                     throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
+                }
+            }
+            case MANUFACTURING_PERIOD_CLOSE_V1 -> {
+                // 旧档仍在 RULES；schema18 起提前到周期边界，先于同刻采样。
+                if (phase != WorldScheduler.Phase.RULES
+                        && phase != WorldScheduler.Phase.PERIOD_BOUNDARY_CLOSE) {
+                    throw new IllegalArgumentException(kind + " 必须落在 RULES 或周期边界关期阶段，收到 "
+                            + phase);
                 }
             }
             case TRANSFER_NOTICE_V1, INFORMATION_BELIEF_PUBLISH_FACT_V1 -> {
@@ -331,6 +364,27 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
             case ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 -> {
                 if (phase != WorldScheduler.Phase.OBSERVATION) {
                     throw new IllegalArgumentException(kind + " 必须落在 OBSERVATION 阶段，收到 " + phase);
+                }
+            }
+            case ENGINEERING_BEGIN_V1, ENGINEERING_BOARD_V1, BOARD_ATTEND_V1,
+                 ENGINEERING_ACTION_V1, ENGINEERING_PERIODIC_V1,
+                 PERIOD_CLOSE_V1,
+                 PERIOD_DISCLOSURE_DEADLINE_V1 -> {
+                if (phase != WorldScheduler.Phase.RULES) {
+                    throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
+                }
+            }
+            case PERIOD_CAPTURE_V1 -> {
+                // 旧检查点仍在 OBSERVATION；schema18 起落在周期边界采样阶段（晚于关期）。
+                if (phase != WorldScheduler.Phase.OBSERVATION
+                        && phase != WorldScheduler.Phase.PERIOD_BOUNDARY_CAPTURE) {
+                    throw new IllegalArgumentException(kind + " 必须落在 OBSERVATION 或周期边界采样阶段，收到 "
+                            + phase);
+                }
+            }
+            case CUSTOMER_EVENT_V1 -> {
+                if (phase != WorldScheduler.Phase.COMPLETION) {
+                    throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }
             }
             case MEDIA_STORY_PROPOSE_V1, MEDIA_STORY_SUBMIT_V1, MEDIA_STORY_REVIEW_V1,
