@@ -54,6 +54,9 @@ import java.util.TreeMap;
  */
 public final class BoardModel {
 
+    /** 自动会议召集人哨兵：只由章程自动入口与恢复重演写入，绝不冒充任何真实主席。 */
+    public static final String CHARTER_AUTO = "CHARTER_AUTO";
+
     /** 固定有效席位数。 */
     public static final int SEAT_COUNT = 5;
 
@@ -92,7 +95,7 @@ public final class BoardModel {
     public static final String REASON_MEETING_EXISTS = "MEETING_EXISTS";
     /** 召集人不是章程主席。 */
     public static final String REASON_NOT_CHAIR = "NOT_CHAIR";
-    /** 时点顺序不满足 创建≤材料截止≤开会<表决截止。 */
+    /** 时点顺序不满足 创建≤材料截止≤开会&lt;表决截止。 */
     public static final String REASON_INVALID_TIMELINE = "INVALID_TIMELINE";
     /** 参数缺失或为空。 */
     public static final String REASON_INVALID_ARGUMENT = "INVALID_ARGUMENT";
@@ -154,10 +157,17 @@ public final class BoardModel {
     public static final String REASON_UNKNOWN_SOURCE = "UNKNOWN_SOURCE";
     /** 该会议已有考核结果。 */
     public static final String REASON_REVIEW_EXISTS = "REVIEW_EXISTS";
+    /** 该会议已有豁免提案。 */
+    public static final String REASON_WAIVER_PROPOSAL_EXISTS = "WAIVER_PROPOSAL_EXISTS";
+    /** 豁免授权引用不存在、字段不匹配或已失效。 */
+    public static final String REASON_WAIVER_NOT_AUTHORIZED = "WAIVER_NOT_AUTHORIZED";
+    /** 该豁免授权已被执行过（只能执行一次）。 */
+    public static final String REASON_WAIVER_ALREADY_CONSUMED = "WAIVER_ALREADY_CONSUMED";
 
     private static final BigDecimal HUNDRED = new BigDecimal("100");
     private static final String AUTHORIZATION_DOMAIN = "board-dividend-v1";
     private static final String APPOINTMENT_AUTHORIZATION_DOMAIN = "manager-appointment-v1";
+    private static final String WAIVER_AUTHORIZATION_DOMAIN = "debt-waiver-v1";
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
@@ -168,7 +178,7 @@ public final class BoardModel {
     private BoardModel() {
     }
 
-    /** 议题：预算、经营考核、现金分红授权与公司经理任免；各自路径互不替代。 */
+    /** 议题：预算、经营考核、现金分红授权、公司经理任免与具体债权豁免；各自路径互不替代。 */
     public enum Topic {
         /** 预算授权。 */
         BUDGET,
@@ -177,7 +187,9 @@ public final class BoardModel {
         /** 现金分红授权（只产生授权引用，不派息）。 */
         DIVIDEND_AUTHORIZATION,
         /** 公司经理任免授权（只产生授权引用，不写任职表）。 */
-        MANAGER_APPOINTMENT
+        MANAGER_APPOINTMENT,
+        /** 具体债权豁免授权（只产生授权引用，不抹账；schema18 起使用）。 */
+        DEBT_WAIVER
     }
 
     /** 预算类别，对应未来制造新承诺。 */
@@ -712,6 +724,87 @@ public final class BoardModel {
     }
 
     /**
+     * 具体债权豁免请求：冻结公司、合同、客户、金额与用途，董事会只能批准或否决这份原文。
+     *
+     * <p>本类型不解除任何债务，也不接触现金或应收；它只是待授权对象。金额精确到分且为正，
+     * 用途必须写明（“一般预算许可”不构成豁免依据）。</p>
+     *
+     * @param waiverId       豁免标识，历史唯一
+     * @param companyPartyId 公司组织
+     * @param contractId     被豁免的合同
+     * @param customerPartyId 被豁免的客户
+     * @param amount         豁免金额，精确到分且为正
+     * @param purpose        具体用途说明
+     */
+    public record DebtWaiverRequest(String waiverId, String companyPartyId, String contractId,
+                                    String customerPartyId, BigDecimal amount, String purpose) {
+
+        /** 校验标识、绑定对象、金额与用途。 */
+        public DebtWaiverRequest {
+            requireText(waiverId, "豁免标识");
+            requireText(companyPartyId, "豁免公司");
+            requireText(contractId, "豁免合同");
+            requireText(customerPartyId, "豁免客户");
+            requireText(purpose, "豁免用途");
+            amount = money2(amount, "豁免金额", true);
+        }
+    }
+
+    /**
+     * 一条豁免决议记录：冻结的请求、会议与授权状态。
+     *
+     * <p>{@code issuedAtMillis} 为 null 表示董事会尚未签发授权；签发后
+     * {@code authorizationRef} 可被经理一次执行，{@code consumedAtMillis} 记录唯一一次执行。</p>
+     *
+     * @param request            冻结请求
+     * @param meetingId          决议会议
+     * @param proposerSeatId     提案席位
+     * @param proposedAtMillis   提案时点
+     * @param issuedAtMillis     授权签发时点；未签发为 null
+     * @param authorizationRef   授权引用；未签发为 null
+     * @param consumedAtMillis   被经理执行时点；未执行为 null
+     */
+    public record DebtWaiver(DebtWaiverRequest request, String meetingId, String proposerSeatId,
+                             long proposedAtMillis,
+                             @JsonInclude(JsonInclude.Include.NON_NULL) Long issuedAtMillis,
+                             @JsonInclude(JsonInclude.Include.NON_NULL) String authorizationRef,
+                             @JsonInclude(JsonInclude.Include.NON_NULL) Long consumedAtMillis) {
+
+        /** 校验时点与授权字段一致性。 */
+        public DebtWaiver {
+            Objects.requireNonNull(request, "豁免请求");
+            requireText(meetingId, "豁免会议");
+            requireText(proposerSeatId, "豁免提案席位");
+            requireTime(proposedAtMillis);
+            if ((issuedAtMillis == null) != (authorizationRef == null)) {
+                throw new IllegalArgumentException("授权时点与引用必须同时存在：" + meetingId);
+            }
+            if (issuedAtMillis != null) {
+                requireTime(issuedAtMillis);
+                requireText(authorizationRef, "豁免授权引用");
+            }
+            if (consumedAtMillis != null) {
+                requireTime(consumedAtMillis);
+                if (issuedAtMillis == null || consumedAtMillis < issuedAtMillis) {
+                    throw new IllegalArgumentException("未被授权的豁免不能被消耗：" + meetingId);
+                }
+            }
+        }
+
+        /** @return 是否已签发授权 */
+        @JsonIgnore
+        public boolean authorized() {
+            return authorizationRef != null;
+        }
+
+        /** @return 是否已被执行 */
+        @JsonIgnore
+        public boolean consumed() {
+            return consumedAtMillis != null;
+        }
+    }
+
+    /**
      * 会议：召集、材料、表决与结果原文；通过后实施状态单独推进。
      *
      * @param meetingId        会议标识
@@ -976,6 +1069,43 @@ public final class BoardModel {
                 }
                 checkAppointmentOutcome(meetingId, status, attendeeSeatIds, recusedSeatIds,
                         ballotCopy);
+            } else if (topic == Topic.DEBT_WAIVER) {
+                if (createdAt > materialDeadline || materialDeadline > opensAt || opensAt >= closesAt) {
+                    throw new IllegalArgumentException("豁免会议时序不合法：" + meetingId);
+                }
+                if (status == MeetingStatus.REVIEWED
+                        || status == MeetingStatus.IMPLEMENTATION_FAILED) {
+                    throw new IllegalArgumentException("豁免议题不支持该阶段：" + meetingId);
+                }
+                if (!attendeeSeatIds.containsAll(recusedSeatIds)) {
+                    throw new IllegalArgumentException("回避席位必须到会：" + meetingId);
+                }
+                Set<String> materialIds = new HashSet<>();
+                for (MaterialRef material : materialList) {
+                    if (!materialIds.add(material.materialId())
+                            || material.asOf() > materialDeadline) {
+                        throw new IllegalArgumentException("豁免材料重复或晚于截止：" + meetingId);
+                    }
+                }
+                if ((status == MeetingStatus.CONVENED || status == MeetingStatus.MATERIALS_FROZEN)
+                        && !ballotCopy.isEmpty()) {
+                    throw new IllegalArgumentException("表决开始前不能有选票：" + meetingId);
+                }
+                if (!lineList.isEmpty()) {
+                    throw new IllegalArgumentException("豁免议题不能携带预算行：" + meetingId);
+                }
+                if (dividendProposal != null || dividendResolution != null
+                        || appointmentProposal != null || appointmentResolution != null) {
+                    throw new IllegalArgumentException("豁免议题不能携带分红/任免元数据：" + meetingId);
+                }
+                for (Ballot ballot : ballotCopy.values()) {
+                    if (!attendeeSeatIds.contains(ballot.seatId())
+                            || recusedSeatIds.contains(ballot.seatId())
+                            || ballot.castAt() < opensAt || ballot.castAt() >= closesAt) {
+                        throw new IllegalArgumentException("豁免会议出现无资格选票："
+                                + ballot.seatId());
+                    }
+                }
             } else if (dividendProposal != null || dividendResolution != null) {
                 throw new IllegalArgumentException("非分红议题不能携带分红元数据：" + meetingId);
             } else if (appointmentProposal != null || appointmentResolution != null) {
@@ -1120,6 +1250,29 @@ public final class BoardModel {
     }
 
     /**
+     * 债权豁免决议候选结果：豁免决议不进入 {@link State}，由调用方（schema18 工程子集）持有。
+     *
+     * @param accepted   业务是否成功
+     * @param reason     结果代码
+     * @param waivers    候选豁免决议列表
+     * @param boardState 需要写回会议终态时的候选董事会状态；只读查询与提案为 null
+     */
+    public record WaiverOutcome(boolean accepted, String reason, List<DebtWaiver> waivers,
+                                State boardState) {
+
+        /** 校验字段与列表不可变。 */
+        public WaiverOutcome {
+            Objects.requireNonNull(reason, "结果代码");
+            waivers = waivers == null ? List.of() : List.copyOf(waivers);
+        }
+
+        /** 三参构造：不携带董事会状态写回。 */
+        public WaiverOutcome(boolean accepted, String reason, List<DebtWaiver> waivers) {
+            this(accepted, reason, waivers, null);
+        }
+    }
+
+    /**
      * 会议召集请求；时序是否合法由 {@link #convene} 判定。
      *
      * @param meetingId        会议标识
@@ -1211,6 +1364,163 @@ public final class BoardModel {
                 request.closesAt(), MeetingStatus.CONVENED, request.attendeeSeatIds(),
                 request.recusedSeatIds(), List.of(), List.of(), Map.of(), null));
         return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 章程自动召集一次经营考核会议：召集人写专属哨兵 {@link #CHARTER_AUTO}，不冒充主席本人。
+     *
+     * <p>只由周期期末采样与恢复重演调用；旧人工 {@link #convene} 的主席限制原样保留。
+     * 会议从 {@code CONVENED} 开始，材料为空，到会与回避由真实董事本人另行登记。</p>
+     *
+     * @param state     当前状态
+     * @param now       当前模拟毫秒
+     * @param meetingId 会议标识
+     * @param materialDeadline 材料截止
+     * @param opensAt   开会时刻
+     * @param closesAt  表决/评分截止（不含）
+     * @return 候选结果
+     */
+    public static Outcome conveneByCharter(State state, long now, String meetingId,
+                                           long materialDeadline, long opensAt, long closesAt) {
+        requireState(state);
+        requireTime(now);
+        requireText(meetingId, "会议标识");
+        if (meetingOf(state, meetingId) != null) {
+            return rejected(state, REASON_MEETING_EXISTS);
+        }
+        if (now > materialDeadline || materialDeadline > opensAt || opensAt >= closesAt) {
+            return rejected(state, REASON_INVALID_TIMELINE);
+        }
+        Draft draft = new Draft(state);
+        draft.meetings.put(meetingId, new Meeting(meetingId, Topic.OPERATING_REVIEW,
+                CHARTER_AUTO, now, materialDeadline, opensAt, closesAt, MeetingStatus.CONVENED,
+                List.of(), List.of(), List.of(), List.of(), Map.of(), null));
+        return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 冻结周期考核材料：由经理真实准备并发布 BOARD 材料后调用，把预留的确切文书版本
+     * 写入会议材料清单。已冻结且引用完全相同视为幂等；不允许改写或追加第二份。
+     *
+     * @param state     当前状态
+     * @param now       当前模拟毫秒，必须在 {@code [opensAt, closesAt)} 内
+     * @param meetingId 会议标识
+     * @param docId     材料文书
+     * @param sourceRef 材料来源引用
+     * @param version   材料确切版本
+     * @return 候选结果
+     */
+    public static Outcome freezePeriodicMaterials(State state, long now, String meetingId,
+                                                  String docId, String sourceRef, long version) {
+        requireState(state);
+        requireTime(now);
+        requireText(meetingId, "会议标识");
+        requireText(docId, "材料文书");
+        requireText(sourceRef, "材料来源引用");
+        if (version < 1) {
+            throw new IllegalArgumentException("材料版本必须从 1 开始：" + version);
+        }
+        Meeting meeting = meetingOf(state, meetingId);
+        if (meeting == null) {
+            return rejected(state, REASON_UNKNOWN_MEETING);
+        }
+        if (meeting.topic() != Topic.OPERATING_REVIEW) {
+            return rejected(state, REASON_WRONG_TOPIC);
+        }
+        MaterialRef ref = new MaterialRef(docId, sourceRef, version, meeting.materialDeadline());
+        if (meeting.status() == MeetingStatus.MATERIALS_FROZEN) {
+            return meeting.materials().size() == 1 && meeting.materials().get(0).equals(ref)
+                    ? accepted(state, REASON_OK) : rejected(state, REASON_MATERIALS_FROZEN);
+        }
+        if (meeting.status() != MeetingStatus.CONVENED) {
+            return rejected(state, REASON_INVALID_STATE);
+        }
+        if (now < meeting.opensAt()) {
+            return rejected(state, REASON_NOT_DUE);
+        }
+        if (now >= meeting.closesAt()) {
+            return rejected(state, REASON_VOTING_CLOSED);
+        }
+        Draft draft = new Draft(state);
+        draft.meetings.put(meetingId, copyWith(meeting, MeetingStatus.MATERIALS_FROZEN,
+                List.of(ref), meeting.proposedLines(), meeting.ballots(), null));
+        return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 异步参与登记：本人在会务窗口内确认参加本次会议，不表示整场连续在场。
+     *
+     * <p>只允许 {@code CONVENED} 且 {@code createdAt <= now < opensAt} 的会议；登记加入
+     * attendee，{@code selfRecused} 只增不减。任免候选人/被撤人或任免、分红提案
+     * {@code relatedSeatIds} 命中该席时强制回避，自主不回避不能覆盖；重复登记不重复席位、
+     * 不清除既有回避，也不改材料、选票、提案/授权或其它字段。</p>
+     *
+     * <p>{@code seatId} 仅是纯核参数，不能证明真实人物或任务来源；真实人物绑定、任务/报告逐帧
+     * 重演与授权闭环由后续世界桥验证。本方法不补记过去到会，也不建立会议表或阅读账。</p>
+     *
+     * @param state       董事会状态
+     * @param now         当前模拟毫秒
+     * @param meetingId   会议标识
+     * @param seatId      登记席位，必须是章程席位
+     * @param selfRecused 是否自主回避；false 不能清除既有或强制回避
+     * @return 候选结果；拒绝时原状态不变
+     */
+    public static Outcome attend(State state, long now, String meetingId, String seatId,
+                                 boolean selfRecused) {
+        requireState(state);
+        requireTime(now);
+        requireText(meetingId, "会议标识");
+        requireText(seatId, "登记席位");
+        Meeting meeting = meetingOf(state, meetingId);
+        if (meeting == null) {
+            return rejected(state, REASON_UNKNOWN_MEETING);
+        }
+        if (!state.charter().hasSeat(seatId)) {
+            return rejected(state, REASON_INVALID_ATTENDANCE);
+        }
+        if (meeting.status() != MeetingStatus.CONVENED) {
+            return rejected(state, REASON_INVALID_STATE);
+        }
+        if (now < meeting.createdAt() || now >= meeting.opensAt()) {
+            return rejected(state, REASON_NOT_DUE);
+        }
+        List<String> attendees = new ArrayList<>(meeting.attendeeSeatIds());
+        if (!attendees.contains(seatId)) {
+            attendees.add(seatId);
+        }
+        List<String> recused = new ArrayList<>(meeting.recusedSeatIds());
+        if ((selfRecused || forcedRecusal(state.charter(), meeting, seatId))
+                && !recused.contains(seatId)) {
+            recused.add(seatId);
+        }
+        Meeting updated = new Meeting(meeting.meetingId(), meeting.topic(),
+                meeting.convenerSeatId(), meeting.createdAt(), meeting.materialDeadline(),
+                meeting.opensAt(), meeting.closesAt(), meeting.status(), attendees, recused,
+                meeting.materials(), meeting.proposedLines(), meeting.ballots(),
+                meeting.failureReason(), meeting.dividendProposal(),
+                meeting.dividendResolution(), meeting.appointmentProposal(),
+                meeting.appointmentResolution());
+        if (updated.equals(meeting)) {
+            return accepted(state, REASON_OK);
+        }
+        Draft draft = new Draft(state);
+        draft.meetings.put(meetingId, updated);
+        return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 任免候选人/被撤人占席或提案关联席命中时的强制回避。
+     */
+    private static boolean forcedRecusal(Charter charter, Meeting meeting, String seatId) {
+        if (meeting.appointmentProposal() != null) {
+            AppointmentRequest request = meeting.appointmentProposal().request();
+            if (seatId.equals(charter.seatOf(request.personPartyId()))
+                    || meeting.appointmentProposal().relatedSeatIds().contains(seatId)) {
+                return true;
+            }
+        }
+        return meeting.dividendProposal() != null
+                && meeting.dividendProposal().relatedSeatIds().contains(seatId);
     }
 
     /**
@@ -1350,6 +1660,20 @@ public final class BoardModel {
      * @return 候选结果
      */
     public static Outcome startVoting(State state, long now, String meetingId) {
+        return startVoting(state, now, meetingId, List.of());
+    }
+
+    /**
+     * 开始表决；豁免议题的“是否有提案”由调用方提供的豁免决议列表判定。
+     *
+     * @param state     当前状态
+     * @param now       当前模拟毫秒
+     * @param meetingId 会议标识
+     * @param waivers   本董事会豁免决议（其它议题可为空）
+     * @return 候选结果
+     */
+    public static Outcome startVoting(State state, long now, String meetingId,
+                                      List<DebtWaiver> waivers) {
         requireState(state);
         requireTime(now);
         Meeting meeting = meetingOf(state, meetingId);
@@ -1369,7 +1693,9 @@ public final class BoardModel {
                 ? !meeting.proposedLines().isEmpty()
                 : meeting.topic() == Topic.DIVIDEND_AUTHORIZATION
                         ? meeting.dividendProposal() != null
-                        : meeting.appointmentProposal() != null;
+                        : meeting.topic() == Topic.DEBT_WAIVER
+                                ? debtWaiverOf(waivers, meetingId) != null
+                                : meeting.appointmentProposal() != null;
         if (!hasProposal) {
             return rejected(state, REASON_EMPTY_PROPOSAL);
         }
@@ -1430,6 +1756,25 @@ public final class BoardModel {
      * @return 候选结果
      */
     public static Outcome closeVoting(State state, long now, String meetingId) {
+        Meeting meeting = meetingOf(state, meetingId);
+        if (meeting != null && meeting.topic() == Topic.DEBT_WAIVER) {
+            // 豁免会议的通过门槛取决于被冻结的具体金额，必须由持有豁免决议的调用方传入
+            return rejected(state, REASON_INVALID_ARGUMENT);
+        }
+        return closeVoting(state, now, meetingId, List.of());
+    }
+
+    /**
+     * 关闭表决并形成终态；豁免会议由调用方提供冻结的豁免决议以判定金额重要性门槛。
+     *
+     * @param state    当前状态
+     * @param now      当前模拟毫秒
+     * @param meetingId 会议标识
+     * @param waivers  本董事会的豁免决议（其它议题可为空）
+     * @return 候选结果
+     */
+    public static Outcome closeVoting(State state, long now, String meetingId,
+                                      List<DebtWaiver> waivers) {
         requireState(state);
         requireTime(now);
         Meeting meeting = meetingOf(state, meetingId);
@@ -1461,6 +1806,13 @@ public final class BoardModel {
                         meeting.materials(), meeting.proposedLines(), meeting.ballots(), null));
                 return accepted(rejectedDraft.build(), REASON_EMPTY_PROPOSAL);
             }
+            if (meeting.topic() == Topic.DEBT_WAIVER
+                    && debtWaiverOf(waivers, meetingId) == null) {
+                Draft rejectedDraft = new Draft(state);
+                rejectedDraft.meetings.put(meetingId, copyWith(meeting, MeetingStatus.REJECTED,
+                        meeting.materials(), meeting.proposedLines(), meeting.ballots(), null));
+                return accepted(rejectedDraft.build(), REASON_EMPTY_PROPOSAL);
+            }
             return rejected(state, REASON_INVALID_STATE);
         }
         if (meeting.status() != MeetingStatus.VOTING) {
@@ -1480,9 +1832,7 @@ public final class BoardModel {
                     yes++;
                 }
             }
-            int required = meeting.topic() == Topic.BUDGET
-                    && meeting.requestedTotal().compareTo(SPECIAL_BUDGET_THRESHOLD) > 0
-                    ? SPECIAL_YES_VOTES : ORDINARY_YES_VOTES;
+            int required = requiredYesVotes(waivers, meeting);
             result = yes >= required ? MeetingStatus.ADOPTED : MeetingStatus.REJECTED;
         }
         Draft draft = new Draft(state);
@@ -1938,6 +2288,431 @@ public final class BoardModel {
             }
         }
         return false;
+    }
+
+    // ------------------------------------------------------------------ 具体债权豁免授权
+
+    /**
+     * 通过门槛：预算合计或豁免金额超过特别阈值走 4 票，其余 3 票；关联回避不降低分母。
+     *
+     * @param waivers 本董事会的豁免决议（其它议题可为空表）
+     * @param meeting 会议
+     * @return 所需赞成票数
+     */
+    public static int requiredYesVotes(List<DebtWaiver> waivers, Meeting meeting) {
+        Objects.requireNonNull(meeting, "会议");
+        if (meeting.topic() == Topic.BUDGET
+                && meeting.requestedTotal().compareTo(SPECIAL_BUDGET_THRESHOLD) > 0) {
+            return SPECIAL_YES_VOTES;
+        }
+        if (meeting.topic() == Topic.DEBT_WAIVER) {
+            DebtWaiver waiver = debtWaiverOf(waivers, meeting.meetingId());
+            if (waiver != null && waiver.request().amount()
+                    .compareTo(SPECIAL_BUDGET_THRESHOLD) > 0) {
+                return SPECIAL_YES_VOTES;
+            }
+        }
+        return ORDINARY_YES_VOTES;
+    }
+
+    /**
+     * 按会议取豁免决议记录（只读）。
+     *
+     * @param waivers   豁免决议列表
+     * @param meetingId 会议标识
+     * @return 豁免记录；不存在返回 null
+     */
+    public static DebtWaiver debtWaiverOf(List<DebtWaiver> waivers, String meetingId) {
+        if (waivers == null || blank(meetingId)) {
+            return null;
+        }
+        for (DebtWaiver waiver : waivers) {
+            if (waiver.meetingId().equals(meetingId)) {
+                return waiver;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 按授权引用取豁免决议记录，不核验有效性。
+     *
+     * @param waivers          豁免决议列表
+     * @param authorizationRef 授权引用
+     * @return 豁免记录；不存在返回 null
+     */
+    public static DebtWaiver debtWaiverByRef(List<DebtWaiver> waivers, String authorizationRef) {
+        if (waivers == null || blank(authorizationRef)) {
+            return null;
+        }
+        for (DebtWaiver waiver : waivers) {
+            if (authorizationRef.equals(waiver.authorizationRef())) {
+                return waiver;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 受理具体债权豁免提案：冻结公司/合同/客户/金额/用途，审议后不可覆盖。
+     *
+     * <p>“一般预算许可”“经理自填授权”都不能替代本提案：请求对象里必须写明具体合同、
+     * 具体客户、具体金额与用途。同一合同存在未执行的豁免授权时拒绝新提案，避免重复授权。</p>
+     *
+     * @param charter        公司章程
+     * @param meetings       现有会议
+     * @param waivers        现有豁免决议
+     * @param now            当前模拟毫秒
+     * @param meetingId      会议标识
+     * @param proposerSeatId 提案席位
+     * @param request        豁免请求
+     * @return 候选结果与新的豁免决议列表
+     */
+    public static WaiverOutcome proposeDebtWaiver(Charter charter, Map<String, Meeting> meetings,
+            List<DebtWaiver> waivers, long now, String meetingId, String proposerSeatId,
+            DebtWaiverRequest request) {
+        Objects.requireNonNull(charter, "章程");
+        Objects.requireNonNull(meetings, "会议");
+        requireTime(now);
+        List<DebtWaiver> current = waivers == null ? List.of() : waivers;
+        Meeting meeting = meetings.get(meetingId);
+        if (meeting == null) {
+            return new WaiverOutcome(false, REASON_UNKNOWN_MEETING, current);
+        }
+        if (meeting.topic() != Topic.DEBT_WAIVER) {
+            return new WaiverOutcome(false, REASON_WRONG_TOPIC, current);
+        }
+        if (meeting.status() != MeetingStatus.CONVENED) {
+            return new WaiverOutcome(false, REASON_MATERIALS_FROZEN, current);
+        }
+        if (now < meeting.createdAt()) {
+            return new WaiverOutcome(false, REASON_INVALID_TIMELINE, current);
+        }
+        if (now > meeting.materialDeadline()) {
+            return new WaiverOutcome(false, REASON_MATERIALS_CLOSED, current);
+        }
+        if (debtWaiverOf(current, meetingId) != null) {
+            return new WaiverOutcome(false, REASON_WAIVER_PROPOSAL_EXISTS, current);
+        }
+        if (request == null) {
+            return new WaiverOutcome(false, REASON_INVALID_ARGUMENT, current);
+        }
+        if (!request.companyPartyId().equals(charter.companyPartyId())) {
+            return new WaiverOutcome(false, REASON_INVALID_ARGUMENT, current);
+        }
+        if (blank(proposerSeatId) || !charter.hasSeat(proposerSeatId)) {
+            return new WaiverOutcome(false, REASON_INVALID_ATTENDANCE, current);
+        }
+        for (DebtWaiver existing : current) {
+            if (existing.request().companyPartyId().equals(request.companyPartyId())
+                    && existing.request().contractId().equals(request.contractId())
+                    && existing.request().customerPartyId().equals(request.customerPartyId())
+                    && existing.authorized() && !existing.consumed()) {
+                return new WaiverOutcome(false, REASON_INVALID_STATE, current);
+            }
+        }
+        List<DebtWaiver> next = new ArrayList<>(current);
+        next.add(new DebtWaiver(request, meetingId, proposerSeatId, now, null, null, null));
+        return new WaiverOutcome(true, REASON_OK, next);
+    }
+
+    /**
+     * 实施已通过的豁免决议：核对选票与金额门槛后签发唯一授权引用，不改任何账。
+     *
+     * @param charter   公司章程
+     * @param state     会议状态（用于写回会议终态）
+     * @param waivers   现有豁免决议
+     * @param now       当前模拟毫秒
+     * @param meetingId 会议标识
+     * @return 候选结果与新的豁免决议列表
+     */
+    public static WaiverOutcome executeAdoptedDebtWaiver(Charter charter, State state,
+            List<DebtWaiver> waivers, long now, String meetingId) {
+        Objects.requireNonNull(state, "状态");
+        requireTime(now);
+        List<DebtWaiver> current = waivers == null ? List.of() : waivers;
+        Meeting meeting = state.meeting(meetingId);
+        if (meeting == null) {
+            return new WaiverOutcome(false, REASON_UNKNOWN_MEETING, current);
+        }
+        if (meeting.topic() != Topic.DEBT_WAIVER) {
+            return new WaiverOutcome(false, REASON_WRONG_TOPIC, current);
+        }
+        if (meeting.status() != MeetingStatus.ADOPTED) {
+            return new WaiverOutcome(false, REASON_NOT_ADOPTED, current);
+        }
+        if (now < meeting.closesAt()) {
+            return new WaiverOutcome(false, REASON_NOT_DUE, current);
+        }
+        DebtWaiver waiver = debtWaiverOf(current, meetingId);
+        if (waiver == null) {
+            return new WaiverOutcome(false, REASON_INVALID_STATE, current);
+        }
+        if (waiver.authorized()) {
+            return new WaiverOutcome(false, REASON_INVALID_STATE, current);
+        }
+        List<String> eligible = meeting.eligibleVoters();
+        if (eligible.size() < QUORUM) {
+            return new WaiverOutcome(false, REASON_NO_QUORUM, current);
+        }
+        if (yesVotes(meeting, eligible) < requiredYesVotes(current, meeting)) {
+            return new WaiverOutcome(false, REASON_NOT_ADOPTED, current);
+        }
+        String authorizationRef = computeDebtWaiverAuthorizationRef(charter, meeting, waiver, now);
+        List<DebtWaiver> next = new ArrayList<>();
+        for (DebtWaiver existing : current) {
+            if (existing.request().waiverId().equals(waiver.request().waiverId())) {
+                next.add(new DebtWaiver(existing.request(), existing.meetingId(),
+                        existing.proposerSeatId(), existing.proposedAtMillis(), now,
+                        authorizationRef, null));
+            } else {
+                next.add(existing);
+            }
+        }
+        Draft draft = new Draft(state);
+        draft.meetings.put(meetingId, copyWith(meeting, MeetingStatus.IMPLEMENTED,
+                meeting.materials(), meeting.proposedLines(), meeting.ballots(), null));
+        return new WaiverOutcome(true, REASON_OK, next, draft.build());
+    }
+
+    /**
+     * 核验豁免授权：必须已签发、未执行、字段逐项相同且来源可重算。
+     *
+     * @param charter          公司章程
+     * @param state            会议状态
+     * @param waivers          豁免决议
+     * @param authorizationRef 待核验引用
+     * @param request          待核验请求
+     * @return 是否可用于执行
+     */
+    public static boolean verifiesDebtWaiverAuthorization(Charter charter, State state,
+            List<DebtWaiver> waivers, String authorizationRef, DebtWaiverRequest request) {
+        Objects.requireNonNull(state, "状态");
+        if (blank(authorizationRef) || request == null || waivers == null) {
+            return false;
+        }
+        for (DebtWaiver waiver : waivers) {
+            if (!waiver.authorized() || waiver.consumed()
+                    || !authorizationRef.equals(waiver.authorizationRef())) {
+                continue;
+            }
+            if (!sameWaiverRequest(waiver.request(), request)) {
+                continue;
+            }
+            Meeting meeting = state.meeting(waiver.meetingId());
+            if (meeting == null || meeting.topic() != Topic.DEBT_WAIVER
+                    || meeting.status() != MeetingStatus.IMPLEMENTED) {
+                continue;
+            }
+            String recomputed = computeDebtWaiverAuthorizationRef(charter, meeting, waiver,
+                    waiver.issuedAtMillis());
+            if (recomputed.equals(authorizationRef)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 消耗已核验的豁免授权：一次执行，重复执行被拒绝。
+     *
+     * @param waivers          豁免决议
+     * @param now              执行时点
+     * @param authorizationRef 授权引用
+     * @return 候选结果与新的豁免决议列表
+     */
+    public static WaiverOutcome consumeDebtWaiver(List<DebtWaiver> waivers, long now,
+                                                  String authorizationRef) {
+        requireTime(now);
+        List<DebtWaiver> current = waivers == null ? List.of() : waivers;
+        DebtWaiver waiver = debtWaiverByRef(current, authorizationRef);
+        if (waiver == null || !waiver.authorized()) {
+            return new WaiverOutcome(false, REASON_WAIVER_NOT_AUTHORIZED, current);
+        }
+        if (waiver.consumed()) {
+            return new WaiverOutcome(false, REASON_WAIVER_ALREADY_CONSUMED, current);
+        }
+        if (now < waiver.issuedAtMillis()) {
+            return new WaiverOutcome(false, REASON_INVALID_TIMELINE, current);
+        }
+        List<DebtWaiver> next = new ArrayList<>();
+        for (DebtWaiver existing : current) {
+            if (existing.request().waiverId().equals(waiver.request().waiverId())) {
+                next.add(new DebtWaiver(existing.request(), existing.meetingId(),
+                        existing.proposerSeatId(), existing.proposedAtMillis(),
+                        existing.issuedAtMillis(), existing.authorizationRef(), now));
+            } else {
+                next.add(existing);
+            }
+        }
+        return new WaiverOutcome(true, REASON_OK, next);
+    }
+
+    /** 豁免请求逐字段相等（用于授权绑定）。 */
+    private static boolean sameWaiverRequest(DebtWaiverRequest first, DebtWaiverRequest second) {
+        return first.waiverId().equals(second.waiverId())
+                && first.companyPartyId().equals(second.companyPartyId())
+                && first.contractId().equals(second.contractId())
+                && first.customerPartyId().equals(second.customerPartyId())
+                && first.amount().compareTo(second.amount()) == 0
+                && first.purpose().equals(second.purpose());
+    }
+
+    /**
+     * 豁免决议自校验：授权/消耗只能出现在真实已实施会议之后，且门槛与选票一致。
+     *
+     * <p>由持有豁免决议的调用方（schema18 工程子集）在每批校验时调用，
+     * {@code BoardModel.State} 本身不带任何豁免或金额字段。</p>
+     *
+     * @param charter  公司章程
+     * @param meetings 该公司会议
+     * @param waivers  该公司豁免决议
+     * @throws IllegalArgumentException 决议与真实会议/章程不一致
+     */
+    public static void validateDebtWaivers(Charter charter, Map<String, Meeting> meetings,
+                                           List<DebtWaiver> waivers) {
+        Objects.requireNonNull(charter, "章程");
+        Objects.requireNonNull(meetings, "会议");
+        List<DebtWaiver> list = waivers == null ? List.of() : waivers;
+        Map<String, DebtWaiver> byMeeting = new TreeMap<>();
+        Set<String> seenIds = new HashSet<>();
+        for (DebtWaiver waiver : list) {
+            DebtWaiverRequest request = waiver.request();
+            if (!seenIds.add(request.waiverId())) {
+                throw new IllegalArgumentException("重复豁免标识：" + request.waiverId());
+            }
+            if (!request.companyPartyId().equals(charter.companyPartyId())) {
+                throw new IllegalArgumentException("豁免公司必须等于章程公司："
+                        + request.waiverId());
+            }
+            if (!charter.hasSeat(waiver.proposerSeatId())) {
+                throw new IllegalArgumentException("豁免提案人不是章程席位："
+                        + waiver.proposerSeatId());
+            }
+            Meeting meeting = meetings.get(waiver.meetingId());
+            if (meeting == null || meeting.topic() != Topic.DEBT_WAIVER) {
+                throw new IllegalArgumentException("豁免记录必须指向真实豁免会议："
+                        + waiver.meetingId());
+            }
+            if (waiver.proposedAtMillis() < meeting.createdAt()
+                    || waiver.proposedAtMillis() > meeting.materialDeadline()) {
+                throw new IllegalArgumentException("豁免提案不在会议材料窗口内："
+                        + waiver.meetingId());
+            }
+            if (byMeeting.put(waiver.meetingId(), waiver) != null) {
+                throw new IllegalArgumentException("同一豁免会议只能有一条决议："
+                        + waiver.meetingId());
+            }
+            if (waiver.authorized()) {
+                if (meeting.status() != MeetingStatus.IMPLEMENTED) {
+                    throw new IllegalArgumentException("未实施会议不能携带豁免授权："
+                            + waiver.meetingId());
+                }
+                if (waiver.issuedAtMillis() < meeting.closesAt()) {
+                    throw new IllegalArgumentException("豁免授权早于表决截止："
+                            + waiver.meetingId());
+                }
+                String expected = computeDebtWaiverAuthorizationRef(charter, meeting, waiver,
+                        waiver.issuedAtMillis());
+                if (!expected.equals(waiver.authorizationRef())) {
+                    throw new IllegalArgumentException("豁免授权引用与真实来源不一致："
+                            + waiver.meetingId());
+                }
+            } else if (meeting.status() == MeetingStatus.IMPLEMENTED) {
+                throw new IllegalArgumentException("已实施豁免会议必须有授权："
+                        + waiver.meetingId());
+            }
+            if (meeting.status() == MeetingStatus.ADOPTED
+                    || meeting.status() == MeetingStatus.IMPLEMENTED) {
+                // 票数门槛按金额重要性由章程决定，不能靠并列状态降低
+                List<String> eligible = meeting.eligibleVoters();
+                int required = request.amount().compareTo(SPECIAL_BUDGET_THRESHOLD) > 0
+                        ? SPECIAL_YES_VOTES : ORDINARY_YES_VOTES;
+                if (eligible.size() < QUORUM || yesVotes(meeting, eligible) < required) {
+                    throw new IllegalArgumentException("豁免通过状态与真实选票/门槛不一致："
+                            + waiver.meetingId());
+                }
+            }
+        }
+        for (Meeting meeting : meetings.values()) {
+            if (meeting.topic() == Topic.DEBT_WAIVER
+                    && meeting.status() == MeetingStatus.IMPLEMENTED
+                    && !byMeeting.containsKey(meeting.meetingId())) {
+                throw new IllegalArgumentException("已实施豁免会议缺少决议记录："
+                        + meeting.meetingId());
+            }
+        }
+    }
+
+    private static String computeDebtWaiverAuthorizationRef(Charter charter, Meeting meeting,
+                                                            DebtWaiver waiver, long issuedAtMillis) {
+        DebtWaiverRequest value = waiver.request();
+        Map<String, Object> source = new TreeMap<>();
+        Map<String, Object> request = new TreeMap<>();
+        request.put("waiverId", value.waiverId());
+        request.put("companyPartyId", value.companyPartyId());
+        request.put("contractId", value.contractId());
+        request.put("customerPartyId", value.customerPartyId());
+        request.put("amount", value.amount().toPlainString());
+        request.put("purpose", value.purpose());
+        source.put("request", request);
+
+        Map<String, Object> charterSource = new TreeMap<>();
+        charterSource.put("companyPartyId", charter.companyPartyId());
+        charterSource.put("chairSeatId", charter.chairSeatId());
+        charterSource.put("quorum", charter.quorum());
+        List<Seat> seatList = new ArrayList<>(charter.seats());
+        seatList.sort(Comparator.comparing(Seat::seatId));
+        List<Map<String, Object>> seats = new ArrayList<>();
+        for (Seat seat : seatList) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("seatId", seat.seatId());
+            row.put("partyId", seat.partyId());
+            seats.add(row);
+        }
+        charterSource.put("seats", seats);
+        source.put("charter", charterSource);
+
+        Map<String, Object> meetingSource = new TreeMap<>();
+        meetingSource.put("meetingId", meeting.meetingId());
+        meetingSource.put("topic", meeting.topic().name());
+        meetingSource.put("convenerSeatId", meeting.convenerSeatId());
+        meetingSource.put("createdAt", meeting.createdAt());
+        meetingSource.put("materialDeadline", meeting.materialDeadline());
+        meetingSource.put("opensAt", meeting.opensAt());
+        meetingSource.put("closesAt", meeting.closesAt());
+        meetingSource.put("attendees", List.copyOf(meeting.attendeeSeatIds()));
+        meetingSource.put("recused", List.copyOf(meeting.recusedSeatIds()));
+        meetingSource.put("proposerSeatId", waiver.proposerSeatId());
+        meetingSource.put("proposedAtMillis", waiver.proposedAtMillis());
+        List<Map<String, Object>> materials = new ArrayList<>();
+        for (MaterialRef material : meeting.materials()) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("materialId", material.materialId());
+            row.put("sourceRef", material.sourceRef());
+            row.put("version", material.version());
+            row.put("asOf", material.asOf());
+            materials.add(row);
+        }
+        meetingSource.put("materials", materials);
+        List<Ballot> ballotList = new ArrayList<>(meeting.ballots().values());
+        ballotList.sort(Comparator.comparing(Ballot::seatId));
+        List<Map<String, Object>> ballots = new ArrayList<>();
+        for (Ballot ballot : ballotList) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("seatId", ballot.seatId());
+            row.put("vote", ballot.vote().name());
+            row.put("castAt", ballot.castAt());
+            ballots.add(row);
+        }
+        meetingSource.put("ballots", ballots);
+        source.put("meeting", meetingSource);
+        source.put("issuedAtMillis", issuedAtMillis);
+        try {
+            return WAIVER_AUTHORIZATION_DOMAIN + ":" + sha256Hex(MAPPER.writeValueAsString(source));
+        } catch (JsonProcessingException failure) {
+            throw new IllegalStateException("豁免授权来源无法规范化", failure);
+        }
     }
 
     /**

@@ -41,3 +41,52 @@ td.preview{white-space:normal;min-width:240px;max-width:380px;color:#5c6a80}
 
 /* 采访页增加导航项后，较矮窗口可滚动侧栏，说明不覆盖按钮。 */
 @media(min-width:761px){nav{overflow-y:auto}.sidebar-note{position:static;margin:28px 14px 0}}
+
+/* 工程经营：同一屏多公司对照与真实动作表单（白色工作台，沿用既有卡片/表格） */
+.eng-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 16px;margin-bottom:12px}
+.eng-grid label{display:block;margin:0 0 6px;font-size:12px;color:#5c6a80}
+.eng-grid input,.eng-grid select{width:100%}
+.eng-extra{border-top:1px solid var(--line);margin:8px 0 0;padding-top:12px}
+.eng-extra summary{cursor:pointer;font-weight:600;color:#3d4a60;margin-bottom:12px}
+.eng-company{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
+.eng-company h3{margin:0 0 4px}
+.eng-company h4{margin:20px 0 10px;font-size:13px;color:#4a576d}
+@media(max-width:1100px){.eng-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){.eng-grid{grid-template-columns:1fr}}
+
+/* 可用性切片：按工具显示的表单字段、解释与可展开的技术细节 */
+.eng-scope{margin-bottom:2px}
+.eng-field{min-width:0}
+.eng-field label{font-weight:600;color:#4a576d}
+.eng-field .hint{margin:4px 0 0;line-height:1.5;color:#93a0b2}
+.eng-sources summary{cursor:pointer;font-weight:600;color:#3d4a60;margin-bottom:10px}
+.eng-sources .grid{font-size:12px}
+@media(max-width:760px){
+  .eng-grid{gap:10px}
+  .eng-field .hint{font-size:11px}
+  .eng-company{padding:14px 12px;border-radius:10px}
+  .table-wrap{-webkit-overflow-scrolling:touch}
+}
+@media(max-width:480px){
+  .eng-scope{grid-template-columns:1fr}
+  .eng-company h3{font-size:14px}
+  .eng-field label{font-size:12px}
+}
+
+/* 周期治理：每期一块，缺项与待执行单独成行；正文保持后端原文的排版 */
+.periodic-period{border-top:1px solid var(--line);margin:18px 0 0;padding-top:16px}
+.periodic-period:first-of-type{border-top:0;margin-top:8px;padding-top:0}
+.periodic-period h4{margin:0 0 10px;font-size:14px;color:#2c3a52}
+#engineering-periodic .grid,.periodic-period .grid{margin:0 0 12px}
+.periodic-body{margin:12px 0 0}
+.periodic-body summary{cursor:pointer;font-weight:600;color:#3d4a60}
+.periodic-body pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:26rem;overflow:auto;margin:8px 0 0;padding:12px;background:#f6f8fb;border-radius:8px;font-size:12px;line-height:1.7}
+.periodic-read{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;margin:8px 0 0}
+.periodic-read .hint{flex-basis:100%;margin:0}
+.eng-score-row{border-top:1px dashed var(--line);padding-top:10px;margin-top:2px}
+.eng-score-row select{margin-top:6px}
+#person-engineering-companies .periodic-period .table-wrap{max-height:26rem;overflow:auto}
+@media(max-width:760px){
+  .periodic-period h4{font-size:13px}
+  .periodic-body pre{max-height:20rem}
+}

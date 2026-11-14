@@ -32,7 +32,11 @@ const state = {
   evidence: null,
   social: null,
   personSocial: null,
-  personEvidence: null
+  personEvidence: null,
+  engineering: null,
+  engineeringCompany: "",
+  engineeringRequest: 0,
+  personEngineering: null
 };
 
 const ADMIN_TABLES = ["accounts", "owners", "pending", "trades", "dividends", "keys"];
@@ -53,7 +57,12 @@ const DETAIL_TABLES = ["company-report", "company-inventory", "company-orders",
   "org-owners", "org-appointments", "org-mandates", "org-reports",
   "information-documents", "information-active", "information-closed",
   "information-observations", "information-readers", "information-reports",
-  "market-bars", "market-gaps"];
+  "market-bars", "market-gaps",
+  "engineering-report", "engineering-seats", "engineering-appointments",
+  "engineering-contracts", "engineering-works", "engineering-budgets",
+  "engineering-commitments", "engineering-meetings", "engineering-requests",
+  "engineering-responses", "engineering-payments", "engineering-waivers",
+  "engineering-tasks", "engineering-reports"];
 const PERSON_TABLES = ["person-accounts", "person-holdings", "person-market"];
 
 const $ = (id) => document.getElementById(id);
@@ -171,6 +180,7 @@ function clearPersonDom() {
   clearPersonalInterview();
   clearPersonalEvidence();
   clearPersonalSocial();
+  clearPersonalEngineering();
   $("person-name").textContent = "—";
   $("person-summary").replaceChildren();
   for (const id of PERSON_TABLES) {
@@ -268,6 +278,9 @@ async function refreshAdmin() {
   }
   if (state.page === "social" && current()) {
     await loadSocial(generation, pageVersion);
+  }
+  if (state.page === "engineering" && current()) {
+    await loadEngineering(generation, pageVersion);
   }
 }
 
@@ -536,6 +549,7 @@ async function refreshPerson() {
   await renderPersonalDialogue(generation);
   await renderPersonalEvidence(generation);
   await renderPersonalSocial(generation);
+  await renderPersonalEngineering(generation);
 }
 
 async function switchPerson(personId) {
@@ -616,13 +630,14 @@ const pages = {
   performance: ["账户表现与历史", "净资产、期间表现与真实资本流，口径唯一。"],
   org: ["人物与任职", "谁能做什么，任职何时生效或结束。"],
   information: ["信息与阅读", "谁发布了什么版本，谁实际读到什么。"],
+  engineering: ["公司经营与回款", "制造与两家工程公司各自真实的合同、工单、预算、客户请求与回款。"],
   media: ["媒体采编", "选题、审阅、发布与更正，都有实际工时和原始版本。"],
   people: ["人物视角", "以各自的权限观察世界，保留信息边界。"],
   models: ["模型运行", "让人物依据自己的观察完成一次判断，查看实际输入与回报。"],
   settings: ["模型与密钥", "为五类场景配置模型、密钥槽位和调用预算。"],
   interview: ["采访预约", "查看采访预约、逐轮对话、实际阅读与机构工时。"],
   evidence: ["证据与共享", "查看真实证据根、公开标签与实际共享；共享不等于已读。"],
-  social: ["消息", "管理员审计真实送达与真实原因；人物只看到允许的状态与本人已读结果。"]
+  social: ["消息", "查看真实送达、未送达原因与实际阅读；未送达不显示原因。"]
 };
 function selectPage(page, refresh = true) {
   if (!pages[page]) return;
@@ -633,6 +648,7 @@ function selectPage(page, refresh = true) {
   if (state.page === "interview" && page !== "interview") clearInterviewDom();
   if (state.page === "evidence" && page !== "evidence") clearEvidenceDom();
   if (state.page === "social" && page !== "social") clearSocialDom();
+  if (state.page === "engineering" && page !== "engineering") clearEngineeringDom();
   if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
   state.page = page;
   state.pageVersion += 1;
@@ -1102,6 +1118,7 @@ function clearDetailDom() {
   clearInterviewDom();
   clearEvidenceDom();
   clearSocialDom();
+  clearEngineeringDom();
   state.details = {};
   clearRecall();
   clearBeliefs();
@@ -2230,6 +2247,14 @@ async function refreshCapabilities(generation, current) {
   const first = state.capabilities === null;
   const selected = new Set(Array.from(document.querySelectorAll('input[name="live-person"]:checked'), node => node.value));
   state.capabilities = result.payload;
+  const scenesNote = $("live-scenes-note");
+  if (scenesNote) {
+    const supported = result.payload.supportedScenes || [];
+    scenesNote.textContent = supported.length
+      ? "当前档案已接入执行器：" + supported.map(id => LIVE_SCENES[id] || id).join("、")
+        + "。清单来自当前档案能力接口；未列出的场景只保存配置，保存不会产生模型调用。"
+      : "当前档案没有接入场景执行器：保存配置不会产生模型调用。";
+  }
   const list = $("live-persons"); list.replaceChildren();
   const legend = document.createElement("legend"); legend.textContent = "本轮参与人物"; list.appendChild(legend);
   for (const person of result.payload.persons) {
@@ -2717,11 +2742,9 @@ async function renderPersonalSocial(generation) {
     cell(tr, row.description);
   });
   const panel = $("person-social");
-  if (panel) panel.hidden = !view.available;
+  if (panel) panel.hidden = !(view.available && (inbox.length || outbox.length || contacts.length));
   if ($("person-social-note")) {
-    const empty = view.available && !inbox.length && !outbox.length && !contacts.length;
-    $("person-social-note").textContent = (view.notes || []).join(" ")
-      + (empty ? " 尚无消息，也尚无可联系的人。" : "");
+    $("person-social-note").textContent = (view.notes || []).join(" ");
   }
 }
 
@@ -2870,3 +2893,2119 @@ async function renderPersonalInterview(tools, generation) {
   $("person-interview-contacts-empty").textContent = contacts.length
     ? "" : "本人尚未通过实际阅读取得可私信的联系入口。";
 }
+
+// ---------------------------------------------------------------- 工程经营与回款（18c 第一切片）
+
+// ---------------------------------------------------------------- 工程动作字段目录
+// 只按 WorldWebHost.dispatchEngineering 的真实用法声明每个工具需要的字段；
+// 页面上不出现的字段绝不会被发送出去（防止旧值混入新请求）。
+
+const ENGINEERING_FIELD_SPECS = {
+  contractId: {
+    id: "eng-contract", label: "合同标识", hint: "例如 B-1；必须是本人实际读过机会后签下的合同。"
+  },
+  workId: {
+    id: "eng-work", label: "开工单号", hint: "本次施工的工单号；同一合同可多次开工。"
+  },
+  units: {
+    id: "eng-units", label: "数量（件）", hint: "开工或报验的单位数；必须是正整数。"
+  },
+  trancheIndex: {
+    id: "eng-tranche", label: "分期序号", hint: "从 0 开始；0 是合法值，会按 0 提交。"
+  },
+  amount: {
+    id: "eng-amount", label: "金额（元）", hint: "最多两位小数；只作为动作参数，不在这里改账。"
+  },
+  purpose: {
+    id: "eng-purpose", label: "用途／依据", hint: "例如终止原因、核销依据；会写入动作证据。"
+  },
+  authorizationRef: {
+    id: "eng-ref", label: "董事会豁免授权引用", hint: "由董事会签发；经理不能自填授权。"
+  },
+  durationMillis: {
+    id: "eng-duration", label: "本次决策工时（毫秒）", hint: "占用本人的正工时；0 表示只占一个时点。"
+  },
+  meetingId: {
+    id: "eng-meeting", label: "会议标识", hint: "必须是自己召集或参与的会议。",
+    conveneHint: "本次要新召集的会议标识；由你指定且不能与已有会议重复。"
+  },
+  materialDeadline: {
+    id: "eng-material-deadline", label: "材料截止时点", hint: "世界毫秒；到此为止可以提交材料。"
+  },
+  opensAt: {
+    id: "eng-opens", label: "开会时点", hint: "世界毫秒；到此时材料冻结并开始表决。"
+  },
+  closesAt: {
+    id: "eng-closes", label: "表决截止时点", hint: "世界毫秒；必须晚于开会时点。"
+  },
+  recused: {
+    id: "eng-recused", label: "是否自主回避", kind: "select",
+    options: [{ value: "", label: "否" }, { value: "true", label: "是（关联议题）" }],
+    hint: "涉及本人关联事项时应选择回避。"
+  },
+  materialId: {
+    id: "eng-material", label: "会议材料标识", hint: "本次会议内的材料名，不得与已有材料重名。"
+  },
+  docId: {
+    id: "eng-doc", label: "材料来源资料",
+    hint: "必须指向真实存在的资料标识；本公司有公开治理说明时会默认填入它，可改选其它真实资料。"
+  },
+  docVersion: {
+    id: "eng-version", label: "资料版本号", hint: "固定引用的版本；默认 1。"
+  },
+  vote: {
+    id: "eng-vote", label: "表决选项", kind: "select",
+    options: [{ value: "", label: "请选择" }, { value: "YES", label: "赞成" },
+      { value: "NO", label: "反对" }, { value: "ABSTAIN", label: "弃权" }],
+    hint: "每人一票；未参与或已回避的席位不能投票。"
+  },
+  appointmentId: {
+    id: "eng-appointment", label: "任免记录标识", hint: "本次任免的记录号，不可与历史重复。"
+  },
+  appointPersonId: {
+    id: "eng-appoint-person", label: "被任免人", hint: "按人物标识填写，例如 dave。"
+  },
+  appointRole: {
+    id: "eng-appoint-role", label: "岗位", kind: "select",
+    options: [{ value: "COMPANY_MANAGER", label: "公司经理" }],
+    hint: "当前实验只支持公司经理岗位。"
+  },
+  appointAction: {
+    id: "eng-appoint-action", label: "任免动作", kind: "select",
+    options: [{ value: "", label: "请选择" }, { value: "APPOINT", label: "任命" },
+      { value: "REVOKE", label: "撤销" }],
+    hint: "撤销时不需要填写期限。"
+  },
+  effectiveAt: {
+    id: "eng-effective", label: "任职生效时点", hint: "世界毫秒；任命从此时点开始，撤销在此生效。"
+  },
+  endsAt: {
+    id: "eng-ends", label: "任职期限（不含）", hint: "世界毫秒；必须晚于生效时点。"
+  },
+  waiverId: {
+    id: "eng-waiver", label: "豁免请求标识", hint: "董事会正在审议的具体债权编号。"
+  },
+  customerPartyId: {
+    id: "eng-customer", label: "客户主体标识", hint: "本次被豁免债权对应的客户账户主体。"
+  },
+  laborLimit: {
+    id: "eng-labor", label: "人工预算上限（元）", hint: "留空表示本类不设上限；与采购上限至少填一个。"
+  },
+  procurementLimit: {
+    id: "eng-procurement", label: "采购预算上限（元）", hint: "留空表示本类不设上限。"
+  },
+  period: {
+    id: "eng-period", label: "预算期间序号", hint: "从 0 开始；0 是合法值，会按 0 提交。"
+  },
+  periodicPeriod: {
+    id: "eng-period", label: "考核期间", kind: "select", source: "periods",
+    hint: "只列本公司真实采样过的期间；期间序号从 1 开始。"
+  },
+  note: {
+    id: "eng-note", label: "更正说明（可选）",
+    hint: "留空表示首版；填写后会作为新草稿正文的更正说明，不改旧版。"
+  },
+  draftId: {
+    id: "eng-draft", label: "草稿", kind: "select", source: "drafts",
+    hint: "只能从本公司真实存在的草稿中选择；准备者不能批准自己的稿。"
+  },
+  draftVersion: {
+    id: "eng-draft-version", label: "草稿版本",
+    hint: "与所选草稿一致的版本号；选草稿后自动填入，也可按真实值修改。"
+  },
+  publisherPersonId: {
+    id: "eng-publisher", label: "指定发布人", kind: "select", source: "publishers",
+    hint: "授权只指定一名本公司董事；实际发布仍由该人自己的会话执行。"
+  },
+  expiresAt: {
+    id: "eng-expires", label: "授权失效时点（世界毫秒）",
+    hint: "右开区间；必须晚于当前世界时点，过期后不能发布。"
+  },
+  authorizationId: {
+    id: "eng-auth", label: "授权标识（可选）", kind: "select", source: "authorizations",
+    hint: "留空表示由服务端取该草稿唯一未消费授权；不能复用已消费授权。"
+  }
+};
+
+const ENGINEERING_TOOL_FIELDS = {
+  "engineering.sign": {
+    fields: ["contractId"], required: ["contractId"],
+    note: "签约只用到合同标识：合同条款来自冻结机会，不能在这里改价。"
+  },
+  "engineering.startWork": {
+    fields: ["contractId", "workId", "units"], required: ["contractId", "workId", "units"],
+    note: "开工按阶段数量报工，需要合同、工单号和件数。"
+  },
+  "engineering.invoice": {
+    fields: ["contractId"], required: ["contractId"],
+    note: "开票只用到合同标识；必须先有客户真实验收。"
+  },
+  "engineering.requestAcceptance": {
+    fields: ["contractId", "trancheIndex", "units"], required: ["contractId", "trancheIndex", "units"],
+    note: "请求验收只登记意图；客户是否验收由真实回应决定。"
+  },
+  "engineering.requestPayment": {
+    fields: ["contractId", "trancheIndex"], required: ["contractId", "trancheIndex"],
+    note: "请求付款只登记意图；到账以真实付款记录为准。"
+  },
+  "engineering.requestRetention": {
+    fields: ["contractId", "trancheIndex"], required: ["contractId", "trancheIndex"],
+    note: "请求质保金同样只是请求；质保到期才可能被支付。"
+  },
+  "engineering.impair": {
+    fields: ["contractId", "amount"], required: ["contractId", "amount"],
+    note: "计提减值只影响减值准备，不改合同收入。"
+  },
+  "engineering.writeOff": {
+    fields: ["contractId", "amount"], required: ["contractId", "amount"],
+    note: "核销不能超过已计提的减值准备。"
+  },
+  "engineering.recover": {
+    fields: ["contractId", "amount"], required: ["contractId", "amount"],
+    note: "请求追索回款：这是追索动作，不是到账；到账看付款记录。"
+  },
+  "engineering.paySupplier": {
+    fields: ["amount", "purpose"], required: ["amount"],
+    note: "支付供应商应付，按汇总口径扣现金与应付。"
+  },
+  "engineering.terminate": {
+    fields: ["contractId", "purpose"], required: ["contractId"],
+    note: "终止只拦后续履约，不回滚已发生成本。"
+  },
+  "engineering.waive": {
+    fields: ["contractId", "amount", "purpose", "authorizationRef", "durationMillis"],
+    required: ["contractId", "amount", "purpose", "authorizationRef", "durationMillis"],
+    note: "执行董事会已签发的豁免：金额、合同、用途必须与授权原文一致。"
+  },
+  "periodic.attend": {
+    fields: ["periodicPeriod", "recused"], required: ["periodicPeriod"],
+    note: "登记出席本期真实考核会议；会议必须仍处于可登记状态，关联事项应选回避。"
+  },
+  "periodic.prepare": {
+    fields: ["periodicPeriod", "note"], required: ["periodicPeriod"],
+    note: "按期末快照生成准确草稿并冻结董事会材料；只有现任经理可用，首版不写更正说明。"
+  },
+  "periodic.score": {
+    fields: ["periodicPeriod"], required: ["periodicPeriod"],
+    note: "每个维度单独给分并选择本期合格证据；没把握的维度留空表示缺项，不补 0。"
+  },
+  "periodic.approve": {
+    fields: ["periodicPeriod", "draftId", "draftVersion"],
+    required: ["periodicPeriod", "draftId", "draftVersion"],
+    note: "只批准本人实际读完的确切草稿版本；准备者不能批准自己的稿。"
+  },
+  "periodic.authorize": {
+    fields: ["periodicPeriod", "draftId", "draftVersion", "publisherPersonId", "expiresAt"],
+    required: ["periodicPeriod", "draftId", "draftVersion", "publisherPersonId", "expiresAt"],
+    note: "至少三名董事已批准后才能签发；授权绑定公司、期间、草稿版本与正文，只消费一次。"
+  },
+  "periodic.publish": {
+    fields: ["periodicPeriod", "draftId", "draftVersion", "authorizationId"],
+    required: ["periodicPeriod", "draftId", "draftVersion"],
+    note: "由被授权本人发布公开正文；发布后不可回填旧版本，逾期会记为迟报。"
+  },
+  "board.conveneAppointment": {
+    fields: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    required: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    note: "只有章程主席能召集经理任免议题；会议号由你指定，不自动创立。任免仍需真实到会、读材料、投票与实施。"
+  },
+  "board.convene": {
+    fields: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    required: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    note: "召集本身也是排程：到期才建会。会议号由你指定，不会自动创建。"
+  },
+  "board.conveneWaiver": {
+    fields: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    required: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    note: "只对本公司主席开放，且服务端会再次核对主席身份。"
+  },
+  "board.attend": {
+    fields: ["meetingId", "recused"], required: ["meetingId"],
+    note: "参与登记占用本人正工时；关联议题应选回避。"
+  },
+  "board.addMaterial": {
+    fields: ["meetingId", "materialId", "docId", "docVersion"],
+    required: ["meetingId", "materialId", "docId", "docVersion"],
+    note: "材料必须指向真实资料与固定版本，不能凭空造材料。"
+  },
+  "board.vote": {
+    fields: ["meetingId", "vote"], required: ["meetingId", "vote"],
+    note: "表决前必须实际完成固定版本材料的阅读。"
+  },
+  "board.proposeBudget": {
+    fields: ["meetingId", "laborLimit", "procurementLimit", "period"],
+    required: ["meetingId"],
+    note: "人工与采购上限至少填一个；期间 0 是合法值。"
+  },
+  "board.proposeAppointment": {
+    fields: ["meetingId", "appointmentId", "appointPersonId", "appointRole",
+      "appointAction", "effectiveAt", "endsAt"],
+    required: ["meetingId", "appointmentId", "appointPersonId", "appointAction", "effectiveAt"],
+    note: "任命需要期限；撤销时期限留空即可。授权≠任职，实施后才生效。"
+  },
+  "board.proposeWaiver": {
+    fields: ["meetingId", "waiverId", "contractId", "customerPartyId", "amount", "purpose"],
+    required: ["meetingId", "waiverId", "contractId", "customerPartyId", "amount", "purpose"],
+    note: "提案冻结金额与用途；董事会只能批准或否决这份原文。"
+  },
+  "board.implement": {
+    fields: ["meetingId"], required: ["meetingId"],
+    note: "实施已通过的决议；未通过时会被真实拒绝。"
+  }
+};
+
+const ENGINEERING_TOOL_LABELS = {
+  "board.convene": "召集会议",
+  "board.conveneWaiver": "召集豁免会议",
+  "board.attend": "参与登记",
+  "board.addMaterial": "提交材料",
+  "board.vote": "表决",
+  "board.proposeBudget": "预算提案",
+  "board.proposeAppointment": "任免提案",
+  "board.proposeWaiver": "豁免提案",
+  "board.implement": "实施决议",
+  "engineering.sign": "签约",
+  "engineering.startWork": "开工",
+  "engineering.invoice": "开票",
+  "engineering.terminate": "终止合同",
+  "engineering.paySupplier": "支付供应商应付",
+  "engineering.impair": "计提减值",
+  "engineering.writeOff": "核销",
+  "engineering.recover": "请求追索回款",
+  "engineering.requestAcceptance": "请求客户验收",
+  "engineering.requestPayment": "请求客户付款",
+  "engineering.requestRetention": "请求质保金",
+  "engineering.waive": "执行董事会豁免",
+  "board.conveneAppointment": "召集经理任免会议",
+  "periodic.attend": "登记周期会议出席",
+  "periodic.prepare": "准备周期财报",
+  "periodic.score": "提交本席评分",
+  "periodic.approve": "批准确切草稿版本",
+  "periodic.authorize": "签发披露授权",
+  "periodic.publish": "发布公开财报"
+};
+
+// 报表字段顺序固定；未出现的键不显示，未实现的口径显式标注，不写 0。
+const ENGINEERING_REPORT_LABELS = [
+  ["companyCash", "公司现金（唯一经营账户）"],
+  ["arCurrent", "应收（当期，已开票未到期）"],
+  ["arRetention", "应收（质保金）"],
+  ["payable", "应付供应商（汇总口径）"],
+  ["allowance", "减值准备"],
+  ["memo", "备查金额"],
+  ["obligation", "客户义务（合同义务合计）"],
+  ["revenue", "已确认收入（按合同确认）"],
+  ["cogs", "已确认成本"],
+  ["impairmentLoss", "减值损失"],
+  ["recoveryIncome", "回收收益"],
+  ["terminationLoss", "终止损失"],
+  ["waiverLoss", "豁免损失"],
+  ["equity", "账面权益"],
+  ["balanced", "账目是否对平"],
+  ["contractCount", "合同数"],
+  ["workOrderCount", "工单数"],
+  ["meetingCount", "董事会会议数"],
+  ["charterQuorum", "法定人数"],
+  ["chairSeatId", "主席席位"],
+  ["customerAccountId", "客户账户"],
+  ["period", "当前客户期间"],
+  ["periodBudgetLeft", "期间预算余量（空＝本档未声明预算）"],
+  ["periodClosed", "期间已关闭"],
+  ["payableScope", "应付口径"],
+  ["customerScope", "客户池口径"],
+  ["workOrderScope", "工单口径"],
+  ["retentionScope", "质保口径"],
+  ["memoScope", "备查口径"],
+  ["templateNote", "经营模板"]
+];
+
+const ENGINEERING_SCOPE_TEXT = {
+  AGGREGATE_SUPPLIER: "聚合（累计发生−累计支付）",
+  NOT_APPLICABLE: "不适用于该经营模板",
+  MANUFACTURING_TEMPLATE: "制造模板（工程专属口径不适用）"
+};
+
+// 真实原因代码 → 中文说明。只覆盖核心实际会产出的代码；未登记的代码不猜，显示“请求未执行”。
+const ENGINEERING_REASON_TEXT = {
+  ACCEPTED: "已受理",
+  SIGNED: "合同已签署",
+  CONTRACT_SIGNED: "合同已签署",
+  OPPORTUNITY_NOT_READ: "未实际读到此机会，不能签约",
+  UNKNOWN_OPPORTUNITY: "该合同条款不在冻结机会里",
+  NOT_AUTHORIZED: "当前岗位没有该权限",
+  NOT_CHAIR: "不是章程主席，不能召集",
+  WORK_STARTED: "已开工（正耗时）",
+  WORK_COMPLETED: "工时结束，工单已完工",
+  WORK_NOT_DUE: "工时未到，尚不能完工",
+  WORK_STATE_INVALID: "工单状态不允许该操作",
+  EXCEEDS_COMPLETED: "超过已完工单位",
+  EXCEEDS_CONTRACT_UNITS: "超过合同单位",
+  INVOICE_ORDER: "开票顺序不符：须先验收先前阶段",
+  NOT_ACCEPTED: "该阶段尚未验收",
+  TRANCHE_MISMATCH: "期次与已开票进度不匹配",
+  NOT_DUE: "尚未到期",
+  INVOICED: "已开票",
+  COLLECTED: "已收款",
+  OVER_COLLECT: "收款超过未清应收",
+  RETENTION_COLLECTED: "质保金已收",
+  IMPAIRED: "已计提减值",
+  IMPAIR_EXCEEDS_GROSS: "减值超过应收总额",
+  WRITTEN_OFF: "已核销",
+  WRITE_OFF_EXCEEDS_ALLOWANCE: "核销超过已计提减值",
+  RECOVERED: "已回收",
+  RECOVERY_EXCEEDS_MEMO: "回收超过备查金额",
+  WAIVED: "已按授权豁免",
+  WAIVE_EXCEEDS_OBLIGATION: "豁免超过未清义务",
+  WAIVER_MISMATCH: "豁免与董事会授权原文不一致",
+  WAIVER_AUTHORIZATION_REQUIRED: "缺少董事会豁免授权引用",
+  WAIVER_ALREADY_CONSUMED: "该豁免授权已被使用",
+  WAIVER_NOT_AUTHORIZED: "董事会尚未签发该豁免",
+  TERMINATED: "合同已终止",
+  SUPPLIER_PAID: "已支付供应商",
+  PAYMENT_EXCEEDS_PAYABLE: "付款超过应付",
+  INSUFFICIENT_CASH: "公司现金不足",
+  ADVANCE_RECEIVED: "已收到客户预收",
+  ADVANCE_EXCEEDS_TERMS: "预收超过合同条款",
+  TERMS_NOT_CLOSED: "预收与质保比例之和超过 100%",
+  RETENTION_CONDITION_UNSUPPORTED: "不支持附带条件的质保",
+  CUSTOMER_REQUESTED: "已向客户提出请求（仅意图，不是付款）",
+  UNMATCHED_REQUEST: "客户事件没有匹配的未回答请求",
+  RESPONSE_BEFORE_REQUEST: "客户回应时点早于请求",
+  NO_DUE_RECEIVABLE: "没有到期未清的债权",
+  PAYER_ACCOUNT_MISMATCH: "付款账户不是本公司的客户账户",
+  BUDGET_PERIOD_CLOSED: "客户期间预算已关闭",
+  CUSTOMER_BUDGET_EXHAUSTED: "客户期间预算不足",
+  BUDGET_NOT_SET: "尚无已生效预算",
+  BUDGET_EXCEEDED: "超过预算上限",
+  BUDGET_BELOW_COMMITTED: "新上限低于已占用金额",
+  NOT_ADOPTED: "决议未通过",
+  ADJOURNED_NO_QUORUM: "法定人数不足，会议延期",
+  VOTING_CLOSED: "表决已截止",
+  ALREADY_VOTED: "本席位已投票",
+  NOT_ELIGIBLE_VOTER: "本席位无权表决（未到会或已回避）",
+  WRONG_TOPIC: "议题不匹配",
+  PROPOSAL_EXISTS: "已有提案",
+  WAIVER_PROPOSAL_EXISTS: "已有豁免提案",
+  MATERIALS_FROZEN: "材料已冻结",
+  MATERIALS_CLOSED: "材料已关闭",
+  MATERIALS_NOT_FROZEN: "材料尚未冻结",
+  MEETING_EXISTS: "会议已存在",
+  UNKNOWN_MEETING: "未知会议",
+  EMPTY_PROPOSAL: "提案为空",
+  DUPLICATE_BUDGET_LINE: "预算行重复",
+  INVALID_AMOUNT: "金额不合法",
+  INVALID_QUANTITY: "数量不合法",
+  INVALID_STATE: "当前状态不允许该操作",
+  INVALID_TIMELINE: "时间线不合法",
+  INVALID_ATTENDANCE: "参与登记不合法",
+  UNKNOWN_SOURCE: "材料来源不存在",
+  UNKNOWN_CONTRACT: "没有这份合同",
+  UNKNOWN_WORK: "没有这个工单",
+  CONTRACT_NOT_ACTIVE: "合同不在履约中",
+  ID_REUSED: "标识已被使用",
+  COMMAND_CONTENT_CONFLICT: "同一命令的内容不一致",
+  REPLAYED: "重复提交，按原结果返回",
+  OVERFLOW: "数值溢出",
+  ALLOCATION_INVALID: "开局分配不合法",
+  STARTED: "已真实开始（BEGIN 屏障通过；不代表签约或到账）",
+  REQUEST_PENDING: "同键已有未回答请求，先等回应",
+  RECOVERY_REQUESTED: "已记录追索请求（客户回应前不会到账）",
+  REJECTED_PAYMENT: "客户未付款（真实回应，金额为 0）",
+  NOT_INVOICED: "该期尚未开票",
+  NO_WRITTEN_OFF_CLAIM: "没有核销后的备查债权",
+  NO_ROOM_FOR_ADVANCE: "合同预收额度已用满",
+  INVALID_TRANCHE: "期次不在合同计划里",
+  ALREADY_ACCEPTED: "该期已验收",
+  ACCEPTANCE_ORDER: "验收顺序不符",
+  UNKNOWN_COMPANY: "不属于本档案的工程公司"
+};
+
+// 未登记代码：既不标成功也不标失败，只给中性说明并保留原码；真实 accepted 由表格单独显示。
+const ENGINEERING_UNKNOWN_REASON_TEXT = "暂无结果说明，请查看原始记录";
+
+function engineeringReason(code) {
+  if (code === null || code === undefined || code === "") {
+    return ENGINEERING_UNKNOWN_REASON_TEXT;
+  }
+  const known = ENGINEERING_REASON_TEXT[code];
+  return known || ENGINEERING_UNKNOWN_REASON_TEXT;
+}
+
+function engineeringReasonKnown(code) {
+  return Object.prototype.hasOwnProperty.call(ENGINEERING_REASON_TEXT, code);
+}
+
+// 结果列只听真实 accepted，不从原因码反推业务状态。
+function engineeringReportVerdict(accepted) {
+  return accepted ? "成功" : "拒绝";
+}
+
+// BEGIN 屏障报告与 FINISH 业务报告分开显示，未知原因不改变阶段判定。
+function engineeringStageLabel(row) {
+  if (!row) {
+    return "—";
+  }
+  if (row.kind === "ENGINEERING_BEGIN_V1") {
+    return "BEGIN（真实开始）";
+  }
+  if (typeof row.taskId === "string" && row.taskId.endsWith(":finish")) {
+    return "FINISH（业务落账）";
+  }
+  return "—";
+}
+
+function engineeringReportText(accepted, code) {
+  if (!engineeringReasonKnown(code)) {
+    return ENGINEERING_UNKNOWN_REASON_TEXT;
+  }
+  return ENGINEERING_REASON_TEXT[code];
+}
+
+const ENGINEERING_STATUS_TEXT = {
+  ACTIVE: "在任", REVOKED: "已撤销", EXPIRED: "已到期", SCHEDULED: "未开始"
+};
+const ENGINEERING_KIND_TEXT = {
+  SIGN: "签约", START_WORK: "开工", COMPLETE_WORK: "完工", INVOICE: "开票",
+  REQUEST_ACCEPTANCE: "请求验收", REQUEST_INVOICE: "请求开票", REQUEST_PAYMENT: "请求付款",
+  REQUEST_RETENTION: "请求质保", IMPAIR: "计提减值", WRITE_OFF: "核销", RECOVER: "追索回款",
+  TERMINATE: "终止", PAY_SUPPLIER: "付供应商", WAIVE: "执行豁免",
+  ADVANCE: "预收", ACCEPT: "验收", REJECT: "拒验", DELAY: "延迟", PAY: "付款",
+  RETENTION_PAY: "质保付款", OVERDUE: "逾期",
+  CONVENE: "召集", ATTEND: "参与", MATERIAL: "材料", PROPOSE_BUDGET: "预算提案",
+  PROPOSE_APPOINTMENT: "任免提案", VOTE: "表决", IMPLEMENT: "实施",
+  CONVENE_WAIVER: "召集豁免会", PROPOSE_WAIVER: "豁免提案"
+};
+
+function engineeringToolLabel(value) {
+  return ENGINEERING_TOOL_LABELS[value] || value || "—";
+}
+
+function engineeringTerm(value, table) {
+  if (value === null || value === undefined || value === "") return "—";
+  return table[value] || value;
+}
+
+/** 任务种类：BEGIN 是已知包装种类（字符串兼容），显示为等待中的回执，不当已完成。 */
+function engineeringKindLabel(value) {
+  if (value === "ENGINEERING_BEGIN_V1") {
+    return "开始回执包装（BEGIN，等待落账）";
+  }
+  return engineeringTerm(value, ENGINEERING_KIND_TEXT);
+}
+
+function engineeringScope(value) {
+  return ENGINEERING_SCOPE_TEXT[value] || text(value);
+}
+
+function wallClock(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "—";
+  return new Date(number).toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+/**
+ * 世界毫秒转“运行X天Y小时”的可读时长；只做展示换算，精确世界毫秒仍原样显示，
+ * 不改任何时间字段或语义。
+ */
+function worldSpanText(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return "";
+  const days = Math.floor(number / 86_400_000);
+  const hours = Math.floor((number % 86_400_000) / 3_600_000);
+  return "运行" + days + "天" + hours + "小时";
+}
+
+/** 时点展示：精确世界毫秒 + 可读时长，两者同时给出。 */
+function worldTimeText(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  return value + " 毫秒（" + worldSpanText(value) + "）";
+}
+
+function clearEngineeringDom() {
+  state.engineering = null;
+  state.engineeringCompany = "";
+  state.engineeringRequest += 1;
+  if ($("engineering-company")) $("engineering-company").replaceChildren();
+  for (const id of ["engineering-report", "engineering-seats", "engineering-appointments",
+    "engineering-contracts", "engineering-works", "engineering-budgets",
+    "engineering-commitments", "engineering-meetings", "engineering-requests",
+    "engineering-responses", "engineering-payments", "engineering-waivers",
+    "engineering-tasks", "engineering-reports"]) {
+    if ($(id)) fillTable(id, [], () => undefined);
+  }
+  for (const id of ["engineering-cut", "engineering-template", "engineering-report-note",
+    "engineering-captured", "engineering-appointments-count", "engineering-contracts-count",
+    "engineering-works-count", "engineering-meetings-count", "engineering-requests-count",
+    "engineering-responses-count", "engineering-payments-count", "engineering-waivers-count",
+    "engineering-tasks-count", "engineering-reports-count"]) {
+    if ($(id)) $(id).textContent = "";
+  }
+  for (const id of ["engineering-sources", "engineering-notes"]) {
+    if ($(id)) $(id).replaceChildren();
+  }
+  if ($("engineering-periodic")) $("engineering-periodic").replaceChildren();
+  if ($("engineering-report-filter")) $("engineering-report-filter").value = "ALL";
+  document.querySelectorAll('[data-panel="engineering"] .empty').forEach(node => { node.hidden = true; });
+  setMessage("engineering-note", "");
+  setMessage("engineering-error", "");
+}
+
+/** 制造模板没有工程工单/质保/客户池时，空态要写“不适用”，不能写成“缺失”。 */
+const ENGINEERING_EMPTY_TEXT = {
+  "engineering-works-empty": { engineering: "尚无工单。", manufacturing: "不适用于该制造经营模板。" },
+  "engineering-requests-empty": { engineering: "暂无记录。", manufacturing: "不适用于该制造经营模板。" },
+  "engineering-responses-empty": { engineering: "暂无记录。", manufacturing: "不适用于该制造经营模板。" },
+  "engineering-waivers-empty": { engineering: "尚无豁免记录。", manufacturing: "不适用于该制造经营模板。" }
+};
+
+// 数据来源区块用中文名做主信息；技术路径仍保留在数值里（放在可展开细节中）。
+const ENGINEERING_SOURCE_LABELS = {
+  report: "经营报表",
+  contracts: "合同与分期",
+  workOrders: "施工工单",
+  budgets: "预算上限",
+  commitments: "预算占用",
+  meetings: "董事会会议",
+  requests: "客户请求",
+  responses: "客户回应",
+  payments: "真实到账",
+  waivers: "债权豁免",
+  tasks: "待执行任务",
+  reports: "操作结果",
+  time: "时间口径"
+};
+
+function setEngineeringEmptyTexts(template) {
+  const manufacturing = template === "MANUFACTURING";
+  for (const [id, texts] of Object.entries(ENGINEERING_EMPTY_TEXT)) {
+    const node = $(id);
+    if (node) node.textContent = manufacturing ? texts.manufacturing : texts.engineering;
+  }
+}
+
+function fillEngineeringCompanies(companies, selected) {
+  const select = $("engineering-company");
+  if (!select) return;
+  select.replaceChildren();
+  for (const company of companies || []) {
+    const option = document.createElement("option");
+    option.value = company.companyId;
+    option.textContent = (company.name || company.companyId) + "（"
+      + (company.template === "ENGINEERING" ? "工程" : "制造") + "）";
+    select.appendChild(option);
+  }
+  select.value = selected || "";
+}
+
+async function loadEngineering(generation, pageVersion) {
+  if (state.mode !== "admin") return;
+  const ticket = ++state.engineeringRequest;
+  let result;
+  try {
+    result = await request("POST", "/api/admin/engineering",
+      { companyId: state.engineeringCompany || "" });
+  } catch (failure) {
+    if (isCurrent(generation) && state.mode === "admin" && ticket === state.engineeringRequest) {
+      setMessage("engineering-error", failure.message);
+    }
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "admin" || ticket !== state.engineeringRequest) return;
+  if (pageVersion !== undefined && pageVersion !== state.pageVersion) return;
+  if (result.status === 401 || result.status === 403) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) {
+    setMessage("engineering-error", "读取工程经营失败（" + result.status + "），请稍后重试。");
+    return;
+  }
+  setMessage("engineering-error", "");
+  state.engineeringCompany = result.payload.companyId || "";
+  state.engineering = result.payload;
+  renderEngineering(result.payload);
+}
+
+// ---------------------------------------------------------------- 周期治理（公司/董事页共用）
+
+const PERIODIC_REASON_TEXT = {
+  OK: "已汇总",
+  NO_QUORUM: "完整有效席不足三名，未形成总分"
+};
+const PERIODIC_AUTH_STATUS_TEXT = {
+  PENDING: "未消费（有效期内）",
+  CONSUMED: "已消费",
+  EXPIRED: "已过期未消费"
+};
+
+function periodicReasonText(code) {
+  if (!code) return "尚未形成汇总";
+  return PERIODIC_REASON_TEXT[code] || "未形成有效汇总";
+}
+
+function periodicMissingNames(ballot, row) {
+  const unavailable = new Set(((row && row.unavailableDimensions) || [])
+    .map(item => item.dimension));
+  return (ballot.missingDimensions || []).map(dimension => {
+    const name = PERIODIC_DIMENSION_TEXT[dimension] || dimension;
+    return unavailable.has(dimension) ? name + "（无合格证据）" : name;
+  }).join("、") || "—";
+}
+
+function periodicDl(container, pairs) {
+  const dl = document.createElement("dl");
+  dl.className = "grid";
+  for (const [label, value] of pairs) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = text(value);
+    dl.append(dt, dd);
+  }
+  container.appendChild(dl);
+  return dl;
+}
+
+function periodicTable(container, caption, headers, rows, emptyText) {
+  if (caption) {
+    const title = document.createElement("h4");
+    title.textContent = caption;
+    container.appendChild(title);
+  }
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = emptyText;
+    container.appendChild(empty);
+    return;
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "table-wrap";
+  const table = document.createElement("table");
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const label of headers) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = label;
+    headRow.appendChild(th);
+  }
+  head.appendChild(headRow);
+  table.appendChild(head);
+  const body = document.createElement("tbody");
+  for (const values of rows) {
+    const tr = document.createElement("tr");
+    for (const value of values) cell(tr, value);
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  wrap.appendChild(table);
+  container.appendChild(wrap);
+}
+
+function periodicPeople(rows) {
+  return (rows || []).map(row => (row.personName || row.personPartyId || row.seatId)).join("、")
+    || "—";
+}
+
+/** 周期区块：God 与董事/经理共用；没有事实就显示缺项，不补 0、不出假总分。 */
+function renderPeriodicBlock(container, periodic, options) {
+  if (!container) return;
+  container.replaceChildren();
+  if (!periodic || !periodic.available) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = periodic && periodic.reason === "NO_PERIODIC_STATE"
+      ? "本次运行未启用周期治理（新档才有）；旧档不补样例数据。"
+      : "本次运行没有可显示的周期事实。";
+    container.appendChild(empty);
+    return;
+  }
+  const personView = !!(options && options.personView);
+  const head = document.createElement("p");
+  head.className = "hint";
+  head.textContent = personView
+    ? "周期来自真实采样与董事会动作；本人只看自己的选票与已允许的汇总/进度。"
+      + "公开财报正文需本人实际读完该版本后才显示；已遗忘的正文要重新阅读才会再次出现。"
+    : "周期来自真实采样与董事会动作；公开正文原样取自已发布版本。"
+      + "累计收入/累计成本是开运以来口径，不是单期发生额。";
+  container.appendChild(head);
+  const rows = (periodic.periods || []).slice().reverse();
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "尚未到第一个期末，暂无采样与披露记录。";
+    container.appendChild(empty);
+    return;
+  }
+  for (const row of rows) {
+    const section = document.createElement("section");
+    section.className = "periodic-period";
+    const title = document.createElement("h4");
+    title.textContent = "第" + row.period + "期 · "
+      + (row.kind === "QUARTERLY" ? "季度正式考核" : "月度复盘")
+      + " · 截至 " + worldTimeText(row.capturedAt);
+    section.appendChild(title);
+    const meeting = row.meeting || {};
+    const drafts = row.drafts || [];
+    const latestDraft = row.latestDraft || null;
+    const score = row.score || {};
+    const publication = row.publication || {};
+    const approvals = latestDraft ? latestDraft.approvalCount + "/"
+      + latestDraft.requiredApprovals : "—";
+    const summary = [
+      ["截至时点", worldTimeText(row.capturedAt)],
+      ["披露截止", row.deadline ? worldTimeText(row.deadline) : "—"],
+      ["考核会议", meeting.meetingId ? (meeting.meetingId + " · " + meeting.status
+        + " · " + worldTimeText(meeting.opensAt) + " — " + worldTimeText(meeting.closesAt)) : "—"],
+      ["真实出席", periodicPeople(meeting.attendees)],
+      ["回避", periodicPeople(meeting.recused)],
+      ["本期材料", row.materialDocId + " v" + row.materialVersion
+        + (options && options.showReadState ? " · 本人已读完：" + (row.myReadMaterial ? "是" : "否")
+          + (row.myReadMaterial === true && row.myRecallEligible === false
+            ? " · 当前不可回忆（可重读）" : "") : "")],
+      ["草稿版本", latestDraft ? ("v" + latestDraft.version + " · 由 " + (latestDraft.preparedByName || latestDraft.preparedBy)
+        + " 于 " + worldTimeText(latestDraft.preparedAt) + " 准备") : "尚未准备"],
+      ["3席批准进度", approvals],
+      ["评分汇总", (score.closed ? periodicReasonText(score.reason) : "尚未关会汇总")
+        + (score.closed && score.total !== null && score.total !== undefined ? " · 总分 " + score.total : " · 无总分")],
+      ["公开版本", publication.released
+        ? (publication.latestVersion
+          ? ("v" + publication.latestVersion + " · " + worldTimeText(publication.latestPublishedAt) + " 发布")
+          : ("已发布 · 版本号未在真实资料中定位 · " + worldTimeText(publication.latestPublishedAt)))
+        : "尚未发布"],
+      ["迟报事实", publication.late ? "已迟报（保留原发布时间）" : "未迟报"],
+      ["错过截止", publication.missed
+        ? ("已记录 MISSED · " + worldTimeText(publication.missedAt)) : "未记录"]
+    ];
+    periodicDl(section, summary);
+
+    const unavailable = row.unavailableDimensions || [];
+    const dimensionStates = row.dimensionStates || [];
+    const dimensionName = (dimension) => PERIODIC_DIMENSION_TEXT[dimension] || dimension;
+    const addHint = (text) => {
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = text;
+      section.appendChild(note);
+    };
+    if (dimensionStates.length) {
+      const missing = dimensionStates.filter(item => item.state === "NO_ELIGIBLE_EVIDENCE"
+        || item.state === "DIMENSION_NOT_AVAILABLE");
+      const awaiting = dimensionStates.filter(item => item.state === "AWAITING_SCORE");
+      if (missing.length) {
+        addHint("本期无合格证据（缺项，不补 0）：" + missing.map(item =>
+          dimensionName(item.dimension)
+          + (item.state === "DIMENSION_NOT_AVAILABLE" ? "（无合格机制）" : "（无合格证据）")).join("、"));
+      }
+      if (awaiting.length) {
+        addHint((row.dimensionScope === "ALL_SEATS"
+          ? "本期有合格证据、还没有人评分（不是缺项）："
+          : "本期有合格证据、本人尚未就这些维度评分（不是缺项）：")
+          + awaiting.map(item => dimensionName(item.dimension)).join("、"));
+      }
+    } else if (unavailable.length) {
+      addHint("本期缺项（不补 0）：" + unavailable.map(item =>
+        dimensionName(item.dimension)
+        + (item.reason === "DIMENSION_NOT_AVAILABLE" ? "（无合格机制）" : "（无合格证据）")).join("、"));
+    }
+
+    periodicTable(section, "草稿与批准（每版单独保留）",
+      ["草稿", "草稿版本", "准备人", "准备时间", "批准数", "3席门槛"],
+      drafts.map(draft => [draft.draftId, "v" + draft.version,
+        draft.preparedByName || draft.preparedBy, worldTimeText(draft.preparedAt),
+        draft.approvalCount, draft.requiredApprovals]),
+      "尚未准备草稿。");
+
+    const ballots = score.ballots || [];
+    periodicTable(section, "各席评分与缺维（保留原始意见）",
+      ["席位", "评分人", "提交时间", "状态", "缺维", "五维分", "理由"],
+      ballots.map(ballot => [ballot.seatId, ballot.personName || ballot.personPartyId,
+        ballot.submittedAt, ballot.status, periodicMissingNames(ballot, row),
+        (ballot.metrics || []).map(metric => (PERIODIC_DIMENSION_TEXT[metric.dimension] || metric.dimension)
+          + " " + metric.score).join("；") || "—", ballot.rationale || "—"]),
+      "尚无有效评分。");
+    if (score.closed) {
+      const aggregate = document.createElement("p");
+      aggregate.className = "hint";
+      aggregate.textContent = "汇总结果：" + periodicReasonText(score.reason)
+        + " · 参与聚合完整席 " + score.seatCount + " 席"
+        + (score.total === null || score.total === undefined ? " · 无总分（缺维不补）" : " · 总分 " + score.total);
+      section.appendChild(aggregate);
+    } else {
+      const open = document.createElement("p");
+      open.className = "hint";
+      open.textContent = personView
+        ? (ballots.length ? "本人已提交本席评分，等待真实关会汇总。" : "本人尚未提交评分。")
+        : (ballots.length ? "尚未汇总：已收 " + ballots.length + " 席，等待真实关会。"
+          : "尚未汇总：还没有有效评分。");
+      section.appendChild(open);
+    }
+
+    periodicTable(section, "披露授权（期限与消费）",
+      ["授权", "草稿版本", "指定发布人", "签发", "失效", "消费", "状态"],
+      (row.authorizations || []).map(authorization => [authorization.authorizationId,
+        authorization.draftVersion ? "v" + authorization.draftVersion : "—",
+        (authorization.publisherName || authorization.publisherPersonId || "—")
+          + (authorization.mine === true ? "（本人可执行）" : ""),
+        authorization.issuedAt || "—", authorization.expiresAt || "—",
+        authorization.consumedAt === undefined ? "—"
+          : (authorization.consumedAt === "0" ? "未消费" : authorization.consumedAt),
+        PERIODIC_AUTH_STATUS_TEXT[authorization.status] || authorization.status]),
+      "尚无披露授权。");
+
+    const releases = row.releases || [];
+    const releaseVersionText = (release) => release.publicVersion
+      ? "v" + release.publicVersion
+      : (release.versionResolved === false ? "未定位" : "—");
+    const releaseHeaders = ["公开版本", "草稿版本", "发布时间", "发布人", "迟报"];
+    if (personView) releaseHeaders.push("本人阅读");
+    periodicTable(section, "公开版本与更正链", releaseHeaders,
+      releases.map(release => {
+        const cells = [releaseVersionText(release),
+          release.draftVersion ? "v" + release.draftVersion : "—",
+          worldTimeText(release.publishedAt), release.publisherName || release.publisherPersonId,
+          release.late ? "是（保留 MISSED）" : "否"];
+        if (personView) {
+          cells.push(release.recallable ? "已读 · 当前可回忆"
+            : (release.forgotten ? "已读过 · 当前不可回忆（需重读）" : "未读"));
+        }
+        return cells;
+      }),
+      "尚未发布公开财报。");
+    if (releases.length > 1 || drafts.length > 1) {
+      const chain = document.createElement("p");
+      chain.className = "hint";
+      chain.textContent = "更正链：草稿 " + drafts.map(draft => "v" + draft.version).join(" → ")
+        + (releases.length ? "；公开 " + releases.map(releaseVersionText).join(" → ") : "")
+        + "。旧版本、旧批准与旧公开记录保留；未发表的草稿修订不增加公开版本。";
+      section.appendChild(chain);
+    }
+    const latest = releases.length ? releases[releases.length - 1] : null;
+    if (latest && latest.body) {
+      const details = document.createElement("details");
+      details.className = "periodic-body";
+      const summaryNode = document.createElement("summary");
+      summaryNode.textContent = "公开正文（后端原文 · 公开 " + releaseVersionText(latest) + "）";
+      const body = document.createElement("pre");
+      body.textContent = latest.body;
+      details.append(summaryNode, body);
+      section.appendChild(details);
+    } else if (latest && personView) {
+      const note = document.createElement("p");
+      note.className = "hint";
+      if (latest.versionResolved === false) {
+        note.textContent = "已发布（发布时间 " + latest.publishedAt + " 毫秒）；"
+          + "后端未在真实资料中定位到该次发布的文档版本，正文与阅读入口暂不提供。";
+      } else if (latest.forgotten) {
+        note.textContent = "已发布公开 " + releaseVersionText(latest) + "；本人过去实际读过该版本，"
+          + "但按既有回忆口径当前已不可回忆。重新阅读该公开版本后才会再次显示正文。";
+      } else {
+        note.textContent = "已发布公开 " + releaseVersionText(latest)
+          + (latest.title ? "（" + latest.title + "）" : "")
+          + "；正文需本人实际读完该公开版本后才显示。";
+      }
+      section.appendChild(note);
+      if (latest.publicDocId && latest.publicVersion) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "quiet";
+        button.textContent = (latest.forgotten ? "重新阅读公开财报 " : "阅读公开财报 ")
+          + releaseVersionText(latest);
+        button.addEventListener("click", () => guard(schedulePeriodicReading(
+          periodic.companyPartyId, row.period, latest.publicDocId, latest.publicVersion)));
+        section.appendChild(button);
+      }
+    }
+
+    const pending = row.pendingActions || [];
+    if (pending.length) {
+      periodicTable(section, "已排程 / 待执行（不是已完成）",
+        ["动作", "人物", "到期时点", "状态"],
+        pending.map(action => [engineeringToolLabel(action.action === "ATTEND" ? "periodic.attend"
+          : "periodic." + String(action.action || "").toLowerCase()), action.personPartyId,
+          action.dueTimeMillis, "已排程（待人执行）"]),
+        "没有待执行动作。");
+    }
+    container.appendChild(section);
+  }
+}
+
+function renderEngineering(view) {
+  $("engineering-cut").textContent = cutText(view, (view.companyName || view.companyId || "")
+    + " · " + (view.template === "ENGINEERING" ? "工程模板" : "制造模板"));
+  $("engineering-captured").textContent = "读取于 " + wallClock(view.capturedAtMillis);
+  $("engineering-template").textContent = view.template === "ENGINEERING" ? "工程模板" : "制造模板";
+  setMessage("engineering-note", view.note || "");
+  setEngineeringEmptyTexts(view.template);
+  fillEngineeringCompanies(view.companies, view.companyId);
+  renderPeriodicBlock($("engineering-periodic"), view.periodic, { showReadState: false });
+
+  const report = view.report || {};
+  const reportRows = [];
+  for (const [key, label] of ENGINEERING_REPORT_LABELS) {
+    if (!(key in report)) continue;
+    const raw = report[key];
+    let value;
+    if (key.endsWith("Scope")) value = engineeringScope(raw);
+    else if (key === "templateNote") value = engineeringScope(raw);
+    else if (typeof raw === "boolean") value = raw ? "成立" : "不成立";
+    else value = text(raw);
+    reportRows.push({ label, value });
+  }
+  fillTable("engineering-report", reportRows, (tr, row) => {
+    cell(tr, row.label);
+    cell(tr, row.value, "num");
+  });
+  $("engineering-report-note").textContent = view.enabled
+    ? "同一确认记录 " + view.position + " · 世界时点 " + view.timeMillis + " 毫秒：现金、应收、应付、收入各占一列，不能相加当收入。"
+    : (view.note || "");
+
+  fillTable("engineering-seats", (view.seats || {}).rows, (tr, row) => {
+    cell(tr, row.seatId);
+    cell(tr, row.partyId);
+    cell(tr, row.partyName);
+    cell(tr, row.chair ? "主席" : "");
+  });
+  fillSection("engineering-seats-empty", null, view.seats);
+
+  fillTable("engineering-appointments", (view.appointments || {}).rows, (tr, row) => {
+    cell(tr, row.appointmentId);
+    cell(tr, row.personName || row.personPartyId);
+    cell(tr, row.role);
+    cell(tr, row.startsAt, "num");
+    cell(tr, row.endsAt, "num");
+    cell(tr, row.revokedAt, "num");
+    cell(tr, engineeringTerm(row.status, ENGINEERING_STATUS_TEXT));
+  });
+  fillSection("engineering-appointments-empty", "engineering-appointments-count", view.appointments);
+
+  fillTable("engineering-contracts", (view.contracts || {}).rows, (tr, row) => {
+    cell(tr, row.contractId);
+    cell(tr, row.unitPrice, "num");
+    cell(tr, row.totalUnits, "num");
+    cell(tr, row.completedUnits, "num");
+    cell(tr, row.acceptedUnits, "num");
+    cell(tr, row.invoicedTranches, "num");
+    cell(tr, row.advanceReceived, "num");
+    cell(tr, row.retentionWithheld, "num");
+    cell(tr, row.revenue, "num");
+    cell(tr, row.cogs, "num");
+    cell(tr, row.arCurrent, "num");
+    cell(tr, row.arRetention, "num");
+    cell(tr, row.allowance, "num");
+    cell(tr, row.memo, "num");
+    cell(tr, row.status);
+  });
+  fillSection("engineering-contracts-empty", "engineering-contracts-count", view.contracts);
+
+  fillTable("engineering-works", (view.workOrders || {}).rows, (tr, row) => {
+    cell(tr, row.workId);
+    cell(tr, row.contractId);
+    cell(tr, row.units, "num");
+    cell(tr, row.startedAt, "num");
+    cell(tr, row.completesAt, "num");
+    cell(tr, row.totalCost, "num");
+    cell(tr, row.laborCost, "num");
+    cell(tr, row.remainingCost, "num");
+    cell(tr, row.acceptedUnits, "num");
+    cell(tr, row.status);
+  });
+  fillSection("engineering-works-empty", "engineering-works-count", view.workOrders);
+
+  fillTable("engineering-budgets", (view.budgets || {}).rows, (tr, row) => {
+    cell(tr, row.period);
+    cell(tr, row.category);
+    cell(tr, row.cap, "num");
+  });
+  fillSection("engineering-budgets-empty", null, view.budgets);
+
+  fillTable("engineering-commitments", (view.commitments || {}).rows, (tr, row) => {
+    cell(tr, row.commitmentId);
+    cell(tr, row.period);
+    cell(tr, row.category);
+    cell(tr, row.reserved, "num");
+    cell(tr, row.spent, "num");
+    cell(tr, row.released, "num");
+    cell(tr, row.outstanding, "num");
+    cell(tr, row.status);
+  });
+  fillSection("engineering-commitments-empty", null, view.commitments);
+
+  fillTable("engineering-meetings", (view.meetings || {}).rows, (tr, row) => {
+    cell(tr, row.meetingId);
+    cell(tr, engineeringTerm(row.topic, ENGINEERING_KIND_TEXT));
+    cell(tr, row.status);
+    cell(tr, row.materialDeadline, "num");
+    cell(tr, row.opensAt, "num");
+    cell(tr, row.closesAt, "num");
+    cell(tr, row.attendees);
+    cell(tr, row.recused);
+    cell(tr, row.ballots);
+    cell(tr, row.proposedLines);
+    cell(tr, row.failureReason);
+  });
+  fillSection("engineering-meetings-empty", "engineering-meetings-count", view.meetings);
+
+  fillTable("engineering-requests", (view.requests || {}).rows, (tr, row) => {
+    cell(tr, row.requestId);
+    cell(tr, row.contractId);
+    cell(tr, row.trancheIndex, "num");
+    cell(tr, engineeringTerm(row.kind, ENGINEERING_KIND_TEXT));
+    cell(tr, row.atMillis, "num");
+    cell(tr, row.personPartyId);
+    cell(tr, row.answered ? "已回应" : "未回应");
+    cell(tr, row.answeredByEventId);
+  });
+  fillSection("engineering-requests-empty", "engineering-requests-count", view.requests);
+
+  fillTable("engineering-responses", (view.responses || {}).rows, (tr, row) => {
+    cell(tr, row.eventId);
+    cell(tr, row.contractId);
+    cell(tr, row.trancheIndex, "num");
+    cell(tr, row.outcome);
+    cell(tr, row.requestId);
+    cell(tr, row.atMillis, "num");
+    cell(tr, row.amount, "num");
+    cell(tr, row.currentOutstanding, "num");
+    cell(tr, row.retentionOutstanding, "num");
+    cell(tr, row.reason);
+  });
+  fillSection("engineering-responses-empty", "engineering-responses-count", view.responses);
+
+  fillTable("engineering-payments", (view.payments || {}).rows, (tr, row) => {
+    cell(tr, row.eventId);
+    cell(tr, row.poolAccountId);
+    cell(tr, row.period, "num");
+    cell(tr, row.contractId);
+    cell(tr, row.trancheIndex, "num");
+    cell(tr, row.kind);
+    cell(tr, row.amount, "num");
+    cell(tr, row.atMillis, "num");
+  });
+  fillSection("engineering-payments-empty", "engineering-payments-count", view.payments);
+
+  fillTable("engineering-waivers", (view.waivers || {}).rows, (tr, row) => {
+    cell(tr, row.waiverId);
+    cell(tr, row.contractId);
+    cell(tr, row.customerPartyId);
+    cell(tr, row.amount, "num");
+    cell(tr, row.purpose);
+    cell(tr, row.authorized ? "已授权" : "未授权");
+    cell(tr, row.consumed ? "已执行" : "未执行");
+    cell(tr, row.authorizationRef);
+    cell(tr, row.meetingId);
+  });
+  fillSection("engineering-waivers-empty", "engineering-waivers-count", view.waivers);
+
+  fillTable("engineering-tasks", (view.tasks || {}).rows, (tr, row) => {
+    cell(tr, row.taskId);
+    cell(tr, row.dueTimeMillis, "num");
+    cell(tr, row.phase);
+    cell(tr, engineeringKindLabel(row.kind));
+    cell(tr, row.wrappedKind ? engineeringKindLabel(row.wrappedKind) : "—");
+    cell(tr, row.wrapperDueMillis, "num");
+    cell(tr, engineeringTerm(row.tool, ENGINEERING_KIND_TEXT));
+    cell(tr, row.state === "SCHEDULED" ? "已排程（待到期）" : text(row.state));
+  });
+  fillSection("engineering-tasks-empty", "engineering-tasks-count", view.tasks);
+
+  renderEngineeringReports(view);
+  fillDl("engineering-sources", Object.entries(view.sources || {})
+    .map(([key, value]) => [ENGINEERING_SOURCE_LABELS[key] || key, value]));
+  fillNotes("engineering-notes", view.notes);
+}
+
+function renderEngineeringReports(view) {
+  const filter = $("engineering-report-filter") ? $("engineering-report-filter").value : "ALL";
+  const all = ((view.reports || {}).rows) || [];
+  const rows = all.filter(row => filter === "ALL"
+    || (filter === "ACCEPTED" ? row.accepted : !row.accepted));
+  fillTable("engineering-reports", rows, (tr, row) => {
+    cell(tr, row.source);
+    cell(tr, row.taskId);
+    cell(tr, engineeringKindLabel(row.kind));
+    cell(tr, engineeringStageLabel(row));
+    cell(tr, engineeringReportVerdict(row.accepted));
+    const textCell = document.createElement("td");
+    textCell.textContent = engineeringReportText(row.accepted, row.reason);
+    tr.appendChild(textCell);
+    const codeCell = document.createElement("td");
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "原码";
+    const code = document.createElement("code");
+    code.textContent = text(row.reason);
+    details.append(summary, code);
+    codeCell.appendChild(details);
+    tr.appendChild(codeCell);
+    cell(tr, row.subjectId);
+    cell(tr, row.timeMillis, "num");
+  });
+  const total = (view.reports || {}).total || 0;
+  $("engineering-reports-count").textContent = total === 0 ? "" : ("显示 " + rows.length + " / 共 " + total + " 条");
+  $("engineering-reports-empty").hidden = total !== 0;
+}
+
+// ---------------------------------------------------------------- 个人视角：工程经营
+
+function clearPersonalEngineering() {
+  state.personEngineering = null;
+  state.engineeringFieldIds = [];
+  if ($("person-engineering-card")) $("person-engineering-card").hidden = true;
+  if ($("person-engineering-companies")) $("person-engineering-companies").replaceChildren();
+  if ($("person-engineering-note")) $("person-engineering-note").textContent = "";
+  if ($("eng-company")) $("eng-company").replaceChildren();
+  if ($("eng-tool")) $("eng-tool").replaceChildren();
+  if ($("eng-fields")) $("eng-fields").replaceChildren();
+  if ($("eng-due")) $("eng-due").value = "";
+  if ($("eng-tool-note")) $("eng-tool-note").textContent = "";
+  if ($("eng-fields-note")) $("eng-fields-note").textContent = "";
+  if ($("person-engineering-notes")) $("person-engineering-notes").replaceChildren();
+  setMessage("engineering-action-result", "");
+  setMessage("engineering-action-error", "");
+}
+
+function dlPairs(target, pairs) {
+  for (const [key, value] of pairs) {
+    const dt = document.createElement("dt");
+    dt.textContent = key;
+    const dd = document.createElement("dd");
+    dd.textContent = text(value);
+    target.append(dt, dd);
+  }
+}
+
+function engineeringTable(title, headers, rows) {
+  const wrap = document.createElement("div");
+  wrap.className = "table-wrap";
+  if (title) {
+    const caption = document.createElement("p");
+    caption.className = "hint";
+    caption.textContent = title;
+    wrap.appendChild(caption);
+  }
+  const table = document.createElement("table");
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const label of headers) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = label;
+    headRow.appendChild(th);
+  }
+  head.appendChild(headRow);
+  table.appendChild(head);
+  const body = document.createElement("tbody");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    for (const value of row) cell(tr, value);
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  wrap.appendChild(table);
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "暂无记录。";
+    wrap.appendChild(empty);
+  }
+  return wrap;
+}
+
+function fillPersonalEngineeringCompanies(companies) {
+  const container = $("person-engineering-companies");
+  container.replaceChildren();
+  if (!companies.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "本人在当前时点没有工程公司的经理任职或董事席位。";
+    container.appendChild(empty);
+    return;
+  }
+  for (const company of companies) {
+    const card = document.createElement("section");
+    card.className = "card eng-company";
+    const head = document.createElement("h3");
+    head.textContent = (company.companyName || company.companyId) + " · " + company.companyId;
+    card.appendChild(head);
+    const roleBits = [];
+    if (company.manager) roleBits.push("现任经理");
+    if (company.seatId) roleBits.push("董事席位 " + company.seatId + (company.chair ? "（主席）" : ""));
+    const role = document.createElement("p");
+    role.className = "hint";
+    role.textContent = roleBits.length ? roleBits.join(" · ") : "当前时点没有可见岗位内容";
+    card.appendChild(role);
+    for (const line of company.notes || []) {
+      if (!line) continue;
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = line;
+      card.appendChild(note);
+    }
+    if (company.managerVacant === true) {
+      const vacant = document.createElement("p");
+      vacant.className = "hint";
+      vacant.textContent = "经理空缺：需要董事会任命后才能准备周期财报（页面不自动任命，也不放宽任免规则）。";
+      card.appendChild(vacant);
+    }
+    if (company.governanceDocId) {
+      // 本人可见的本公司公开治理说明：标题/文档/版本来自本人卡片，正文按真实阅读+回忆门控。
+      const noteHead = document.createElement("h4");
+      noteHead.textContent = "本公司治理说明（公开模拟说明）";
+      card.appendChild(noteHead);
+      const noteRead = company.governanceDocRead === true;
+      const noteRecallable = company.governanceDocRecallable === true;
+      const noteDl = document.createElement("dl");
+      noteDl.className = "grid";
+      dlPairs(noteDl, [
+        ["标题", company.governanceDocTitle || company.governanceDocId],
+        ["文档 / 版本", company.governanceDocId + " v" + company.governanceDocVersion],
+        ["本人阅读", noteRead
+          ? (noteRecallable ? "已读 · 当前可回忆" : "已读过 · 当前不可回忆（需重读）")
+          : "未读"]
+      ]);
+      card.appendChild(noteDl);
+      if (!noteRecallable) {
+        const readButton = document.createElement("button");
+        readButton.type = "button";
+        readButton.className = "quiet";
+        readButton.textContent = (noteRead ? "重新阅读治理说明 v" : "开始阅读治理说明 v")
+          + company.governanceDocVersion;
+        readButton.addEventListener("click", () => guard(scheduleDocumentReading(
+          company.companyId, company.governanceDocId, company.governanceDocVersion,
+          company.governanceDocTitle || "本公司治理说明")));
+        card.appendChild(readButton);
+      }
+      if (noteRecallable && company.governanceDocBody) {
+        const details = document.createElement("details");
+        details.className = "periodic-body";
+        const summary = document.createElement("summary");
+        summary.textContent = "治理说明正文（后端原文 v" + company.governanceDocVersion + "）";
+        const pre = document.createElement("pre");
+        pre.textContent = company.governanceDocBody;
+        details.append(summary, pre);
+        card.appendChild(details);
+      } else {
+        const noteHint = document.createElement("p");
+        noteHint.className = "hint";
+        noteHint.textContent = noteRead
+          ? "已读过但当前不可回忆：重新阅读并等世界推进到阅读完成后，才会再次显示正文。"
+          : "正文需本人实际读完并仍可回忆才显示；排程后要等世界推进到阅读完成。";
+        card.appendChild(noteHint);
+      }
+    }
+    const facts = document.createElement("dl");
+    facts.className = "grid";
+    const factPairs = [];
+    if (company.template !== "MANUFACTURING") {
+      factPairs.push(["公司现金", company.companyCash], ["应收当期", company.arCurrent],
+        ["应付供应商（汇总）", company.payable],
+        ["已签合同", (company.contracts || []).join("、") || "—"]);
+    } else {
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = "制造经营明细与金额在公司经营与治理页；此卡只列本人岗位与周期治理。";
+      card.appendChild(note);
+    }
+    factPairs.push(["本岗位工具", (company.tools || []).map(engineeringToolLabel).join("、") || "—"],
+      ["董事席位/法定人数", company.seatId ? (company.seatId + " · " + (company.seatCount || "—")
+        + " 席 · 法定 " + (company.quorum || "—")) : "—"]);
+    dlPairs(facts, factPairs);
+    card.appendChild(facts);
+
+    const customer = company.customer;
+    if (customer) {
+      const title = document.createElement("h4");
+      title.textContent = "客户请求与回应";
+      card.appendChild(title);
+      const period = document.createElement("dl");
+      period.className = "grid";
+      dlPairs(period, [
+        ["应收当期", customer.arCurrent],
+        ["应收质保", customer.arRetention],
+        ["备查", customer.memo],
+        ["客户义务", customer.obligation]
+      ]);
+      card.appendChild(period);
+      const budgetNote = document.createElement("p");
+      budgetNote.className = "hint";
+      budgetNote.textContent = "客户内部期间、预算余量、闭期状态与共享池账户本人未获知："
+        + "不显示、不补 0；本页只给本公司合同的请求、客户回应与本公司实际到账。";
+      card.appendChild(budgetNote);
+      card.appendChild(engineeringTable("客户请求（意图，不等于已付款）",
+        ["请求", "合同", "期次", "种类", "提出时点", "已回应"],
+        (customer.requests || []).map(row => [row.requestId, row.contractId, row.trancheIndex,
+          engineeringTerm(row.kind, ENGINEERING_KIND_TEXT), row.atMillis, row.answered ? "已回应" : "未回应"])));
+      card.appendChild(engineeringTable("客户回应（外部事实，不等于到账）",
+        ["事件", "合同", "期次", "结果", "金额", "当期未清", "质保未清", "原因"],
+        (customer.responses || []).map(row => [row.eventId, row.contractId, row.trancheIndex,
+          row.outcome, row.amount, row.currentOutstanding, row.retentionOutstanding, row.reason])));
+      card.appendChild(engineeringTable("本公司实际到账（真实付款，不含别家公司用款）",
+        ["事件", "合同", "期次", "种类", "金额", "时点"],
+        (customer.payments || []).map(row => [row.eventId, row.contractId,
+          row.trancheIndex, row.kind, row.amount, row.atMillis])));
+    }
+
+    if (company.waivers && company.waivers.length) {
+      card.appendChild(engineeringTable("具体债权豁免（授权≠已执行）",
+        ["豁免", "合同", "金额", "用途", "已授权", "已执行", "授权引用"],
+        company.waivers.map(row => [row.waiverId, row.contractId, row.amount, row.purpose,
+          row.authorized ? "已授权" : "未授权", row.consumed ? "已执行" : "未执行",
+          company.manager ? (row.authorizationRef || "—") : "（董事不持有执行引用）"])));
+    }
+
+    if (company.seatId) {
+      card.appendChild(engineeringTable("我参与或召集的会议（他人选票只给计数）",
+        ["会议", "议题", "状态", "我的角色", "我的票", "计数", "材料", "预算请求", "结果"],
+        (company.meetings || []).map(row => [row.meetingId,
+          engineeringTerm(row.topic, ENGINEERING_KIND_TEXT), row.status,
+          row.role === "CONVENER" ? "召集" : row.role === "RECUSED" ? "回避" : "到会",
+          row.myVote || "未投", row.tally, row.materials, row.proposedLines, row.failureReason])));
+    }
+
+    const periodicHead = document.createElement("h4");
+    periodicHead.textContent = "本公司周期治理（截至、评分与披露）";
+    card.appendChild(periodicHead);
+    const readBox = document.createElement("div");
+    readBox.className = "periodic-read";
+    let readButtons = 0;
+    for (const row of (company.periodic && company.periodic.periods) || []) {
+      if (!company.seatId) continue;
+      // 历史已读（myReadMaterial）与当前可回忆（myRecallEligible）分开看：遗忘后仍给重读入口。
+      const forgotten = row.myReadMaterial === true && row.myRecallEligible === false;
+      if (row.myReadMaterial === true && !forgotten) continue;
+      const draft = row.latestDraft;
+      if (!draft) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "quiet";
+      button.textContent = (forgotten ? "重新阅读第" : "阅读第") + row.period + "期材料（v"
+        + draft.version + "）";
+      button.addEventListener("click", () => guard(schedulePeriodicReading(
+        company.companyId, row.period, draft.docId, draft.version)));
+      readBox.appendChild(button);
+      readButtons += 1;
+    }
+    if (readButtons) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "评分与批准前必须实际读完本期材料；排程后要等世界推进到阅读完成，"
+        + "未读完就提交会被真实拒绝并保留原因。";
+      readBox.appendChild(hint);
+      card.appendChild(readBox);
+    } else if (company.seatId) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "没有待阅读的本期材料：草稿尚未准备，或本人已实际读完。";
+      card.appendChild(hint);
+    }
+    const periodicBox = document.createElement("div");
+    renderPeriodicBlock(periodicBox, company.periodic, { showReadState: true, personView: true });
+    card.appendChild(periodicBox);
+    container.appendChild(card);
+  }
+}
+
+function fillEngineeringSelectors(companies) {
+  const companySelect = $("eng-company");
+  if (!companySelect) return;
+  companySelect.replaceChildren();
+  for (const company of companies) {
+    const option = document.createElement("option");
+    option.value = company.companyId;
+    option.textContent = company.companyName || company.companyId;
+    companySelect.appendChild(option);
+  }
+  refreshEngineeringTools();
+}
+
+/** 只列出本公司岗位真实工具；主席额外得到「召集豁免会议」（服务端仍复核主席+召集权）。 */
+function engineeringToolsOf(company) {
+  const tools = (company && company.tools) || [];
+  const list = tools.slice();
+  // 豁免召集只存在于工程公司（有工程合同）；制造章程公司由后端不再下发该工具。
+  if (company && company.template !== "MANUFACTURING" && company.chair
+      && list.includes("board.convene")
+      && !list.includes("board.conveneWaiver")) {
+    list.push("board.conveneWaiver");
+  }
+  return list;
+}
+
+function refreshEngineeringTools() {
+  const companies = (state.personEngineering && state.personEngineering.companies) || [];
+  const companySelect = $("eng-company");
+  const toolSelect = $("eng-tool");
+  if (!companySelect || !toolSelect) return;
+  const selected = companies.find(item => item.companyId === companySelect.value);
+  const previous = toolSelect.value;
+  toolSelect.replaceChildren();
+  for (const tool of engineeringToolsOf(selected)) {
+    const option = document.createElement("option");
+    option.value = tool;
+    option.textContent = engineeringToolLabel(tool);
+    toolSelect.appendChild(option);
+  }
+  if (previous && engineeringToolsOf(selected).includes(previous)) {
+    toolSelect.value = previous;
+  }
+  renderEngineeringFields(toolSelect.value);
+}
+
+function engineeringWorldNow() {
+  const view = state.personEngineering || {};
+  const now = Number(view.timeMillis);
+  return Number.isFinite(now) && now >= 0 ? now : null;
+}
+
+/** 只给时间类字段合理默认值；会议/材料/任职/授权标识一律留空，绝不代造。 */
+function engineeringToolDefaults(tool, now) {
+  const defaults = {};
+  if (now === null) return defaults;
+  if (tool === "board.convene" || tool === "board.conveneWaiver"
+      || tool === "board.conveneAppointment") {
+    defaults.materialDeadline = String(now + 60_000);
+    defaults.opensAt = String(now + 120_000);
+    defaults.closesAt = String(now + 180_000);
+  }
+  if (tool === "board.addMaterial") {
+    // 默认引用本人卡片上的本公司公开治理说明（真实 docId/版本）；仍可改选其它真实资料。
+    defaults.docVersion = "1";
+    const card = currentPersonCompany();
+    if (card && card.governanceDocId) {
+      defaults.docId = String(card.governanceDocId);
+      defaults.docVersion = String(card.governanceDocVersion || "1");
+    }
+  }
+  if (tool === "board.proposeBudget") defaults.period = "0";
+  if (tool === "engineering.requestAcceptance" || tool === "engineering.requestPayment"
+      || tool === "engineering.requestRetention") {
+    defaults.trancheIndex = "0";
+  }
+  if (tool === "board.proposeAppointment") {
+    defaults.appointRole = "COMPANY_MANAGER";
+    defaults.effectiveAt = String(now + 60_000);
+    defaults.endsAt = String(now + 2_592_000_000);
+  }
+  if (tool === "periodic.authorize") {
+    defaults.expiresAt = String(now + 86_400_000);
+  }
+  return defaults;
+}
+
+/** 按所选工具重建字段：上一个工具的旧值随容器一起清掉，不会混进新请求。 */
+// 周期五维与中文名：与后端冻结 Dimension 顺序一致；缺维照实显示，不自造分数。
+const PERIODIC_DIMENSIONS = [
+  ["OPERATING_COMMITMENT", "经营兑现"],
+  ["CASH_SOLVENCY", "现金偿债"],
+  ["RISK", "风险"],
+  ["DISCLOSURE", "披露"],
+  ["LONG_TERM_INVESTMENT", "长期投入"]
+];
+const PERIODIC_DIMENSION_TEXT = Object.fromEntries(PERIODIC_DIMENSIONS);
+
+function selectedEngineeringCompany() {
+  return $("eng-company") ? $("eng-company").value : "";
+}
+
+function currentPeriodicCard() {
+  const companies = (state.personEngineering && state.personEngineering.companies) || [];
+  const card = companies.find(item => item.companyId === selectedEngineeringCompany());
+  return card && card.periodic && card.periodic.available ? card.periodic : null;
+}
+
+/** 当前选择的人物公司卡片（标题/治理说明/工具都从它取，不跨公司复用）。 */
+function currentPersonCompany() {
+  const companies = (state.personEngineering && state.personEngineering.companies) || [];
+  return companies.find(item => item.companyId === selectedEngineeringCompany()) || null;
+}
+
+function periodicDefaultPeriod(card) {
+  const rows = (card && card.periods) || [];
+  return rows.length ? String(rows[rows.length - 1].period) : "";
+}
+
+function periodicRowOf(card, period) {
+  const rows = (card && card.periods) || [];
+  return rows.find(row => String(row.period) === String(period)) || null;
+}
+
+function periodicDraftsOf(card, period) {
+  const row = periodicRowOf(card, period);
+  return (row && row.drafts) || [];
+}
+
+function appendOption(select, value, label, dataset) {
+  const node = document.createElement("option");
+  node.value = value;
+  node.textContent = label;
+  if (dataset) node.dataset = Object.assign({}, node.dataset || {}, dataset);
+  select.appendChild(node);
+  return node;
+}
+
+/** 周期下拉只从本角色可见的真实公司投影里取；没有可选项时保留空占位。 */
+function fillPeriodicOptions(control, source, period, placeholder) {
+  control.replaceChildren();
+  const card = currentPeriodicCard();
+  if (placeholder !== undefined) appendOption(control, "", placeholder);
+  if (!card) return;
+  if (source === "periods") {
+    for (const row of card.periods || []) {
+      appendOption(control, String(row.period),
+        "第" + row.period + "期 · " + (row.kind === "QUARTERLY" ? "季度" : "月度"));
+    }
+  } else if (source === "drafts") {
+    for (const draft of periodicDraftsOf(card, period)) {
+      appendOption(control, draft.draftId,
+        "第" + period + "期 · 草稿 v" + draft.version + " · " + (draft.preparedByName || draft.preparedBy),
+        { version: String(draft.version) });
+    }
+  } else if (source === "publishers") {
+    for (const seat of card.seats || []) {
+      appendOption(control, seat.personPartyId,
+        (seat.personName || seat.personPartyId) + "（" + seat.seatId + "）");
+    }
+  } else if (source === "authorizations") {
+    const row = periodicRowOf(card, period);
+    for (const authorization of (row && row.authorizations) || []) {
+      if (authorization.status !== "PENDING") continue;
+      // 经理也能看到本公司的未消费授权；只有指定发布人本人的授权能被执行。
+      if (authorization.mine !== true) continue;
+      appendOption(control, authorization.authorizationId,
+        authorization.authorizationId + " · " + (authorization.publisherName || authorization.publisherPersonId)
+          + " · 至 " + authorization.expiresAt);
+    }
+  }
+}
+
+/** 本人在该期的可执行授权：只来自本人响应里的后端投影，不读 God 状态、不自造。 */
+function periodicGrantOf(card, period) {
+  const row = periodicRowOf(card, period);
+  const grants = (row && row.authorizations) || [];
+  return grants.find(authorization => authorization.status === "PENDING"
+    && authorization.mine === true) || null;
+}
+
+/**
+ * 发布表单按本人可执行授权回填草稿/版本/授权：非经理的指定发布人可能看不到草稿行，
+ * 这些值仍必须取自后端允许给本人的字段。
+ */
+function applyPublishGrant() {
+  const card = currentPeriodicCard();
+  const period = periodicDefaultPeriod(card);
+  const grant = periodicGrantOf(card, period);
+  const draft = $("eng-draft");
+  const version = $("eng-draft-version");
+  const auth = $("eng-auth");
+  if (!grant) return;
+  if (draft && grant.draftId) {
+    if (!(draft.children || []).some(option => option.value === grant.draftId)) {
+      appendOption(draft, grant.draftId,
+        "授权草稿 v" + grant.draftVersion + "（本人被指定发布）",
+        { version: String(grant.draftVersion) });
+    }
+    draft.value = grant.draftId;
+  }
+  if (version && grant.draftVersion) version.value = String(grant.draftVersion);
+  if (auth && grant.authorizationId) auth.value = grant.authorizationId;
+}
+
+/** 选草稿时把版本号同步到同一真实版本；不伪造、不猜下一个版本。 */
+function syncDraftVersion() {
+  const draft = $("eng-draft");
+  const version = $("eng-draft-version");
+  if (!draft || !version) return;
+  const option = (draft.children || []).find(item => item.value === draft.value);
+  if (option && option.dataset && option.dataset.version) {
+    version.value = option.dataset.version;
+  }
+}
+
+function periodicUnavailableText(row) {
+  const missing = (row && row.unavailableDimensions) || [];
+  if (!missing.length) return "";
+  return missing.map(item => PERIODIC_DIMENSION_TEXT[item.dimension] || item.dimension)
+    .join("、");
+}
+
+/** 评分只从本期真实证据里选；该维没有合格证据时保持缺项，不生成 0 分。 */
+function renderPeriodicScoreFields(tool, spec, now) {
+  const container = $("eng-fields");
+  const card = currentPeriodicCard();
+  const period = periodicDefaultPeriod(card);
+  const row = periodicRowOf(card, period);
+  const periodWrapper = document.createElement("div");
+  periodWrapper.className = "eng-field";
+  periodWrapper.dataset.field = "periodicPeriod";
+  const periodLabel = document.createElement("label");
+  periodLabel.htmlFor = "eng-period";
+  periodLabel.textContent = "考核期间（必填）";
+  const periodSelect = document.createElement("select");
+  periodSelect.id = "eng-period";
+  periodSelect.dataset.field = "periodicPeriod";
+  periodSelect.required = true;
+  fillPeriodicOptions(periodSelect, "periods", period);
+  periodSelect.value = period;
+  periodSelect.addEventListener("change", () => renderEngineeringFields(tool));
+  periodWrapper.append(periodLabel, periodSelect);
+  container.appendChild(periodWrapper);
+  state.engineeringFieldIds.push("periodicPeriod");
+
+  for (const [dimension, label] of PERIODIC_DIMENSIONS) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "eng-field eng-score-row";
+    wrapper.dataset.field = "metric:" + dimension;
+    const scoreLabel = document.createElement("label");
+    scoreLabel.htmlFor = "eng-score-" + dimension;
+    scoreLabel.textContent = label + "（0—100，留空表示缺项）";
+    const score = document.createElement("input");
+    score.type = "text";
+    score.autocomplete = "off";
+    score.id = "eng-score-" + dimension;
+    score.dataset.field = "metricScore";
+    score.dataset.dimension = dimension;
+    const evidenceLabel = document.createElement("label");
+    evidenceLabel.htmlFor = "eng-evidence-" + dimension;
+    evidenceLabel.textContent = "本维证据";
+    const evidence = document.createElement("select");
+    evidence.id = "eng-evidence-" + dimension;
+    evidence.dataset.field = "metricEvidence";
+    evidence.dataset.dimension = dimension;
+    const choices = [];
+    for (const entry of (row && row.evidence) || []) {
+      if ((entry.dimensions || []).includes(dimension)) {
+        choices.push({ ref: entry.ref, asOf: entry.asOf });
+      }
+    }
+    appendOption(evidence, "", choices.length ? "请选择本期合格证据" : "本期无合格证据");
+    for (const choice of choices) {
+      appendOption(evidence, choice.ref,
+        choice.ref + (choice.asOf ? " · 时点 " + choice.asOf : ""), { asOf: choice.asOf });
+    }
+    evidence.disabled = choices.length === 0;
+    score.disabled = choices.length === 0;
+    wrapper.append(scoreLabel, score, evidenceLabel, evidence);
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = choices.length
+      ? "证据时点自动取本期截至时点；分数与证据必须同时填写，才算一个完整维度。"
+      : "本期没有该维度的合格证据：保留缺项，不补 0。";
+    wrapper.appendChild(hint);
+    container.appendChild(wrapper);
+  }
+  const missing = periodicUnavailableText(row);
+  if ($("eng-fields-note")) {
+    $("eng-fields-note").textContent = (spec.note || "")
+      + (missing ? " 本期不可评分维度：" + missing + "（保留缺项）。" : "");
+  }
+  if ($("eng-tool-note")) {
+    $("eng-tool-note").textContent = "将发起：提交本席评分（periodic.score）"
+      + " · 第" + (period || "?") + "期";
+  }
+}
+
+/** 按所选工具重建字段：上一个工具的旧值随容器一起清掉，不会混进新请求。 */
+function renderEngineeringFields(tool) {
+  state.engineeringTool = tool;
+  const container = $("eng-fields");
+  const note = $("eng-fields-note");
+  const toolNote = $("eng-tool-note");
+  if (!container) return;
+  container.replaceChildren();
+  state.engineeringFieldIds = [];
+  const spec = ENGINEERING_TOOL_FIELDS[tool];
+  const now = engineeringWorldNow();
+  const defaults = engineeringToolDefaults(tool, now);
+  if ($("eng-due")) {
+    $("eng-due").value = now === null ? "" : String(now + 1000);
+  }
+  if (!spec) {
+    if (note) note.textContent = "该工具暂未提供表单：请先选择公司与本岗位工具。";
+    if (toolNote) toolNote.textContent = "";
+    return;
+  }
+  if (tool === "periodic.score") {
+    renderPeriodicScoreFields(tool, spec, now);
+    return;
+  }
+  const periodicPeriod = periodicDefaultPeriod(currentPeriodicCard());
+  for (const key of spec.fields) {
+    const field = ENGINEERING_FIELD_SPECS[key];
+    if (!field) continue;
+    const wrapper = document.createElement("div");
+    wrapper.className = "eng-field";
+    wrapper.dataset.field = key;
+    const label = document.createElement("label");
+    label.htmlFor = field.id;
+    label.textContent = field.label + (spec.required.includes(key) ? "（必填）" : "（可选）");
+    let control;
+    if (field.source) {
+      control = document.createElement("select");
+      fillPeriodicOptions(control, field.source, periodicPeriod);
+      if (field.source === "periods") control.value = periodicPeriod;
+      if (field.source === "drafts") {
+        if (control.children.length) control.value = control.children[0].value;
+        control.addEventListener("change", syncDraftVersion);
+      }
+    } else if (field.kind === "select") {
+      control = document.createElement("select");
+      for (const option of field.options || []) {
+        appendOption(control, option.value, option.label);
+      }
+    } else {
+      control = document.createElement("input");
+      control.type = "text";
+      control.autocomplete = "off";
+    }
+    control.id = field.id;
+    control.dataset.field = key;
+    const fallback = key === "periodicPeriod" ? periodicPeriod
+      : (defaults[key] === undefined ? "" : defaults[key]);
+    control.value = fallback;
+    control.required = spec.required.includes(key);
+    wrapper.append(label, control);
+    if (field.hint) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = key === "meetingId"
+        && (tool === "board.convene" || tool === "board.conveneWaiver"
+          || tool === "board.conveneAppointment")
+        ? field.conveneHint : field.hint;
+      wrapper.appendChild(hint);
+    }
+    container.appendChild(wrapper);
+    state.engineeringFieldIds.push(key);
+  }
+  if (spec.fields.includes("draftId")) syncDraftVersion();
+  if (tool === "periodic.publish") applyPublishGrant();
+  if (note) note.textContent = spec.note || "";
+  if (toolNote) {
+    toolNote.textContent = "将发起：" + engineeringToolLabel(tool) + "（" + tool + "）";
+  }
+}
+
+function engineeringFieldValues() {
+  const values = {
+    dueTimeMillis: $("eng-due") ? $("eng-due").value.trim() : ""
+  };
+  for (const key of state.engineeringFieldIds || []) {
+    const field = ENGINEERING_FIELD_SPECS[key];
+    const node = field ? $(field.id) : null;
+    values[key] = node ? String(node.value == null ? "" : node.value).trim() : "";
+  }
+  if (state.engineeringTool === "periodic.score") {
+    values.metrics = [];
+    for (const [dimension] of PERIODIC_DIMENSIONS) {
+      const scoreNode = $("eng-score-" + dimension);
+      const evidenceNode = $("eng-evidence-" + dimension);
+      const score = scoreNode ? String(scoreNode.value == null ? "" : scoreNode.value).trim() : "";
+      const sourceRef = evidenceNode ? String(evidenceNode.value == null ? "" : evidenceNode.value).trim() : "";
+      if (!score && !sourceRef) continue;
+      values.metrics.push({ dimension, score, sourceRef });
+    }
+  }
+  return values;
+}
+
+const ENGINEERING_INT_FIELDS = ["trancheIndex", "units", "docVersion", "durationMillis",
+  "materialDeadline", "opensAt", "closesAt", "effectiveAt", "endsAt", "period"];
+const ENGINEERING_MONEY_FIELDS = ["amount", "laborLimit", "procurementLimit"];
+
+/** 提交前校验：只针对当前工具可见字段；返回中文提示列表，空表示通过。 */
+function engineeringValidate(tool, values) {
+  const spec = ENGINEERING_TOOL_FIELDS[tool];
+  if (!spec) return ["请选择一个可用工具"];
+  const errors = [];
+  const fieldLabel = (key) => (ENGINEERING_FIELD_SPECS[key] || {}).label || key;
+  if (!values.dueTimeMillis) {
+    errors.push("「排程到期」必须填写");
+  } else if (!/^\d+$/.test(values.dueTimeMillis)) {
+    errors.push("「排程到期」必须是世界毫秒整数");
+  }
+  for (const key of spec.required) {
+    if (!values[key]) errors.push("「" + fieldLabel(key) + "」必须填写");
+  }
+  for (const key of spec.fields) {
+    const value = values[key];
+    if (!value) continue;
+    if (ENGINEERING_INT_FIELDS.includes(key) && !/^\d+$/.test(value)) {
+      errors.push("「" + fieldLabel(key) + "」必须是非负整数");
+    }
+    if (ENGINEERING_MONEY_FIELDS.includes(key) && !/^\d{1,15}(\.\d{1,2})?$/.test(value)) {
+      errors.push("「" + fieldLabel(key) + "」必须是最多两位小数的非负金额");
+    }
+  }
+  if (values.units && /^\d+$/.test(values.units) && Number(values.units) <= 0) {
+    errors.push("「" + fieldLabel("units") + "」必须大于 0");
+  }
+  if (values.amount && /^\d+(\.\d{1,2})?$/.test(values.amount) && Number(values.amount) <= 0) {
+    errors.push("「" + fieldLabel("amount") + "」必须大于 0");
+  }
+  if (values.materialDeadline && values.opensAt
+      && Number(values.opensAt) < Number(values.materialDeadline)) {
+    errors.push("「开会时点」不能早于「材料截止时点」");
+  }
+  if (values.opensAt && values.closesAt && Number(values.closesAt) <= Number(values.opensAt)) {
+    errors.push("「表决截止时点」必须晚于「开会时点」");
+  }
+  if (tool === "board.proposeAppointment" && values.appointAction === "APPOINT") {
+    if (!values.endsAt) {
+      errors.push("任命必须填写「任职期限」");
+    } else if (values.effectiveAt && Number(values.endsAt) <= Number(values.effectiveAt)) {
+      errors.push("「任职期限」必须晚于「任职生效时点」");
+    }
+  }
+  if (tool === "board.proposeBudget" && !values.laborLimit && !values.procurementLimit) {
+    errors.push("预算提案至少要填一个人工或采购上限");
+  }
+  if (tool.startsWith("periodic.")) {
+    const period = values.periodicPeriod;
+    if (period && (!/^\d+$/.test(period) || Number(period) < 1)) {
+      errors.push("「考核期间」必须是大于等于 1 的整数");
+    }
+    if (values.durationMillis && !/^\d+$/.test(values.durationMillis)) {
+      errors.push("「本次决策工时」必须是非负整数");
+    } else if (values.durationMillis === "0") {
+      errors.push("「本次决策工时」对周期动作必须大于 0");
+    }
+    if (tool === "periodic.score") {
+      const metrics = values.metrics || [];
+      if (!metrics.length) {
+        errors.push("评分至少填写一个完整维度（分数与本期证据）");
+      }
+      for (const metric of metrics) {
+        const name = PERIODIC_DIMENSION_TEXT[metric.dimension] || metric.dimension;
+        if (!metric.score) {
+          errors.push("「" + name + "」缺少分数");
+        } else if (!/^\d{1,3}(\.\d{1,2})?$/.test(metric.score)
+            || Number(metric.score) > 100) {
+          errors.push("「" + name + "」必须是 0—100 的分数");
+        }
+        if (!metric.sourceRef) errors.push("「" + name + "」必须选择本期合格证据");
+      }
+    }
+    if (["periodic.approve", "periodic.authorize", "periodic.publish"].includes(tool)) {
+      if (values.draftId && !values.draftVersion) {
+        errors.push("「草稿版本」必须填写");
+      } else if (values.draftVersion && !/^\d+$/.test(values.draftVersion)) {
+        errors.push("「草稿版本」必须是整数");
+      }
+      if (values.draftId && values.draftVersion) {
+        const drafts = periodicDraftsOf(currentPeriodicCard(), period);
+        const match = drafts.find(draft => draft.draftId === values.draftId
+          && String(draft.version) === String(values.draftVersion));
+        // 非经理的指定发布人看不到他人草稿行；本人可执行授权里的草稿绑定同样合法。
+        const grant = tool === "periodic.publish"
+          ? periodicGrantOf(currentPeriodicCard(), period) : null;
+        const grantMatch = !!grant && grant.draftId === values.draftId
+          && String(grant.draftVersion) === String(values.draftVersion);
+        if (!match && !grantMatch) {
+          errors.push("所选草稿不属于该期间或版本不一致，请重新选择");
+        }
+      }
+    }
+    if (tool === "periodic.authorize") {
+      const now = Number(state.personEngineering && state.personEngineering.timeMillis);
+      if (values.expiresAt && Number.isFinite(now) && Number(values.expiresAt) <= now) {
+        errors.push("「授权失效时点」必须晚于当前世界时点");
+      }
+    }
+  }
+  return errors;
+}
+
+/** 把焦点放到第一个缺失的必填字段，避免用户在大表里找。 */
+function engineeringFocusFirstInvalid(tool, values) {
+  const spec = ENGINEERING_TOOL_FIELDS[tool];
+  if (!spec) return;
+  for (const key of spec.required) {
+    if (values[key]) continue;
+    const field = ENGINEERING_FIELD_SPECS[key];
+    const node = field ? $(field.id) : null;
+    if (node && typeof node.focus === "function") node.focus();
+    return;
+  }
+  if (tool === "periodic.score") {
+    for (const [dimension] of PERIODIC_DIMENSIONS) {
+      const scoreNode = $("eng-score-" + dimension);
+      const evidenceNode = $("eng-evidence-" + dimension);
+      const score = scoreNode ? String(scoreNode.value || "").trim() : "";
+      const ref = evidenceNode ? String(evidenceNode.value || "").trim() : "";
+      if ((score && !ref) || (!score && ref)) {
+        const target = score && !ref ? evidenceNode : scoreNode;
+        if (target && typeof target.focus === "function") target.focus();
+        return;
+      }
+    }
+  }
+}
+
+async function renderPersonalEngineering(generation) {
+  let result;
+  try {
+    result = await request("GET", "/api/me/engineering");
+  } catch (failure) {
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (result.status === 401) { sessionLost(); return; }
+  if (result.status !== 200 || !result.payload) return;
+  const view = result.payload;
+  state.personEngineering = view;
+  const card = $("person-engineering-card");
+  if (!card) return;
+  card.hidden = false;
+  $("person-engineering-note").textContent = view.enabled
+    ? "同一确认记录 " + view.position + " · 世界时点 " + view.timeMillis + " 毫秒；只显示本人岗位内容。"
+    : (view.note || "此运行未启用工程经营。");
+  fillPersonalEngineeringCompanies(view.companies || []);
+  fillEngineeringSelectors(view.companies || []);
+  fillNotes("person-engineering-notes", view.notes);
+}
+
+/** 只把当前工具可见字段放进请求；空串不发，显式 "0" 原样保留。 */
+function engineeringActionBody(tool, values) {
+  const view = state.personEngineering || {};
+  state.engineeringSubmitSeq = (state.engineeringSubmitSeq || 0) + 1;
+  const stamp = Date.now() + "-" + state.engineeringSubmitSeq;
+  const body = {
+    expectedPosition: String(view.position || ""),
+    commandId: "web-eng-" + stamp,
+    taskId: "web-eng-" + stamp + "-task",
+    dueTimeMillis: values.dueTimeMillis,
+    companyId: $("eng-company").value,
+    tool: tool
+  };
+  const spec = ENGINEERING_TOOL_FIELDS[tool];
+  for (const key of (spec ? spec.fields : [])) {
+    const raw = values[key];
+    if (raw === undefined || raw === "") continue;
+    if (key === "recused") {
+      body.recused = raw === "true";
+      continue;
+    }
+    body[key === "periodicPeriod" ? "period" : key] = raw;
+  }
+  if (tool === "periodic.score") {
+    const metrics = (values.metrics || []).filter(metric => metric.score && metric.sourceRef);
+    if (metrics.length) body.metrics = metrics;
+  }
+  return body;
+}
+
+/**
+ * 排程一次真实阅读：只用于当前会话人物；读完与否仍由信息模块在到期时判定。
+ * 传入的文档与版本必须来自本人卡片/本人投影，页面不代造标识。
+ */
+async function scheduleDocumentReading(companyId, docId, version, label) {
+  const view = state.personEngineering || {};
+  if (!view.position) {
+    setMessage("engineering-action-error", "当前没有可用的世界位置，请刷新后再试。");
+    return;
+  }
+  state.engineeringSubmitSeq = (state.engineeringSubmitSeq || 0) + 1;
+  const stamp = Date.now() + "-" + state.engineeringSubmitSeq;
+  let result;
+  try {
+    result = await request("POST", "/api/me/read", {
+      expectedPosition: String(view.position),
+      commandId: "web-read-" + stamp,
+      taskId: "web-read-" + stamp + "-task",
+      dueTimeMillis: String(Number(view.timeMillis) + 1000),
+      docId: docId,
+      version: String(version)
+    });
+  } catch (failure) {
+    setMessage("engineering-action-error", failure.message);
+    return;
+  }
+  if (result.status === 401) { sessionLost(); return; }
+  if (result.status === 409) {
+    setMessage("engineering-action-error", "世界已推进到新的确认位置，请刷新后再排程阅读。");
+    return;
+  }
+  if (result.status !== 200 || !result.payload) {
+    const reason = result.payload && result.payload.message ? result.payload.message
+      : "服务返回 " + result.status;
+    setMessage("engineering-action-error", "阅读排程被拒绝：" + reason);
+    return;
+  }
+  setMessage("engineering-action-result", "已排程阅读：公司 " + companyId + " · " + label
+    + " v" + version + " · 命令 " + result.payload.receipt
+    + "。世界推进到阅读完成后再刷新，才会显示“本人已读完”。");
+  await renderPersonalEngineering(state.generation);
+}
+
+/** 周期材料阅读入口：标签固定为“第 N 期材料”，其余与通用阅读一致。 */
+async function schedulePeriodicReading(companyId, period, docId, version) {
+  return scheduleDocumentReading(companyId, docId, version, "第" + period + "期材料");
+}
+
+async function submitEngineeringAction(event) {
+  event.preventDefault();
+  setMessage("engineering-action-result", "");
+  setMessage("engineering-action-error", "");
+  if (!state.personEngineering || state.mode !== "person") {
+    setMessage("engineering-action-error", "当前不是人物会话，无法以任何人物身份提交。");
+    return;
+  }
+  const tool = $("eng-tool") ? $("eng-tool").value : "";
+  const values = engineeringFieldValues();
+  const errors = engineeringValidate(tool, values);
+  if (errors.length) {
+    setMessage("engineering-action-error", "还不能提交：" + errors.slice(0, 3).join("；")
+      + (errors.length > 3 ? "；等共 " + errors.length + " 项" : "") + "。");
+    engineeringFocusFirstInvalid(tool, values);
+    return;
+  }
+  const body = engineeringActionBody(tool, values);
+  let result;
+  try {
+    result = await request("POST", "/api/me/engineering/action", body);
+  } catch (failure) {
+    setMessage("engineering-action-error", failure.message);
+    return;
+  }
+  if (state.mode !== "person") return;
+  if (result.status === 401) { sessionLost(); return; }
+  if (result.status === 409) {
+    setMessage("engineering-action-error", "世界已推进到新的确认位置，请刷新后再提交。");
+    return;
+  }
+  if (result.status !== 200 || !result.payload) {
+    const reason = result.payload && result.payload.message ? result.payload.message
+      : "服务返回 " + result.status;
+    setMessage("engineering-action-error", "排程被拒绝：" + reason);
+    return;
+  }
+  const view = result.payload;
+  const periodicNote = String(view.tool || "").startsWith("periodic.")
+    ? "周期动作只显示为已排程/待执行；到期 FINISH 后才产生草稿、评分、批准或公开版本，"
+      + "发布前不能当已完成披露。"
+    : "";
+  setMessage("engineering-action-result", "已排程：" + engineeringToolLabel(view.tool)
+    + " · 公司 " + view.companyId + " · 命令 " + view.receipt
+    + "。世界推进到到期时点后才落账，届时以真实回报为准。" + periodicNote);
+  await renderPersonalEngineering(state.generation);
+  await refreshPerson();
+}
+
+$("engineering-company").addEventListener("change", () => {
+  state.engineeringCompany = $("engineering-company").value;
+  loadEngineering(state.generation, state.pageVersion);
+});
+$("engineering-refresh").addEventListener("click", () => {
+  loadEngineering(state.generation, state.pageVersion);
+});
+$("engineering-report-filter").addEventListener("change", () => {
+  if (state.engineering) renderEngineeringReports(state.engineering);
+});
+$("eng-company").addEventListener("change", () => {
+  state.engineeringFieldIds = [];
+  refreshEngineeringTools();
+});
+$("eng-tool").addEventListener("change", () => {
+  renderEngineeringFields($("eng-tool").value);
+});
+$("engineering-action-form").addEventListener("submit", (event) => {
+  guard(submitEngineeringAction(event));
+});

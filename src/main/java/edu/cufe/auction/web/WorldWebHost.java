@@ -7,6 +7,8 @@ import edu.cufe.auction.world.DecisionModel;
 import edu.cufe.auction.world.DecisionRun;
 import edu.cufe.auction.world.DividendModel;
 import edu.cufe.auction.world.LiveCompletionInbox;
+import edu.cufe.auction.world.EngineeringModel;
+import edu.cufe.auction.world.EngineeringRun;
 import edu.cufe.auction.world.EvidenceRun;
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.MediaEvidence;
@@ -21,6 +23,8 @@ import edu.cufe.auction.world.MediaRun;
 import edu.cufe.auction.world.OpeningRegistry;
 import edu.cufe.auction.world.PendingTask;
 import edu.cufe.auction.world.PerformanceModel;
+import edu.cufe.auction.world.PeriodicActionPayload;
+import edu.cufe.auction.world.PeriodicModel;
 import edu.cufe.auction.world.RoleAccess;
 import edu.cufe.auction.world.RoleRun;
 import edu.cufe.auction.world.RoleTradingView;
@@ -2844,8 +2848,7 @@ public final class WorldWebHost implements AutoCloseable {
                     num(snapshot.timeMillis()), true, run.state().clock(),
                     bounded(messages), bounded(blocks),
                     bounded(reports), bounded(contacts),
-                    java.util.List.of("送达状态与拒因来自真实报告；收件人是否已读按历史真实阅读判定，"
-                                    + "与当前能否回忆正文/地址无关。",
+                    java.util.List.of("送达状态与拒因来自真实报告；收件人是否已读按其可回忆的阅读记录。",
                             "未送达对外统一 UNDELIVERED，管理端保留真实原因。"));
         });
     }
@@ -2915,8 +2918,7 @@ public final class WorldWebHost implements AutoCloseable {
             }
             return new SocialPersonView(personId, num(snapshot.timeMillis()), true,
                     bounded(inbox), bounded(outbox), bounded(contacts),
-                    java.util.List.of("只显示本人已送达信封、发件结果与合法联系人；"
-                            + "已读按历史真实阅读判定，正文仅在当前可回忆时显示。"));
+                    java.util.List.of("只显示本人已送达信封、发件结果与合法联系人；正文需本人实际读完。"));
         });
     }
 
@@ -3696,5 +3698,2167 @@ public final class WorldWebHost implements AutoCloseable {
             return null;
         }
         return value.length() <= PREVIEW_LIMIT ? value : value.substring(0, PREVIEW_LIMIT);
+    }
+
+    // ================================================================ 18c 工程经营（Web 第一切片）
+
+    /** 旧档（schema ≤17 或未加载工程子集）的统一说明：本页不显示任何样例数据。 */
+    public static final String ENGINEERING_DISABLED_NOTE =
+            "此运行未启用工程经营（schema ≤17 或未加载工程子集）：本页不显示样例数据，也不补零。";
+
+    /**
+     * 周期会议出席工具：运行层公开入口已接受 ATTEND，但 v6 目录未单独列出；
+     * Web 只为真实董事补充该入口，权限仍由 BEGIN 时的席位/会议状态复核。
+     */
+    public static final String PERIODIC_ATTEND_TOOL = "periodic.attend";
+    /**
+     * 章程公司主席专用的经理任免召集入口：与工程董事会同一套任免机制，
+     * 只在真实治理董事会里开一次任免议题会议，不新建角色或无限期任职。
+     */
+    public static final String BOARD_CONVENE_APPOINTMENT_TOOL = "board.conveneAppointment";
+
+    /**
+     * 只读解析持久化待办载荷用的映射器；不持有世界状态。
+     * BEGIN 包装只当作「待执行等待中的包装」，绝不当作已完成；种类常量取核心真值
+     * {@link PendingTask#ENGINEERING_BEGIN_V1}，不在 Web 侧重复声明字符串。
+     */
+    private static final com.fasterxml.jackson.databind.ObjectMapper PAYLOAD_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /**
+     * BEGIN 包装的严格只读视图：字段缺失或类型不符就返回 null（未知即未知，不做猜测）。
+     *
+     * @param targetKind  包装内层真实任务种类
+     * @param dueMillis   包装声明的到期时点
+     * @param payload     内层原始 JSON 字符串
+     */
+    record BeginWrapper(String targetKind, long dueMillis, String payload) {
+    }
+
+    /** 页面只读：一次选择一家公司；公司列表与所选公司来自同一快照。 */
+    public record EngineeringOption(String companyId, String name, String template,
+                                    String managerPersonId) {
+    }
+
+    /**
+     * 工程/制造公司 God 视图：一个 writer 任务、一份快照内派生全部区块。
+     *
+     * @param runId          运行标识
+     * @param position       已确认位置（字符串）
+     * @param timeMillis     世界时点（字符串）
+     * @param phase          最后阶段
+     * @param capturedAtMillis 本机墙钟读取时刻（不是世界时间）
+     * @param enabled        当前运行是否有工程子集
+     * @param note           未启用说明；启用时为 null
+     * @param companies      真实可选公司（制造 + 工程）
+     * @param companyId      当前选择
+     * @param companyName    当前公司名称
+     * @param template       ENGINEERING / MANUFACTURING
+     * @param report         报表口径（金额为精确字符串；未实现字段为 null）
+     * @param seats          董事会席位
+     * @param appointments   该公司真实任职
+     * @param contracts      合同（含逐合同 claims）
+     * @param workOrders     真实工单（开工会留下）
+     * @param budgets        已生效预算上限
+     * @param commitments    预算占用
+     * @param meetings       真实董事会会议
+     * @param requests       经理客户请求（意图）
+     * @param responses      客户回应（外部事实）
+     * @param payments       真实付款（到账）
+     * @param waivers        具体债权豁免（授权与消耗审计）
+     * @param tasks          待执行工程待办（到期才落账）
+     * @param reports        真实回报
+     * @param periodic       本公司周期治理只读投影（采样、评分、披露、更正与迟报）
+     * @param sources        每个区块的真实来源
+     * @param notes          口径说明
+     */
+    public record EngineeringView(String runId, String position, String timeMillis, String phase,
+                                  String capturedAtMillis, boolean enabled, String note,
+                                  List<EngineeringOption> companies, String companyId,
+                                  String companyName, String template,
+                                  Map<String, Object> report, Section seats,
+                                  Section appointments, Section contracts, Section workOrders,
+                                  Section budgets, Section commitments, Section meetings,
+                                  Section requests, Section responses, Section payments,
+                                  Section waivers, Section tasks, Section reports,
+                                  Map<String, Object> periodic,
+                                  Map<String, String> sources, List<String> notes) {
+        /** 冻结集合，避免调用方改响应。 */
+        public EngineeringView {
+            companies = List.copyOf(companies);
+            sources = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(sources));
+            notes = List.copyOf(notes);
+        }
+    }
+
+    /** 个人视角：只含本人在任/占席的公司；其他公司、God 审计与未来计划不出现。 */
+    public record PersonEngineeringView(String personPartyId, String position, String timeMillis,
+                                        String capturedAtMillis, boolean enabled, String note,
+                                        List<Map<String, Object>> companies, List<String> notes) {
+        /** 冻结集合。 */
+        public PersonEngineeringView {
+            companies = List.copyOf(companies);
+            notes = List.copyOf(notes);
+        }
+    }
+
+    /**
+     * 一条由可信会话提交的工程命令；actor 不在字段里，只由会话身份决定。
+     *
+     * @param expectedPosition  客户端看到的位置
+     * @param commandId         幂等命令标识
+     * @param taskId            任务标识
+     * @param dueTimeMillis     到期时点
+     * @param companyId         目标工程公司
+     * @param tool              真实工具标识（RoleTradingView 常量或 board.conveneWaiver）
+     * @param contractId        合同
+     * @param workId            开工标识
+     * @param trancheIndex      期次
+     * @param units             数量
+     * @param amount            金额（十进制字符串）
+     * @param purpose           用途/证据引用
+     * @param authorizationRef  董事会豁免授权引用
+     * @param meetingId         会议
+     * @param materialId        会议内材料标识
+     * @param docId             材料来源资料
+     * @param docVersion        材料固定版本
+     * @param vote              YES / NO / ABSTAIN
+     * @param recused           是否自主回避
+     * @param appointmentId     任免记录标识
+     * @param appointPersonId   被任免人
+     * @param appointRole       岗位
+     * @param appointAction     APPOINT / REVOKE
+     * @param effectiveAt       生效时点
+     * @param endsAt            期限（不含）；撤销为 0
+     * @param waiverId          豁免请求标识
+     * @param customerPartyId   客户主体
+     * @param laborLimit        人工预算上限（字符串）
+     * @param procurementLimit  采购预算上限（字符串）
+     * @param period            预算期间
+     * @param materialDeadline  材料截止
+     * @param opensAt           开会时点
+     * @param closesAt          表决截止
+     * @param durationMillis    声明工时；null 表示用内核默认
+     */
+    public record EngineeringCommand(long expectedPosition, String commandId, String taskId,
+                                     long dueTimeMillis, String companyId, String tool,
+                                     String contractId, String workId, int trancheIndex,
+                                     long units, String amount, String purpose,
+                                     String authorizationRef, String meetingId,
+                                     String materialId, String docId, long docVersion,
+                                     String vote, boolean recused, String appointmentId,
+                                     String appointPersonId, String appointRole,
+                                     String appointAction, long effectiveAt, long endsAt,
+                                     String waiverId, String customerPartyId,
+                                     String laborLimit, String procurementLimit, long period,
+                                     long materialDeadline, long opensAt, long closesAt,
+                                     Long durationMillis, String draftId, long draftVersion,
+                                     String publisherPersonId, long expiresAt,
+                                     String authorizationId, String note,
+                                     List<PeriodicMetricInput> metrics) {
+    }
+
+    /**
+     * 周期评分的一维输入：维度、分数（十进制字符串）与本期真实证据引用。
+     * asOf 一律由服务端取采样截至时点，页面不能自填“全局位置”。
+     */
+    public record PeriodicMetricInput(String dimension, String score, String sourceRef) {
+    }
+
+    /** 排程回执：只是受理，不等于已执行。 */
+    public record EngineeringActionView(String runId, String position, String timeMillis,
+                                        String companyId, String tool, String receipt) {
+    }
+
+    /** 每个区块的真实来源说明（God 与个人视图共用）。 */
+    private static Map<String, String> engineeringSources() {
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("report", "唯一现金账户表 + EngineeringModel.Report（纯核派生，不二次加总）");
+        sources.put("contracts", "EngineeringModel.State.contracts 与同合同 claims");
+        sources.put("workOrders", "EngineeringModel.State.workOrders（真实开工工单）");
+        sources.put("budgets", "boardOfCompany(...).board().budgets（真实董事议决上限）");
+        sources.put("commitments", "boardOfCompany(...).board().commitments（真实预算占用）");
+        sources.put("meetings", "boardOfCompany(...).board().meetings（真实会议与表决）");
+        sources.put("requests", "EngineeringRun.customer.requests（经理请求＝意图）");
+        sources.put("responses", "EngineeringRun.customer.responses（客户外部回应）");
+        sources.put("payments", "EngineeringRun.customer.payments（真实双边付款）");
+        sources.put("waivers", "EngineeringRun.waivers（唯一授权与消耗权威）");
+        sources.put("tasks", "Snapshot.pending（到期才落账；排程不等于已执行）");
+        sources.put("reports", "EngineeringRun.reports + BoardRun.reports（accepted/reason 原样）");
+        sources.put("periodic", "EngineeringRun.periodic（真实采样/评分/草稿/批准/授权/发布/MISSED）"
+                + " + InformationModel 公开版本正文");
+        sources.put("time", "position/timeMillis 是世界位置与时点；capturedAtMillis 是本机墙钟读取时刻");
+        return java.util.Collections.unmodifiableMap(sources);
+    }
+
+    private static BigDecimal zeroMoney() {
+        return BigDecimal.ZERO.setScale(2);
+    }
+
+    /**
+     * God 工程视图（单 writer 任务、单快照）。
+     *
+     * @param requestedCompanyId 选择的公司；空字符串表示按真实候选稳定取首个
+     * @return 视图
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public EngineeringView engineeringView(String requestedCompanyId)
+            throws BusyException, Exception {
+        String requested = requestedCompanyId == null ? "" : requestedCompanyId;
+        return call(() -> engineeringViewOf(readyNow(), requested));
+    }
+
+    private EngineeringView engineeringViewOf(WorldRuntime current, String requested) {
+        WorldRuntime.Snapshot snapshot = current.snapshot();
+        OpeningRegistry registry = current.openingRegistry().orElse(null);
+        EngineeringRun run = snapshot.engineering().orElse(null);
+        String captured = num(System.currentTimeMillis());
+        String position = num(snapshot.position());
+        String time = num(snapshot.timeMillis());
+
+        List<EngineeringOption> options = new ArrayList<>();
+        String manufacturingCompany = snapshot.governance()
+                .map(board -> board.board().charter().companyPartyId()).orElse(null);
+        if (manufacturingCompany != null) {
+            options.add(new EngineeringOption(manufacturingCompany,
+                    partyName(registry, manufacturingCompany), "MANUFACTURING", null));
+        }
+        if (run != null) {
+            for (String companyId : run.companyIds()) {
+                options.add(new EngineeringOption(companyId, partyName(registry, companyId),
+                        "ENGINEERING", managerOf(snapshot, companyId)));
+            }
+        }
+        String selected = requested;
+        if (selected.isEmpty() && !options.isEmpty()) {
+            selected = options.get(0).companyId();
+        }
+        EngineeringOption option = null;
+        for (EngineeringOption candidate : options) {
+            if (candidate.companyId().equals(selected)) {
+                option = candidate;
+                break;
+            }
+        }
+        if (option == null) {
+            throw new IllegalArgumentException("没有这家公司，或当前运行未登记它");
+        }
+
+        List<String> notes = new ArrayList<>();
+        if (run == null) {
+            notes.add(ENGINEERING_DISABLED_NOTE);
+        }
+        notes.add("金额并排显示，不能相加当收入：现金是账户余额，AR 当期与质保是应收，收入只取合同 claims。");
+        notes.add("客户请求只是意图；客户回应是外部事实；只有 payments 才是真实到账。");
+        notes.add("董事会授权不等于已执行：waivers 里 authorized 与 consumed 分列。");
+        notes.add("开工不等于完工：工单状态与合同 completedUnits/acceptedUnits/invoicedTranches 分列。");
+        notes.add("供应商应付为聚合口径（累计发生−累计支付），不按供应商拆分。");
+        notes.add("周期治理只显示真实采样、评分、草稿、批准、授权与公开版本；已排程不等于已执行，"
+                + "未到期/未发生的截止与披露不补。");
+        notes.add("公开财报正文原样取自已发布版本；累计收入/累计成本是开运以来口径，不是单期发生额。");
+
+        Map<String, Object> report = new LinkedHashMap<>();
+        List<Map<String, Object>> seatRows = new ArrayList<>();
+        List<Map<String, Object>> appointmentRows = new ArrayList<>();
+        List<Map<String, Object>> contractRows = new ArrayList<>();
+        List<Map<String, Object>> workOrderRows = new ArrayList<>();
+        List<Map<String, Object>> budgetRows = new ArrayList<>();
+        List<Map<String, Object>> commitmentRows = new ArrayList<>();
+        List<Map<String, Object>> meetingRows = new ArrayList<>();
+        List<Map<String, Object>> requestRows = new ArrayList<>();
+        List<Map<String, Object>> responseRows = new ArrayList<>();
+        List<Map<String, Object>> paymentRows = new ArrayList<>();
+        List<Map<String, Object>> waiverRows = new ArrayList<>();
+        List<Map<String, Object>> taskRows = new ArrayList<>();
+        List<Map<String, Object>> reportRows = new ArrayList<>();
+
+        // ---- 董事会（制造来自 governance 单例，工程来自 engineering.boards：同一个统一查询）
+        BoardRun board = current.boardOfCompany(selected).orElse(null);
+        if (board != null) {
+            BoardModel.Charter charter = board.board().charter();
+            for (BoardModel.Seat seat : charter.seats()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("seatId", seat.seatId());
+                row.put("partyId", seat.partyId());
+                row.put("partyName", partyName(registry, seat.partyId()));
+                row.put("chair", seat.seatId().equals(charter.chairSeatId()));
+                seatRows.add(row);
+            }
+            List<BoardModel.Meeting> meetings = new ArrayList<>(board.board().meetings().values());
+            meetings.sort(Comparator.comparingLong(BoardModel.Meeting::createdAt)
+                    .thenComparing(BoardModel.Meeting::meetingId).reversed());
+            for (BoardModel.Meeting meeting : meetings) {
+                meetingRows.add(meetingRow(meeting));
+            }
+            for (BoardModel.Budget budget : board.board().budgets()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("period", num(budget.period()));
+                row.put("category", budget.category().name());
+                row.put("cap", dec(budget.cap()));
+                budgetRows.add(row);
+            }
+            for (BoardModel.Commitment commitment : board.board().commitments()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("commitmentId", commitment.commitmentId());
+                row.put("period", num(commitment.period()));
+                row.put("category", commitment.category().name());
+                row.put("reserved", dec(commitment.reserved()));
+                row.put("spent", dec(commitment.spent()));
+                row.put("released", dec(commitment.released()));
+                row.put("outstanding", dec(commitment.outstanding()));
+                row.put("status", commitment.status().name());
+                commitmentRows.add(row);
+            }
+            for (BoardRun.Report entry : board.reports().values()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("source", "GOVERNANCE");
+                row.put("taskId", entry.taskId());
+                row.put("commandId", entry.commandId());
+                row.put("kind", entry.kind());
+                row.put("accepted", entry.accepted());
+                row.put("reason", entry.reason());
+                row.put("subjectId", entry.meetingId());
+                row.put("timeMillis", num(entry.timeMillis()));
+                row.put("position", num(entry.position()));
+                reportRows.add(row);
+            }
+            report.put("charterQuorum", Integer.toString(charter.quorum()));
+            report.put("chairSeatId", charter.chairSeatId());
+            report.put("meetingCount", Integer.toString(meetings.size()));
+        }
+
+        // ---- 该公司真实任职（RoleAccess，撤销只结束授权）
+        RoleRun roles = snapshot.roles().orElse(null);
+        if (roles != null) {
+            for (RoleAccess.Appointment appointment : roles.access().appointments()) {
+                if (!appointment.organizationPartyId().equals(selected)) {
+                    continue;
+                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("appointmentId", appointment.id());
+                row.put("personPartyId", appointment.personPartyId());
+                row.put("personName", partyName(registry, appointment.personPartyId()));
+                row.put("role", appointment.role().name());
+                row.put("startsAt", num(appointment.startsAt()));
+                row.put("endsAt", num(appointment.endsAt()));
+                row.put("effectiveEnd", num(appointment.effectiveEnd()));
+                row.put("revokedAt", appointment.revokedAt() == null
+                        ? null : num(appointment.revokedAt()));
+                row.put("active", appointment.activeAt(snapshot.timeMillis()));
+                row.put("status", appointmentStatus(appointment, snapshot.timeMillis()));
+                appointmentRows.add(row);
+            }
+            appointmentRows.sort(Comparator.comparing(row -> String.valueOf(row.get("appointmentId"))));
+        }
+
+        EngineeringModel.State state = run == null ? null : run.stateOf(selected);
+        if ("ENGINEERING".equals(option.template()) && state != null) {
+            WorldRuntime.CompanyAudit audit = current.companyAudit(selected).orElse(null);
+            WorldRuntime.CustomerAudit customer = current.customerAudit(selected).orElse(null);
+            if (audit != null) {
+                report.put("companyCash", dec(audit.companyCash()));
+                report.put("arCurrent", dec(audit.arCurrent()));
+                report.put("arRetention", dec(audit.arRetention()));
+                report.put("payable", dec(audit.payable()));
+                report.put("allowance", dec(audit.allowance()));
+                report.put("obligation", dec(audit.obligation()));
+                report.put("equity", dec(audit.equity()));
+                report.put("balanced", audit.balanced());
+                report.put("contractCount", Integer.toString(audit.contractCount()));
+                report.put("workOrderCount", Integer.toString(audit.workOrderCount()));
+            }
+            BigDecimal revenue = zeroMoney();
+            BigDecimal cogs = zeroMoney();
+            BigDecimal impairment = zeroMoney();
+            BigDecimal recovery = zeroMoney();
+            BigDecimal termination = zeroMoney();
+            BigDecimal waiverLoss = zeroMoney();
+            for (EngineeringModel.Claim claim : state.claims().values()) {
+                revenue = revenue.add(claim.revenue());
+                cogs = cogs.add(claim.cogs());
+                impairment = impairment.add(claim.impairmentLoss());
+                recovery = recovery.add(claim.recoveryIncome());
+                termination = termination.add(claim.terminationLoss());
+                waiverLoss = waiverLoss.add(claim.waiverLoss());
+            }
+            report.put("revenue", dec(revenue));
+            report.put("cogs", dec(cogs));
+            report.put("impairmentLoss", dec(impairment));
+            report.put("recoveryIncome", dec(recovery));
+            report.put("terminationLoss", dec(termination));
+            report.put("waiverLoss", dec(waiverLoss));
+            report.put("payableScope", "AGGREGATE_SUPPLIER");
+            if (customer != null) {
+                report.put("customerAccountId", customer.customerAccountId());
+                report.put("period", num(customer.period()));
+                report.put("periodBudgetLeft", dec(customer.periodBudgetLeft()));
+                report.put("periodClosed", customer.periodClosed());
+                report.put("memo", dec(customer.memo()));
+                for (EngineeringRun.Customer.Request request : customer.requests()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("requestId", request.requestId());
+                    row.put("contractId", request.contractId());
+                    row.put("trancheIndex", Integer.toString(request.trancheIndex()));
+                    row.put("kind", request.kind());
+                    row.put("atMillis", num(request.atMillis()));
+                    row.put("personPartyId", request.personPartyId());
+                    row.put("answered", request.answered());
+                    row.put("answeredByEventId", request.answeredByEventId());
+                    row.put("answeredAtMillis", request.answeredAtMillis() == 0
+                            ? null : num(request.answeredAtMillis()));
+                    requestRows.add(row);
+                }
+                for (EngineeringRun.Customer.Response response : customer.responses()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("eventId", response.eventId());
+                    row.put("contractId", response.contractId());
+                    row.put("trancheIndex", Integer.toString(response.trancheIndex()));
+                    row.put("kind", response.kind());
+                    row.put("outcome", response.outcome());
+                    row.put("requestId", response.requestId());
+                    row.put("atMillis", num(response.atMillis()));
+                    row.put("amount", dec(response.amount()));
+                    row.put("currentOutstanding", dec(response.currentOutstanding()));
+                    row.put("retentionOutstanding", dec(response.retentionOutstanding()));
+                    row.put("reason", response.reason());
+                    responseRows.add(row);
+                }
+                for (EngineeringRun.Customer.Payment payment : customer.payments()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("eventId", payment.eventId());
+                    row.put("poolAccountId", payment.poolAccountId());
+                    row.put("period", num(payment.period()));
+                    row.put("contractId", payment.contractId());
+                    row.put("trancheIndex", Integer.toString(payment.trancheIndex()));
+                    row.put("kind", payment.kind());
+                    row.put("amount", dec(payment.amount()));
+                    row.put("atMillis", num(payment.atMillis()));
+                    paymentRows.add(row);
+                }
+                for (WorldRuntime.WaiverView waiver : customer.waivers()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("waiverId", waiver.waiverId());
+                    row.put("contractId", waiver.contractId());
+                    row.put("customerPartyId", waiver.customerPartyId());
+                    row.put("amount", dec(waiver.amount()));
+                    row.put("purpose", waiver.purpose());
+                    row.put("authorized", waiver.authorized());
+                    row.put("consumed", waiver.consumed());
+                    row.put("authorizationRef", waiver.authorizationRef());
+                    row.put("meetingId", waiver.meetingId());
+                    waiverRows.add(row);
+                }
+            }
+            for (EngineeringModel.Contract contract : state.contracts().values()) {
+                EngineeringModel.Claim claim = state.claims().get(contract.contractId());
+                long totalUnits = 0L;
+                for (long units : contract.terms().trancheUnits()) {
+                    totalUnits += units;
+                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("contractId", contract.contractId());
+                row.put("unitPrice", dec(contract.unitPrice()));
+                row.put("unitCost", dec(contract.unitCost()));
+                row.put("advanceBp", Integer.toString(contract.terms().advanceBp()));
+                row.put("retentionBp", Integer.toString(contract.terms().retentionBp()));
+                row.put("netDays", Integer.toString(contract.terms().netDays()));
+                row.put("retentionNetDays", Integer.toString(contract.terms().retentionNetDays()));
+                row.put("totalUnits", num(totalUnits));
+                row.put("completedUnits", num(contract.completedUnits()));
+                row.put("acceptedUnits", num(contract.acceptedUnits()));
+                row.put("invoicedTranches", Integer.toString(contract.invoicedTranches()));
+                row.put("advanceReceived", dec(contract.advanceReceived()));
+                row.put("retentionWithheld", dec(contract.retentionWithheld()));
+                row.put("signedAt", num(contract.signedAt()));
+                row.put("status", contract.status().name());
+                if (claim != null) {
+                    row.put("revenue", dec(claim.revenue()));
+                    row.put("cogs", dec(claim.cogs()));
+                    row.put("contractAsset", dec(claim.contractAsset()));
+                    row.put("contractLiability", dec(claim.contractLiability()));
+                    row.put("arCurrent", dec(claim.arCurrent()));
+                    row.put("arRetention", dec(claim.arRetention()));
+                    row.put("allowance", dec(claim.allowance()));
+                    row.put("memo", dec(claim.memo()));
+                }
+                contractRows.add(row);
+            }
+            contractRows.sort(Comparator.comparing(
+                    (Map<String, Object> row) -> String.valueOf(row.get("contractId"))));
+            for (EngineeringModel.WorkOrder order : state.workOrders().values()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("workId", order.workId());
+                row.put("contractId", order.contractId());
+                row.put("units", num(order.units()));
+                row.put("startedAt", num(order.startedAt()));
+                row.put("completesAt", num(order.completesAt()));
+                row.put("totalCost", dec(order.totalCost()));
+                row.put("laborCost", dec(order.laborCost()));
+                row.put("remainingCost", dec(order.remainingCost()));
+                row.put("acceptedUnits", num(order.acceptedUnits()));
+                row.put("status", order.status().name());
+                workOrderRows.add(row);
+            }
+            for (EngineeringRun.Report entry : run.reports().values()) {
+                if (!entry.companyPartyId().equals(selected)) {
+                    continue;
+                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("source", "ENGINEERING");
+                row.put("taskId", entry.taskId());
+                row.put("commandId", entry.commandId());
+                row.put("kind", entry.kind());
+                row.put("accepted", entry.accepted());
+                row.put("reason", entry.reason());
+                row.put("subjectId", entry.companyPartyId());
+                row.put("timeMillis", num(entry.timeMillis()));
+                row.put("position", num(entry.position()));
+                reportRows.add(row);
+            }
+            Set<String> engineeringKinds = Set.of(PendingTask.ENGINEERING_BOARD_V1,
+                    PendingTask.BOARD_ATTEND_V1, PendingTask.ENGINEERING_ACTION_V1,
+                    PendingTask.CUSTOMER_EVENT_V1);
+            boolean[] unattributed = {false};
+            taskRows.addAll(pendingTaskRows(snapshot, selected, engineeringKinds, unattributed));
+            if (unattributed[0]) {
+                notes.add("另有 " + unattributed[0] + " 条工程待办没有可归属的公司字段，未在本页显示。");
+            }
+        } else {
+            // 制造模板：经营明细沿用制造台账，工程专属区块明确标注未实现。
+            ManufacturingRun manufacturing = snapshot.manufacturing().orElse(null);
+            if (manufacturing != null) {
+                try {
+                    ManufacturingModel.Report value = ManufacturingModel.report(
+                            manufacturing.ledger(), snapshot.accounts(),
+                            dividendPosition(snapshot.dividends().orElse(null)));
+                    report.put("companyCash", dec(value.companyCash()));
+                    report.put("arCurrent", dec(value.receivableOutstanding()));
+                    report.put("payable", dec(value.payableOutstanding()));
+                    report.put("revenue", dec(value.revenue()));
+                    report.put("cogs", dec(value.costOfGoodsSold()));
+                    report.put("equity", dec(value.equity()));
+                    report.put("balanced", value.balanced());
+                    report.put("templateNote", "MANUFACTURING_TEMPLATE");
+                } catch (RuntimeException invalid) {
+                    notes.add("制造报表派生失败：" + (invalid.getMessage() == null
+                            ? invalid.getClass().getSimpleName() : invalid.getMessage()));
+                }
+                List<ManufacturingModel.SalesContract> contracts =
+                        new ArrayList<>(manufacturing.ledger().contracts().values());
+                contracts.sort(Comparator.comparingLong(ManufacturingModel.SalesContract::signedAt)
+                        .thenComparing(ManufacturingModel.SalesContract::contractId).reversed());
+                for (ManufacturingModel.SalesContract contract : contracts) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("contractId", contract.contractId());
+                    row.put("quantity", num(contract.quantity()));
+                    row.put("unitPrice", dec(contract.unitPrice()));
+                    row.put("signedAt", num(contract.signedAt()));
+                    row.put("deliveredQuantity", num(contract.deliveredQuantity()));
+                    row.put("remainingQuantity", num(contract.remainingQuantity()));
+                    row.put("period", num(contract.period()));
+                    contractRows.add(row);
+                }
+                List<ManufacturingModel.Receivable> receivables =
+                        new ArrayList<>(manufacturing.ledger().receivables().values());
+                receivables.sort(Comparator.comparingLong(ManufacturingModel.Receivable::recognizedAt)
+                        .thenComparing(ManufacturingModel.Receivable::receivableId).reversed());
+                for (ManufacturingModel.Receivable receivable : receivables) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("source", "MANUFACTURING_RECEIVABLE");
+                    row.put("receivableId", receivable.receivableId());
+                    row.put("contractId", receivable.contractId());
+                    row.put("amount", dec(receivable.amount()));
+                    row.put("outstanding", dec(receivable.outstanding()));
+                    row.put("dueAt", num(receivable.dueAt()));
+                    row.put("status", receivable.status().name());
+                    paymentRows.add(row);
+                }
+            }
+            report.put("workOrderScope", "NOT_APPLICABLE");
+            report.put("retentionScope", "NOT_APPLICABLE");
+            report.put("memoScope", "NOT_APPLICABLE");
+            report.put("customerScope", "NOT_APPLICABLE");
+            // 制造公司的董事会待办同样真实可见：已排程不等于已完成。
+            Set<String> pendingKinds = Set.of(PendingTask.ENGINEERING_BOARD_V1,
+                    PendingTask.BOARD_ATTEND_V1, PendingTask.ENGINEERING_ACTION_V1,
+                    PendingTask.CUSTOMER_EVENT_V1);
+            boolean[] pendingUnattributed = {false};
+            taskRows.addAll(pendingTaskRows(snapshot, selected, pendingKinds,
+                    pendingUnattributed));
+            if (pendingUnattributed[0]) {
+                notes.add("另有 " + pendingUnattributed[0] + " 条待办没有可归属的公司字段，未在本页显示。");
+            }
+            notes.add("制造模板没有工程工单、质保与客户池：这些区块标为该经营模板不适用，不显示数字也不写 0 冒充。");
+            notes.add("制造经营明细（采购/生产/费用）请看「公司经营与治理」页，本页只做同公司并排对照。");
+        }
+
+        sortReportsNewestFirst(reportRows);
+        Section seats = bounded(seatRows);
+        Section appointments = bounded(appointmentRows);
+        Section contracts = bounded(contractRows);
+        Section workOrders = bounded(workOrderRows);
+        Section budgets = bounded(budgetRows);
+        Section commitments = bounded(commitmentRows);
+        Section meetings = bounded(meetingRows);
+        Section requests = bounded(requestRows);
+        Section responses = bounded(responseRows);
+        Section payments = bounded(paymentRows);
+        Section waivers = bounded(waiverRows);
+        Section tasks = bounded(taskRows);
+        Section reports = bounded(reportRows);
+        Map<String, Object> periodic = periodicViewOf(current, snapshot, registry, selected, "", true);
+        return new EngineeringView(runId, position, time, snapshot.lastPhase(), captured,
+                run != null, run == null ? ENGINEERING_DISABLED_NOTE : null, List.copyOf(options),
+                selected, partyName(registry, selected), option.template(), report, seats,
+                appointments, contracts, workOrders, budgets, commitments, meetings, requests,
+                responses, payments, waivers, tasks, reports, periodic, engineeringSources(), notes);
+    }
+
+    /**
+     * 该公司开局治理说明的已发布版本：只按固定文档标识在该帧 Information 里取最新已发布版本，
+     * 没有就返回 null（不猜、不造）。
+     */
+    private static InformationModel.DocumentVersion governanceNoteOf(
+            InformationModel.State information, String companyPartyId, long now) {
+        if (information == null || companyPartyId == null || companyPartyId.isBlank()) {
+            return null;
+        }
+        String docId = "company-governance:" + companyPartyId + ":1";
+        for (InformationModel.Document document : information.documents()) {
+            if (!document.docId().equals(docId)) {
+                continue;
+            }
+            InformationModel.DocumentVersion latest = null;
+            for (InformationModel.DocumentVersion version : document.versions()) {
+                if (version.publishedAt() <= now) {
+                    latest = version;
+                }
+            }
+            return latest;
+        }
+        return null;
+    }
+
+    /**
+     * 该公司已排程/在办的董事与经营待办（只读投影，state 恒为 SCHEDULED）。
+     *
+     * <p>章程公司（制造）也走同一投影：真实待办不因公司类型被隐藏；BEGIN 屏障以其内层动作
+     * 归属公司，无法归属的只计数，不在页面猜测归属。</p>
+     *
+     * @param snapshot       同一确认快照
+     * @param companyPartyId 公司
+     * @param kinds          直接归属该公司的任务种类
+     * @param unattributed   出参：无可归属公司字段的条数
+     * @return 待办行
+     */
+    private static List<Map<String, Object>> pendingTaskRows(WorldRuntime.Snapshot snapshot,
+            String companyPartyId, Set<String> kinds, boolean[] unattributed) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (PendingTask task : snapshot.pending()) {
+            String owner;
+            String tool;
+            String wrappedKind = null;
+            String wrapperDue = null;
+            if (kinds.contains(task.kind())) {
+                owner = payloadCompany(task.payload());
+                tool = payloadText(task.payload(), "action");
+            } else if (PendingTask.ENGINEERING_BEGIN_V1.equals(task.kind())) {
+                BeginWrapper wrapper = beginWrapper(task.payload());
+                if (wrapper == null) {
+                    unattributed[0] = true;
+                    continue;
+                }
+                owner = payloadCompany(wrapper.payload());
+                tool = payloadText(wrapper.payload(), "action");
+                wrappedKind = wrapper.targetKind();
+                wrapperDue = num(wrapper.dueMillis());
+            } else {
+                continue;
+            }
+            if (!companyPartyId.equals(owner)) {
+                if (owner == null || owner.isEmpty()) {
+                    unattributed[0] = true;
+                }
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("taskId", task.taskId());
+            row.put("dueTimeMillis", num(task.dueTimeMillis()));
+            row.put("phase", task.phase().name());
+            row.put("kind", task.kind());
+            row.put("wrappedKind", wrappedKind);
+            row.put("wrapperDueMillis", wrapperDue);
+            row.put("tool", tool);
+            row.put("state", "SCHEDULED");
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /**
+     * 周期治理只读投影：把同一帧里真实的采样、会议、评分、草稿、批准、授权、公开版本与
+     * MISSED 原样组成页面区块。God 与董事/经理共用同一实现，差异只在 God 额外拿到
+     * 世界位置/摘要与全部席位的原始评分；角色视图仍只统计本人动作，不凭空补 0 或总分。
+     *
+     * @param current         当前世界
+     * @param snapshot        同一确认快照
+     * @param registry        开局登记表（姓名显示）
+     * @param companyPartyId  公司
+     * @param personPartyId   会话人物；God 传空串
+     * @param god             是否 God 审计
+     * @return 只读区块；没有周期状态时 available=false
+     */
+    private Map<String, Object> periodicViewOf(WorldRuntime current, WorldRuntime.Snapshot snapshot,
+            OpeningRegistry registry, String companyPartyId, String personPartyId, boolean god) {
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("companyPartyId", companyPartyId);
+        view.put("companyName", displayName(registry, companyPartyId));
+        java.util.Optional<PeriodicModel.CompanyPeriods> found = current.periodicOf(companyPartyId);
+        if (found.isEmpty()) {
+            view.put("available", false);
+            view.put("reason", "NO_PERIODIC_STATE");
+            return view;
+        }
+        PeriodicModel.CompanyPeriods periods = found.get();
+        BoardRun board = current.boardOfCompany(companyPartyId).orElse(null);
+        BoardModel.Charter charter = board == null ? null : board.board().charter();
+        Map<String, String> seatPerson = new LinkedHashMap<>();
+        Map<String, String> personSeat = new LinkedHashMap<>();
+        if (charter != null) {
+            for (BoardModel.Seat seat : charter.seats()) {
+                seatPerson.put(seat.seatId(), seat.partyId());
+                personSeat.put(seat.partyId(), seat.seatId());
+            }
+        }
+        String me = personPartyId == null ? "" : personPartyId;
+        String mySeat = me.isBlank() ? null : personSeat.get(me);
+        boolean manager = !me.isBlank() && current.isActiveManager(companyPartyId, me,
+                snapshot.timeMillis());
+        boolean seatHolder = mySeat != null;
+        PeriodicModel.Access access = current.periodicAccess();
+        InformationModel.State information = snapshot.information()
+                .map(run -> run.information()).orElse(null);
+        Map<Long, List<Map<String, Object>>> evidenceByPeriod = new LinkedHashMap<>();
+        Map<Long, String> publicDocByPeriod = new LinkedHashMap<>();
+        Map<Long, Map<String, Object>> roleRowByPeriod = new LinkedHashMap<>();
+        // God 审计走 periodicGodView 的自有行：人物投影对无席/无经理者按设计返回空表，
+        // 不能拿它当 God 的证据来源（否则会误报“无合格证据”）。人物仍只消费自己的投影。
+        Map<String, Object> periodicSource = god
+                ? current.periodicGodView(companyPartyId)
+                : current.periodicRoleView(me, companyPartyId);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> roleRows = (List<Map<String, Object>>) periodicSource
+                .getOrDefault("periods", List.of());
+        for (Map<String, Object> roleRow : roleRows) {
+            Object period = roleRow.get("period");
+            if (!(period instanceof Number number)) {
+                continue;
+            }
+            roleRowByPeriod.put(number.longValue(), roleRow);
+            Object evidence = roleRow.get("evidence");
+            if (evidence instanceof List<?> list) {
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> rows = (List<Map<String, Object>>) list;
+                evidenceByPeriod.put(number.longValue(), rows);
+            }
+            Object publicDoc = roleRow.get("publicDocId");
+            if (publicDoc instanceof String doc && !doc.isBlank()) {
+                publicDocByPeriod.put(number.longValue(), doc);
+            }
+        }
+
+        view.put("available", true);
+        view.put("god", god);
+        view.put("seat", seatHolder);
+        view.put("manager", manager);
+        view.put("mySeatId", mySeat);
+        view.put("chair", mySeat != null && charter != null
+                && mySeat.equals(charter.chairSeatId()));
+        view.put("seatCount", charter == null ? null : Integer.toString(charter.seats().size()));
+        view.put("quorum", charter == null ? null : Integer.toString(charter.quorum()));
+        List<Map<String, Object>> seatView = new ArrayList<>();
+        if (charter != null) {
+            for (BoardModel.Seat seat : charter.seats()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("seatId", seat.seatId());
+                row.put("personPartyId", seat.partyId());
+                row.put("personName", displayName(registry, seat.partyId()));
+                row.put("chair", seat.seatId().equals(charter.chairSeatId()));
+                seatView.add(row);
+            }
+        }
+        view.put("seats", seatView);
+        view.put("companyPartyId", companyPartyId);
+        Map<String, Object> policy = new LinkedHashMap<>();
+        policy.put("policyId", periods.policy().policyId());
+        policy.put("periodMillis", num(periods.policy().periodMillis()));
+        policy.put("reviewEveryPeriods", Integer.toString(periods.policy().reviewEveryPeriods()));
+        policy.put("formalEveryPeriods", Integer.toString(periods.policy().formalEveryPeriods()));
+        policy.put("materialLeadMillis", num(periods.policy().materialLeadMillis()));
+        policy.put("reviewWindowMillis", num(periods.policy().reviewWindowMillis()));
+        policy.put("disclosureWindowMillis", num(periods.policy().disclosureWindowMillis()));
+        policy.put("minCompleteSeats", Integer.toString(PeriodicModel.MIN_COMPLETE_SEATS));
+        view.put("policy", policy);
+
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (PeriodicModel.Snapshot snapshotRow : periods.snapshots()) {
+            long period = snapshotRow.period();
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("period", num(period));
+            row.put("kind", period % PeriodicModel.FORMAL_EVERY_PERIODS == 0
+                    ? "QUARTERLY" : "MONTHLY");
+            row.put("capturedAt", num(snapshotRow.capturedAt()));
+            long deadline = -1L;
+            try {
+                deadline = Math.addExact(snapshotRow.capturedAt(),
+                        periods.policy().disclosureWindowMillis());
+            } catch (ArithmeticException overflow) {
+                deadline = -1L;
+            }
+            row.put("deadline", deadline < 0 ? null : num(deadline));
+            row.put("materialDocId", snapshotRow.materialDocId());
+            row.put("materialVersion", num(snapshotRow.materialVersion()));
+            if (god) {
+                row.put("position", num(snapshotRow.position()));
+                row.put("basisDigest", snapshotRow.basisDigest());
+                row.put("statementDigest", snapshotRow.statementDigest());
+            }
+            if (seatHolder) {
+                row.put("myReadMaterial", access.hasRead(me, snapshotRow.materialDocId(),
+                        snapshotRow.materialVersion(), snapshot.timeMillis()));
+                row.put("myRecallEligible", access.recallEligible(me, snapshotRow.materialDocId(),
+                        snapshotRow.materialVersion(), snapshot.timeMillis()));
+            }
+
+            Map<String, Long> asOfByRef = periodicEvidenceAsOf(periods, companyPartyId, period,
+                    snapshotRow.capturedAt());
+            List<Map<String, Object>> evidence = new ArrayList<>();
+            for (Map<String, Object> entry : evidenceByPeriod.getOrDefault(period, List.of())) {
+                Object refValue = entry.get("ref");
+                if (!(refValue instanceof String ref) || ref.isBlank()) {
+                    continue;
+                }
+                Long exact = asOfByRef.get(ref);
+                if (ref.startsWith("disclosure:") && exact == null) {
+                    // 后端人物投影没有给出该披露证据的成熟时点：宁可不提供，也不猜历史。
+                    continue;
+                }
+                Map<String, Object> copy = new LinkedHashMap<>();
+                copy.put("ref", ref);
+                copy.put("dimensions", entry.get("dimensions"));
+                copy.put("asOf", num(exact == null ? snapshotRow.capturedAt() : exact));
+                evidence.add(copy);
+            }
+            row.put("evidence", evidence);
+            List<Map<String, Object>> unavailable = new ArrayList<>();
+            for (BoardModel.Dimension dimension : BoardModel.Dimension.values()) {
+                boolean covered = false;
+                for (Map<String, Object> entry : evidence) {
+                    Object dimensions = entry.get("dimensions");
+                    if (dimensions instanceof List<?> list
+                            && list.contains(dimension.name())) {
+                        covered = true;
+                    }
+                }
+                if (!covered) {
+                    Map<String, Object> miss = new LinkedHashMap<>();
+                    miss.put("dimension", dimension.name());
+                    miss.put("reason", dimension == BoardModel.Dimension.LONG_TERM_INVESTMENT
+                            ? "DIMENSION_NOT_AVAILABLE" : "NO_ELIGIBLE_EVIDENCE");
+                    unavailable.add(miss);
+                }
+            }
+            row.put("unavailableDimensions", unavailable);
+            // 区分“无合格证据”（真缺项）和“有证据但还没人评分”（进度）：未评分不等于不存在。
+            // God 统计全席；人物只统计本人，避免把“别人已评分”说成自己的进度。
+            Set<String> scoredDimensions = new LinkedHashSet<>();
+            for (PeriodicModel.Ballot ballot : periods.ballots()) {
+                if (ballot.period() != period) {
+                    continue;
+                }
+                if (!god && !ballot.personPartyId().equals(me)) {
+                    continue;
+                }
+                for (BoardModel.EvidenceMetric metric : ballot.metrics()) {
+                    scoredDimensions.add(metric.dimension().name());
+                }
+            }
+            List<Map<String, Object>> dimensionStates = new ArrayList<>();
+            for (BoardModel.Dimension dimension : BoardModel.Dimension.values()) {
+                boolean hasEvidence = false;
+                for (Map<String, Object> entry : evidence) {
+                    Object dimensions = entry.get("dimensions");
+                    if (dimensions instanceof List<?> list && list.contains(dimension.name())) {
+                        hasEvidence = true;
+                    }
+                }
+                boolean scored = scoredDimensions.contains(dimension.name());
+                String state;
+                if (hasEvidence) {
+                    state = scored ? "SCORED" : "AWAITING_SCORE";
+                } else if (dimension == BoardModel.Dimension.LONG_TERM_INVESTMENT) {
+                    state = "DIMENSION_NOT_AVAILABLE";
+                } else {
+                    state = "NO_ELIGIBLE_EVIDENCE";
+                }
+                Map<String, Object> stateRow = new LinkedHashMap<>();
+                stateRow.put("dimension", dimension.name());
+                stateRow.put("hasEvidence", hasEvidence);
+                stateRow.put("scored", scored);
+                stateRow.put("state", state);
+                dimensionStates.add(stateRow);
+            }
+            row.put("dimensionStates", dimensionStates);
+            row.put("dimensionScope", god ? "ALL_SEATS" : "MYSELF");
+
+            BoardModel.Meeting meeting = board == null ? null
+                    : board.board().meeting(snapshotRow.meetingId());
+            if (meeting != null) {
+                Map<String, Object> meetingView = new LinkedHashMap<>();
+                meetingView.put("meetingId", meeting.meetingId());
+                meetingView.put("topic", meeting.topic().name());
+                meetingView.put("status", meeting.status().name());
+                meetingView.put("convenerSeatId", meeting.convenerSeatId());
+                meetingView.put("createdAt", num(meeting.createdAt()));
+                meetingView.put("materialDeadline", num(meeting.materialDeadline()));
+                meetingView.put("opensAt", num(meeting.opensAt()));
+                meetingView.put("closesAt", num(meeting.closesAt()));
+                meetingView.put("attendees", seatRows(meeting.attendeeSeatIds(), seatPerson,
+                        registry));
+                meetingView.put("recused", seatRows(meeting.recusedSeatIds(), seatPerson,
+                        registry));
+                meetingView.put("attendeeCount",
+                        Integer.toString(meeting.attendeeSeatIds().size()));
+                row.put("meeting", meetingView);
+            }
+
+            Map<String, Object> roleRow = roleRowByPeriod.getOrDefault(period, Map.of());
+            List<Map<String, Object>> draftRows = new ArrayList<>();
+            Map<String, Object> latestDraft = null;
+            if (god) {
+                List<PeriodicModel.Draft> drafts = new ArrayList<>();
+                for (PeriodicModel.Draft draft : periods.drafts()) {
+                    if (draft.period() == period) {
+                        drafts.add(draft);
+                    }
+                }
+                for (PeriodicModel.Draft draft : drafts) {
+                    Map<String, Object> draftView = new LinkedHashMap<>();
+                    draftView.put("draftId", draft.draftId());
+                    draftView.put("docId", draft.docId());
+                    draftView.put("version", num(draft.version()));
+                    draftView.put("preparedBy", draft.preparedBy());
+                    draftView.put("preparedByName", displayName(registry, draft.preparedBy()));
+                    draftView.put("preparedAt", num(draft.preparedAt()));
+                    draftView.put("position", num(draft.position()));
+                    draftView.put("snapshotPosition", num(draft.snapshotPosition()));
+                    draftView.put("bodyDigest", draft.bodyDigest());
+                    List<Map<String, Object>> approvalRows = new ArrayList<>();
+                    for (PeriodicModel.Approval approval : periods.approvals()) {
+                        if (!approval.draftId().equals(draft.draftId())
+                                || approval.draftVersion() != draft.version()) {
+                            continue;
+                        }
+                        Map<String, Object> approvalView = new LinkedHashMap<>();
+                        approvalView.put("approverPersonId", approval.approverPersonId());
+                        approvalView.put("approverName",
+                                displayName(registry, approval.approverPersonId()));
+                        approvalView.put("approverSeatId", approval.approverSeatId());
+                        approvalView.put("approvedAt", num(approval.approvedAt()));
+                        approvalRows.add(approvalView);
+                    }
+                    draftView.put("approvals", approvalRows);
+                    draftView.put("approvalCount", Integer.toString(approvalRows.size()));
+                    draftView.put("requiredApprovals",
+                            Integer.toString(PeriodicModel.MIN_COMPLETE_SEATS));
+                    draftView.put("mine", !me.isBlank() && draft.preparedBy().equals(me));
+                    draftRows.add(draftView);
+                    latestDraft = draftView;
+                }
+            } else if (roleRow.get("myDraft") instanceof Map<?, ?> myDraft) {
+                // 人物页只消费后端 periodicRoleView 给出的本人可见草稿投影；不列他人批准明细。
+                Map<String, Object> draftView = new LinkedHashMap<>();
+                Object preparedBy = myDraft.get("preparedBy");
+                draftView.put("draftId", myDraft.get("draftId"));
+                draftView.put("docId", myDraft.get("docId"));
+                draftView.put("version", myDraft.get("version"));
+                draftView.put("preparedBy", preparedBy);
+                draftView.put("preparedByName", displayName(registry,
+                        preparedBy == null ? null : preparedBy.toString()));
+                draftView.put("preparedAt", myDraft.get("preparedAt"));
+                draftView.put("approvalCount", String.valueOf(myDraft.get("approvals")));
+                draftView.put("requiredApprovals",
+                        Integer.toString(PeriodicModel.MIN_COMPLETE_SEATS));
+                draftView.put("mine", !me.isBlank() && me.equals(preparedBy));
+                draftRows.add(draftView);
+                latestDraft = draftView;
+            }
+            row.put("drafts", draftRows);
+            if (latestDraft != null) {
+                row.put("latestDraft", latestDraft);
+            }
+            boolean myApproval = false;
+            if (god) {
+                for (PeriodicModel.Approval approval : periods.approvals()) {
+                    if (approval.period() == period && approval.approverPersonId().equals(me)) {
+                        myApproval = true;
+                    }
+                }
+            } else {
+                myApproval = Boolean.TRUE.equals(roleRow.get("myApproval"));
+            }
+            row.put("myApproval", myApproval);
+
+            Map<String, Object> scoreView = new LinkedHashMap<>();
+            PeriodicModel.Score aggregate = null;
+            for (PeriodicModel.Score score : periods.scores()) {
+                if (score.period() == period) {
+                    aggregate = score;
+                }
+            }
+            List<Map<String, Object>> ballotRows = new ArrayList<>();
+            for (PeriodicModel.Ballot ballot : periods.ballots()) {
+                if (ballot.period() != period) {
+                    continue;
+                }
+                if (!god && !ballot.personPartyId().equals(me)) {
+                    // 人物页不看其他董事的原始评分/理由；只看后端允许的本人选票与汇总。
+                    continue;
+                }
+                Map<String, Object> ballotView = new LinkedHashMap<>();
+                ballotView.put("seatId", ballot.seatId());
+                ballotView.put("personPartyId", ballot.personPartyId());
+                ballotView.put("personName", displayName(registry, ballot.personPartyId()));
+                ballotView.put("submittedAt", num(ballot.submittedAt()));
+                ballotView.put("status", ballot.reviewStatus().name());
+                Set<BoardModel.Dimension> present = new LinkedHashSet<>();
+                List<Map<String, Object>> metrics = new ArrayList<>();
+                for (BoardModel.EvidenceMetric metric : ballot.metrics()) {
+                    present.add(metric.dimension());
+                    Map<String, Object> metricView = new LinkedHashMap<>();
+                    metricView.put("dimension", metric.dimension().name());
+                    metricView.put("score", dec(metric.score()));
+                    metricView.put("sourceRef", metric.sourceRef());
+                    metricView.put("asOf", num(metric.asOf()));
+                    metrics.add(metricView);
+                }
+                List<String> missing = new ArrayList<>();
+                for (BoardModel.Dimension dimension : BoardModel.Dimension.values()) {
+                    if (!present.contains(dimension)) {
+                        missing.add(dimension.name());
+                    }
+                }
+                ballotView.put("missingDimensions", missing);
+                ballotView.put("metrics", metrics);
+                ballotView.put("rationale", ballot.rationale());
+                ballotView.put("mine", !me.isBlank() && ballot.personPartyId().equals(me));
+                ballotRows.add(ballotView);
+            }
+            scoreView.put("closed", aggregate != null);
+            if (aggregate != null) {
+                scoreView.put("status", aggregate.status().name());
+                scoreView.put("reason", aggregate.reason());
+                scoreView.put("seatCount", Integer.toString(aggregate.seatCount()));
+                scoreView.put("total", aggregate.total() == null ? null : dec(aggregate.total()));
+            } else {
+                scoreView.put("seatCount", god ? Integer.toString(ballotRows.size()) : null);
+                scoreView.put("total", null);
+            }
+            scoreView.put("ballots", ballotRows);
+            row.put("score", scoreView);
+
+            List<Map<String, Object>> authorizationRows = new ArrayList<>();
+            if (god) {
+                for (PeriodicModel.Authorization authorization : periods.authorizations()) {
+                    if (authorization.period() != period) {
+                        continue;
+                    }
+                    Map<String, Object> authorizationView = new LinkedHashMap<>();
+                    authorizationView.put("authorizationId", authorization.authorizationId());
+                    authorizationView.put("draftId", authorization.draftId());
+                    authorizationView.put("draftVersion", num(authorization.draftVersion()));
+                    authorizationView.put("publisherPersonId", authorization.publisherPersonId());
+                    authorizationView.put("publisherName",
+                            displayName(registry, authorization.publisherPersonId()));
+                    authorizationView.put("issuedAt", num(authorization.issuedAt()));
+                    authorizationView.put("expiresAt", num(authorization.expiresAt()));
+                    authorizationView.put("consumedAt", num(authorization.consumedAt()));
+                    String status;
+                    if (authorization.consumedAt() > 0) {
+                        status = "CONSUMED";
+                    } else if (snapshot.timeMillis() >= authorization.expiresAt()) {
+                        status = "EXPIRED";
+                    } else {
+                        status = "PENDING";
+                    }
+                    authorizationView.put("status", status);
+                    authorizationView.put("approvers", new ArrayList<>(
+                            authorization.approverPersonIds()));
+                    authorizationRows.add(authorizationView);
+                }
+            } else if (roleRow.get("pendingAuthorization") instanceof Map<?, ?> pending) {
+                // 只显示 periodicRoleView 已允许给本人的未消费授权；不列他人的历史 grant。
+                // 后端已给出可执行所需的草稿绑定（draftId/draftVersion）：原样保留给发布表单，
+                // 页面不再从 God 状态或自己的草稿列表猜这些值。
+                Map<String, Object> authorizationView = new LinkedHashMap<>();
+                authorizationView.put("authorizationId", pending.get("authorizationId"));
+                authorizationView.put("draftId", pending.get("draftId"));
+                authorizationView.put("draftVersion", pending.get("draftVersion"));
+                authorizationView.put("publisherPersonId", pending.get("publisherPersonId"));
+                Object publisher = pending.get("publisherPersonId");
+                authorizationView.put("publisherName", displayName(registry,
+                        publisher == null ? null : publisher.toString()));
+                authorizationView.put("expiresAt", pending.get("expiresAt"));
+                authorizationView.put("status", "PENDING");
+                // 经理也会看到本公司本期授权；只有指定发布人本人能真正消费它。
+                authorizationView.put("mine", !me.isBlank() && me.equals(
+                        publisher == null ? null : publisher.toString()));
+                authorizationRows.add(authorizationView);
+            }
+            row.put("authorizations", authorizationRows);
+
+            List<Map<String, Object>> releaseRows = new ArrayList<>();
+            PeriodicModel.Release latestRelease = null;
+            Long latestPublicVersion = null;
+            String releaseDocId = publicDocByPeriod.get(period);
+            for (PeriodicModel.Release release : periods.releases()) {
+                if (release.period() != period) {
+                    continue;
+                }
+                // 公开版本号取自已发布资料的真实文档版本：按该次发布的真实发布时刻定位，并与
+                // 被发草稿正文核对；定位不到就明确标未定位，不按发行条数或草稿次数推断。
+                InformationModel.DocumentVersion publicDoc =
+                        publicVersionOf(information, releaseDocId, release);
+                Long publicVersion = publicDoc == null ? null : publicDoc.version();
+                Map<String, Object> releaseView = new LinkedHashMap<>();
+                releaseView.put("publicDocId", releaseDocId);
+                releaseView.put("version", publicVersion == null ? null : num(publicVersion));
+                releaseView.put("publicVersion", publicVersion == null ? null : num(publicVersion));
+                releaseView.put("versionResolved", publicVersion != null);
+                // 草稿版本来自发布记录本身，与公开文档版本是两个真实概念，不互相代填。
+                releaseView.put("draftVersion", num(release.draftVersion()));
+                releaseView.put("publishedAt", num(release.publishedAt()));
+                releaseView.put("late", release.late());
+                releaseView.put("publisherPersonId", release.publisherPersonId());
+                releaseView.put("publisherName",
+                        displayName(registry, release.publisherPersonId()));
+                releaseView.put("title", publicDoc == null ? null : publicDoc.title());
+                if (god) {
+                    releaseView.put("authorizationId", release.authorizationId());
+                    releaseView.put("bodyDigest", release.bodyDigest());
+                    releaseView.put("bodyAvailable", publicDoc != null);
+                    releaseView.put("body", publicDoc == null ? null : publicDoc.body());
+                } else {
+                    // 历史已读（hasRead，永久）与当前可回忆（recallEligible，走冻结回忆阈值）
+                    // 分开表达：正文只在当前可回忆时给出，遗忘后需要重新阅读，不新造遗忘政策。
+                    boolean read = publicVersion != null && !me.isBlank()
+                            && access.hasRead(me, releaseDocId, publicVersion,
+                            snapshot.timeMillis());
+                    boolean recallable = read && access.recallEligible(me, releaseDocId,
+                            publicVersion, snapshot.timeMillis());
+                    releaseView.put("read", read);
+                    releaseView.put("recallable", recallable);
+                    releaseView.put("forgotten", read && !recallable);
+                    releaseView.put("bodyAvailable", recallable && publicDoc != null);
+                    releaseView.put("body", recallable && publicDoc != null
+                            ? publicDoc.body() : null);
+                    releaseView.put("requiresReading", !recallable);
+                }
+                releaseRows.add(releaseView);
+                latestRelease = release;
+                latestPublicVersion = publicVersion;
+            }
+            row.put("releases", releaseRows);
+            Map<String, Object> publication = new LinkedHashMap<>();
+            publication.put("publicDocId", publicDocByPeriod.get(period));
+            publication.put("released", !releaseRows.isEmpty());
+            // 这里是真实 release 记录条数；公开文档版本号另由 latestVersion/各版本行的
+            // publicVersion 给出，两者不互相代填。
+            publication.put("versions", Integer.toString(releaseRows.size()));
+            publication.put("latestVersion",
+                    latestPublicVersion == null ? null : num(latestPublicVersion));
+            publication.put("latestPublishedAt",
+                    latestRelease == null ? null : num(latestRelease.publishedAt()));
+            boolean late = false;
+            for (PeriodicModel.Release release : periods.releases()) {
+                if (release.period() == period && release.late()) {
+                    late = true;
+                }
+            }
+            publication.put("late", late);
+            boolean missed = false;
+            long missedAt = 0L;
+            for (PeriodicModel.Missed marker : periods.missed()) {
+                if (marker.period() == period) {
+                    missed = true;
+                    missedAt = marker.missedAt();
+                }
+            }
+            publication.put("missed", missed);
+            publication.put("missedAt", missedAt == 0L ? null : num(missedAt));
+            row.put("publication", publication);
+            row.put("corrections", Integer.toString(
+                    draftRows.size() > 1 || releaseRows.size() > 1 ? 1 : 0));
+
+            List<Map<String, Object>> pending = periodicPending(snapshot, companyPartyId, period,
+                    me, god);
+            row.put("pendingActions", pending);
+            rows.add(row);
+        }
+        view.put("periods", rows);
+        List<String> notes = new ArrayList<>();
+        notes.add("已排程动作只在 pendingActions 里显示为待执行；到期 FINISH 后同一期间行才会出现草稿/评分/公开版本。");
+        notes.add("缺维按每席实际提交的维度计算；不足三名完整有效席时不形成总分，不补 0。");
+        notes.add("公开正文原样取自已发布版本；更正会形成新草稿/新批准/新公开版本并保留旧版本。");
+        notes.add("公开版本号取自已发布资料的文档版本；草稿修订未发表不会增加公开版本，"
+                + "草稿版本与公开版本是两个概念。");
+        notes.add("本人正文按既有阅读与回忆口径给出：历史已读保留为标识，遗忘后需重新阅读才再次显示正文。");
+        view.put("notes", notes);
+        return view;
+    }
+
+    /** 席位清单转显示行；空席位保持空表，不补虚构席。 */
+    private static List<Map<String, Object>> seatRows(List<String> seatIds,
+            Map<String, String> seatPerson, OpeningRegistry registry) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (String seatId : seatIds) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("seatId", seatId);
+            String person = seatPerson.get(seatId);
+            row.put("personPartyId", person);
+            row.put("personName", displayName(registry, person));
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /** 登记姓名优先，没有登记时回退到稳定 partyId，不让页面出现空空白。 */
+    private static String displayName(OpeningRegistry registry, String partyId) {
+        String name = partyName(registry, partyId);
+        return name == null || name.isBlank() ? partyId : name;
+    }
+
+    /** 该期间仍未完成的周期任务；只显示真实排程，不把 SCHEDULED 当已完成。 */
+    private static List<Map<String, Object>> periodicPending(WorldRuntime.Snapshot snapshot,
+            String companyPartyId, long period, String personPartyId, boolean god) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (PendingTask task : snapshot.pending()) {
+            PeriodicActionPayload payload = null;
+            if (PendingTask.ENGINEERING_PERIODIC_V1.equals(task.kind())) {
+                payload = periodicPayload(task.payload());
+            } else if (PendingTask.ENGINEERING_BEGIN_V1.equals(task.kind())) {
+                BeginWrapper wrapper = beginWrapper(task.payload());
+                if (wrapper != null
+                        && PendingTask.ENGINEERING_PERIODIC_V1.equals(wrapper.targetKind())) {
+                    payload = periodicPayload(wrapper.payload());
+                }
+            }
+            if (payload == null || !payload.companyPartyId().equals(companyPartyId)
+                    || payload.period() != period) {
+                continue;
+            }
+            if (!god && !payload.personPartyId().equals(personPartyId)) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("taskId", task.taskId());
+            row.put("dueTimeMillis", num(task.dueTimeMillis()));
+            row.put("kind", task.kind());
+            row.put("action", payload.action());
+            row.put("personPartyId", payload.personPartyId());
+            row.put("state", "SCHEDULED");
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private static PeriodicActionPayload periodicPayload(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            return PAYLOAD_MAPPER.readValue(text, PeriodicActionPayload.class);
+        } catch (IOException | RuntimeException unreadable) {
+            return null;
+        }
+    }
+
+    /**
+     * 该次发布对应的公开文档真实版本；找不到返回 null（不按条数或草稿次数推断版本号）。
+     *
+     * <p>同一个公开文档的版本发布时间严格递增，因此用 release 的真实 {@code publishedAt}
+     * 定位是精确的；再用公开版本正文与所发草稿的 Information 正文核对一次，正文对不上就不认
+     * 这条映射。两者都来自真实文档记录，不读任何私有值。</p>
+     */
+    private static InformationModel.DocumentVersion publicVersionOf(
+            InformationModel.State information, String publicDocId,
+            PeriodicModel.Release release) {
+        if (information == null || publicDocId == null || publicDocId.isBlank()
+                || release == null) {
+            return null;
+        }
+        String draftBody = publicBody(information, release.docId(), release.version());
+        for (InformationModel.Document document : information.documents()) {
+            if (!document.docId().equals(publicDocId)) {
+                continue;
+            }
+            for (InformationModel.DocumentVersion version : document.versions()) {
+                if (version.publishedAt() != release.publishedAt()) {
+                    continue;
+                }
+                if (draftBody != null && !draftBody.equals(version.body())) {
+                    return null;
+                }
+                return version;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 该期证据引用 → 可提交的准确 asOf：披露维必须用对应 release 的真实发布时刻或
+     * MISSED 记录时刻；其余维度以该期采样截至时点为上界（账/合同/工单均已结算到期末）。
+     * 后端人物投影目前不逐条给证据时点，因此这里按同一公开事实重建；找不到就返回空，
+     * 调用方不得猜历史。
+     */
+    private static Map<String, Long> periodicEvidenceAsOf(PeriodicModel.CompanyPeriods periods,
+            String companyPartyId, long period, long capturedAt) {
+        Map<String, Long> times = new LinkedHashMap<>();
+        Map<Long, Integer> order = new LinkedHashMap<>();
+        for (PeriodicModel.Release release : periods.releases()) {
+            int index = order.merge(release.period(), 1, Integer::sum);
+            if (release.period() < period && release.publishedAt() <= capturedAt) {
+                times.put("disclosure:" + companyPartyId + ":" + release.period()
+                        + ":release:" + index, release.publishedAt());
+            }
+        }
+        for (PeriodicModel.Missed marker : periods.missed()) {
+            if (marker.period() < period && marker.missedAt() <= capturedAt) {
+                times.put("disclosure:" + companyPartyId + ":" + marker.period() + ":missed",
+                        marker.missedAt());
+            }
+        }
+        return times;
+    }
+
+    /** 公开版本正文：只从 InformationModel 的真实版本取，找不到返回 null（不编造）。 */
+    private static String publicBody(InformationModel.State information, String docId,
+            long version) {
+        if (information == null || docId == null) {
+            return null;
+        }
+        for (InformationModel.Document document : information.documents()) {
+            if (document.docId().equals(docId)) {
+                InformationModel.DocumentVersion found = document.at(version);
+                return found == null ? null : found.body();
+            }
+        }
+        return null;
+    }
+
+    private static Map<String, Object> meetingRow(BoardModel.Meeting meeting) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("meetingId", meeting.meetingId());
+        row.put("topic", meeting.topic().name());
+        row.put("convenerSeatId", meeting.convenerSeatId());
+        row.put("createdAt", num(meeting.createdAt()));
+        row.put("materialDeadline", num(meeting.materialDeadline()));
+        row.put("opensAt", num(meeting.opensAt()));
+        row.put("closesAt", num(meeting.closesAt()));
+        row.put("status", meeting.status().name());
+        row.put("attendees", String.join(",", meeting.attendeeSeatIds()));
+        row.put("recused", String.join(",", meeting.recusedSeatIds()));
+        row.put("materialCount", Integer.toString(meeting.materials().size()));
+        row.put("proposedLines", proposedLines(meeting.proposedLines()));
+        row.put("ballots", ballots(meeting.ballots()));
+        row.put("failureReason", meeting.failureReason());
+        return row;
+    }
+
+    /**
+     * 本人视角的工程/经营事实（单 writer 任务、单快照、只按真实岗位裁剪）。
+     *
+     * @param personPartyId 会话绑定人物
+     * @return 个人视图
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public PersonEngineeringView personEngineering(String personPartyId)
+            throws BusyException, Exception {
+        return call(() -> personEngineeringOf(readyNow(), personPartyId));
+    }
+
+    private PersonEngineeringView personEngineeringOf(WorldRuntime current, String personPartyId) {
+        WorldRuntime.Snapshot snapshot = current.snapshot();
+        OpeningRegistry registry = current.openingRegistry().orElse(null);
+        EngineeringRun run = snapshot.engineering().orElse(null);
+        String position = num(snapshot.position());
+        String time = num(snapshot.timeMillis());
+        String captured = num(System.currentTimeMillis());
+        List<Map<String, Object>> companies = new ArrayList<>();
+        List<String> notes = new ArrayList<>();
+        if (run == null) {
+            return new PersonEngineeringView(personPartyId, position, time, captured, false,
+                    ENGINEERING_DISABLED_NOTE, List.of(), List.of(ENGINEERING_DISABLED_NOTE));
+        }
+        // 章程公司（制造）与工程公司共用同一周期状态；旧选择器只遍历工程公司会把制造周期挡掉。
+        String manufacturingCompany = snapshot.governance()
+                .map(board -> board.board().charter().companyPartyId()).orElse(null);
+        if (manufacturingCompany != null) {
+            Map<String, Object> card = manufacturingPersonCard(current, snapshot, registry,
+                    manufacturingCompany, personPartyId);
+            if (card != null) {
+                companies.add(card);
+            }
+        }
+        for (String companyId : run.companyIds()) {
+            WorldRuntime.CompanyRoleView role = current.companyView(personPartyId, companyId)
+                    .orElse(null);
+            if (role == null) {
+                continue;
+            }
+            Map<String, Object> card = new LinkedHashMap<>();
+            card.put("companyId", companyId);
+            card.put("companyName", partyName(registry, companyId));
+            card.put("template", "ENGINEERING");
+            card.put("manager", role.manager());
+            card.put("tools", role.tools());
+            card.put("companyCash", dec(role.companyCash()));
+            card.put("arCurrent", dec(role.arCurrent()));
+            card.put("payable", dec(role.payable()));
+            card.put("contracts", role.contractIds());
+            if (role.manager()) {
+                WorldRuntime.CustomerRoleView customer =
+                        current.companyCustomerView(personPartyId, companyId).orElse(null);
+                if (customer != null) {
+                    Map<String, Object> view = new LinkedHashMap<>();
+                    // 外部客户的期间序号、预算余量、闭期状态与共享池账户标识都属于对方内部信息：
+                    // 本岗位没有披露依据，服务端直接不产出这些字段（不是发给浏览器再隐藏，也不补 0）。
+                    view.put("companyCash", dec(customer.companyCash()));
+                    view.put("arCurrent", dec(customer.arCurrent()));
+                    view.put("arRetention", dec(customer.arRetention()));
+                    view.put("memo", dec(customer.memo()));
+                    view.put("obligation", dec(customer.obligation()));
+                    // 外部客户的期间预算余量与闭期状态属于对方内部信息：本岗位没有披露依据，不发给浏览器。
+                    List<Map<String, Object>> requests = new ArrayList<>();
+                    for (EngineeringRun.Customer.Request request : customer.requests()) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("requestId", request.requestId());
+                        row.put("contractId", request.contractId());
+                        row.put("trancheIndex", Integer.toString(request.trancheIndex()));
+                        row.put("kind", request.kind());
+                        row.put("atMillis", num(request.atMillis()));
+                        row.put("answered", request.answered());
+                        requests.add(row);
+                    }
+                    List<Map<String, Object>> responses = new ArrayList<>();
+                    for (EngineeringRun.Customer.Response response : customer.responses()) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("eventId", response.eventId());
+                        row.put("contractId", response.contractId());
+                        row.put("trancheIndex", Integer.toString(response.trancheIndex()));
+                        row.put("kind", response.kind());
+                        row.put("outcome", response.outcome());
+                        row.put("amount", dec(response.amount()));
+                        row.put("currentOutstanding", dec(response.currentOutstanding()));
+                        row.put("retentionOutstanding", dec(response.retentionOutstanding()));
+                        row.put("atMillis", num(response.atMillis()));
+                        row.put("reason", response.reason());
+                        responses.add(row);
+                    }
+                    // 只给本公司实际到账，不给客户池账户标识，也不含其它公司的用款。
+                    List<Map<String, Object>> payments = new ArrayList<>();
+                    for (EngineeringRun.Customer.Payment payment
+                            : run.customer().paymentsOf(companyId)) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("eventId", payment.eventId());
+                        row.put("contractId", payment.contractId());
+                        row.put("trancheIndex", Integer.toString(payment.trancheIndex()));
+                        row.put("kind", payment.kind());
+                        row.put("amount", dec(payment.amount()));
+                        row.put("atMillis", num(payment.atMillis()));
+                        payments.add(row);
+                    }
+                    view.put("requests", requests);
+                    view.put("responses", responses);
+                    view.put("payments", payments);
+                    card.put("customer", view);
+                }
+                List<Map<String, Object>> waivers = new ArrayList<>();
+                for (BoardModel.DebtWaiver waiver : run.waiversOf(companyId)) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("waiverId", waiver.request().waiverId());
+                    row.put("contractId", waiver.request().contractId());
+                    row.put("amount", dec(waiver.request().amount()));
+                    row.put("purpose", waiver.request().purpose());
+                    row.put("authorized", waiver.authorized());
+                    row.put("consumed", waiver.consumed());
+                    row.put("authorizationRef", waiver.authorizationRef());
+                    row.put("meetingId", waiver.meetingId());
+                    waivers.add(row);
+                }
+                card.put("waivers", waivers);
+            }
+            BoardRun board = current.boardOfCompany(companyId).orElse(null);
+            if (board != null) {
+                BoardModel.Charter charter = board.board().charter();
+                String ownSeat = null;
+                for (BoardModel.Seat seat : charter.seats()) {
+                    if (seat.partyId().equals(personPartyId)) {
+                        ownSeat = seat.seatId();
+                    }
+                }
+                if (ownSeat != null) {
+                    card.put("seatId", ownSeat);
+                    card.put("chair", ownSeat.equals(charter.chairSeatId()));
+                    card.put("seatCount", Integer.toString(charter.seats().size()));
+                    card.put("quorum", Integer.toString(charter.quorum()));
+                    List<String> withAttend = new ArrayList<>(role.tools());
+                    if (!withAttend.contains(PERIODIC_ATTEND_TOOL)) {
+                        withAttend.add(PERIODIC_ATTEND_TOOL);
+                    }
+                    card.put("tools", List.copyOf(withAttend));
+                    List<Map<String, Object>> meetings = new ArrayList<>();
+                    List<BoardModel.Meeting> all = new ArrayList<>(board.board().meetings().values());
+                    all.sort(Comparator.comparingLong(BoardModel.Meeting::createdAt)
+                            .thenComparing(BoardModel.Meeting::meetingId).reversed());
+                    for (BoardModel.Meeting meeting : all) {
+                        boolean involved = meeting.convenerSeatId().equals(ownSeat)
+                                || meeting.attendeeSeatIds().contains(ownSeat)
+                                || meeting.recusedSeatIds().contains(ownSeat);
+                        if (!involved) {
+                            continue;
+                        }
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("meetingId", meeting.meetingId());
+                        row.put("topic", meeting.topic().name());
+                        row.put("status", meeting.status().name());
+                        row.put("opensAt", num(meeting.opensAt()));
+                        row.put("closesAt", num(meeting.closesAt()));
+                        row.put("materialDeadline", num(meeting.materialDeadline()));
+                        row.put("role", meeting.convenerSeatId().equals(ownSeat) ? "CONVENER"
+                                : meeting.recusedSeatIds().contains(ownSeat) ? "RECUSED"
+                                : "ATTENDEE");
+                        BoardModel.Ballot ballot = meeting.ballots().get(ownSeat);
+                        row.put("myVote", ballot == null ? null : ballot.vote().name());
+                        row.put("myVoteAt", ballot == null ? null : num(ballot.castAt()));
+                        int yes = 0;
+                        int no = 0;
+                        int abstain = 0;
+                        for (BoardModel.Ballot each : meeting.ballots().values()) {
+                            switch (each.vote()) {
+                                case YES -> yes++;
+                                case NO -> no++;
+                                default -> abstain++;
+                            }
+                        }
+                        row.put("tally", "yes=" + yes + ",no=" + no + ",abstain=" + abstain);
+                        row.put("materials", Integer.toString(meeting.materials().size()));
+                        row.put("proposedLines", proposedLines(meeting.proposedLines()));
+                        row.put("failureReason", meeting.failureReason());
+                        meetings.add(row);
+                    }
+                    card.put("meetings", meetings);
+                }
+            }
+            card.put("periodic", periodicViewOf(current, snapshot, registry, companyId,
+                    personPartyId, false));
+            companies.add(card);
+        }
+        notes.add("只列出本人在任经理或占董事席位的公司；未任/未占席的公司不返回，也不提示是否存在。");
+        notes.add("章程公司（制造）与工程公司一样有独立周期；制造只在本人任经理或占董事席位时出现。");
+        notes.add("经理只看本公司的合同请求、客户回应与本公司实际到账；客户内部期间预算/闭期、"
+                + "别家公司用款、未读机会与客户未来计划都不进入本视图，也不补 0。");
+        notes.add("董事只看到自己参与或召集的会议与自己的选票，其他席位只给赞成/反对/弃权计数。");
+        notes.add("页面按钮只调用真实排程入口；排程成功也只是“已排程”，到期才落账。");
+        return new PersonEngineeringView(personPartyId, position, time, captured, true, null,
+                companies, notes);
+    }
+
+    /**
+     * 制造（章程公司）的人物卡片：只给本人真实董事席位/经理任职与周期投影，
+     * 不复制制造账或工程合同；金额与经营明细仍在既有公司页面查看。
+     */
+    private Map<String, Object> manufacturingPersonCard(WorldRuntime current,
+            WorldRuntime.Snapshot snapshot, OpeningRegistry registry, String companyPartyId,
+            String personPartyId) {
+        BoardRun board = snapshot.governance().orElse(null);
+        if (board == null) {
+            return null;
+        }
+        BoardModel.Charter charter = board.board().charter();
+        String seat = charter.seatOf(personPartyId);
+        boolean manager = current.isActiveManager(companyPartyId, personPartyId,
+                snapshot.timeMillis());
+        if (seat == null && !manager) {
+            return null;
+        }
+        Map<String, Object> card = new LinkedHashMap<>();
+        card.put("companyId", companyPartyId);
+        card.put("companyName", partyName(registry, companyPartyId));
+        card.put("template", "MANUFACTURING");
+        card.put("manager", manager);
+        if (seat != null) {
+            card.put("seatId", seat);
+            card.put("chair", seat.equals(charter.chairSeatId()));
+            card.put("seatCount", Integer.toString(charter.seats().size()));
+            card.put("quorum", Integer.toString(charter.quorum()));
+        }
+        List<String> tools = new ArrayList<>();
+        if (seat != null) {
+            tools.addAll(List.of(RoleTradingView.TOOL_BOARD_CONVENE,
+                    RoleTradingView.TOOL_BOARD_ATTEND, RoleTradingView.TOOL_BOARD_MATERIAL,
+                    RoleTradingView.TOOL_BOARD_VOTE, RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET,
+                    RoleTradingView.TOOL_BOARD_PROPOSE_APPOINTMENT,
+                    RoleTradingView.TOOL_BOARD_IMPLEMENT,
+                    RoleTradingView.TOOL_PERIODIC_SCORE,
+                    RoleTradingView.TOOL_PERIODIC_APPROVE,
+                    RoleTradingView.TOOL_PERIODIC_PUBLISH,
+                    PERIODIC_ATTEND_TOOL));
+            if (seat.equals(charter.chairSeatId())) {
+                // 只有主席能召集任免议题；该入口在运行层复用同一任免机制，不新建角色。
+                tools.add(BOARD_CONVENE_APPOINTMENT_TOOL);
+            }
+        }
+        if (manager) {
+            for (String tool : List.of(RoleTradingView.TOOL_PERIODIC_PREPARE,
+                    RoleTradingView.TOOL_PERIODIC_AUTHORIZE,
+                    RoleTradingView.TOOL_PERIODIC_PUBLISH)) {
+                if (!tools.contains(tool)) {
+                    tools.add(tool);
+                }
+            }
+        }
+        card.put("tools", List.copyOf(tools));
+        // 没有在任经理是真实状态，不是缺数据：页面要明确说明需要董事会任命。
+        boolean managerVacant = !manager;
+        card.put("managerVacant", managerVacant);
+        // 本公司开局治理说明是公开模拟说明：真实发布后所有读者都能从自己的目录取用。
+        InformationModel.State noteInformation = snapshot.information()
+                .map(run -> run.information()).orElse(null);
+        InformationModel.DocumentVersion note = governanceNoteOf(noteInformation, companyPartyId,
+                snapshot.timeMillis());
+        if (note != null) {
+            // 历史已读与当前可回忆分开；正文只在本人真实读完且仍可回忆时给出（同一 Recall 判据）。
+            PeriodicModel.Access access = current.periodicAccess();
+            String noteDocId = "company-governance:" + companyPartyId + ":1";
+            boolean noteRead = access.hasRead(personPartyId, noteDocId, note.version(),
+                    snapshot.timeMillis());
+            boolean noteRecallable = access.recallEligible(personPartyId, noteDocId,
+                    note.version(), snapshot.timeMillis());
+            card.put("governanceDocId", noteDocId);
+            card.put("governanceDocVersion", num(note.version()));
+            card.put("governanceDocTitle", note.title());
+            card.put("governanceDocPublishedAt", num(note.publishedAt()));
+            card.put("governanceDocRead", noteRead);
+            card.put("governanceDocRecallable", noteRecallable);
+            card.put("governanceDocBody", noteRead && noteRecallable ? note.body() : null);
+        }
+        List<String> cardNotes = new ArrayList<>();
+        if (managerVacant) {
+            cardNotes.add("本公司当前没有在任公司经理：需要董事会按已有任免流程任命后才能准备周期财报。");
+        }
+        card.put("notes", cardNotes);
+        card.put("periodic", periodicViewOf(current, snapshot, registry, companyPartyId,
+                personPartyId, false));
+        return card;
+    }
+
+    /**
+     * 以会话人物排程一次资料阅读：只接受本人、真实资料与固定版本；
+     * 是否属于可读受众仍由信息模块在到期时复核，页面不能代替权限。
+     *
+     * @param personPartyId 会话绑定人物
+     * @param command       严格解析的阅读命令
+     * @return 已排程回执
+     * @throws BusyException 队列满
+     * @throws Exception     世界读取/持久失败
+     */
+    public ReadingActionView scheduleReading(String personPartyId, ReadingCommand command)
+            throws BusyException, Exception {
+        if (command == null) {
+            throw new IllegalArgumentException("阅读命令不能为空");
+        }
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            if (snapshot.position() != command.expectedPosition()) {
+                throw new PositionMismatch(snapshot.position());
+            }
+            String receipt = current.scheduleStartReading(command.commandId(), command.taskId(),
+                    command.dueTimeMillis(), personPartyId, command.docId(), command.version());
+            return new ReadingActionView(runId, num(snapshot.position()),
+                    num(snapshot.timeMillis()), command.docId(),
+                    Long.toString(command.version()), receipt);
+        });
+    }
+
+    /**
+     * 阅读命令；阅读者不在字段里，只由会话身份决定。
+     *
+     * @param expectedPosition 客户端看到的位置
+     * @param commandId        幂等命令标识
+     * @param taskId           任务标识
+     * @param dueTimeMillis    开始阅读时点
+     * @param docId            资料
+     * @param version          固定版本
+     */
+    public record ReadingCommand(long expectedPosition, String commandId, String taskId,
+                                 long dueTimeMillis, String docId, long version) {
+    }
+
+    /** 阅读排程回执：只是已排程，读完与否以世界记录为准。 */
+    public record ReadingActionView(String runId, String position, String timeMillis,
+                                    String docId, String version, String receipt) {
+    }
+
+    /**
+     * 用可信会话人物提交一条工程/周期命令；岗位工具表与真实状态在 writer 线程内核对。
+     *
+     * @param personPartyId 会话绑定人物（不接受 body 自填身份）
+     * @param command       已严格解析的命令
+     * @return 排程回执
+     * @throws BusyException       队列满
+     * @throws PositionMismatch    客户端位置已过期
+     * @throws Exception           世界读取/持久失败
+     */
+    public EngineeringActionView scheduleEngineering(String personPartyId,
+            EngineeringCommand command) throws BusyException, Exception {
+        if (command == null) {
+            throw new IllegalArgumentException("命令不能为空");
+        }
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            if (snapshot.engineering().isEmpty()) {
+                throw new IllegalArgumentException(ENGINEERING_DISABLED_NOTE);
+            }
+            if (snapshot.position() != command.expectedPosition()) {
+                throw new PositionMismatch(snapshot.position());
+            }
+            String company = command.companyId();
+            EngineeringRun.CompanySpec spec = snapshot.engineering().orElseThrow()
+                    .config().specOf(company);
+            String charterCompany = snapshot.governance()
+                    .map(board -> board.board().charter().companyPartyId()).orElse(null);
+            boolean charterTarget = company.equals(charterCompany);
+            if (spec == null && !charterTarget) {
+                throw new IllegalArgumentException("没有这家公司，或当前运行未登记它");
+            }
+            String tool = command.tool();
+            List<String> allowedTools;
+            if (spec != null) {
+                WorldRuntime.CompanyRoleView role = current.companyView(personPartyId, company)
+                        .orElseThrow(() -> new IllegalArgumentException(
+                                "本人在该公司没有现任经理任职，也没有董事席位"));
+                List<String> tools = new ArrayList<>(role.tools());
+                boolean director = current.boardOfCompany(company)
+                        .map(board -> board.board().charter().seatOf(personPartyId) != null)
+                        .orElse(false);
+                if (director && !tools.contains(PERIODIC_ATTEND_TOOL)) {
+                    tools.add(PERIODIC_ATTEND_TOOL);
+                }
+                allowedTools = List.copyOf(tools);
+            } else {
+                allowedTools = manufacturingTools(snapshot, company, personPartyId);
+                if (allowedTools.isEmpty()) {
+                    throw new IllegalArgumentException("本人在该公司没有现任经理任职，也没有董事席位");
+                }
+            }
+            boolean chair = isChair(current, company, personPartyId);
+            boolean canConvene = allowedTools.contains(RoleTradingView.TOOL_BOARD_CONVENE);
+            // 豁免会议召集沿用普通召集权限：必须既是本公司董事且持有召集权，又实际是章程主席。
+            // 核心仍会再次复核主席，这里不新增权限，也不允许仅凭主席身份绕过岗位工具表。
+            if (!allowedTools.contains(tool)
+                    && !("board.conveneWaiver".equals(tool) && chair && canConvene)) {
+                throw new IllegalArgumentException("当前岗位不具备该动作：" + tool);
+            }
+            String receipt = dispatchEngineering(current, personPartyId, command);
+            WorldRuntime.Snapshot after = current.snapshot();
+            return new EngineeringActionView(runId, num(after.position()),
+                    num(after.timeMillis()), company, tool, receipt);
+        });
+    }
+
+    private static boolean isChair(WorldRuntime current, String companyId, String personPartyId) {
+        return current.boardOfCompany(companyId)
+                .map(board -> board.board().charter())
+                .map(charter -> charter.seats().stream()
+                        .anyMatch(seat -> seat.seatId().equals(charter.chairSeatId())
+                                && seat.partyId().equals(personPartyId)))
+                .orElse(false);
+    }
+
+    /** 章程公司的人物工具表：与人物卡片同源，只给真实席位/经理岗位。 */
+    private List<String> manufacturingTools(WorldRuntime.Snapshot snapshot, String companyPartyId,
+            String personPartyId) {
+        BoardRun board = snapshot.governance().orElse(null);
+        if (board == null) {
+            return List.of();
+        }
+        BoardModel.Charter charter = board.board().charter();
+        String seat = charter.seatOf(personPartyId);
+        boolean manager = isActiveManager(snapshot, companyPartyId, personPartyId);
+        if (seat == null && !manager) {
+            return List.of();
+        }
+        List<String> tools = new ArrayList<>();
+        if (seat != null) {
+            tools.addAll(List.of(RoleTradingView.TOOL_BOARD_CONVENE,
+                    RoleTradingView.TOOL_BOARD_ATTEND, RoleTradingView.TOOL_BOARD_MATERIAL,
+                    RoleTradingView.TOOL_BOARD_VOTE, RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET,
+                    RoleTradingView.TOOL_BOARD_PROPOSE_APPOINTMENT,
+                    RoleTradingView.TOOL_BOARD_IMPLEMENT,
+                    RoleTradingView.TOOL_PERIODIC_SCORE,
+                    RoleTradingView.TOOL_PERIODIC_APPROVE,
+                    RoleTradingView.TOOL_PERIODIC_PUBLISH,
+                    PERIODIC_ATTEND_TOOL));
+            if (seat.equals(charter.chairSeatId())) {
+                tools.add(BOARD_CONVENE_APPOINTMENT_TOOL);
+            }
+        }
+        if (manager) {
+            for (String tool : List.of(RoleTradingView.TOOL_PERIODIC_PREPARE,
+                    RoleTradingView.TOOL_PERIODIC_AUTHORIZE,
+                    RoleTradingView.TOOL_PERIODIC_PUBLISH)) {
+                if (!tools.contains(tool)) {
+                    tools.add(tool);
+                }
+            }
+        }
+        return List.copyOf(tools);
+    }
+
+    /** 从快照所属运行判断经理任职；与 periodicViewOf 同一世界时点。 */
+    private boolean isActiveManager(WorldRuntime.Snapshot snapshot, String companyPartyId,
+            String personPartyId) {
+        return snapshot.roles().map(roles -> {
+            for (RoleAccess.Appointment appointment : roles.access().appointments()) {
+                if (appointment.personPartyId().equals(personPartyId)
+                        && appointment.organizationPartyId().equals(companyPartyId)
+                        && appointment.role() == RoleAccess.Role.COMPANY_MANAGER
+                        && appointment.activeAt(snapshot.timeMillis())) {
+                    return true;
+                }
+            }
+            return false;
+        }).orElse(false);
+    }
+
+    private String dispatchEngineering(WorldRuntime current, String person,
+            EngineeringCommand command) throws IOException {
+        String company = command.companyId();
+        String cid = command.commandId();
+        String tid = command.taskId();
+        long due = command.dueTimeMillis();
+        String contract = command.contractId();
+        String meeting = command.meetingId();
+        switch (command.tool()) {
+            case RoleTradingView.TOOL_BOARD_CONVENE:
+            case "board.conveneWaiver":
+                return command.tool().equals(RoleTradingView.TOOL_BOARD_CONVENE)
+                        ? current.scheduleEngineeringConvene(cid, tid, due, company, person,
+                                meeting, command.materialDeadline(), command.opensAt(),
+                                command.closesAt())
+                        : current.scheduleEngineeringWaiverConvene(cid, tid, due, company, person,
+                                meeting, command.materialDeadline(), command.opensAt(),
+                                command.closesAt());
+            case BOARD_CONVENE_APPOINTMENT_TOOL:
+                // 任免议题召集：与工程董事会同一入口，章程公司用其唯一治理董事会。
+                return current.scheduleEngineeringAppointmentConvene(cid, tid, due, company,
+                        person, meeting, command.materialDeadline(), command.opensAt(),
+                        command.closesAt());
+            case RoleTradingView.TOOL_BOARD_ATTEND:
+                return current.scheduleEngineeringAttend(cid, tid, due, company, person, meeting,
+                        command.recused());
+            case RoleTradingView.TOOL_BOARD_MATERIAL:
+                return current.scheduleEngineeringMaterial(cid, tid, due, company, person,
+                        meeting, command.materialId(), command.docId(), command.docVersion());
+            case RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET:
+                return current.scheduleEngineeringBudgetProposal(cid, tid, due, company, person,
+                        meeting, budgetLines(command));
+            case RoleTradingView.TOOL_BOARD_PROPOSE_APPOINTMENT:
+                return current.scheduleEngineeringAppointmentProposal(cid, tid, due, company,
+                        person, meeting, List.of(), appointmentRequest(company, command));
+            case RoleTradingView.TOOL_BOARD_PROPOSE_WAIVER:
+                return current.scheduleEngineeringWaiverProposal(cid, tid, due, company, person,
+                        meeting, new BoardModel.DebtWaiverRequest(command.waiverId(), company,
+                                contract, command.customerPartyId(), moneyOf(command.amount()),
+                                command.purpose()));
+            case RoleTradingView.TOOL_BOARD_VOTE:
+                if (command.durationMillis() == null) {
+                    return current.scheduleEngineeringVote(cid, tid, due, company, person,
+                            meeting, voteOf(command.vote()));
+                }
+                return current.scheduleEngineeringVote(cid, tid, due, company, person, meeting,
+                        voteOf(command.vote()), command.durationMillis());
+            case RoleTradingView.TOOL_BOARD_IMPLEMENT:
+                return current.scheduleEngineeringImplement(cid, tid, due, company, person, meeting);
+            case RoleTradingView.TOOL_ENGINEERING_SIGN:
+                return engineeringAction(current, person, command, "SIGN", contract, "", 0, 0L,
+                        zeroMoney(), "");
+            case RoleTradingView.TOOL_ENGINEERING_START_WORK:
+                return engineeringAction(current, person, command, "START_WORK", contract,
+                        command.workId(), 0, command.units(), zeroMoney(), "");
+            case RoleTradingView.TOOL_ENGINEERING_INVOICE:
+                return engineeringAction(current, person, command, "INVOICE", contract, "", 0, 0L,
+                        zeroMoney(), "");
+            case RoleTradingView.TOOL_ENGINEERING_REQUEST_ACCEPTANCE:
+                return engineeringAction(current, person, command, "REQUEST_ACCEPTANCE", contract,
+                        "", command.trancheIndex(), command.units(), zeroMoney(), "");
+            case RoleTradingView.TOOL_ENGINEERING_REQUEST_RETENTION:
+                return engineeringAction(current, person, command, "REQUEST_RETENTION", contract,
+                        "", command.trancheIndex(), 0L, zeroMoney(), "");
+            case RoleTradingView.TOOL_ENGINEERING_REQUEST_PAYMENT:
+                return engineeringAction(current, person, command, "REQUEST_PAYMENT", contract, "",
+                        command.trancheIndex(), 0L, zeroMoney(), "");
+            case RoleTradingView.TOOL_ENGINEERING_IMPAIR:
+                return engineeringAction(current, person, command, "IMPAIR", contract, "", 0, 0L,
+                        moneyOf(command.amount()), command.purpose());
+            case RoleTradingView.TOOL_ENGINEERING_WRITE_OFF:
+                return engineeringAction(current, person, command, "WRITE_OFF", contract, "", 0, 0L,
+                        moneyOf(command.amount()), command.purpose());
+            case RoleTradingView.TOOL_ENGINEERING_RECOVER:
+                return engineeringAction(current, person, command, "RECOVER", contract, "", 0, 0L,
+                        moneyOf(command.amount()), command.purpose());
+            case RoleTradingView.TOOL_ENGINEERING_PAY_SUPPLIER:
+                return engineeringAction(current, person, command, "PAY_SUPPLIER", "", "", 0, 0L,
+                        moneyOf(command.amount()), command.purpose());
+            case RoleTradingView.TOOL_ENGINEERING_TERMINATE:
+                return engineeringAction(current, person, command, "TERMINATE", contract, "", 0, 0L,
+                        zeroMoney(), command.purpose());
+            case RoleTradingView.TOOL_ENGINEERING_WAIVE:
+                if (command.durationMillis() == null) {
+                    throw new IllegalArgumentException("WAIVE 必须给出声明工时 durationMillis");
+                }
+                return current.scheduleEngineeringWaive(cid, tid, due, company, person, contract,
+                        moneyOf(command.amount()), command.purpose(), command.authorizationRef(),
+                        command.period(), command.durationMillis());
+            case RoleTradingView.TOOL_PERIODIC_PREPARE:
+                return periodicAction(current, person, command, "PREPARE");
+            case RoleTradingView.TOOL_PERIODIC_SCORE:
+                return periodicAction(current, person, command, "SCORE");
+            case RoleTradingView.TOOL_PERIODIC_APPROVE:
+                return periodicAction(current, person, command, "APPROVE");
+            case RoleTradingView.TOOL_PERIODIC_AUTHORIZE:
+                return periodicAction(current, person, command, "AUTHORIZE");
+            case RoleTradingView.TOOL_PERIODIC_PUBLISH:
+                return periodicAction(current, person, command, "PUBLISH");
+            case "periodic.attend":
+                return periodicAction(current, person, command, "ATTEND");
+            default:
+                throw new IllegalArgumentException("本切片未接线的工程工具：" + command.tool());
+        }
+    }
+
+    /**
+     * 周期人物动作的统一排程：只传递显式参数，身份/席位/实读/回忆仍由运行层复核；
+     * 评分证据的 asOf 取该期真实采样截至时点，页面不提供、也不能改写。
+     */
+    private String periodicAction(WorldRuntime current, String person, EngineeringCommand command,
+            String action) throws IOException {
+        String company = command.companyId();
+        long period = command.period();
+        String note = command.note() == null ? "" : command.note();
+        if ("ATTEND".equals(action)) {
+            note = command.recused() ? "RECUSE" : "";
+        }
+        List<PeriodicActionPayload.PeriodicMetric> metrics = new ArrayList<>();
+        if ("SCORE".equals(action)) {
+            long capturedAt = -1L;
+            PeriodicModel.CompanyPeriods periods = null;
+            java.util.Optional<PeriodicModel.CompanyPeriods> found = current.periodicOf(company);
+            if (found.isPresent()) {
+                periods = found.get();
+                for (PeriodicModel.Snapshot snapshot : periods.snapshots()) {
+                    if (snapshot.period() == period) {
+                        capturedAt = snapshot.capturedAt();
+                    }
+                }
+            }
+            if (periods == null || capturedAt < 0) {
+                throw new IllegalArgumentException("没有该期采样，不能提交评分：第 " + period + " 期");
+            }
+            Map<String, Long> asOfByRef = periodicEvidenceAsOf(periods, company, period, capturedAt);
+            for (PeriodicMetricInput input : command.metrics()) {
+                String dimension = input.dimension() == null ? "" : input.dimension();
+                try {
+                    BoardModel.Dimension.valueOf(dimension);
+                } catch (IllegalArgumentException invalid) {
+                    throw new IllegalArgumentException("未知评分维度：" + dimension);
+                }
+                String sourceRef = input.sourceRef() == null ? "" : input.sourceRef();
+                Long exact = asOfByRef.get(sourceRef);
+                if (sourceRef.startsWith("disclosure:") && exact == null) {
+                    throw new IllegalArgumentException("披露证据缺少准确成熟时点，不能提交：" + sourceRef);
+                }
+                BigDecimal score;
+                try {
+                    score = new BigDecimal(input.score());
+                } catch (RuntimeException invalid) {
+                    throw new IllegalArgumentException("评分必须是十进制数字：" + dimension);
+                }
+                metrics.add(new PeriodicActionPayload.PeriodicMetric(dimension, score,
+                        sourceRef, exact == null ? capturedAt : exact));
+            }
+            if (metrics.isEmpty()) {
+                throw new IllegalArgumentException("评分至少需要一个完整维度");
+            }
+        }
+        long duration = command.durationMillis() == null ? 1L : command.durationMillis();
+        return current.schedulePeriodicAction(command.commandId(), command.taskId(),
+                command.dueTimeMillis(), company, person, action, period,
+                command.draftId() == null ? "" : command.draftId(), command.draftVersion(),
+                command.publisherPersonId() == null ? "" : command.publisherPersonId(),
+                command.expiresAt(), command.authorizationId() == null ? "" :
+                        command.authorizationId(), metrics, note, duration);
+    }
+
+    private static String engineeringAction(WorldRuntime current, String person,
+            EngineeringCommand command, String action, String contractId, String workId,
+            int trancheIndex, long units, BigDecimal amount, String evidenceRef)
+            throws IOException {
+        if (command.durationMillis() == null) {
+            return current.scheduleEngineeringAction(command.commandId(), command.taskId(),
+                    command.dueTimeMillis(), command.companyId(), person, action, contractId,
+                    workId, trancheIndex, units, amount, evidenceRef == null ? "" : evidenceRef,
+                    command.period());
+        }
+        return current.scheduleEngineeringAction(command.commandId(), command.taskId(),
+                command.dueTimeMillis(), command.companyId(), person, action, contractId, workId,
+                trancheIndex, units, amount, evidenceRef == null ? "" : evidenceRef,
+                command.period(), command.durationMillis());
+    }
+
+    private static List<BoardModel.BudgetLine> budgetLines(EngineeringCommand command) {
+        List<BoardModel.BudgetLine> lines = new ArrayList<>();
+        if (command.laborLimit() != null && !command.laborLimit().isBlank()) {
+            lines.add(new BoardModel.BudgetLine(command.period(),
+                    BoardModel.BudgetCategory.PRODUCTION_LABOR, moneyOf(command.laborLimit())));
+        }
+        if (command.procurementLimit() != null && !command.procurementLimit().isBlank()) {
+            lines.add(new BoardModel.BudgetLine(command.period(),
+                    BoardModel.BudgetCategory.PROCUREMENT, moneyOf(command.procurementLimit())));
+        }
+        if (lines.isEmpty()) {
+            throw new IllegalArgumentException("预算提案至少需要 laborLimit 或 procurementLimit");
+        }
+        return List.copyOf(lines);
+    }
+
+    private static BoardModel.AppointmentRequest appointmentRequest(String company,
+            EngineeringCommand command) {
+        if (command.appointPersonId() == null || command.appointPersonId().isBlank()
+                || command.appointmentId() == null || command.appointmentId().isBlank()
+                || command.appointAction() == null || command.appointAction().isBlank()) {
+            throw new IllegalArgumentException(
+                    "任免提案需要 appointmentId / appointPersonId / appointAction");
+        }
+        String roleText = command.appointRole() == null || command.appointRole().isBlank()
+                ? RoleAccess.Role.COMPANY_MANAGER.name() : command.appointRole();
+        RoleAccess.Role role;
+        try {
+            role = RoleAccess.Role.valueOf(roleText);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("未知岗位：" + roleText);
+        }
+        BoardModel.AppointmentAction action;
+        try {
+            action = BoardModel.AppointmentAction.valueOf(command.appointAction());
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("未知任免动作：" + command.appointAction());
+        }
+        Long ends = action == BoardModel.AppointmentAction.APPOINT
+                ? Long.valueOf(command.endsAt()) : null;
+        return new BoardModel.AppointmentRequest(command.appointmentId(),
+                command.appointPersonId(), company, role, action, command.effectiveAt(), ends);
+    }
+
+    private static BoardModel.Vote voteOf(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("投票需要 vote：YES / NO / ABSTAIN");
+        }
+        try {
+            return BoardModel.Vote.valueOf(value);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("未知投票取值：" + value);
+        }
+    }
+
+    private static BigDecimal moneyOf(String value) {
+        if (value == null || value.isBlank()) {
+            return zeroMoney();
+        }
+        try {
+            return new BigDecimal(value).setScale(2, java.math.RoundingMode.UNNECESSARY);
+        } catch (ArithmeticException | NumberFormatException invalid) {
+            throw new IllegalArgumentException("金额必须是最多两位小数的十进制：" + value);
+        }
+    }
+
+    private static String managerOf(WorldRuntime.Snapshot snapshot, String companyId) {
+        RoleRun roles = snapshot.roles().orElse(null);
+        if (roles == null) {
+            return null;
+        }
+        long now = snapshot.timeMillis();
+        for (RoleAccess.Appointment appointment : roles.access().appointments()) {
+            if (appointment.organizationPartyId().equals(companyId)
+                    && appointment.role() == RoleAccess.Role.COMPANY_MANAGER
+                    && appointment.activeAt(now)) {
+                return appointment.personPartyId();
+            }
+        }
+        return null;
+    }
+
+    /** 从持久化待办载荷里只读取出公司标识；解析失败返回 null（不猜）。 */
+    private static String payloadCompany(String payload) {
+        return payloadText(payload, "companyPartyId");
+    }
+
+    private static String payloadText(String payload, String field) {
+        com.fasterxml.jackson.databind.JsonNode node = jsonNode(payload);
+        if (node == null) {
+            return null;
+        }
+        com.fasterxml.jackson.databind.JsonNode value = node.get(field);
+        return value == null || value.isNull() || !value.isTextual()
+                ? null : value.textValue();
+    }
+
+    /** 严格读取 BEGIN 包装：三字段齐全且类型正确才返回；缺失/类型不符一律 null（未知即未知）。 */
+    static BeginWrapper beginWrapper(String payload) {
+        com.fasterxml.jackson.databind.JsonNode node = jsonNode(payload);
+        if (node == null) {
+            return null;
+        }
+        com.fasterxml.jackson.databind.JsonNode kind = node.get("targetKind");
+        com.fasterxml.jackson.databind.JsonNode due = node.get("dueMillis");
+        com.fasterxml.jackson.databind.JsonNode inner = node.get("payload");
+        if (kind == null || !kind.isTextual() || kind.textValue().isBlank()
+                || due == null || !due.isIntegralNumber() || !due.canConvertToLong()
+                || due.longValue() < 0
+                || inner == null || !inner.isTextual() || inner.textValue().isBlank()) {
+            return null;
+        }
+        if (jsonNode(inner.textValue()) == null) {
+            return null;
+        }
+        return new BeginWrapper(kind.textValue(), due.longValue(), inner.textValue());
+    }
+
+    private static com.fasterxml.jackson.databind.JsonNode jsonNode(String payload) {
+        if (payload == null || payload.isBlank()) {
+            return null;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode node =
+                    PAYLOAD_MAPPER.readTree(payload);
+            return node != null && node.isObject() ? node : null;
+        } catch (IOException unreadable) {
+            return null;
+        }
     }
 }

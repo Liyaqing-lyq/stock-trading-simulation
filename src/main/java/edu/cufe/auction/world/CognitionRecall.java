@@ -125,6 +125,45 @@ public final class CognitionRecall {
     }
 
     /**
+     * 该人物在 {@code now} 是否仍能回忆某确切实读版本：只看真实完成经历与冻结阈值，
+     * <b>不受</b> {@link #recall} 的条数/正文预算截断影响（预算只是输入选择，不是遗忘）。
+     *
+     * @param state         真实信息状态
+     * @param personPartyId 查询人物
+     * @param docId         资料标识
+     * @param version       确切版本
+     * @param nowMillis     查询时点，不可为负
+     * @param policy        实验参数；为 null 时返回 false（没有冻结回忆机制就不能声称已回忆）
+     * @return 通过阈值返回 true
+     */
+    public static boolean eligible(State state, String personPartyId, String docId,
+                                   long version, long nowMillis, Policy policy) {
+        if (state == null || policy == null || personPartyId == null || docId == null
+                || version < 1 || nowMillis < 0) {
+            return false;
+        }
+        if (!state.persons().contains(personPartyId)) {
+            return false;
+        }
+        for (ReadObservation observation : state.observations()) {
+            if (!observation.personPartyId().equals(personPartyId)
+                    || !observation.docId().equals(docId)
+                    || observation.version() != version
+                    || observation.publishedAt() > nowMillis
+                    || observation.completedAt() > nowMillis) {
+                continue;
+            }
+            ClosedReading lastRead = lastCompleted(state, observation, nowMillis);
+            long lastReadAt = lastRead == null ? observation.completedAt() : lastRead.closedAt();
+            if (scoreOf(lastReadAt, nowMillis, policy.halfLifeMillis())
+                    >= policy.thresholdPermille()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * 回忆本人已完成阅读的经历。
      *
      * @param state         真实信息状态

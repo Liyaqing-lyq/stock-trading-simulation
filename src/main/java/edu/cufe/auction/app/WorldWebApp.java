@@ -21,11 +21,12 @@ import java.util.concurrent.CountDownLatch;
  * 凭据只加载到服务端内存，用于场景调用及遮罩/显式查看，控制台只打印一次性管理员引导凭据，
  * 绝不打印 API key。启动不调用模型；只有管理员显式开始后，已启用场景才可发送有界请求。</p>
  *
- * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media]}；默认
+ * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media|engineering]}；默认
  * {@code logs/web-workbench}、{@code C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt}、
  * 端口 18080（被占用则明确失败，不会杀掉已有服务）；默认live用独立world-live.journal，scripted仍用world.journal，
  * 显式cognition使用world-cognition.journal与冻结的回忆实验策略，belief使用独立world-belief.journal
- * 并启用判断、核验与来源学习实验。</p>
+ * 并启用判断、核验与来源学习实验，engineering使用独立world-engineering.journal按现有工程场景与
+ * 冻结工程配置启动（全部场景默认关闭，未自动调用模型）。</p>
  */
 public final class WorldWebApp {
 
@@ -43,7 +44,7 @@ public final class WorldWebApp {
     /**
      * 启动并阻塞，直至进程结束或启动失败。
      *
-     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence或social，均可省略
+     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social或engineering，均可省略
      * @throws Exception 启动失败（凭据、目录、端口、世界）
      */
     public static void main(String[] args) throws Exception {
@@ -58,9 +59,10 @@ public final class WorldWebApp {
         if (!mode.equals("live") && !mode.equals("scripted") && !mode.equals("cognition")
                 && !mode.equals("belief") && !mode.equals("media") && !mode.equals("interview")
                 && !mode.equals("dialogue") && !mode.equals("evidence")
-                && !mode.equals("social")) {
+                && !mode.equals("social") && !mode.equals("engineering")) {
             throw new IllegalArgumentException(
-                    "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、evidence或social");
+                    "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
+                            + "evidence、social或engineering");
         }
         boolean live = mode.equals("live");
         boolean cognition = mode.equals("cognition");
@@ -70,6 +72,7 @@ public final class WorldWebApp {
         boolean dialogue = mode.equals("dialogue");
         boolean evidence = mode.equals("evidence");
         boolean social = mode.equals("social");
+        boolean engineering = mode.equals("engineering");
 
         Files.createDirectories(workDir);
 
@@ -83,7 +86,11 @@ public final class WorldWebApp {
         }
 
         SceneRoutes routes = SceneRoutes.open(workDir);
-        WorldWebHost host = social
+        WorldWebHost host = engineering
+                ? new WorldWebHost(() -> WorldWebScenario.openEngineering(
+                        workDir.resolve("world-engineering.journal")),
+                        routes, new LiveDecisionProvider(keys))
+                : social
                 ? new WorldWebHost(() -> WorldWebScenario.openSocial(
                         workDir.resolve("world-social.journal")),
                         routes, new LiveDecisionProvider(keys))
@@ -144,7 +151,10 @@ public final class WorldWebApp {
         System.out.println("场景配置：" + workDir.resolve(SceneRoutes.FILE_NAME).toAbsolutePath()
                 .normalize());
         System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
-        System.out.println(social
+        System.out.println(engineering
+                ? "模式：工程经营实验（schema18，独立 world-engineering.journal）；未自动调用模型。"
+                        + "全部场景默认关闭，请在页面核对场景配置并明确开始一轮。"
+                : social
                 ? "模式：一对一消息实验（schema17，独立 world-social.journal）；未自动调用模型。"
                         + "请在页面核对场景配置并明确开始一轮。"
                 : evidence

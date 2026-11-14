@@ -25,11 +25,14 @@ import java.util.Set;
  * 也不包含媒体自主采编、群聊/调查/采访、六层记忆、遗忘或偏信。角色获得的只有
  * {@link ReadObservation} 这一份本人投影，拿不到 {@link Document}、{@link State} 或内部审计源。</p>
  *
- * <p><b>受众口径</b>：受众只有三种——{@link AudienceKind#PUBLIC 公开}、
- * {@link AudienceKind#ORGANIZATION 组织}、{@link AudienceKind#DIRECT 本人直投}。组织资料每次查询与
- * 每次到期复核都用<b>调用方传入的最新</b> {@link RoleAccess.State} 判 {@link Action#READ_ORGANIZATION_FILE}，
- * 离职后立即失效；直投只对指定人物成立。未知文档、未发布版本与无权文档一律返回同一个
- * {@link Status#NOT_AVAILABLE}，不泄露隐藏资料的存在性。</p>
+ * <p><b>受众口径</b>：受众五种——{@link AudienceKind#PUBLIC 公开}、
+ * {@link AudienceKind#ORGANIZATION 组织}、{@link AudienceKind#DIRECT 本人直投}、
+ * {@link AudienceKind#GROUP 群组}、{@link AudienceKind#BOARD 董事会}。组织资料每次查询与每次到期复核都用<b>调用方传入的最新</b>
+ * {@link RoleAccess.State} 判 {@link Action#READ_ORGANIZATION_FILE}，离职后立即失效；直投只对
+ * 指定人物成立；群组统一委托 {@link GroupAccess#canRead}；董事会资料委托
+ * {@link BoardAccess#canRead}，只按当时真实章程席位判定，不使用 RoleAccess。旧签名对群组与董事会
+ * 都按恒定拒绝处理。未知文档、未发布版本与无权文档一律返回同一个 {@link Status#NOT_AVAILABLE}，
+ * 不泄露隐藏资料的存在性。</p>
  *
  * <p><b>版本口径</b>：文档标识、发布者与受众在首次发表时冻结，版本号从 1 连续递增、发布时间
  * 严格递增；标题、正文、公开来源描述与阅读耗时按版本冻结。追加新版本不会改变旧版，也不能
@@ -66,23 +69,27 @@ public final class InformationModel {
     private InformationModel() {
     }
 
-    /** 受众种类；首版只有公开、组织与本人直投三种。 */
+    /** 受众种类；本版为公开、组织、本人直投、群组与董事会五种。 */
     public enum AudienceKind {
         /** 任何已登记人物可见。 */
         PUBLIC,
         /** 仅该组织当前获准读取组织档案的任职者可见。 */
         ORGANIZATION,
         /** 仅指定人物本人可见。 */
-        DIRECT
+        DIRECT,
+        /** 仅由注入的 {@link GroupAccess} 判定为有资格的读取者可见。 */
+        GROUP,
+        /** 仅由注入的 {@link BoardAccess} 判定为该公司当时真实章程席位的读取者可见。 */
+        BOARD
     }
 
     /**
-     * 受众：公开、一个组织或一个人物。
+     * 受众：公开、一个组织、一个人物、一个群组或一个董事会。
      *
-     * <p>公开受众不携带对象；组织与直投受众必须写明对象标识。受众随文档冻结，追加版本不能修改它。</p>
+     * <p>公开受众不携带对象；组织、直投、群组与董事会受众必须写明对象标识。受众随文档冻结，追加版本不能修改它。</p>
      *
      * @param kind    受众种类
-     * @param partyId 组织或人物标识；公开受众必须为空
+     * @param partyId 组织、人物、群组或公司标识；公开受众必须为空
      */
     public record Audience(AudienceKind kind, String partyId) {
 
@@ -94,7 +101,14 @@ public final class InformationModel {
                     throw new IllegalArgumentException("公开资料不携带受众对象");
                 }
             } else {
-                requireText(partyId, kind == AudienceKind.ORGANIZATION ? "受众组织" : "受众人物");
+                String label = switch (kind) {
+                    case ORGANIZATION -> "受众组织";
+                    case DIRECT -> "受众人物";
+                    case GROUP -> "受众群";
+                    case BOARD -> "受众公司";
+                    default -> throw new IllegalStateException("未知受众种类：" + kind);
+                };
+                requireText(partyId, label);
             }
         }
 
@@ -125,6 +139,32 @@ public final class InformationModel {
          */
         public static Audience direct(String personPartyId) {
             return new Audience(AudienceKind.DIRECT, personPartyId);
+        }
+
+        /**
+         * 群组受众。
+         *
+         * <p>本类只冻结群标识；能否读取由每次查询/开读/完成时注入的 {@link GroupAccess} 判定，
+         * 不在受众里复制成员表或永久收件人列表。</p>
+         *
+         * @param groupId 群标识
+         * @return 由群读取回调判定资格的受众
+         */
+        public static Audience group(String groupId) {
+            return new Audience(AudienceKind.GROUP, groupId);
+        }
+
+        /**
+         * 董事会受众。
+         *
+         * <p>本类只冻结公司标识；能否读取由每次查询/开读/完成时注入的 {@link BoardAccess} 判定，
+         * 不在受众里复制董事会成员表或席位历史。</p>
+         *
+         * @param companyPartyId 公司组织 partyId
+         * @return 由董事会读取回调判定资格的受众
+         */
+        public static Audience board(String companyPartyId) {
+            return new Audience(AudienceKind.BOARD, companyPartyId);
         }
     }
 
@@ -595,6 +635,9 @@ public final class InformationModel {
     /**
      * 首次发表一篇资料：标识、发布者与受众从此冻结，版本号为 1。
      *
+     * <p>群组受众只要求在发表时写明非空群标识；成员资格不在发表时固化，读取时由注入的
+     * {@link GroupAccess} 判定。公开、组织与直投的发表校验保持原口径。</p>
+     *
      * @param state            当前信息状态
      * @param docId            新的不透明文档标识
      * @param publisherPartyId 已登记发布者
@@ -661,36 +704,56 @@ public final class InformationModel {
      * 目录：返回该人物此刻可见资料的最新已发布版本索引。
      *
      * <p>只含标识、版本、标题、公开发布者与发布时刻；不含正文、内部审计源、全局数量或隐藏版本。
-     * 未登记人物得到空目录，与「没有可见资料」表现一致。</p>
+     * 未登记人物得到空目录，与「没有可见资料」表现一致。群组资料把“最新可见版本”的发布时间
+     * 交给 {@link GroupAccess}，因此 JOIN_TIME 一类策略看到的是真正要展示的版本。</p>
      *
      * @param state         当前信息状态
      * @param access        最新任职授权
      * @param personPartyId 查询人物
      * @param now           查询时刻，不可为负
+     * @param groups        群组读取回调；null 视为 {@link GroupAccess#NONE}
      * @return 按资料标识排序的可见目录
      * @throws IllegalArgumentException 参数为空或时刻为负
      */
     public static List<CatalogEntry> catalog(State state, RoleAccess.State access, String personPartyId,
-                                             long now) {
+                                             long now, GroupAccess groups) {
+        return catalog(state, access, personPartyId, now, groups, BoardAccess.NONE);
+    }
+
+    /**
+     * 目录查询（董事会 + 群组组合回调）：董事会受众走 {@link BoardAccess}，群组受众走
+     * {@link GroupAccess}；两个参数位不同，旧 5 参数调用与显式 null 仍解析到群组签名。
+     *
+     * @param state         当前信息状态
+     * @param access        最新任职授权
+     * @param personPartyId 查询人物
+     * @param now           查询时刻
+     * @param groups        群组读取回调；null 视为 {@link GroupAccess#NONE}
+     * @param boards        董事会读取回调；null 视为 {@link BoardAccess#NONE}
+     * @return 可见目录
+     */
+    public static List<CatalogEntry> catalog(State state, RoleAccess.State access, String personPartyId,
+                                             long now, GroupAccess groups, BoardAccess boards) {
         requireState(state);
         requireAccess(access);
         requireText(personPartyId, "查询人物");
         requireNonNegative(now, "查询时刻");
+        GroupAccess groupAccess = groups == null ? GroupAccess.NONE : groups;
+        BoardAccess boardAccess = boards == null ? BoardAccess.NONE : boards;
         if (!state.persons().contains(personPartyId)) {
             return List.of();
         }
         List<CatalogEntry> entries = new ArrayList<>();
         for (Document document : state.documents()) {
-            if (!visible(document.audience(), access, personPartyId, now)) {
-                continue;
-            }
             DocumentVersion latest = null;
             for (DocumentVersion version : document.versions()) {
                 if (version.publishedAt() <= now) {
                     latest = version;
                 }
             }
-            if (latest == null) {
+            if (latest == null
+                    || !visible(document.audience(), access, personPartyId, now,
+                    latest.publishedAt(), groupAccess, boardAccess)) {
                 continue;
             }
             entries.add(new CatalogEntry(document.docId(), latest.version(), latest.title(),
@@ -700,10 +763,25 @@ public final class InformationModel {
     }
 
     /**
+     * 旧签名目录查询：群组受众按 {@link GroupAccess#NONE} 处理。
+     *
+     * @param state         当前信息状态
+     * @param access        最新任职授权
+     * @param personPartyId 查询人物
+     * @param now           查询时刻
+     * @return 可见目录
+     */
+    public static List<CatalogEntry> catalog(State state, RoleAccess.State access, String personPartyId,
+                                             long now) {
+        return catalog(state, access, personPartyId, now, GroupAccess.NONE);
+    }
+
+    /**
      * 开始阅读一个明确版本：校验已发布与权限，预留本人工时。
      *
      * <p>未知文档、未发布版本与无权阅读返回同一个 {@link Status#NOT_AVAILABLE}；本人已有活动阅读
-     * 返回 {@link Status#BUSY}；{@code due} 溢出返回 {@link Status#TIME_OVERFLOW}。任何拒绝都不改变状态。</p>
+     * 返回 {@link Status#BUSY}；{@code due} 溢出返回 {@link Status#TIME_OVERFLOW}。任何拒绝都不改变状态。
+     * 群组受众把该明确版本的发布时间与开始时刻一起交给 {@link GroupAccess}。</p>
      *
      * @param state         当前信息状态
      * @param access        最新任职授权
@@ -711,11 +789,32 @@ public final class InformationModel {
      * @param docId         资料标识
      * @param version       明确版本号
      * @param now           开始时刻，不可为负
+     * @param groups        群组读取回调；null 视为 {@link GroupAccess#NONE}
      * @return 结果；成功时新状态含一条活动阅读
      * @throws IllegalArgumentException 参数为空、时刻为负或版本号小于 1
      */
     public static Outcome startRead(State state, RoleAccess.State access, String personPartyId,
-                                    String docId, long version, long now) {
+                                    String docId, long version, long now, GroupAccess groups) {
+        return startRead(state, access, personPartyId, docId, version, now, groups, BoardAccess.NONE);
+    }
+
+    /**
+     * 开始阅读（董事会 + 群组组合回调）：董事会受众走 {@link BoardAccess}，群组受众走
+     * {@link GroupAccess}；参数个数与旧 7 参数签名不同，显式 null 仍解析到群组签名。
+     *
+     * @param state         当前信息状态
+     * @param access        最新任职授权
+     * @param personPartyId 阅读者
+     * @param docId         资料标识
+     * @param version       明确版本号
+     * @param now           开始时刻
+     * @param groups        群组读取回调；null 视为 {@link GroupAccess#NONE}
+     * @param boards        董事会读取回调；null 视为 {@link BoardAccess#NONE}
+     * @return 结果
+     */
+    public static Outcome startRead(State state, RoleAccess.State access, String personPartyId,
+                                    String docId, long version, long now, GroupAccess groups,
+                                    BoardAccess boards) {
         requireState(state);
         requireAccess(access);
         requireText(personPartyId, "阅读者");
@@ -724,6 +823,8 @@ public final class InformationModel {
         if (version < 1) {
             throw new IllegalArgumentException("阅读版本必须从 1 开始：" + version);
         }
+        GroupAccess groupAccess = groups == null ? GroupAccess.NONE : groups;
+        BoardAccess boardAccess = boards == null ? BoardAccess.NONE : boards;
         if (!state.persons().contains(personPartyId)) {
             return new Outcome(Status.NOT_AVAILABLE, state, null);
         }
@@ -735,7 +836,8 @@ public final class InformationModel {
         if (target == null || target.publishedAt() > now) {
             return new Outcome(Status.NOT_AVAILABLE, state, null);
         }
-        if (!visible(document.audience(), access, personPartyId, now)) {
+        if (!visible(document.audience(), access, personPartyId, now,
+                target.publishedAt(), groupAccess, boardAccess)) {
             return new Outcome(Status.NOT_AVAILABLE, state, null);
         }
         for (Reading reading : state.active()) {
@@ -759,6 +861,22 @@ public final class InformationModel {
     }
 
     /**
+     * 旧签名开读：群组受众按 {@link GroupAccess#NONE} 处理。
+     *
+     * @param state         当前信息状态
+     * @param access        最新任职授权
+     * @param personPartyId 阅读者
+     * @param docId         资料标识
+     * @param version       明确版本号
+     * @param now           开始时刻
+     * @return 结果
+     */
+    public static Outcome startRead(State state, RoleAccess.State access, String personPartyId,
+                                    String docId, long version, long now) {
+        return startRead(state, access, personPartyId, docId, version, now, GroupAccess.NONE);
+    }
+
+    /**
      * 完成阅读：到期是唯一的逻辑完成时点，成功才把固定版本全文交成本人经历。
      *
      * <p>未到期返回 {@link Status#NOT_DUE} 且状态不变。到期后用调用方传入的<b>最新完整任职历史</b>
@@ -777,16 +895,40 @@ public final class InformationModel {
      * @param personPartyId 阅读者
      * @param readId        阅读标识
      * @param now           提交时刻（只决定调用何时发生，不改写终态与工时），不可为负
+     * @param groups        群组读取回调；null 视为 {@link GroupAccess#NONE}
      * @return 结果；完成时携带本人经历
      * @throws IllegalArgumentException 参数为空、时刻为负或时刻早于阅读开始
      */
     public static Outcome completeRead(State state, RoleAccess.State access, String personPartyId,
-                                       String readId, long now) {
+                                       String readId, long now, GroupAccess groups) {
+        return completeRead(state, access, personPartyId, readId, now, groups, BoardAccess.NONE);
+    }
+
+    /**
+     * 完成阅读（董事会 + 群组组合回调）：董事会受众走 {@link BoardAccess}，群组受众走
+     * {@link GroupAccess}；参数个数与旧 6 参数签名不同，显式 null 仍解析到群组签名。
+     *
+     * <p>与群组口径一致：资格在阅读单固定的 {@code due} 判定，而不是调用本方法的处理时刻；
+     * 到期前失席会得到 {@link Status#DENIED} 并保留真实阅读经历，事后复职不能倒填。</p>
+     *
+     * @param state         当前信息状态
+     * @param access        最新任职授权
+     * @param personPartyId 阅读者
+     * @param readId        阅读标识
+     * @param now           提交时刻
+     * @param groups        群组读取回调；null 视为 {@link GroupAccess#NONE}
+     * @param boards        董事会读取回调；null 视为 {@link BoardAccess#NONE}
+     * @return 结果
+     */
+    public static Outcome completeRead(State state, RoleAccess.State access, String personPartyId,
+                                       String readId, long now, GroupAccess groups, BoardAccess boards) {
         requireState(state);
         requireAccess(access);
         requireText(personPartyId, "阅读者");
         requireText(readId, "阅读标识");
         requireNonNegative(now, "完成时刻");
+        GroupAccess groupAccess = groups == null ? GroupAccess.NONE : groups;
+        BoardAccess boardAccess = boards == null ? BoardAccess.NONE : boards;
         if (!state.persons().contains(personPartyId)) {
             return new Outcome(Status.NOT_FOUND, state, null);
         }
@@ -809,7 +951,8 @@ public final class InformationModel {
         List<ReadObservation> observations = new ArrayList<>(state.observations());
 
         long completedAt = reading.dueAt();
-        if (!visible(document.audience(), access, personPartyId, completedAt)) {
+        if (!visible(document.audience(), access, personPartyId, completedAt,
+                version.publishedAt(), groupAccess, boardAccess)) {
             closed.add(new ClosedReading(reading.readId(), personPartyId, reading.docId(), reading.version(),
                     reading.startedAt(), reading.dueAt(), completedAt, CloseReason.DENIED));
             State denied = new State(state.persons(), state.documents(), active, closed, observations,
@@ -830,6 +973,21 @@ public final class InformationModel {
         State completed = new State(state.persons(), state.documents(), active, closed, observations,
                 state.nextReadSequence());
         return new Outcome(Status.COMPLETED, completed, observation);
+    }
+
+    /**
+     * 旧签名完成阅读：群组受众按 {@link GroupAccess#NONE} 处理。
+     *
+     * @param state 当前信息状态
+     * @param access 最新任职授权
+     * @param personPartyId 阅读者
+     * @param readId 阅读标识
+     * @param now 提交时刻
+     * @return 结果
+     */
+    public static Outcome completeRead(State state, RoleAccess.State access, String personPartyId,
+                                       String readId, long now) {
+        return completeRead(state, access, personPartyId, readId, now, GroupAccess.NONE);
     }
 
     /**
@@ -963,7 +1121,8 @@ public final class InformationModel {
     // ---------------------------------------------------------------- 内部
 
     private static boolean visible(Audience audience, RoleAccess.State access, String personPartyId,
-                                   long now) {
+                                   long now, long docVersionPublishedAt, GroupAccess groups,
+                                   BoardAccess boards) {
         switch (audience.kind()) {
             case PUBLIC:
                 return true;
@@ -972,6 +1131,10 @@ public final class InformationModel {
             case ORGANIZATION:
                 return RoleAccess.authorize(access, personPartyId, Action.READ_ORGANIZATION_FILE,
                         Target.organization(audience.partyId()), now) == Decision.ALLOW;
+            case GROUP:
+                return groups.canRead(audience.partyId(), personPartyId, docVersionPublishedAt, now);
+            case BOARD:
+                return boards.canRead(audience.partyId(), personPartyId, now);
             default:
                 throw new IllegalStateException("未知受众种类：" + audience.kind());
         }
@@ -999,6 +1162,43 @@ public final class InformationModel {
             throw new IllegalArgumentException("阅读引用了未发布版本：" + docId + " v" + version);
         }
         return frozen;
+    }
+
+    /**
+     * 管理只读：取某资料的确切已发布版本（用于运行层绑定发布正文，不进入任何角色投影）。
+     *
+     * @param state   信息状态
+     * @param docId   资料标识
+     * @param version 确切版本
+     * @return 版本内容；资料或版本不存在返回空
+     */
+    static java.util.Optional<DocumentVersion> version(State state, String docId,
+                                                       long version) {
+        requireState(state);
+        Document document = findDocument(state.documents(), docId);
+        if (document == null) {
+            return java.util.Optional.empty();
+        }
+        for (DocumentVersion candidate : document.versions()) {
+            if (candidate.version() == version) {
+                return java.util.Optional.of(candidate);
+            }
+        }
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * 管理只读：资料当前的发布者与受众（发布前绑定校验用）。
+     *
+     * @param state 信息状态
+     * @param docId 资料标识
+     * @return 受众与发布者；不存在返回空
+     */
+    static java.util.Optional<Audience> audienceOf(State state, String docId) {
+        requireState(state);
+        Document document = findDocument(state.documents(), docId);
+        return document == null ? java.util.Optional.empty()
+                : java.util.Optional.of(document.audience());
     }
 
     private static Document findDocument(List<Document> documents, String docId) {

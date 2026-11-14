@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 /**
  * M5a 工程回款纯核：签约、预收、履约投入、验收、阶段开票、到期回款、供应商支付、
@@ -514,7 +515,8 @@ public final class EngineeringModel {
             payable = CashLedger.money(payable);
             initialEquity = CashLedger.money(initialEquity);
             initialWorldCash = CashLedger.money(initialWorldCash);
-            usedIds = Collections.unmodifiableSet(new LinkedHashSet<>(usedIds));
+            // 集合语义：已用标识按字典序保存，序列化与逐帧重演比较不依赖插入/哈希顺序
+            usedIds = Collections.unmodifiableSet(new TreeSet<>(usedIds));
             commandContents = Collections.unmodifiableMap(new TreeMap<>(commandContents));
             commandOutcomes = Collections.unmodifiableMap(new TreeMap<>(commandOutcomes));
             if (!contracts.keySet().equals(claims.keySet())) {

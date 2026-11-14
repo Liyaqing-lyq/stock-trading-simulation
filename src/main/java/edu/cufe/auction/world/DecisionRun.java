@@ -63,6 +63,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
     public static final String TOOL_CONTRACT_VERSION_V4 = "role-decision-tools-v4";
     /** schema17：在一对一消息档案上追加社交工具参数的完整合同。 */
     public static final String TOOL_CONTRACT_VERSION_V5 = "role-decision-tools-v5";
+    /** schema18b：董事/经理工具合同；仅 18 档案使用，v1–v5 文本不变。 */
+    public static final String TOOL_CONTRACT_VERSION_V6 = "role-decision-tools-v6";
 
     /** 决定动作内部命令前缀。 */
     private static final String PREFIX_COMMAND = "dec";
@@ -359,6 +361,23 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                                    List<PendingAction> pending, List<String> tools,
                                    DecisionModel.Config config, String toolContractVersion,
                                    com.fasterxml.jackson.databind.JsonNode interview) {
+        return inputText(view, wakeReason, cutoffTimeMillis, pending, tools, config,
+                toolContractVersion, interview, null);
+    }
+
+    /**
+     * 带工程治理/经营角色投影的输入文本（仅 v6）。
+     *
+     * <p>投影由可信运行层按本人真实席位、任职、已读且仍可回忆的机会与材料裁剪生成；
+     * 不含隐藏总额、他人选票或未读条款。v1–v5 与无投影的 v6 输入逐字保持不变。</p>
+     *
+     * @param engineering v6 的公司/董事会角色投影；其他版本必须为 null
+     */
+    public static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
+                                   List<PendingAction> pending, List<String> tools,
+                                   DecisionModel.Config config, String toolContractVersion,
+                                   com.fasterxml.jackson.databind.JsonNode interview,
+                                   com.fasterxml.jackson.databind.JsonNode engineering) {
         Objects.requireNonNull(view, "观察视图");
         Objects.requireNonNull(config, "冻结配置");
         Objects.requireNonNull(toolContractVersion, "工具合同版本");
@@ -366,8 +385,13 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         root.put("toolContractVersion", toolContractVersion);
         if ((TOOL_CONTRACT_VERSION_V3.equals(toolContractVersion)
                 || TOOL_CONTRACT_VERSION_V4.equals(toolContractVersion)
-                || TOOL_CONTRACT_VERSION_V5.equals(toolContractVersion)) && interview != null) {
+                || TOOL_CONTRACT_VERSION_V5.equals(toolContractVersion)
+                || TOOL_CONTRACT_VERSION_V6.equals(toolContractVersion)) && interview != null) {
             root.set("interview", interview);
+        }
+        if (TOOL_CONTRACT_VERSION_V6.equals(toolContractVersion) && engineering != null) {
+            // 只给本人岗位可见的公司/董事投影：actor/seat/company 由服务端绑定，模型不能自授
+            root.set("engineering", engineering);
         }
         root.put("person", view.personPartyId());
         root.put("wakeReason", wakeReason);
@@ -619,7 +643,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             }
         }
 
-        if (TOOL_CONTRACT_VERSION_V5.equals(toolContractVersion) && view.social() != null) {
+        if ((TOOL_CONTRACT_VERSION_V5.equals(toolContractVersion)
+                || TOOL_CONTRACT_VERSION_V6.equals(toolContractVersion)) && view.social() != null) {
             // schema17 人物社交投影：只本人 inbox/outbox 与合法联系人，不含正文与他人消息
             ObjectNode social = root.putObject("social");
             ArrayNode inbox = social.putArray("inbox");
@@ -796,7 +821,132 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         if (tool == null) {
             return List.of();
         }
-        if (TOOL_CONTRACT_VERSION_V5.equals(version)) {
+        if (TOOL_CONTRACT_VERSION_V6.equals(version)) {
+            // 只声明模型可选的业务对象；actor/seat 由运行层按本人真实任职派生，不能自授
+            switch (tool) {
+                case RoleTradingView.TOOL_BOARD_CONVENE -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"meetingId", "string"},
+                            new String[]{"materialDeadline", "long"},
+                            new String[]{"opensAt", "long"}, new String[]{"closesAt", "long"},
+                            new String[]{"topic", "string"});
+                }
+                case RoleTradingView.TOOL_BOARD_ATTEND -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"meetingId", "string"});
+                }
+                case RoleTradingView.TOOL_BOARD_MATERIAL -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"meetingId", "string"},
+                            new String[]{"materialId", "string"},
+                            new String[]{"sourceRef", "string"}, new String[]{"version", "long"});
+                }
+                case RoleTradingView.TOOL_BOARD_VOTE -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"meetingId", "string"},
+                            new String[]{"vote", "string"});
+                }
+                case RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"meetingId", "string"},
+                            new String[]{"lines", "array"});
+                }
+                case RoleTradingView.TOOL_BOARD_PROPOSE_APPOINTMENT -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"meetingId", "string"},
+                            new String[]{"appointmentId", "string"},
+                            new String[]{"personPartyId", "string"},
+                            new String[]{"action", "string"},
+                            new String[]{"effectiveAt", "long"}, new String[]{"endsAt", "long"});
+                }
+                case RoleTradingView.TOOL_BOARD_PROPOSE_WAIVER -> {
+                    // 只能提出具体债权：客户账户与公司由运行层从冻结配置派生
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"meetingId", "string"},
+                            new String[]{"waiverId", "string"},
+                            new String[]{"contractId", "string"},
+                            new String[]{"amount", "decimal"},
+                            new String[]{"purpose", "string"});
+                }
+                case RoleTradingView.TOOL_BOARD_IMPLEMENT -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"meetingId", "string"});
+                }
+                case RoleTradingView.TOOL_ENGINEERING_SIGN -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"contractId", "string"});
+                }
+                case RoleTradingView.TOOL_ENGINEERING_START_WORK -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"contractId", "string"},
+                            new String[]{"workId", "string"}, new String[]{"units", "long"},
+                            new String[]{"period", "long"});
+                }
+                case RoleTradingView.TOOL_ENGINEERING_INVOICE,
+                     RoleTradingView.TOOL_ENGINEERING_TERMINATE -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"contractId", "string"},
+                            new String[]{"reason", "string"});
+                }
+                case RoleTradingView.TOOL_ENGINEERING_PAY_SUPPLIER,
+                     RoleTradingView.TOOL_ENGINEERING_IMPAIR,
+                     RoleTradingView.TOOL_ENGINEERING_WRITE_OFF -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"amount", "decimal"});
+                }
+                case RoleTradingView.TOOL_ENGINEERING_RECOVER -> {
+                    // 核销后追索：只提出请求；客户是否还款由冻结客户响应决定
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"contractId", "string"},
+                            new String[]{"amount", "decimal"});
+                }
+                case RoleTradingView.TOOL_ENGINEERING_REQUEST_ACCEPTANCE,
+                     RoleTradingView.TOOL_ENGINEERING_REQUEST_PAYMENT,
+                     RoleTradingView.TOOL_ENGINEERING_REQUEST_RETENTION -> {
+                    // 请求只是意图：客户是否验收/付款由冻结外部计划决定
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"contractId", "string"},
+                            new String[]{"trancheIndex", "int"});
+                }
+                case RoleTradingView.TOOL_ENGINEERING_WAIVE -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"contractId", "string"},
+                            new String[]{"amount", "decimal"},
+                            new String[]{"purpose", "string"},
+                            new String[]{"authorizationRef", "string"});
+                }
+                case RoleTradingView.TOOL_PERIODIC_PREPARE -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"period", "long"}, new String[]{"note", "string"});
+                }
+                case RoleTradingView.TOOL_PERIODIC_SCORE -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"period", "long"}, new String[]{"metrics", "array"},
+                            new String[]{"rationale", "string"});
+                }
+                case RoleTradingView.TOOL_PERIODIC_APPROVE -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"period", "long"}, new String[]{"draftId", "string"},
+                            new String[]{"draftVersion", "long"});
+                }
+                case RoleTradingView.TOOL_PERIODIC_AUTHORIZE -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"period", "long"}, new String[]{"draftId", "string"},
+                            new String[]{"draftVersion", "long"},
+                            new String[]{"publisherPersonId", "string"},
+                            new String[]{"expiresAt", "long"});
+                }
+                case RoleTradingView.TOOL_PERIODIC_PUBLISH -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"period", "long"}, new String[]{"draftId", "string"},
+                            new String[]{"draftVersion", "long"},
+                            new String[]{"authorizationId", "string"});
+                }
+                default -> {
+                }
+            }
+        }
+        if (TOOL_CONTRACT_VERSION_V5.equals(version) || TOOL_CONTRACT_VERSION_V6.equals(version)) {
             switch (tool) {
                 case RoleTradingView.TOOL_SOCIAL_SEND -> {
                     return List.of(new String[]{"toPartyId", "string"},
@@ -811,7 +961,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 }
             }
         }
-        if (TOOL_CONTRACT_VERSION_V4.equals(version) || TOOL_CONTRACT_VERSION_V5.equals(version)) {
+        if (TOOL_CONTRACT_VERSION_V4.equals(version) || TOOL_CONTRACT_VERSION_V5.equals(version)
+                || TOOL_CONTRACT_VERSION_V6.equals(version)) {
             switch (tool) {
                 case RoleTradingView.TOOL_MEDIA_EVIDENCE_SHARE -> {
                     return List.of(new String[]{"rootDocId", "string"},
@@ -832,7 +983,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             }
         }
         if (TOOL_CONTRACT_VERSION_V3.equals(version) || TOOL_CONTRACT_VERSION_V4.equals(version)
-                || TOOL_CONTRACT_VERSION_V5.equals(version)) {
+                || TOOL_CONTRACT_VERSION_V5.equals(version)
+                || TOOL_CONTRACT_VERSION_V6.equals(version)) {
             switch (tool) {
                 case RoleTradingView.TOOL_INTERVIEW_INVITE -> {
                     return List.of(new String[]{"requestClientId", "string"},

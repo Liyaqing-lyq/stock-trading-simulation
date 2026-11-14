@@ -5,6 +5,7 @@ import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.CashLedger;
 import edu.cufe.auction.world.CognitionRecall;
 import edu.cufe.auction.world.DecisionModel;
+import edu.cufe.auction.world.EngineeringRun;
 import edu.cufe.auction.world.EvidenceRun;
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.InformationRun;
@@ -551,6 +552,9 @@ public final class WorldWebScenario {
     public static final String SOCIAL_CONTACT_DOC = "social:contact-intro";
     /** 社交档两个普通非媒体人物。 */
     public static final List<String> SOCIAL_PERSONS = List.of("nina", "omar");
+    /** 18b 董事/经理动作的冻结耗时：同时就是人物焦点的占用长度。 */
+    public static final long ENGINEERING_ACTION_MILLIS = 1_000L;
+
     /** 社交冻结工时（实验参数，未按现实校准）。 */
     public static final long SOCIAL_SEND_MILLIS = 1_000L;
     public static final long SOCIAL_DELIVERY_MILLIS = 2_000L;
@@ -586,6 +590,76 @@ public final class WorldWebScenario {
         return new DecisionModel.Config(base.providerKind(), base.providerId(),
                 base.pricingVersion(), base.thinkMillisByWake(), actions, base.limits(),
                 new DecisionModel.Budget(base.budget().runCap(), caps), base.profile());
+    }
+
+    /**
+     * schema18b 决定配置：在 schema17 社交档之上登记 v6 董事/经理工具的真实动作耗时。
+     *
+     * <p>工时即这些动作占用人物焦点的长度；工具名只在 18 档出现，v1–v5 输入与配置不变。</p>
+     *
+     * @return 冻结决定配置
+     */
+    public static DecisionModel.Config engineeringDecisionConfig() {
+        DecisionModel.Config base = socialDecisionConfig();
+        Map<String, Long> actions = new TreeMap<>(base.actionMillisByTool());
+        for (String tool : List.of(RoleTradingView.TOOL_BOARD_CONVENE,
+                RoleTradingView.TOOL_BOARD_ATTEND, RoleTradingView.TOOL_BOARD_MATERIAL,
+                RoleTradingView.TOOL_BOARD_VOTE, RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET,
+                RoleTradingView.TOOL_BOARD_PROPOSE_APPOINTMENT,
+                RoleTradingView.TOOL_BOARD_PROPOSE_WAIVER,
+                RoleTradingView.TOOL_BOARD_IMPLEMENT, RoleTradingView.TOOL_ENGINEERING_SIGN,
+                RoleTradingView.TOOL_ENGINEERING_START_WORK,
+                RoleTradingView.TOOL_ENGINEERING_INVOICE,
+                RoleTradingView.TOOL_ENGINEERING_TERMINATE,
+                RoleTradingView.TOOL_ENGINEERING_PAY_SUPPLIER,
+                RoleTradingView.TOOL_ENGINEERING_IMPAIR,
+                RoleTradingView.TOOL_ENGINEERING_WRITE_OFF,
+                RoleTradingView.TOOL_ENGINEERING_RECOVER,
+                RoleTradingView.TOOL_ENGINEERING_REQUEST_ACCEPTANCE,
+                RoleTradingView.TOOL_ENGINEERING_REQUEST_PAYMENT,
+                RoleTradingView.TOOL_ENGINEERING_REQUEST_RETENTION,
+                RoleTradingView.TOOL_ENGINEERING_WAIVE,
+                RoleTradingView.TOOL_PERIODIC_PREPARE,
+                RoleTradingView.TOOL_PERIODIC_SCORE,
+                RoleTradingView.TOOL_PERIODIC_APPROVE,
+                RoleTradingView.TOOL_PERIODIC_AUTHORIZE,
+                RoleTradingView.TOOL_PERIODIC_PUBLISH)) {
+            actions.put(tool, ENGINEERING_ACTION_MILLIS);
+        }
+        Map<String, DecisionModel.Usage> caps = new TreeMap<>(base.budget().personCap());
+        // 章程公司董事/经理也要能发起真实 v6 决定：给该公司每个席位补齐内部实验额度。
+        // 只补已有席位的预算，不新增角色、不改冻结的任期与章程。
+        for (BoardModel.Seat seat : charter().seats()) {
+            caps.putIfAbsent(seat.partyId(), DecisionModel.Usage.unknownCost(25, 250_000, 50_000));
+        }
+        return new DecisionModel.Config(base.providerKind(), base.providerId(),
+                base.pricingVersion(), base.thinkMillisByWake(), actions, base.limits(),
+                new DecisionModel.Budget(base.budget().runCap(), caps), base.profile());
+    }
+
+    /**
+     * 18b 的 scripted 决定配置：与 live 档同一工具表，但没有 live profile，
+     * 供确定性 provider 桩与现有决策测试链使用（不产生任何真实调用）。
+     *
+     * @return scripted 决定配置
+     */
+    public static DecisionModel.Config engineeringScriptedDecisionConfig() {
+        DecisionModel.Config base = engineeringDecisionConfig();
+        return new DecisionModel.Config(DecisionModel.PROVIDER_SCRIPTED, base.providerId(),
+                base.pricingVersion(), base.thinkMillisByWake(), base.actionMillisByTool(),
+                base.limits(), scriptedBudget(base.budget()));
+    }
+
+    /** 脚本档预算：保留次数/token 上限，费用改为已知 0.00（不产生真实计费）。 */
+    private static DecisionModel.Budget scriptedBudget(DecisionModel.Budget base) {
+        Map<String, DecisionModel.Usage> caps = new TreeMap<>();
+        base.personCap().forEach((person, cap) -> caps.put(person, zeroCost(cap)));
+        return new DecisionModel.Budget(zeroCost(base.runCap()), caps);
+    }
+
+    private static DecisionModel.Usage zeroCost(DecisionModel.Usage usage) {
+        return new DecisionModel.Usage(usage.attempts(), usage.inputTokens(),
+                usage.outputTokens(), new BigDecimal("0.00"));
     }
 
     /**
@@ -802,6 +876,382 @@ public final class WorldWebScenario {
         return new DecisionModel.Config(base.providerKind(), base.providerId(), base.pricingVersion(),
                 base.thinkMillisByWake(), actions, base.limits(),
                 new DecisionModel.Budget(base.budget().runCap(), caps), base.profile());
+    }
+
+    /** schema18 工程档运行标识（独立日志，不迁移 17 档）。 */
+    public static final String ENGINEERING_RUN_ID = "web-engineering";
+    /** schema18 工程档标识，实验夹具而非真实公司。 */
+    public static final String ENGINEERING_PROFILE = "web-engineering-v1";
+    /**
+     * 章程公司（制造）的开局治理说明文档标识：只由冻结章程与开局任职派生，
+     * 供董事会在真实任免会议中作为材料阅读；不是真实公司披露。
+     */
+    public static final String GOVERNANCE_NOTE_DOC = "company-governance:" + COMPANY + ":1";
+    /** 治理说明的阅读耗时（模拟毫秒，实验值）。 */
+    public static final long GOVERNANCE_NOTE_READ_MILLIS = 1_000L;
+    /** 工程公司 A：至少两张冻结合同共享同一经营现金账户。 */
+    public static final String ENGINE_A = "eng-a";
+    /** 工程公司 B。 */
+    public static final String ENGINE_B = "eng-b";
+
+    /** @return schema18 工程档：社交全链模块 + engineering 模块，脚本不发起提供方调用 */
+    public static RunManifest engineeringManifest() {
+        Map<String, Integer> modules = new TreeMap<>(socialManifest().moduleVersions());
+        modules.put("engineering", 1);
+        return new RunManifest(ENGINEERING_RUN_ID, 11L,
+                RunManifest.RULES_ENGINEERING_WORLD_EXPERIMENT_V1, modules,
+                Map.of("profile", ENGINEERING_PROFILE), RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    /**
+     * 工程档账户：制造业原账户保持不变，两个工程公司各自唯一经营账户与独立客户/供应商/作业账户。
+     *
+     * @return 开局现金清单（新增账户只出现在本档，旧档字节不变）
+     */
+    public static List<CashLedger.OpeningAccount> engineeringOpenings() {
+        List<CashLedger.OpeningAccount> list = new ArrayList<>(openings());
+        list.add(new CashLedger.OpeningAccount("ENG-A", "eng-a", money("5000.00"),
+                "工程A开局历史禀赋"));
+        list.add(new CashLedger.OpeningAccount("ENG-A-CUS", "eng-a-cus", money("20000.00"),
+                "工程A客户预算"));
+        list.add(new CashLedger.OpeningAccount("ENG-A-SUP", "eng-a-sup", money("0.00"),
+                "工程A供应商聚合"));
+        list.add(new CashLedger.OpeningAccount("ENG-A-OPS", "eng-a-ops", money("0.00"),
+                "工程A作业方聚合"));
+        list.add(new CashLedger.OpeningAccount("ENG-B", "eng-b", money("4000.00"),
+                "工程B开局历史禀赋"));
+        list.add(new CashLedger.OpeningAccount("ENG-B-CUS", "eng-b-cus", money("15000.00"),
+                "工程B客户预算"));
+        list.add(new CashLedger.OpeningAccount("ENG-B-SUP", "eng-b-sup", money("0.00"),
+                "工程B供应商聚合"));
+        list.add(new CashLedger.OpeningAccount("ENG-B-OPS", "eng-b-ops", money("0.00"),
+                "工程B作业方聚合"));
+        return list;
+    }
+
+    /**
+     * 工程档登记：在社交档人物与媒体组织之上加两个工程公司与各自账户 owner。
+     *
+     * <p>两个工程公司各有五席董事会；席位人物可跨公司复用，但同一公司内一人一席。</p>
+     *
+     * @return 开局登记（含证券与开局分配）
+     */
+    public static OpeningRegistry engineeringRegistry() {
+        OpeningRegistry base = registry();
+        List<OpeningRegistry.Party> parties = new ArrayList<>(base.parties());
+        List<OpeningRegistry.PropertyOwner> owners = new ArrayList<>(base.owners());
+        for (String organization : List.of("wire", "investigative")) {
+            parties.add(new OpeningRegistry.Party(organization,
+                    OpeningRegistry.PartyKind.ORGANIZATION,
+                    organization.equals("wire") ? "快讯社（实验）" : "调查社（实验）"));
+            owners.add(new OpeningRegistry.PropertyOwner(organization,
+                    OpeningRegistry.OwnerKind.ORGANIZATION, organization));
+        }
+        Map<String, String> names = new TreeMap<>(Map.of("rita", "快讯记者", "ed", "快讯编辑",
+                "sam", "调查记者", "bea", "调查编辑"));
+        for (String person : MEDIA_PERSONS) {
+            parties.add(new OpeningRegistry.Party(person, OpeningRegistry.PartyKind.PERSON,
+                    names.get(person)));
+            owners.add(new OpeningRegistry.PropertyOwner(person,
+                    OpeningRegistry.OwnerKind.PERSON, person));
+        }
+        for (String person : SOCIAL_PERSONS) {
+            parties.add(new OpeningRegistry.Party(person, OpeningRegistry.PartyKind.PERSON,
+                    person.equals("nina") ? "普通职员甲" : "普通职员乙"));
+            owners.add(new OpeningRegistry.PropertyOwner(person,
+                    OpeningRegistry.OwnerKind.PERSON, person));
+        }
+        for (String company : List.of(ENGINE_A, ENGINE_B)) {
+            parties.add(new OpeningRegistry.Party(company,
+                    OpeningRegistry.PartyKind.ORGANIZATION,
+                    company.equals(ENGINE_A) ? "工程公司A（实验）" : "工程公司B（实验）"));
+            owners.add(new OpeningRegistry.PropertyOwner(company,
+                    OpeningRegistry.OwnerKind.ORGANIZATION, company));
+            for (String suffix : List.of("-cus", "-sup", "-ops")) {
+                owners.add(new OpeningRegistry.PropertyOwner(company + suffix,
+                        OpeningRegistry.OwnerKind.AGGREGATE, null));
+            }
+        }
+        List<OpeningRegistry.Security> securities = new ArrayList<>(base.securities());
+        securities.add(new OpeningRegistry.Security("CUFE-A", ENGINE_A, 1_000L,
+                money("10.00")));
+        securities.add(new OpeningRegistry.Security("CUFE-B", ENGINE_B, 1_000L,
+                money("10.00")));
+        List<OpeningRegistry.ShareAllocation> allocations =
+                new ArrayList<>(base.allocations());
+        allocations.add(new OpeningRegistry.ShareAllocation("INV", "CUFE-A", 600L,
+                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT));
+        allocations.add(new OpeningRegistry.ShareAllocation("ENG-A", "CUFE-A", 400L,
+                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.TREASURY));
+        allocations.add(new OpeningRegistry.ShareAllocation("INV", "CUFE-B", 600L,
+                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.FLOAT));
+        allocations.add(new OpeningRegistry.ShareAllocation("ENG-B", "CUFE-B", 400L,
+                new BigDecimal("10.0000"), OpeningRegistry.ShareClass.TREASURY));
+        return new OpeningRegistry(parties, owners, securities, allocations);
+    }
+
+    /** @return 单公司五席章程；主席固定第一席 */
+    private static BoardModel.Charter engineeringCharter(String company, String prefix,
+                                                         List<String> persons) {
+        List<BoardModel.Seat> seats = new ArrayList<>();
+        for (int i = 0; i < persons.size(); i++) {
+            seats.add(new BoardModel.Seat(prefix + (i + 1), persons.get(i)));
+        }
+        return new BoardModel.Charter(company, seats, prefix + "1", BoardModel.QUORUM);
+    }
+
+    /** @return 单张冻结合同计划（阶段单位以 List 保存，保证配置值相等） */
+    private static EngineeringRun.ContractPlan engineeringContract(String contractId,
+            String unitPrice, String unitCost, long[] tranches) {
+        List<Long> units = new ArrayList<>(tranches.length);
+        for (long unitsPerTranche : tranches) {
+            units.add(unitsPerTranche);
+        }
+        return new EngineeringRun.ContractPlan(contractId, money(unitPrice),
+                new BigDecimal(unitCost).setScale(4), 1000, 1000, 30, 60, units);
+    }
+
+    /** @return schema18 工程配置：A 两张合同共享 A 现金，B 一张；每公司唯一模板与章程 */
+    public static EngineeringRun.Config engineeringConfig() {
+        List<EngineeringRun.CompanySpec> companies = List.of(
+                new EngineeringRun.CompanySpec(ENGINE_A, "eng-a", "ENG-A", "ENG-A-CUS",
+                        "ENG-A-SUP", "ENG-A-OPS", 60_000L, 6_000,
+                        engineeringCharter(ENGINE_A, "ea",
+                                List.of("alice", "bob", "carol", "dave", "erin")),
+                        List.of(engineeringContract("A1", "100.00", "40.00",
+                                        new long[]{10, 20, 30}),
+                                engineeringContract("A2", "50.00", "20.00",
+                                        new long[]{40}))),
+                new EngineeringRun.CompanySpec(ENGINE_B, "eng-b", "ENG-B", "ENG-B-CUS",
+                        "ENG-B-SUP", "ENG-B-OPS", 60_000L, 5_000,
+                        engineeringCharter(ENGINE_B, "eb",
+                                List.of("rita", "ed", "sam", "bea", "nina")),
+                        List.of(engineeringContract("B1", "200.00", "100.00",
+                                new long[]{5, 5}))));
+        return new EngineeringRun.Config("schema18 实验参数，未按现实校准", companies);
+    }
+
+    /**
+     * 打开 schema18 工程档：同一 WorldRuntime 打开同一 WorldJournal，保留媒体/采访/对话/证据/社交，
+     * 额外按公司持有工程经营与董事会；开局不移动现金、不代签新合同、不发起模型调用。
+     *
+     * @param journal 独立日志文件
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldWebHost.Opened openEngineering(Path journal) throws Exception {
+        // 是否为新档必须在打开日志之前确定：已存在的日志（哪怕世界时点仍是 0）不算新档，
+        // 重开不得偷偷新增开局说明。相同新档重开时，原已排程命令仍在命令表里，保持幂等。
+        boolean freshArchive = !java.nio.file.Files.exists(journal)
+                || java.nio.file.Files.size(journal) == 0L;
+        RunManifest manifest = engineeringManifest();
+        WorldRuntime runtime = engineeringRuntime(journal, engineeringConfig(),
+                engineeringOpenings());
+        if (freshArchive) {
+            // 这是显式的模拟公司治理说明：只公布公司标识、实际公开章程席位/法定人数、
+            // 开局经理空缺与既有任免规则；不含开局机构任职列表、私预算、余额、评分或候选人资历。
+            // 作者身沿用既有登记读者（同一夹具作者），受众为公开，任何人从自己的目录取用。
+            runtime.schedulePublishDocument("gov-note:" + COMPANY, "gov-note-task:" + COMPANY,
+                    150L, GOVERNANCE_NOTE_DOC, INVESTOR,
+                    InformationModel.Audience.publicAudience(),
+                    "制造公司开局治理说明（模拟冻结配置）", governanceNoteBody(),
+                    "开局冻结章程与任免规则（模拟，不是真实披露）",
+                    GOVERNANCE_NOTE_READ_MILLIS, List.of());
+        }
+        for (EngineeringRun.CompanySpec spec : engineeringConfig().companies()) {
+            for (EngineeringRun.ContractPlan plan : spec.contracts()) {
+                runtime.schedulePublishDocument("opp:" + spec.companyPartyId() + ":"
+                        + plan.contractId(), "opp-task:" + spec.companyPartyId() + ":"
+                        + plan.contractId(), 100L,
+                        "engineering-opportunity:" + plan.contractId(), INVESTOR,
+                        InformationModel.Audience.publicAudience(),
+                        "工程机会 " + plan.contractId(),
+                        opportunityBody(spec, plan), "冻结工程机会", 1_000L,
+                        List.of());
+            }
+        }
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
+    /**
+     * 开局治理说明正文：只由冻结章程派生，公开字段仅限公司标识、席位/法定人数、
+     * 开局经理空缺与既有任免规则。
+     *
+     * <p>不含开局机构任职列表、私预算、账户余额、隐藏评分或任何候选人资历/业绩；
+     * 明确标注是模拟冻结配置。这是公开说明，任何人可从自己的目录取用并阅读。</p>
+     *
+     * @return 说明正文
+     */
+    private static String governanceNoteBody() {
+        BoardModel.Charter charter = charter();
+        StringBuilder seats = new StringBuilder();
+        for (BoardModel.Seat seat : charter.seats()) {
+            if (seats.length() > 0) {
+                seats.append('、');
+            }
+            seats.append(seat.seatId()).append(':').append(seat.partyId());
+            if (seat.seatId().equals(charter.chairSeatId())) {
+                seats.append("(主席)");
+            }
+        }
+        return "模拟冻结配置（开局夹具，不是真实公司披露）\n"
+                + "公司=" + COMPANY + "\n"
+                + "章程席位=" + seats + "\n"
+                + "法定人数=" + charter.quorum() + "\n"
+                + "公司经理=空缺（开局没有 COMPANY_MANAGER 任职，需董事会任免）\n"
+                + "任免规则（已接受机制）=主席召集任免会议→董事到会并读材料→表决→实施后按请求的"
+                + "生效时点写入真实任职；不自动任命，也不产生无限期角色。\n";
+    }
+
+    /**
+     * 工程机会资料的正文：只写冻结配置里已有的真实条款，读者能据此核对自己将签什么。
+     *
+     * <p>数量单位、单价、单位成本、预收/质保比例与付款期限全部取自 {@link EngineeringRun.ContractPlan}
+     * 与所属 {@link EngineeringRun.CompanySpec} 的实际字段，格式与结构化输入一致（单价两位小数）。
+     * 正文不写客户期间预算、客户现金或未来客户回应计划，避免把 God 才能算的私有事实当成经理已知。</p>
+     *
+     * @param spec 所属工程公司（只用到公司标识与所有者标识）
+     * @param plan 该公司的冻结合同计划
+     * @return 供实际阅读的中文正文
+     */
+    private static String opportunityBody(EngineeringRun.CompanySpec spec,
+            EngineeringRun.ContractPlan plan) {
+        StringBuilder units = new StringBuilder();
+        for (int i = 0; i < plan.trancheUnits().size(); i++) {
+            if (i > 0) {
+                units.append('、');
+            }
+            units.append('第').append(i + 1).append("阶段 ").append(plan.trancheUnits().get(i))
+                    .append(" 件");
+        }
+        return "实验预置合同机会（来源：冻结工程配置，不是真实客户要约）\n"
+                + "所属公司：" + spec.companyPartyId() + "（所有者 " + spec.companyOwnerId() + "）\n"
+                + "合同标识：" + plan.contractId() + "\n"
+                + "数量单位：" + units + "\n"
+                + "单价：" + fixed(plan.unitPrice()) + " 元/单位\n"
+                + "单位成本：" + plan.unitCost().toPlainString() + " 元/单位\n"
+                + "预收比例：" + basisPoints(plan.advanceBp()) + "；质保扣留比例："
+                + basisPoints(plan.retentionBp()) + "\n"
+                + "付款期：" + plan.netDays() + " 天；质保期：" + plan.retentionNetDays() + " 天\n"
+                + "合法动作前提：本人须先实际阅读本资料才能签约；开工按阶段数量报工；"
+                + "完工后须客户真实验收回应才能开票；开票到期后才可请求付款。\n"
+                + "本资料不含客户预算、客户现金或未来回应计划，不得据此推测。";
+    }
+
+    /** 金额两位数（与结构化输入的金额口径一致）。 */
+    private static String fixed(java.math.BigDecimal value) {
+        return value == null ? "0.00"
+                : value.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
+    }
+
+    /** 万分比转百分比文本（2000 → 20%）。 */
+    private static String basisPoints(int value) {
+        return java.math.BigDecimal.valueOf(value, 2).stripTrailingZeros().toPlainString() + "%";
+    }
+
+    /**
+     * 工程档真实构造接缝：同一套登记/配置，只替换工程配置，供受控测试使用。
+     *
+     * @param journal     独立日志
+     * @param engineering 工程冻结配置
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldRuntime engineeringRuntime(Path journal, EngineeringRun.Config engineering)
+            throws Exception {
+        return engineeringRuntime(journal, engineering, engineeringOpenings());
+    }
+
+    /**
+     * 工程档真实构造接缝：可替换开局账户，用于验证非法初始金额在写盘前被拒绝。
+     *
+     * @param journal     独立日志
+     * @param engineering 工程冻结配置
+     * @param openings    开局现金清单
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldRuntime engineeringRuntime(Path journal, EngineeringRun.Config engineering,
+            List<CashLedger.OpeningAccount> openings) throws Exception {
+        return engineeringRuntime(journal, engineering, openings, engineeringDecisionConfig());
+    }
+
+    /**
+     * 受控测试接缝：18 档可替换决定配置（scripted 桩或 live 由配置自证，不注入凭据）。
+     *
+     * @param journal     独立日志
+     * @param engineering 工程冻结配置
+     * @param decision    决定配置；scripted 档必须无 live profile
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldRuntime engineeringRuntime(Path journal, EngineeringRun.Config engineering,
+            DecisionModel.Config decision) throws Exception {
+        return engineeringRuntime(journal, engineering, engineeringOpenings(), decision);
+    }
+
+    /**
+     * 受控测试接缝：同时替换开局账户与决定配置。
+     *
+     * @param journal     独立日志
+     * @param engineering 工程冻结配置
+     * @param openings    开局现金清单
+     * @param decision    决定配置
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldRuntime engineeringRuntime(Path journal, EngineeringRun.Config engineering,
+            List<CashLedger.OpeningAccount> openings, DecisionModel.Config decision)
+            throws Exception {
+        return engineeringRuntime(journal, engineering, openings, decision, List.of());
+    }
+
+    /**
+     * 受控测试接缝：在原任职表上追加开局即有效的任职（用于章程公司经理等真实岗位）。
+     *
+     * @param journal     独立日志
+     * @param engineering 工程冻结配置
+     * @param extra       追加任职（同样写入开局配置，重开必须一致）
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldRuntime engineeringRuntimeWithAppointments(Path journal,
+            EngineeringRun.Config engineering, List<RoleAccess.Appointment> extra)
+            throws Exception {
+        return engineeringRuntime(journal, engineering, engineeringOpenings(),
+                engineeringDecisionConfig(), extra);
+    }
+
+    private static WorldRuntime engineeringRuntime(Path journal, EngineeringRun.Config engineering,
+            List<CashLedger.OpeningAccount> openings, DecisionModel.Config decision,
+            List<RoleAccess.Appointment> extra) throws Exception {
+        OpeningRegistry registry = engineeringRegistry();
+        List<RoleAccess.Appointment> appointments = new ArrayList<>(roles().appointments());
+        appointments.addAll(extra);
+        long end = 30L * 86_400_000L;
+        for (int i = 0; i < MEDIA_PERSONS.size(); i++) {
+            appointments.add(new RoleAccess.Appointment("MEDIA-" + i, MEDIA_PERSONS.get(i),
+                    i < 2 ? "wire" : "investigative",
+                    i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
+                    0L, end, null));
+        }
+        List<String> readers = new ArrayList<>(information().readers());
+        readers.addAll(MEDIA_PERSONS);
+        readers.addAll(SOCIAL_PERSONS);
+        InformationRun.Config info = new InformationRun.Config(readers, COGNITION_POLICY,
+                new BeliefModel.Policy(200, 8, end, 20, 200, 3, end));
+        List<InterviewRun.ContactEntry> contacts = new ArrayList<>(interviewConfig().contacts());
+        for (String person : SOCIAL_PERSONS) {
+            contacts.add(new InterviewRun.ContactEntry("私信", person,
+                    "公开联系说明：可一对一私人消息", SOCIAL_CONTACT_DOC, 1L));
+        }
+        return new WorldRuntime(journal, engineeringManifest(), openings, registry,
+                new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
+                        "SUP", "CUS", "OPS"), SYMBOL), charter(),
+                new RoleRun.Config(roles().mandates(), appointments), info,
+                decision, null, mediaConfig(), interviewConfig(),
+                dialogueConfig(), evidenceConfig(), socialConfig(), SOCIAL_BLOCK_MILLIS,
+                contacts, engineering);
     }
 
     private static BigDecimal money(String value) {
