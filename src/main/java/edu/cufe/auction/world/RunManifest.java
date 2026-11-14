@@ -94,6 +94,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** schema18：在社交全链之上接入按公司的工程经营与董事会（不迁移旧档）。 */
     public static final String RULES_ENGINEERING_WORLD_EXPERIMENT_V1 =
             "engineering-world-experiment-v1";
+    /** schema20：在工程全链之上接入群组、平台发布与呈现（不迁移旧档）。 */
+    public static final String RULES_GROUPS_PLATFORM_EXPERIMENT_V1 = "groups-platform-experiment-v1";
     public static final String RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1 =
             "interview-dialogue-experiment-v1";
 
@@ -283,6 +285,29 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("dialogue");
     }
 
+    /**
+     * 是否启用 schema20 群组模块。
+     *
+     * <p>只认冻结模块表，不按版本号推断；群组与平台发布必须同时启用，另一模块缺失时构造期拒绝。
+     * 旧 ≤19 档案永远返回 false，因此旧校验路径与旧档字节不受影响。</p>
+     *
+     * @return 模块表包含 groups 时返回 true
+     */
+    public boolean hasGroups() {
+        return moduleVersions.containsKey("groups");
+    }
+
+    /**
+     * 是否启用 schema20 平台发布模块。
+     *
+     * <p>与 {@link #hasGroups()} 严格成对；不因为档案版本更高就假设银行（19）或群组存在。</p>
+     *
+     * @return 模块表包含 publication 时返回 true
+     */
+    public boolean hasPublication() {
+        return moduleVersions.containsKey("publication");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -306,7 +331,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -329,7 +355,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         Map<String, Integer> expected = new TreeMap<>();
         expected.put("cash", 1);
         expected.put("scheduler", 1);
-        boolean withEngineering = RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withGroups = RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withEngineering = withGroups
+                || RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion);
         boolean withSocial = withEngineering || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion);
         boolean withEvidence = withSocial
                 || RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion);
@@ -426,6 +454,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         }
         if (withEngineering) {
             expected.put("engineering", 1);
+        }
+        if (withGroups) {
+            expected.put("groups", 1);
+            expected.put("publication", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "

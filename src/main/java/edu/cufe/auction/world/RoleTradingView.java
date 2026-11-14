@@ -127,6 +127,23 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     /** 社交工具（schema17）：解除屏蔽。 */
     public static final String TOOL_SOCIAL_UNBLOCK = "social.unblock";
 
+    /** 群工具（schema20）：加入公开群。 */
+    public static final String TOOL_GROUP_JOIN = "group.join";
+    /** 群工具（schema20）：邀请他人加入本人所在群。 */
+    public static final String TOOL_GROUP_INVITE = "group.invite";
+    /** 群工具（schema20）：接受或拒绝发给本人的邀请。 */
+    public static final String TOOL_GROUP_RESPOND = "group.respond";
+    /** 群工具（schema20）：退出本人当前所在群。 */
+    public static final String TOOL_GROUP_LEAVE = "group.leave";
+    /** 群工具（schema20）：在本人所在群发帖。 */
+    public static final String TOOL_GROUP_POST = "group.post";
+    /** 群工具（schema20）：更正本人已发布的群帖。 */
+    public static final String TOOL_GROUP_CORRECT = "group.correct";
+    /** 平台工具（schema20）：公开发布平台帖。 */
+    public static final String TOOL_PLATFORM_POST = "platform.post";
+    /** 平台工具（schema20）：更正本人已发布的平台帖。 */
+    public static final String TOOL_PLATFORM_CORRECT = "platform.correct";
+
     /** 采访工具：记者发起预约邀请。 */
     public static final String TOOL_INTERVIEW_INVITE = "interview.invite";
 

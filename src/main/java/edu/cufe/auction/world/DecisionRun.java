@@ -378,6 +378,24 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                                    DecisionModel.Config config, String toolContractVersion,
                                    com.fasterxml.jackson.databind.JsonNode interview,
                                    com.fasterxml.jackson.databind.JsonNode engineering) {
+        return inputText(view, wakeReason, cutoffTimeMillis, pending, tools, config,
+                toolContractVersion, interview, engineering, null);
+    }
+
+    /**
+     * 带群组/平台投影的输入文本（仅 v6，schema20）。
+     *
+     * <p>投影由可信运行层按本人真实成员段、发给本人的待处理邀请与真实平台目录裁剪生成；
+     * 不含他人私群、邀请对象以外的人物或未发表版本。v1–v5 与无投影的 v6 输入逐字保持不变。</p>
+     *
+     * @param groups 群组/平台投影；其他版本或无群组模块必须为 null
+     */
+    public static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
+                                   List<PendingAction> pending, List<String> tools,
+                                   DecisionModel.Config config, String toolContractVersion,
+                                   com.fasterxml.jackson.databind.JsonNode interview,
+                                   com.fasterxml.jackson.databind.JsonNode engineering,
+                                   com.fasterxml.jackson.databind.JsonNode groups) {
         Objects.requireNonNull(view, "观察视图");
         Objects.requireNonNull(config, "冻结配置");
         Objects.requireNonNull(toolContractVersion, "工具合同版本");
@@ -392,6 +410,10 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         if (TOOL_CONTRACT_VERSION_V6.equals(toolContractVersion) && engineering != null) {
             // 只给本人岗位可见的公司/董事投影：actor/seat/company 由服务端绑定，模型不能自授
             root.set("engineering", engineering);
+        }
+        if (TOOL_CONTRACT_VERSION_V6.equals(toolContractVersion) && groups != null) {
+            // 只给本人真实成员段、发给本人的待邀请与真实平台目录；成员资格与来源仍由服务端复核
+            root.set("groups", groups);
         }
         root.put("person", view.personPartyId());
         root.put("wakeReason", wakeReason);
@@ -824,6 +846,41 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         if (TOOL_CONTRACT_VERSION_V6.equals(version)) {
             // 只声明模型可选的业务对象；actor/seat 由运行层按本人真实任职派生，不能自授
             switch (tool) {
+                case RoleTradingView.TOOL_GROUP_JOIN -> {
+                    return List.<String[]>of(new String[]{"groupId", "string"});
+                }
+                case RoleTradingView.TOOL_GROUP_INVITE -> {
+                    return List.of(new String[]{"groupId", "string"},
+                            new String[]{"inviteePartyId", "string"});
+                }
+                case RoleTradingView.TOOL_GROUP_RESPOND -> {
+                    return List.of(new String[]{"inviteId", "string"},
+                            new String[]{"accept", "boolean"});
+                }
+                case RoleTradingView.TOOL_GROUP_LEAVE -> {
+                    return List.<String[]>of(new String[]{"groupId", "string"});
+                }
+                case RoleTradingView.TOOL_GROUP_POST -> {
+                    return List.of(new String[]{"groupId", "string"},
+                            new String[]{"title", "string"}, new String[]{"body", "string"},
+                            new String[]{"cites", "array"});
+                }
+                case RoleTradingView.TOOL_GROUP_CORRECT -> {
+                    return List.of(new String[]{"docId", "string"},
+                            new String[]{"basedOnVersion", "long"},
+                            new String[]{"title", "string"}, new String[]{"body", "string"},
+                            new String[]{"cites", "array"});
+                }
+                case RoleTradingView.TOOL_PLATFORM_POST -> {
+                    return List.of(new String[]{"title", "string"},
+                            new String[]{"body", "string"}, new String[]{"cites", "array"});
+                }
+                case RoleTradingView.TOOL_PLATFORM_CORRECT -> {
+                    return List.of(new String[]{"docId", "string"},
+                            new String[]{"basedOnVersion", "long"},
+                            new String[]{"title", "string"}, new String[]{"body", "string"},
+                            new String[]{"cites", "array"});
+                }
                 case RoleTradingView.TOOL_BOARD_CONVENE -> {
                     return List.of(new String[]{"companyPartyId", "string"},
                             new String[]{"meetingId", "string"},
