@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -29,8 +30,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * B2 生命周期链（作者侧，针对独审 L1）：子进程被外部结束后不得继续报 RUNNING，
  * 必须转 {@code EXITED} 并给真实退出码；再次启动要保留原来的业务结果；正常停止仍是 STOPPED。
  *
- * <p>另外用"可观测的 STARTING 状态"当确定性闸门，验证 start 健康核验期间并发 stop 不会
- * 被旧的 start 回写成 RUNNING（不靠随机 sleep 撞概率）。</p>
+ * <p>并发窗口用 {@link RunLauncher#beforeHealthCheck} 这个 package-private 接缝做**确定性**交错：
+ * 测试把 start 停在"子进程已起、尚未提交 RUNNING"的窗口里，再在窗口内停止，靠 latch 同步而不是
+ * 轮询/sleep 撞概率。</p>
  */
 class BranchLifecycleChainTest {
 
@@ -138,7 +140,7 @@ class BranchLifecycleChainTest {
                 .map(ProcessHandle::isAlive).orElse(false), 20_000L));
     }
 
-    // ------------------------------------------------------------------ 并发窗口
+    // ------------------------------------------------------------------ 并发窗口（确定性）
 
     @Test
     void concurrentStopDuringStartNeverLeavesRunning() throws Exception {
@@ -147,53 +149,108 @@ class BranchLifecycleChainTest {
         assertEquals(200, post("/api/admin/branches", JSON.writeValueAsString(Map.of(
                 "position", "1", "childRunId", CHILD, "kind", "operator", "note", "并发")))
                 .statusCode());
-        String first = json(post("/api/admin/runs/" + CHILD + "/start", "")).path("status").asText();
-        assertEquals("RUNNING", first);
-
-        // 先用一次正常 stop 归零，再让 start 与 stop 在同一窗口里相遇。
+        // 基线：正常启动 → 正常停止仍可用
+        assertEquals("RUNNING", json(post("/api/admin/runs/" + CHILD + "/start", ""))
+                .path("status").asText());
         assertEquals("STOPPED", json(post("/api/admin/runs/" + CHILD + "/stop", ""))
                 .path("status").asText());
 
-        for (int round = 0; round < 3; round++) {
-            // 确定性闸门：start 在锁外做健康核验时，list 一定能观察到 STARTING。
-            CountDownLatch started = new CountDownLatch(1);
-            AtomicReference<String> startOutcome = new AtomicReference<>("");
-            Thread starter = new Thread(() -> {
-                try {
-                    RunLauncher.View view = launcher.start(CHILD);
-                    startOutcome.set("VIEW:" + view.status());
-                } catch (RunLauncher.Rejected rejected) {
-                    startOutcome.set("REJECTED:" + rejected.code());
-                } catch (Exception failure) {
-                    startOutcome.set("ERROR:" + failure);
-                }
-            }, "lifecycle-start-" + round);
-            starter.start();
+        // 确定性交错 A：把 start 停在"子进程已起、尚未提交 RUNNING"的窗口里；stop 清理完、写最终状态前
+        // 再把旧 start 放出去，让它的失败收尾正好落在"清理完、未提交"的窗口内。
+        CountDownLatch inWindow = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch startSettled = new CountDownLatch(1);
+        launcher.beforeHealthCheck = () -> {
+            inWindow.countDown();
+            awaitQuietly(release, 60_000L);
+        };
+        launcher.afterStopCleanup = () -> {
+            release.countDown();                 // 让旧 start 在这里失败收尾
+            awaitQuietly(startSettled, 60_000L); // 等它真的收尾完，再由 stop 提交状态
+        };
+        AtomicReference<String> outcome = new AtomicReference<>("");
+        Thread starter = new Thread(() -> {
+            try {
+                outcome.set("VIEW:" + launcher.start(CHILD).status());
+            } catch (RunLauncher.Rejected rejected) {
+                outcome.set("REJECTED:" + rejected.code());
+            } catch (Exception failure) {
+                outcome.set("ERROR:" + failure);
+            } finally {
+                startSettled.countDown();
+            }
+        }, "lifecycle-start-window");
+        starter.start();
+        assertTrue(inWindow.await(60, TimeUnit.SECONDS), "start 必须到达健康核验前的窗口");
+        RunLauncher.View duringWindow = launcher.list().stream()
+                .filter(view -> view.runId().equals(CHILD)).findFirst().orElseThrow();
+        assertEquals("STARTING", duringWindow.status(), "窗口内 start 还没提交 RUNNING");
+        assertEquals(1, launcher.activeCount(), "清理完成前仍应占用并发额度");
 
-            boolean sawStarting = waitUntil(() -> {
-                try {
-                    return launcher.list().stream()
-                            .anyMatch(view -> view.runId().equals(CHILD)
-                                    && "STARTING".equals(view.status()));
-                } catch (Exception unreadable) {
-                    return false;
-                }
-            }, 20_000L);
-            assertTrue(sawStarting, "必须能观察到真实的 STARTING 窗口（而不是靠 sleep 撞）");
-            started.countDown();
+        RunLauncher.View stopped = launcher.stop(CHILD);
+        assertEquals("STOPPED", stopped.status(), "用户 stop 必须得到 STOPPED");
+        starter.join(60_000L);
+        assertFalse(starter.isAlive(), "并发窗口内 start 必须结束");
+        assertTrue(outcome.get().startsWith("REJECTED"),
+                "被 stop 的 start 只能是明确拒绝，实际：" + outcome.get());
+        launcher.beforeHealthCheck = null;
+        launcher.afterStopCleanup = null;
 
-            RunLauncher.View stoppedByUser = launcher.stop(CHILD);
-            starter.join(60_000L);
-            assertFalse(starter.isAlive(), "并发窗口内 start 必须结束");
+        JsonNode listed = json(get("/api/admin/runs"));
+        assertEquals("STOPPED", listed.path("runs").get(0).path("status").asText(),
+                "stop 之后旧 start 不得把条目改回 RUNNING 或 FAILED（" + outcome.get() + "）");
+        assertEquals(0, listed.path("active").asInt(), "不许留下占额度的死条目");
 
-            String outcome = startOutcome.get();
-            JsonNode listed = json(get("/api/admin/runs"));
-            String status = listed.path("runs").get(0).path("status").asText();
-            assertFalse(outcome.isEmpty(), "并发窗口内 start 必须给出结果");
-            assertNotEquals("RUNNING", status, "stop 之后旧 start 不得把条目改回 RUNNING（"
-                    + outcome + "）");
-            assertTrue("STOPPED".equals(status) || "EXITED".equals(status), "真实状态：" + status);
-            assertEquals(0, listed.path("active").asInt(), "不许留下占额度的死条目");
+        // 确定性交错 B：旧 start 的失败收尾不得碰"新一代"条目。
+        CountDownLatch firstWindow = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        launcher.beforeHealthCheck = () -> {
+            if (calls.incrementAndGet() == 1) {
+                firstWindow.countDown();
+                awaitQuietly(releaseFirst, 60_000L);
+            }
+        };
+        AtomicReference<String> oldOutcome = new AtomicReference<>("");
+        Thread oldStart = new Thread(() -> {
+            try {
+                oldOutcome.set("VIEW:" + launcher.start(CHILD).status());
+            } catch (RunLauncher.Rejected rejected) {
+                oldOutcome.set("REJECTED:" + rejected.code());
+            } catch (Exception failure) {
+                oldOutcome.set("ERROR:" + failure);
+            }
+        }, "lifecycle-start-old");
+        oldStart.start();
+        assertTrue(firstWindow.await(60, TimeUnit.SECONDS), "旧 start 必须停在窗口里");
+        assertEquals("STOPPED", launcher.stop(CHILD).status());
+        RunLauncher.View second = launcher.start(CHILD);
+        assertEquals("RUNNING", second.status(), "停止后应能立即重新启动新一代");
+        long secondPid = second.pid();
+        assertTrue(secondPid > 0);
+
+        releaseFirst.countDown();
+        oldStart.join(60_000L);
+        assertFalse(oldStart.isAlive());
+        assertTrue(oldOutcome.get().startsWith("REJECTED"),
+                "旧 start 应被明确拒绝：" + oldOutcome.get());
+
+        JsonNode afterOld = json(get("/api/admin/runs"));
+        assertEquals("RUNNING", afterOld.path("runs").get(0).path("status").asText(),
+                "旧 start 的收尾不得把新一代改掉");
+        assertEquals(secondPid, afterOld.path("runs").get(0).path("pid").asLong(),
+                "旧 start 的收尾不得杀掉新一代进程");
+        assertEquals(1, afterOld.path("active").asInt());
+        assertEquals("STOPPED", json(post("/api/admin/runs/" + CHILD + "/stop", ""))
+                .path("status").asText());
+    }
+
+    /** 在限定时间内等待闸门；超时后继续，由测试断言兜底。 */
+    private static void awaitQuietly(CountDownLatch latch, long millis) {
+        try {
+            latch.await(millis, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 

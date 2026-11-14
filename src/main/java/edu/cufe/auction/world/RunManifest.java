@@ -61,6 +61,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 在四岗交易档案之上再加决定屏障与尝试（M4d 新增的明确组合，scripted 模型）。 */
     public static final String RULES_DECISION_EXPERIMENT_V1 = "decision-experiment-v1";
 
+    /**
+     * 命令意图档案：在群组平台全链之上启用 {@code command-intent} 模块的明确组合。
+     *
+     * <p>先用最需要的一条闭：制造排程把种类写进命令正文，因此新档可以鉴别 PURCHASE 与
+     * PRODUCTION 这类同形动作；其余外部排程入口的身份字段（taskId/到期/工时）在其域命令里
+     * 已有或已在既有校验中绑定，见 {@code contract-command-intent.md}。旧档继续原格式，
+     * 缺失的身份信息不伪造。</p>
+     */
+    public static final String RULES_COMMAND_INTENT_EXPERIMENT_V1 =
+            "command-intent-experiment-v1";
+
     /** 在决定档案之上再加现金分红世界桥（M3d D3b 新增的明确组合，scripted 模型）。 */
     public static final String RULES_DIVIDEND_WORLD_EXPERIMENT_V1 = "dividend-world-experiment-v1";
 
@@ -298,6 +309,18 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     }
 
     /**
+     * 是否启用命令意图模块（新规则档）。
+     *
+     * <p>启用后制造命令正文必须携带种类，恢复时按原命令种类重演；旧档没有该模块，
+     * 继续按原格式读取，同形歧义作为已知旧契约限制保留。</p>
+     *
+     * @return 模块表包含 {@code command-intent} 时返回 true
+     */
+    public boolean hasCommandIntent() {
+        return moduleVersions.containsKey("command-intent");
+    }
+
+    /**
      * 是否启用 schema20 平台发布模块。
      *
      * <p>与 {@link #hasGroups()} 严格成对；不因为档案版本更高就假设银行（19）或群组存在。</p>
@@ -332,7 +355,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_COMMAND_INTENT_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -355,7 +379,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         Map<String, Integer> expected = new TreeMap<>();
         expected.put("cash", 1);
         expected.put("scheduler", 1);
-        boolean withGroups = RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withGroups = RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_COMMAND_INTENT_EXPERIMENT_V1.equals(rulesVersion);
         boolean withEngineering = withGroups
                 || RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion);
         boolean withSocial = withEngineering || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion);
@@ -417,6 +442,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         }
         if (withTrading) {
             expected.put("trading", 1);
+        }
+        if (RULES_COMMAND_INTENT_EXPERIMENT_V1.equals(rulesVersion)) {
+            expected.put("command-intent", 1);
         }
         if (RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion) || withDividend) {
             expected.put("decisions", 1);

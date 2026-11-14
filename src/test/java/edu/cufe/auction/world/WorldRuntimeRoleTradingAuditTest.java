@@ -42,6 +42,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Consumer;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -688,12 +689,24 @@ class WorldRuntimeRoleTradingAuditTest {
             ((ArrayNode) snapshot.path("pending")).add(timer);
             ((ArrayNode) snapshot.path("usedTaskIds")).add("late-old-sweep");
         });
-        try (WorldRuntime rt = open(late)) {
+        // 1）合法日志：真实推进越过全部到期后，新版本订单仍然活动、交易账不变。
+        try (WorldRuntime rt = open(journal)) {
             WorldExchange.State before = exchange(rt);
             rt.advanceTo(240_000L);
             assertEquals(before, exchange(rt), "旧版本规则不得改动新版本交易账");
-            assertTrue(orderOf(rt, "new-child").live());
+            assertTrue(orderOf(rt, "new-child").live(), "新版本子单必须仍然活动");
         }
+        // 2）版本 1 扫尾在合法日志里从来不存在，机制不是「版本更新即重排」：真实链是
+        //    「扫尾先于确认（到期 now+1）→ 确认时 CANCEL_PENDING 门撤销旧扫尾 → 执行层按
+        //    STALE_VERSION 兜底」。把它塞进已完成子单的同一帧只能得到非法帧，必须在构造期由
+        //    任务重演拒绝，而不是靠执行期补救。
+        byte[] attacked = Files.readAllBytes(late);
+        IOException rejected = assertThrows(IOException.class, () -> open(late).close(),
+                "同帧夹带版本 1 扫尾的任务帧必须拒绝重开");
+        assertTrue(rejected.getMessage()
+                        .contains("任务帧与按原任务重演的状态不一致：roleT:4:dave:new-child-t"),
+                rejected.getMessage());
+        assertArrayEquals(attacked, Files.readAllBytes(late), "拒绝不得修写日志");
     }
 
     private static String t(String childId) {

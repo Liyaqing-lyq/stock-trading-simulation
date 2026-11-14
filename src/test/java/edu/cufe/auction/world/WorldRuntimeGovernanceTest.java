@@ -836,7 +836,10 @@ class WorldRuntimeGovernanceTest {
                 root -> ((ObjectNode) meetingNode(root, meetingId).path("ballots").path("s4"))
                         .put("vote", "YES"));
         IOException failure = assertThrows(IOException.class, () -> open(rewritten).close());
-        assertTrue(failure.getMessage().contains("表决终态与选票不一致"), failure.getMessage());
+        // 统一任务派生校验会先于治理终态检查拒绝同一批一致改写；拒绝本身必须保持。
+        assertTrue(failure.getMessage()
+                        .contains("任务帧与按原任务重演的状态不一致"),
+                failure.getMessage());
     }
 
     @Test

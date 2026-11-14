@@ -1378,6 +1378,62 @@ public final class WorldWebScenario {
 
     private static WorldRuntime groupsRuntime(Path journal, GroupModel.Config groups,
             PlatformPostModel.Config platform, int feedLimit, long readMillis) throws Exception {
+        return groupsRuntime(journal, groups, platform, feedLimit, readMillis, groupsManifest());
+    }
+
+    /**
+     * 新规则档工厂：在群组平台全链之上启用 {@code command-intent} 模块。
+     *
+     * <p>Web 的 intent 模式使用独立新档；已有群组档继续原规则，不隐式迁移。
+     * 这一档写出的制造命令正文携带种类，恢复时按原命令种类重演；旧档继续原格式。</p>
+     *
+     * @param journal 独立日志
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldRuntime commandIntentRuntime(Path journal) throws Exception {
+        return groupsRuntime(journal, groupsConfig(), groupsPlatformConfig(), GROUPS_FEED_LIMIT,
+                GROUPS_READ_MILLIS, commandIntentManifest());
+    }
+
+    /**
+     * 打开完整指令原意实验档，仅在新档安排既有开局资料；重开不重复排程或调用模型。
+     *
+     * @param journal 独立日志文件，不能使用旧规则档案
+     * @return 已打开的世界与新运行标识
+     * @throws Exception 清单不匹配、开局或恢复失败
+     */
+    public static WorldWebHost.Opened openCommandIntent(Path journal) throws Exception {
+        boolean freshArchive = !java.nio.file.Files.exists(journal)
+                || java.nio.file.Files.size(journal) == 0L;
+        WorldRuntime runtime = commandIntentRuntime(journal);
+        try {
+            if (freshArchive) {
+                publishOpeningDocuments(runtime);
+            }
+            return new WorldWebHost.Opened(runtime, commandIntentManifest().runId());
+        } catch (Exception failure) {
+            runtime.close();
+            throw failure;
+        }
+    }
+
+    /**
+     * 新规则清单：与群组档相同的模块组合，另加 {@code command-intent}。
+     *
+     * @return 命令意图档清单
+     */
+    public static RunManifest commandIntentManifest() {
+        Map<String, Integer> modules = new TreeMap<>(groupsManifest().moduleVersions());
+        modules.put("command-intent", 1);
+        return new RunManifest("web-intent", 11L,
+                RunManifest.RULES_COMMAND_INTENT_EXPERIMENT_V1, modules,
+                Map.of("profile", ENGINEERING_PROFILE), RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    private static WorldRuntime groupsRuntime(Path journal, GroupModel.Config groups,
+            PlatformPostModel.Config platform, int feedLimit, long readMillis, RunManifest manifest)
+            throws Exception {
         OpeningRegistry registry = engineeringRegistry();
         List<RoleAccess.Appointment> appointments = new ArrayList<>(roles().appointments());
         long end = 30L * 86_400_000L;
@@ -1397,7 +1453,7 @@ public final class WorldWebScenario {
             contacts.add(new InterviewRun.ContactEntry("私信", person,
                     "公开联系说明：可一对一私人消息", SOCIAL_CONTACT_DOC, 1L));
         }
-        return new WorldRuntime(journal, groupsManifest(), engineeringOpenings(), registry,
+        return new WorldRuntime(journal, manifest, engineeringOpenings(), registry,
                 new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
                         "SUP", "CUS", "OPS"), SYMBOL), charter(),
                 new RoleRun.Config(roles().mandates(), appointments), info,
