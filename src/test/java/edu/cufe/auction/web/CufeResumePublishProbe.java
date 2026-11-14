@@ -32,7 +32,10 @@ public final class CufeResumePublishProbe {
         Path journal = Path.of(args[0]);
         String publisher = args[1];
         String company = WorldWebScenario.COMPANY;
-        try (WorldRuntime world = WorldWebScenario.openEngineering(journal).runtime()) {
+        boolean groups = args.length > 2 && args[2].equals("groups");
+        try (WorldRuntime world = groups
+                ? WorldWebScenario.openGroups(journal).runtime()
+                : WorldWebScenario.openEngineering(journal).runtime()) {
             WorldRuntime.Snapshot snapshot = world.snapshot();
             long now = snapshot.timeMillis();
             boolean managerActive = world.isActiveManager(company, "dave", now);

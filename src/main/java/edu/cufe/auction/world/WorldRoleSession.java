@@ -929,6 +929,218 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
                 targetPartyId, true);
     }
 
+    /** 群动作的业务参数：公开加入。 */
+    public record GroupJoinDraft(String groupId) {
+
+        /** 校验字段。 */
+        public GroupJoinDraft {
+            requireText(groupId);
+        }
+    }
+
+    /** 群动作的业务参数：邀请他人。 */
+    public record GroupInviteDraft(String groupId, String inviteePartyId) {
+
+        /** 校验字段。 */
+        public GroupInviteDraft {
+            requireText(groupId, inviteePartyId);
+        }
+    }
+
+    /** 群动作的业务参数：处理发给本人的邀请。 */
+    public record GroupRespondDraft(String inviteId, boolean accept) {
+
+        /** 校验字段。 */
+        public GroupRespondDraft {
+            requireText(inviteId);
+        }
+    }
+
+    /** 群动作的业务参数：退出本人当前所在群。 */
+    public record GroupLeaveDraft(String groupId) {
+
+        /** 校验字段。 */
+        public GroupLeaveDraft {
+            requireText(groupId);
+        }
+    }
+
+    /** 群动作的业务参数：在本人所在群发帖；来源只能是本人真实读过的版本。 */
+    public record GroupPostDraft(String groupId, String title, String body, List<Citation> cites) {
+
+        /** 校验字段并冻结来源。 */
+        public GroupPostDraft {
+            requireText(groupId, title, body);
+            cites = List.copyOf(cites == null ? List.of() : cites);
+        }
+    }
+
+    /** 群动作的业务参数：更正本人已发布的群帖。 */
+    public record GroupCorrectDraft(String docId, long basedOnVersion, String title, String body,
+                                    List<Citation> cites) {
+
+        /** 校验字段并冻结来源。 */
+        public GroupCorrectDraft {
+            requireText(docId, title, body);
+            if (basedOnVersion < 1) {
+                throw new IllegalArgumentException("更正基准版本必须从 1 开始：" + basedOnVersion);
+            }
+            cites = List.copyOf(cites == null ? List.of() : cites);
+        }
+    }
+
+    /** 平台动作的业务参数：公开发帖。 */
+    public record PlatformPostDraft(String title, String body, List<Citation> cites) {
+
+        /** 校验字段并冻结来源。 */
+        public PlatformPostDraft {
+            requireText(title, body);
+            cites = List.copyOf(cites == null ? List.of() : cites);
+        }
+    }
+
+    /** 平台动作的业务参数：更正本人已发布的平台帖。 */
+    public record PlatformCorrectDraft(String docId, long basedOnVersion, String title,
+                                       String body, List<Citation> cites) {
+
+        /** 校验字段并冻结来源。 */
+        public PlatformCorrectDraft {
+            requireText(docId, title, body);
+            if (basedOnVersion < 1) {
+                throw new IllegalArgumentException("更正基准版本必须从 1 开始：" + basedOnVersion);
+            }
+            cites = List.copyOf(cites == null ? List.of() : cites);
+        }
+    }
+
+    /**
+     * 加入公开群：正工时动作，到期才建立成员段。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于屏障加冻结加入工时
+     * @param draft           业务内容
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String joinGroup(String clientCommandId, String clientTaskId, long dueMillis,
+                            GroupJoinDraft draft) throws IOException {
+        return runtime.scheduleGroupAction(this, clientCommandId, clientTaskId, dueMillis,
+                "JOIN", draft);
+    }
+
+    /**
+     * 邀请他人加入本人所在群：正工时动作，到期才创建待处理邀请。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于屏障加冻结邀请工时
+     * @param draft           业务内容
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String inviteToGroup(String clientCommandId, String clientTaskId, long dueMillis,
+                                GroupInviteDraft draft) throws IOException {
+        return runtime.scheduleGroupAction(this, clientCommandId, clientTaskId, dueMillis,
+                "INVITE", draft);
+    }
+
+    /**
+     * 接受或拒绝发给本人的邀请：正工时动作，到期才改成员段/邀请状态。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于屏障加冻结处理工时
+     * @param draft           业务内容
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String respondInvitation(String clientCommandId, String clientTaskId, long dueMillis,
+                                    GroupRespondDraft draft) throws IOException {
+        return runtime.scheduleGroupAction(this, clientCommandId, clientTaskId, dueMillis,
+                "RESPOND", draft);
+    }
+
+    /**
+     * 退出本人当前所在群：正工时动作，到期才关闭成员段。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于屏障加冻结退出工时
+     * @param draft           业务内容
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String leaveGroup(String clientCommandId, String clientTaskId, long dueMillis,
+                             GroupLeaveDraft draft) throws IOException {
+        return runtime.scheduleGroupAction(this, clientCommandId, clientTaskId, dueMillis,
+                "LEAVE", draft);
+    }
+
+    /**
+     * 在本人所在群发帖：正工时动作，到期生成待投递帖子。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于屏障加冻结发帖工时
+     * @param draft           业务内容
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String postToGroup(String clientCommandId, String clientTaskId, long dueMillis,
+                              GroupPostDraft draft) throws IOException {
+        return runtime.scheduleGroupAction(this, clientCommandId, clientTaskId, dueMillis,
+                "POST", draft);
+    }
+
+    /**
+     * 更正本人已发布的群帖：正工时动作，到期生成待投递更正版本。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于屏障加冻结发帖工时
+     * @param draft           业务内容
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String correctGroupPost(String clientCommandId, String clientTaskId, long dueMillis,
+                                   GroupCorrectDraft draft) throws IOException {
+        return runtime.scheduleGroupAction(this, clientCommandId, clientTaskId, dueMillis,
+                "CORRECTION", draft);
+    }
+
+    /**
+     * 公开发布平台帖：正工时动作，到期生成待投递平台帖。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于屏障加冻结平台写帖工时
+     * @param draft           业务内容
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String postToPlatform(String clientCommandId, String clientTaskId, long dueMillis,
+                                 PlatformPostDraft draft) throws IOException {
+        return runtime.scheduleGroupAction(this, clientCommandId, clientTaskId, dueMillis,
+                "PLATFORM_POST", draft);
+    }
+
+    /**
+     * 更正本人已发布的平台帖：正工时动作，到期生成待投递更正版本。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于屏障加冻结平台写帖工时
+     * @param draft           业务内容
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String correctPlatformPost(String clientCommandId, String clientTaskId, long dueMillis,
+                                      PlatformCorrectDraft draft) throws IOException {
+        return runtime.scheduleGroupAction(this, clientCommandId, clientTaskId, dueMillis,
+                "PLATFORM_CORRECTION", draft);
+    }
+
     /**
      * 作者提交组织草稿。
      *

@@ -9,6 +9,8 @@ const vm = require("node:vm");
 const webDir = process.argv[2] || path.join(__dirname, "../src/main/resources/web");
 const only = process.argv[3] || "";
 const source = fs.readFileSync(path.join(webDir, "app.js"), "utf8");
+const groupsFile = path.join(webDir, "groups.js");
+const groupsSource = fs.existsSync(groupsFile) ? fs.readFileSync(groupsFile, "utf8") : "";
 
 // ---------------------------------------------------------------- DOM 原语
 function makeElement(tag = "div") {
@@ -48,6 +50,7 @@ function makeDocument() {
     addEventListener() { }
   };
   document._nodes = nodes;
+  document.querySelector = () => null;
   return document;
 }
 
@@ -67,6 +70,7 @@ function makeWorld(router, name) {
     return { status: answer.status, json: async () => answer.payload };
   };
   vm.runInContext(source, context);
+  if (groupsSource) vm.runInContext(groupsSource, context);
   // `state` 是脚本级 const，不在全局对象上；显式取同一对象。
   vm.runInContext("globalThis.state = state;", context);
   const world = { name, context, document, calls, state: context.state };

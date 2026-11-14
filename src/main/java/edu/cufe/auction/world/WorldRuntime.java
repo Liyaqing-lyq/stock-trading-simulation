@@ -92,6 +92,8 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_SOCIAL = 17;
     /** schema18：在社交全链之上按公司持有工程经营与董事会（同一 journal，不迁移旧档）。 */
     private static final int STATE_SCHEMA_ENGINEERING = 18;
+    /** schema20：在工程全链之上接入群组、平台发布与呈现（银行 schema19 不属于本候选）。 */
+    private static final int STATE_SCHEMA_GROUPS = 20;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -153,6 +155,14 @@ public final class WorldRuntime implements AutoCloseable {
     private final List<InterviewRun.ContactEntry> socialContacts;
     /** schema18 按公司工程经营与董事会冻结配置；旧档为 null。 */
     private final EngineeringRun.Config engineeringConfig;
+    /** schema20 群组与平台发布冻结配置；旧档为 null。 */
+    private final GroupModel.Config groupConfig;
+    /** schema20 平台写帖冻结配置；旧档为 null。 */
+    private final PlatformPostModel.Config platformConfig;
+    /** schema20 平台目录上限（1..200）；旧档为 0。 */
+    private final int groupFeedLimit;
+    /** schema20 群/平台帖固定阅读耗时；旧档为 0。 */
+    private final long groupReadMillis;
     /** live 完成槽：构造时自动建立，scripted 为 null；不公开。 */
     private final LiveCompletionInbox liveInbox;
     /** 有界回调队列：异步线程只 offer，不读写世界状态。 */
@@ -628,7 +638,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               SocialRun social,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              EngineeringRun engineering) {
+                              EngineeringRun engineering,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              GroupsRun groups) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -912,11 +924,43 @@ public final class WorldRuntime implements AutoCloseable {
                  long socialBlockMillis, List<InterviewRun.ContactEntry> contacts,
                  EngineeringRun.Config engineering)
             throws IOException {
+        this(file, manifest, openings, registry, manufacturing, charter, roles, information,
+                decisions, injectedInbox, media, interview, dialogue, evidence, social,
+                socialBlockMillis, contacts, engineering, null, null, 0, 0);
+    }
+
+    /**
+     * schema20 完整构造：在工程全链之上启用群组、平台发布与呈现。
+     *
+     * <p>群组配置只允许出现在 {@code groups-platform-experiment-v1}；它必须建立在工程档之上。
+     * 预置群、群主与初始成员、各动作工时、平台写帖工时与目录上限在创建任何日志文件之前校验，
+     * 失败不会留下半成品档案。银行（schema19）不属于本候选：这里不按版本号假设任何银行模块。</p>
+     *
+     * @param groups        schema20 群组冻结配置；旧档必须为 null
+     * @param platform      schema20 平台写帖冻结配置；旧档必须为 null
+     * @param feedLimit     平台目录上限，必须 1..200；旧档传 0
+     * @throws IOException 打开日志失败
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                 OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                 BoardModel.Charter charter, RoleRun.Config roles,
+                 InformationRun.Config information, DecisionModel.Config decisions,
+                 LiveCompletionInbox injectedInbox, MediaRun.Config media,
+                 InterviewRun.Config interview, InterviewDialogue.Config dialogue,
+                 EvidenceRun.Config evidence, SocialMessageModel.Config social,
+                 long socialBlockMillis, List<InterviewRun.ContactEntry> contacts,
+                 EngineeringRun.Config engineering, GroupModel.Config groups,
+                 PlatformPostModel.Config platform, int feedLimit, long readMillis)
+            throws IOException {
         this.evidenceConfig = evidence;
         this.socialConfig = social;
         this.socialBlockMillis = socialBlockMillis;
         this.socialContacts = contacts == null ? List.of() : List.copyOf(contacts);
         this.engineeringConfig = engineering;
+        this.groupConfig = groups;
+        this.platformConfig = platform;
+        this.groupFeedLimit = feedLimit;
+        this.groupReadMillis = readMillis;
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         boolean liveProfile = decisions != null && decisions.profile() != null;
         if (liveProfile && !manifest.hasLiveDecisions()) {
@@ -1127,6 +1171,28 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未启用工程模块的运行不接受工程配置："
                     + manifest.rulesVersion());
         }
+        if (manifest.hasGroups()) {
+            if (!manifest.hasEngineering()) {
+                throw new IllegalArgumentException("群组档案必须建立在工程全链之上："
+                        + manifest.rulesVersion());
+            }
+            if (!manifest.hasPublication()) {
+                throw new IllegalArgumentException("群组档案必须同时启用平台发布模块："
+                        + manifest.rulesVersion());
+            }
+            if (groups == null || platform == null) {
+                throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                        + " 必须提供群组与平台冻结配置");
+            }
+            if (feedLimit < 1 || feedLimit > 200) {
+                throw new IllegalArgumentException("平台目录上限必须在 1..200：" + feedLimit);
+            }
+            // 冻结工具工时必须与群组/平台配置逐项一致，避免"计划工时"与"业务工时"两套真值
+            requireGroupActionMillis(decisions);
+        } else if (groups != null || platform != null || feedLimit != 0) {
+            throw new IllegalArgumentException("未启用群组模块的运行不接受群组配置："
+                    + manifest.rulesVersion());
+        }
         if (manifest.hasDecisions() && (!manifest.hasTrading() || !manifest.hasRoles()
                 || !manifest.hasInformation())) {
             throw new IllegalArgumentException("决定档案必须建立在四岗交易与阅读档案之上："
@@ -1205,6 +1271,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (engineeringConfig != null) {
             // 工程公司/账户/owner/章程/初始金额/冻结合同在写盘前拒绝
             validateEngineeringOpening(ordered);
+        }
+        if (groupConfig != null) {
+            // 预置群/群主/初始成员/历史策略在写盘前拒绝，不留下半成品档案
+            validateGroupsOpening();
         }
         this.orderedOpenings = List.copyOf(ordered);
         if (roleConfig != null) {
@@ -3160,6 +3230,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(commandId, "命令标识");
         requireText(taskId, "任务标识");
         requireText(payload.docId(), "资料标识");
+        requireNotReservedDocId(payload.docId());
         requireText(payload.title(), "资料标题");
         requireText(payload.body(), "资料正文");
         if (payload.readDurationMillis() <= 0) {
@@ -3244,6 +3315,8 @@ public final class WorldRuntime implements AutoCloseable {
             return state.commandOutcomes().get(commandId);
         }
         requireSchedulable(dueTimeMillis, taskId);
+        // 单人物焦点：本人还有未完成的群组动作时不能开始新阅读
+        requireNoGroupAction(personPartyId, state.pending());
         // 反向互斥：本人正有董事/经理正工时，不能同时开始阅读。
         // 判权必须用真实阅读区间 [due, due+readDuration)，不能把 now→未来到期整段当占用，
         // 否则“阅读在预约开始前结束”的合法日程会被误挡。
@@ -3423,6 +3496,9 @@ public final class WorldRuntime implements AutoCloseable {
                          PendingTask.SOCIAL_DELIVER_V1,
                          PendingTask.SOCIAL_BLOCK_V1,
                          PendingTask.SOCIAL_UNBLOCK_V1 -> completeSocialTask(next);
+                    case PendingTask.GROUP_BEGIN_V1,
+                         PendingTask.GROUP_FINISH_V1,
+                         PendingTask.GROUP_PUBLISH_V1 -> completeGroupTask(next);
                     case PendingTask.INTERVIEW_INVITE_V1,
                          PendingTask.INTERVIEW_RESPOND_V1,
                          PendingTask.INTERVIEW_CANCEL_V1,
@@ -4322,7 +4398,7 @@ public final class WorldRuntime implements AutoCloseable {
         List<RoleView.Holding> holdings = holdingsOf(snap, visible.keySet());
         List<RoleView.Market> market = marketOf(snap);
         List<InformationModel.CatalogEntry> catalog = InformationModel.catalog(information,
-                access, person, now);
+                access, person, now, groupAccess(snap), BoardAccess.NONE);
         Map<String, Integer> ordinals = readingOrdinals(information, person);
         List<RoleView.Experience> observations = new ArrayList<>();
         if (recall == null) {
@@ -5175,6 +5251,7 @@ public final class WorldRuntime implements AutoCloseable {
 
         DecisionRun candidate = run;
         DecisionModel.State model = run.state();
+        GroupsRun groupsAfter = state.groups();
         int opened = 0;
         int created = 0;
         for (DecisionRun.Request request : requests) {
@@ -5185,12 +5262,20 @@ public final class WorldRuntime implements AutoCloseable {
                     cutoffTime);
             RoleTradingView view = roleTradingViewAt(state, session);
             List<String> tools = allowedToolsOf(view);
+            List<PublicationRun.FeedEntry> feed = publicationFeedEntries(state,
+                    state.information() == null ? null : state.information().information(),
+                    cutoffTime);
             String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
                     pendingActionsAt(state, run, request.personPartyId()), tools, decisionConfig,
                     toolContractVersion(),
                     manifest.hasDialogue()
                             ? interviewInput(state, request.personPartyId(), cutoffTime) : null,
-                    engineeringInput(state, request.personPartyId(), cutoffTime));
+                    engineeringInput(state, request.personPartyId(), cutoffTime),
+                    manifest.hasGroups()
+                            ? groupsInput(state, state.information() == null ? null
+                                    : state.information().information(), request.personPartyId(),
+                                    cutoffTime)
+                            : null);
             if (decisionConfig.live()
                     && informationConfig != null && informationConfig.recallPolicy() != null) {
                 // 新档：先量实际字符/字节，超限在构造 ProviderPlan 之前就明确失败，整批不提交
@@ -5215,6 +5300,11 @@ public final class WorldRuntime implements AutoCloseable {
                     created++;
                     if (result.verdict() == DecisionModel.Verdict.ACCEPTED) {
                         opened++;
+                        if (manifest.hasGroups()) {
+                            // 实际进入本次输入窗口的目录条目才记呈现；被截掉的不记
+                            groupsAfter = recordPresentation(groupsAfter, model, request.actionId(),
+                                    feed, cutoffTime);
+                        }
                     }
                 }
                 case DUPLICATE -> {
@@ -5226,7 +5316,8 @@ public final class WorldRuntime implements AutoCloseable {
             return "DECIDING:0";
         }
         String outcome = "DECIDING:" + opened;
-        WorldState world = decisionWorld(candidate, internalCommand, content, outcome);
+        WorldState world = decisionWorld(candidate, internalCommand, content, outcome,
+                groupsAfter);
         commitAndApply(internalCommand, content, outcome,
                 List.of(new WorldEvent("dec-opened:" + commandId, "DECISION_OPENED_V1", content)),
                 world);
@@ -5560,6 +5651,54 @@ public final class WorldRuntime implements AutoCloseable {
                 state.delivered(), state.usedTaskIds(), contents, outcomes, state.securities(),
                 state.exchange(), state.manufacturing(), state.governance(), state.roles(),
                 state.information(), state.trading(), candidate);
+    }
+
+    /** 决定批次的期望状态：除决定子集外显式替换群组子集（呈现帧可能在本批写入）。 */
+    private WorldState decisionWorld(DecisionRun candidate, String commandId, String content,
+                                      String outcome, GroupsRun groups) {
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(commandId, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        outcomes.put(commandId, outcome);
+        return next(state.timeMillis(), state.lastPhase(), state.accounts(), state.pending(),
+                state.delivered(), state.usedTaskIds(), contents, outcomes, state.securities(),
+                state.exchange(), state.manufacturing(), state.governance(), state.roles(),
+                state.information(), state.trading(), candidate, state.dividends(),
+                state.beliefs(), state.media(), state.interviews(), state.evidence(),
+                state.social(), state.engineering(), groups);
+    }
+
+    /**
+     * 把本次决定输入实际包含的目录条目记成呈现事实。
+     *
+     * <p>只认真实动作、真实尝试与真实输入摘要；同一次尝试重复调用不会双记，同一尝试换了输入
+     * 摘要属于同批不一致，直接失败而不是悄悄覆盖。</p>
+     *
+     * @param groups   当前群组子集
+     * @param model    本批最新的决定状态
+     * @param actionId 真实动作
+     * @param feed     本次输入实际包含的目录（可能为空）
+     * @param cutoff   观察截止时刻
+     * @return 写入呈现帧后的群组子集
+     */
+    private GroupsRun recordPresentation(GroupsRun groups, DecisionModel.State model,
+                                         String actionId, List<PublicationRun.FeedEntry> feed,
+                                         long cutoff) {
+        if (groups == null || feed.isEmpty()) {
+            return groups;
+        }
+        DecisionModel.Decision decision = DecisionModel.decision(model, actionId).orElse(null);
+        if (decision == null || decision.attempts().isEmpty()) {
+            return groups;
+        }
+        DecisionModel.Attempt attempt = decision.attempts().get(decision.attempts().size() - 1);
+        PublicationRun.PresentationOutcome outcome = PublicationRun.record(groups.publication(),
+                actionId, attempt.attemptId(), decision.inputDigest(), cutoff, feed, feed);
+        return switch (outcome.status()) {
+            case RECORDED -> groups.withPublication(outcome.run());
+            case DUPLICATE, NO_ENTRIES -> groups;
+            default -> throw new IllegalStateException("呈现记录不一致：" + outcome.status());
+        };
     }
 
     /** live 派发结果：只有 {@code DISPATCHED} 带非空 Call，其余一律 null。 */
@@ -6327,7 +6466,7 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 本次观察允许返回的工具：视图工具去掉只读引用，再加唯一内建观望。 */
-    private static List<String> allowedToolsOf(RoleTradingView view) {
+    private List<String> allowedToolsOf(RoleTradingView view) {
         TreeSet<String> tools = new TreeSet<>(view.tools());
         tools.remove(RoleTradingView.TOOL_CITE);
         tools.add(DecisionModel.TOOL_WAIT);
@@ -6469,7 +6608,11 @@ public final class WorldRuntime implements AutoCloseable {
             }
             case RoleTradingView.TOOL_FORECAST_PUBLISH -> {
                 kind = PendingTask.ROLE_TRADING_FORECAST_V1;
-                body = strict(WorldRoleSession.ForecastDraft.class, args);
+                WorldRoleSession.ForecastDraft draft =
+                        strict(WorldRoleSession.ForecastDraft.class, args);
+                // 预测稿是普通发表：不得占用群帖/平台帖保留空间
+                requireNotReservedDocId(draft.docId());
+                body = draft;
             }
             case RoleTradingView.TOOL_COMPANY_REPORT_ORDERS -> {
                 kind = PendingTask.ROLE_TRADING_COMPANY_REPORT_V1;
@@ -6688,11 +6831,35 @@ public final class WorldRuntime implements AutoCloseable {
                 kind = planned.kind();
                 body = planned.payload();
             }
+            case RoleTradingView.TOOL_GROUP_JOIN,
+                 RoleTradingView.TOOL_GROUP_INVITE,
+                 RoleTradingView.TOOL_GROUP_RESPOND,
+                 RoleTradingView.TOOL_GROUP_LEAVE,
+                 RoleTradingView.TOOL_GROUP_POST,
+                 RoleTradingView.TOOL_GROUP_CORRECT,
+                 RoleTradingView.TOOL_PLATFORM_POST,
+                 RoleTradingView.TOOL_PLATFORM_CORRECT -> {
+                if (!manifest.hasGroups() || base.groups() == null) {
+                    throw new IOException("未知业务工具：" + tool);
+                }
+                GroupPlanned planned = planGroupTool(tool, args, binding, recorded, model, base);
+                if (planned.reject() != null) {
+                    // 业务拒绝：保留 INTENT 与原回执，不排任务、不改世界
+                    return new PlacedAction(recorded.actionId(), tool, "", "", "",
+                            recorded.barrierAtMillis(), "", null, planned.reject());
+                }
+                kind = planned.kind();
+                body = planned.payload();
+            }
             default -> throw new IOException("未知业务工具：" + tool);
         }
         long dueMillis = DecisionModel.actionDueMillis(model, recorded.actionId());
         if (PendingTask.ENGINEERING_BEGIN_V1.equals(kind)) {
             // BEGIN 屏障到期就是屏障时点本身；真实完成时点由包装携带，回执/计划都只落意图。
+            dueMillis = recorded.barrierAtMillis();
+        }
+        if (PendingTask.GROUP_BEGIN_V1.equals(kind)) {
+            // 群组 BEGIN 门到期就是屏障时点；真实完成时点在完成帧按冻结工时另排
             dueMillis = recorded.barrierAtMillis();
         }
         if (InterviewRun.KINDS.contains(kind)) {
@@ -7424,13 +7591,23 @@ public final class WorldRuntime implements AutoCloseable {
     /** 一次决定批次的期望候选：决定子集与操作规定的四类元数据。 */
     private record DecisionBatch(DecisionRun decisions, List<PendingTask> pending,
                                  Set<String> usedTaskIds, Map<String, String> commandContents,
-                                 Map<String, String> commandOutcomes, String outcome, SocialRun social) {
+                                 Map<String, String> commandOutcomes, String outcome, SocialRun social,
+                                 GroupsRun groups) {
 
-        /** 旧六参：社交状态沿用上一帧。 */
+        /** 旧六参：社交与群组状态沿用上一帧。 */
         DecisionBatch(DecisionRun decisions, List<PendingTask> pending,
                       Set<String> usedTaskIds, Map<String, String> commandContents,
                       Map<String, String> commandOutcomes, String outcome) {
-            this(decisions, pending, usedTaskIds, commandContents, commandOutcomes, outcome, null);
+            this(decisions, pending, usedTaskIds, commandContents, commandOutcomes, outcome, null,
+                    null);
+        }
+
+        /** 七参：社交状态显式，群组状态沿用上一帧。 */
+        DecisionBatch(DecisionRun decisions, List<PendingTask> pending,
+                      Set<String> usedTaskIds, Map<String, String> commandContents,
+                      Map<String, String> commandOutcomes, String outcome, SocialRun social) {
+            this(decisions, pending, usedTaskIds, commandContents, commandOutcomes, outcome, social,
+                    null);
         }
     }
 
@@ -7511,6 +7688,13 @@ public final class WorldRuntime implements AutoCloseable {
                 : expected.social();
         if (!java.util.Objects.equals(expectedSocial, candidate.social())) {
             throw new IOException("决定批次的社交子集与逐帧重算不一致");
+        }
+        if (manifest.hasGroups()) {
+            GroupsRun expectedGroups = expected.groups() == null ? previous.groups()
+                    : expected.groups();
+            if (!Objects.equals(expectedGroups, candidate.groups())) {
+                throw new IOException("决定批次的群组子集与逐帧重算不一致");
+            }
         }
         if (candidate.timeMillis() != previous.timeMillis()
                 || !candidate.lastPhase().equals(previous.lastPhase())
@@ -7672,6 +7856,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         DecisionRun candidate = run;
         DecisionModel.State model = run.state();
+        GroupsRun groupsAfter = previous.groups();
         int opened = 0;
         int created = 0;
         for (DecisionRun.Request request : requests) {
@@ -7682,12 +7867,20 @@ public final class WorldRuntime implements AutoCloseable {
                     cutoffTime);
             RoleTradingView view = roleTradingViewAt(previous, session);
             List<String> tools = allowedToolsOf(view);
+            List<PublicationRun.FeedEntry> feed = publicationFeedEntries(previous,
+                    previous.information() == null ? null : previous.information().information(),
+                    cutoffTime);
             String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
                     pendingActionsAt(previous, run, request.personPartyId()), tools,
                     decisionConfig, toolContractVersion(),
                     manifest.hasDialogue()
                             ? interviewInput(previous, request.personPartyId(), cutoffTime) : null,
-                    engineeringInput(previous, request.personPartyId(), cutoffTime));
+                    engineeringInput(previous, request.personPartyId(), cutoffTime),
+                    manifest.hasGroups()
+                            ? groupsInput(previous, previous.information() == null ? null
+                                    : previous.information().information(), request.personPartyId(),
+                                    cutoffTime)
+                            : null);
             DecisionModel.ProviderPlan plan = new DecisionModel.ProviderPlan(request.route(),
                     input.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
             DecisionModel.OpenRequest openRequest = new DecisionModel.OpenRequest(model.runId(),
@@ -7705,6 +7898,10 @@ public final class WorldRuntime implements AutoCloseable {
                     created++;
                     if (result.verdict() == DecisionModel.Verdict.ACCEPTED) {
                         opened++;
+                        if (manifest.hasGroups()) {
+                            groupsAfter = recordPresentation(groupsAfter, model, request.actionId(),
+                                    feed, cutoffTime);
+                        }
                     }
                 }
                 case DUPLICATE -> {
@@ -7720,8 +7917,12 @@ public final class WorldRuntime implements AutoCloseable {
                 || !commit.commandContent().equals(event.payload())) {
             throw new IOException("开决定批次原文或回报与重建不一致");
         }
-        return batchWithCommand(previous, candidate, commit.commandId(), commit.commandContent(),
-                outcome, true);
+        Map<String, String> contents = new TreeMap<>(previous.commandContents());
+        contents.put(commit.commandId(), commit.commandContent());
+        Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+        outcomes.put(commit.commandId(), outcome);
+        return new DecisionBatch(candidate, previous.pending(), previous.usedTaskIds(),
+                contents, outcomes, outcome, null, groupsAfter);
     }
 
     private DecisionBatch expectedReply(WorldState previous, WorldCommit commit, WorldEvent event,
@@ -8075,7 +8276,12 @@ public final class WorldRuntime implements AutoCloseable {
                         ? interviewInput(previous, decision.personPartyId(),
                         decision.cutoffTimeMillis()) : null,
                 engineeringInput(previous, decision.personPartyId(),
-                        decision.cutoffTimeMillis()));
+                        decision.cutoffTimeMillis()),
+                manifest.hasGroups()
+                        ? groupsInput(previous, previous.information() == null ? null
+                                : previous.information().information(),
+                                decision.personPartyId(), decision.cutoffTimeMillis())
+                        : null);
         if (!regenerated.equals(decision.inputText())) {
             throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());
         }
@@ -10779,7 +10985,7 @@ public final class WorldRuntime implements AutoCloseable {
                 subjectId = payload.docId();
                 InformationModel.Outcome outcome = InformationModel.startRead(before,
                         requireRoleRun().access(), payload.personPartyId(), payload.docId(),
-                        payload.version(), now, GroupAccess.NONE, periodicBoards());
+                        payload.version(), now, groupAccess(), periodicBoards());
                 after = outcome.state();
                 accepted = outcome.status() == InformationModel.Status.STARTED;
                 reason = outcome.status().name();
@@ -10826,7 +11032,7 @@ public final class WorldRuntime implements AutoCloseable {
                 }
                 InformationModel.Outcome outcome = InformationModel.completeRead(before,
                         readingAccess, payload.personPartyId(), payload.readId(), now,
-                        GroupAccess.NONE, periodicBoards());
+                        groupAccess(), periodicBoards());
                 after = outcome.state();
                 observation = outcome.observation();
                 accepted = outcome.status() == InformationModel.Status.COMPLETED;
@@ -11317,6 +11523,7 @@ public final class WorldRuntime implements AutoCloseable {
         validateMedia(candidate, previous, commit);
         validateSocial(candidate, previous, commit);
         validateEngineering(candidate, previous, commit);
+        validateGroups(candidate, previous, commit);
         validateInterviews(candidate, previous, commit);
     }
 
@@ -11458,7 +11665,7 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
                 previous.dividends(), previous.beliefs(), media, run, previous.evidence(),
-                previous.social(), previous.engineering());
+                previous.social(), previous.engineering(), previous.groups());
     }
 
     /** 决定来源：按任务标识在已接收决定动作引用里查找同一任务。 */
@@ -12019,7 +12226,7 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
                 previous.dividends(), previous.beliefs(), run, previous.interviews(), evidence,
-                previous.social(), previous.engineering());
+                previous.social(), previous.engineering(), previous.groups());
     }
 
     /**
@@ -12076,7 +12283,7 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
                 previous.dividends(), previous.beliefs(), previous.media(), previous.interviews(),
-                previous.evidence(), social, previous.engineering());
+                previous.evidence(), social, previous.engineering(), previous.groups());
     }
 
     /**
@@ -16348,7 +16555,7 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 information, previous.trading(), previous.decisions(), previous.dividends(),
                 previous.beliefs(), previous.media(), previous.interviews(), previous.evidence(),
-                previous.social(), previous.engineering());
+                previous.social(), previous.engineering(), previous.groups());
         List<WorldEvent> events = List.of(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()), new WorldEvent("information-report:" + task.taskId(), "INFORMATION_REPORT_V1",
                 mapper.writeValueAsString(report)));
@@ -16474,7 +16681,7 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.governance(), previous.roles(), previous.information(), previous.trading(),
                 previous.decisions(), previous.dividends(), previous.beliefs(),
                 previous.media(), previous.interviews(), previous.evidence(), previous.social(),
-                previous.engineering());
+                previous.engineering(), previous.groups());
         List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + added.taskId(), "TASK_SCHEDULED_V1",
                 mapper.writeValueAsString(added)));
         List<WorldEvent> actual = commit.events().stream()
@@ -17418,7 +17625,29 @@ public final class WorldRuntime implements AutoCloseable {
                         : null,
                 manifest.hasSocial() ? SocialRun.open(socialConfig, socialBlockMillis,
                         socialContacts) : null,
-                engineering);
+                engineering,
+                manifest.hasGroups() ? GroupsRun.open(groupConfig, platformConfig, groupFeedLimit,
+                        groupReadMillis, registeredPersons(), 0L) : null);
+    }
+
+    /**
+     * 开局登记人物（PERSON 种类），按标识排序。
+     *
+     * <p>群组纯核与平台帖子只认这些人物；未登记对象在任何入口都被拒绝，不会被伪造成成员。</p>
+     *
+     * @return 去重排序的人物标识
+     */
+    private List<String> registeredPersons() {
+        if (registry == null) {
+            return List.of();
+        }
+        java.util.TreeSet<String> persons = new java.util.TreeSet<>();
+        for (OpeningRegistry.Party party : registry.parties()) {
+            if (party.kind() == OpeningRegistry.PartyKind.PERSON) {
+                persons.add(party.partyId());
+            }
+        }
+        return List.copyOf(persons);
     }
 
     /**
@@ -17526,6 +17755,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasGroups()) {
+            return STATE_SCHEMA_GROUPS;
+        }
         if (manifest.hasEngineering()) {
             return STATE_SCHEMA_ENGINEERING;
         }
@@ -17843,11 +18075,38 @@ public final class WorldRuntime implements AutoCloseable {
                             EvidenceRun evidence,
                             SocialRun social,
                             EngineeringRun engineering) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, trading, decisions, dividends, beliefs, media, interviews,
+                evidence, social, engineering, state.groups());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading,
+                            DecisionRun decisions,
+                            DividendModel.State dividends,
+                            BeliefRun beliefs,
+                            MediaRun media,
+                            InterviewRun interviews,
+                            EvidenceRun evidence,
+                            SocialRun social,
+                            EngineeringRun engineering,
+                            GroupsRun groups) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
                 roles, information, trading, decisions, dividends, beliefs, media, interviews,
-                evidence, social, engineering);
+                evidence, social, engineering, groups);
     }
 
     // ==================================================================
@@ -18276,7 +18535,7 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 previous.information(), previous.trading(), previous.decisions(),
                 previous.dividends(), previous.beliefs(), previous.media(), previous.interviews(), previous.evidence(),
-                previous.social(), previous.engineering());
+                previous.social(), previous.engineering(), previous.groups());
     }
 
     private void requireCashBatch(WorldCommit commit, WorldState candidate, WorldState expected,
@@ -19484,7 +19743,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         List<String> tools = new ArrayList<>(roleTools(appointments, manifest.hasBelief(),
                 manifest.hasMedia(), manifest.hasInterviews(), manifest.hasEvidence(),
-                manifest.hasSocial()));
+                manifest.hasSocial(), manifest.hasGroups()));
         if (manifest.hasDialogue() && isDialogueParticipant(snap, person)) {
             tools.add(RoleTradingView.TOOL_INTERVIEW_SPEAK);
         }
@@ -19942,7 +20201,7 @@ public final class WorldRuntime implements AutoCloseable {
     private static List<String> roleTools(List<RoleTradingView.Appointment> appointments,
                                           boolean beliefEnabled, boolean mediaEnabled,
                                           boolean interviewEnabled, boolean evidenceEnabled,
-                                          boolean socialEnabled) {
+                                          boolean socialEnabled, boolean groupsEnabled) {
         boolean researcher = false;
         boolean manager = false;
         boolean risk = false;
@@ -20009,6 +20268,17 @@ public final class WorldRuntime implements AutoCloseable {
             tools.add(RoleTradingView.TOOL_SOCIAL_SEND);
             tools.add(RoleTradingView.TOOL_SOCIAL_BLOCK);
             tools.add(RoleTradingView.TOOL_SOCIAL_UNBLOCK);
+        }
+        if (groupsEnabled) {
+            // 群组动作对任何登记人物开放；成员资格、邀请授权与引用资格由运行层按真实状态复核
+            tools.add(RoleTradingView.TOOL_GROUP_JOIN);
+            tools.add(RoleTradingView.TOOL_GROUP_INVITE);
+            tools.add(RoleTradingView.TOOL_GROUP_RESPOND);
+            tools.add(RoleTradingView.TOOL_GROUP_LEAVE);
+            tools.add(RoleTradingView.TOOL_GROUP_POST);
+            tools.add(RoleTradingView.TOOL_GROUP_CORRECT);
+            tools.add(RoleTradingView.TOOL_PLATFORM_POST);
+            tools.add(RoleTradingView.TOOL_PLATFORM_CORRECT);
         }
         if (interviewEnabled) {
             // 回应/取消/结束对任何登记人物开放；只有发起邀请需要记者岗位（由运行时再次判权）
@@ -20409,6 +20679,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (!socialPendingOf(person, base.pending()).isEmpty()) {
             throw new IllegalArgumentException("本人已有未完成的社交动作");
         }
+        requireNoGroupAction(person, base.pending());
         if (hasPendingReading(person, base.pending())
                 || (base.information() != null && hasActiveReading(person))) {
             throw new IllegalArgumentException("本人正在阅读资料，不能同时发私人消息");
@@ -21277,25 +21548,42 @@ public final class WorldRuntime implements AutoCloseable {
                 }
                 List<RoleView.ReadingRef> publicRefs = new ArrayList<>();
                 List<RoleView.ReadingRef> privateRefs = new ArrayList<>();
+                List<RoleView.ReadingRef> groupRefs = new ArrayList<>();
+                MediaModel.SourceOrigins groupOrigins = null;
+                if (manifest.hasGroups() && base.groups() != null) {
+                    groupOrigins = GroupMediaBridge.sourceOrigins(base.groups().state(),
+                            new PostOrigins(base.groups().state(),
+                                    base.groups().publication().platform()));
+                }
                 for (RoleView.ReadingRef ref : refs) {
                     InformationModel.Document document = informationDocument(observedInfo,
                             ref.docId());
-                    if (document != null
+                    if (groupOrigins != null && groupOrigins.covers(ref.docId())) {
+                        // 群/平台帖是非公开来源：走私有证据位，再由受信 origins 展开到规范根
+                        groupRefs.add(ref);
+                    } else if (document != null
                             && document.audience().kind() == InformationModel.AudienceKind.PUBLIC) {
                         publicRefs.add(ref);
                     } else {
                         privateRefs.add(ref);
                     }
                 }
+                privateRefs.addAll(groupRefs);
+                List<RoleView.ReadingRef> cited = new ArrayList<>(publicRefs);
                 MediaModel.SubmitRequest privateRequest = new MediaModel.SubmitRequest(
                         draft.storyId(), draft.expectedRevision(), draft.title(), draft.body(),
-                        draft.publicSourceDescription(), publicRefs, startedAt, completedAt);
+                        draft.publicSourceDescription(), cited, startedAt, completedAt);
                 MediaEvidence.State organizationEvidence = base.evidence().stateOf(organization);
-                MediaModel.EvidenceBridgeOutcome result = MediaModel.submitWithEvidence(
-                        mediaBefore, policy, access, informationBefore, person, privateRequest,
-                        mediaContext(run, organization), new MediaModel.EvidenceContext(privateRefs,
-                                organizationEvidence, derivedAliases(mediaBefore, draft),
-                                bindingLedger(base.evidence())));
+                MediaModel.EvidenceContext evidenceContext = new MediaModel.EvidenceContext(
+                        privateRefs, organizationEvidence, derivedAliases(mediaBefore, draft),
+                        bindingLedger(base.evidence()));
+                MediaModel.EvidenceBridgeOutcome result = groupOrigins == null
+                        ? MediaModel.submitWithEvidence(mediaBefore, policy, access,
+                                informationBefore, person, privateRequest,
+                                mediaContext(run, organization), evidenceContext)
+                        : MediaModel.submitWithGroupSources(mediaBefore, policy, access,
+                                informationBefore, person, privateRequest,
+                                mediaContext(run, organization), evidenceContext, groupOrigins);
                 accepted = result.accepted();
                 reason = result.reason();
                 if (accepted) {
@@ -21626,7 +21914,8 @@ public final class WorldRuntime implements AutoCloseable {
             subject = body.docId();
             InformationModel.Document document = documentOf(before, body.docId());
             boolean allowed = document != null
-                    && InformationModel.catalog(before, access, payload.personPartyId(), now).stream()
+                    && InformationModel.catalog(before, access, payload.personPartyId(), now,
+                    groupAccess(), BoardAccess.NONE).stream()
                     .anyMatch(entry -> entry.docId().equals(body.docId()))
                     && (document.audience().kind() != InformationModel.AudienceKind.ORGANIZATION
                     || observedFor(payload, document.audience().partyId(), access, now) != null);
@@ -21634,7 +21923,8 @@ public final class WorldRuntime implements AutoCloseable {
                 reason = RoleTradingModel.REASON_NOT_AUTHORIZED;
             } else {
                 InformationModel.Outcome outcome = InformationModel.startRead(before, access,
-                        payload.personPartyId(), body.docId(), body.version(), now);
+                        payload.personPartyId(), body.docId(), body.version(), now, groupAccess(),
+                        BoardAccess.NONE);
                 after = outcome.state();
                 accepted = outcome.status() == InformationModel.Status.STARTED;
                 reason = outcome.status().name();
@@ -23362,4 +23652,1475 @@ public final class WorldRuntime implements AutoCloseable {
         return Optional.of(new MediaWorkAudit(budgets, pending));
     }
 
+    // ==================================================================
+    // schema20 群组与平台发布：BEGIN/FINISH 帧、系统投递、恢复重算与读取门
+    // ==================================================================
+
+    /** 平台目录中一条被包含的条目（只含真实标题与元数据）。 */
+    private record GroupFeedItem(int rank, String docId, long version, String title,
+                                String publisherPartyId, long publishedAt, String kind) {
+    }
+
+    /** 群组/平台动作的业务参数；正文只在冻结任务负载里传给投递帧，不写进纯核。 */
+    private record GroupTaskPayload(String person, String commandId, String action, String groupId,
+                                    String targetId, String title, String body,
+                                    List<GroupModel.Ref> refs, long basedOnVersion, boolean accept,
+                                    String postId, String docId, long version) {
+
+        /** 校验动作与时点字段。 */
+        GroupTaskPayload {
+            requireText(person, "人物");
+            requireText(commandId, "命令标识");
+            requireText(action, "业务动作");
+            refs = refs == null ? List.of() : List.copyOf(refs);
+            if (basedOnVersion < 0) {
+                throw new IllegalArgumentException("更正基准版本不能为负：" + basedOnVersion);
+            }
+            // 各动作只带自己需要的字段，其余留空串/0，避免同一负载承载多种语义
+            switch (action) {
+                case "JOIN", "LEAVE" -> requireText(groupId, "群");
+                case "INVITE" -> {
+                    requireText(groupId, "群");
+                    requireText(targetId, "受邀人");
+                }
+                case "RESPOND" -> requireText(targetId, "邀请");
+                case "POST" -> {
+                    requireText(groupId, "群");
+                    requireText(title, "标题");
+                    requireText(body, "正文");
+                }
+                case "CORRECTION" -> {
+                    requireText(docId, "资料标识");
+                    requireText(title, "标题");
+                    requireText(body, "正文");
+                    if (basedOnVersion < 1) {
+                        throw new IllegalArgumentException("更正基准版本必须从 1 开始");
+                    }
+                }
+                case "PLATFORM_POST" -> {
+                    requireText(title, "标题");
+                    requireText(body, "正文");
+                }
+                case "PLATFORM_CORRECTION" -> {
+                    requireText(docId, "资料标识");
+                    requireText(title, "标题");
+                    requireText(body, "正文");
+                    if (basedOnVersion < 1) {
+                        throw new IllegalArgumentException("更正基准版本必须从 1 开始");
+                    }
+                }
+                default -> throw new IllegalArgumentException("未知群组业务动作：" + action);
+            }
+        }
+
+        /** 该动作在冻结配置里的正时长。 */
+        long durationOf(GroupsRun run) {
+            return switch (action) {
+                case "JOIN" -> run.config().joinMillis();
+                case "INVITE" -> run.config().inviteMillis();
+                case "RESPOND" -> run.config().respondMillis();
+                case "LEAVE" -> run.config().leaveMillis();
+                case "POST", "CORRECTION" -> run.config().postMillis();
+                case "PLATFORM_POST", "PLATFORM_CORRECTION" -> run.platformConfig().postMillis();
+                default -> throw new IllegalStateException("未知群组业务动作：" + action);
+            };
+        }
+
+        /** 是否为群帖或平台帖动作（需要投递帧）。 */
+        boolean publishes() {
+            return "POST".equals(action) || "CORRECTION".equals(action)
+                    || "PLATFORM_POST".equals(action) || "PLATFORM_CORRECTION".equals(action);
+        }
+    }
+
+    /** 一帧群组完成的完整结果：纯计算，不提交。 */
+    private record GroupFrame(boolean accepted, String reason, GroupsRun groups,
+                              InformationRun information, List<PendingTask> pending,
+                              PendingTask scheduled, String subject, long atMillis) {
+    }
+
+    /** 纯核 begin 的结果：拒绝原因或已受理状态（平台动作另带平台状态）。 */
+    private record GroupBegun(String reason, GroupModel.State state, PlatformPostModel.State platform,
+                              String subject, String postId, String docId, long version,
+                              String detail) {
+
+        static GroupBegun rejected(String reason, GroupModel.State state) {
+            return new GroupBegun(reason, state, null, "", "", "", 0L, reason);
+        }
+
+        /** 对外统一不可用、审计保留细分原因。 */
+        static GroupBegun rejectedHidden(String detail, GroupModel.State state) {
+            return new GroupBegun("NOT_AVAILABLE", state, null, "", "", "", 0L, detail);
+        }
+
+        boolean accepted() {
+            return reason == null;
+        }
+    }
+
+    /** 把 begin 结果落到运行状态：平台动作替换平台状态，群动作替换群状态。 */
+    private GroupsRun begunRun(GroupsRun run, GroupBegun begun) {
+        GroupsRun next = run.withState(begun.state());
+        return begun.platform() == null ? next : withPlatform(next, begun.platform());
+    }
+
+    /**
+     * 调用者对该动作目标的群是否没有合法知情资格。
+     *
+     * <p>合法知情只有三种：动作目标是公开群（公开加入本就暴露存在性）、本人此刻在群内、
+     * 本人持有该群的邀请（任何状态）。其余一律视为与"未知群"相同；未知文档/未知邀请也走同一
+     * 结果。这样 join/invite/respond/leave/post/correct 的拒绝码不能当存在性 oracle。</p>
+     */
+    private boolean groupHiddenFrom(String action, GroupsRun run, String person,
+                                    GroupTaskPayload body, long now) {
+        String groupId = null;
+        switch (action) {
+            case "JOIN", "INVITE", "LEAVE", "POST" -> groupId = body.groupId();
+            case "RESPOND" -> {
+                String inviteId = body.targetId();
+                for (GroupModel.Invitation invitation : run.state().invitations()) {
+                    if (invitation.inviteId().equals(inviteId)
+                            && invitation.invitee().equals(person)) {
+                        groupId = invitation.groupId();
+                    }
+                }
+                if (groupId == null) {
+                    // 未知邀请与发给别人的邀请同答：不可用
+                    return true;
+                }
+            }
+            case "CORRECTION" -> {
+                for (GroupModel.Post post : run.state().posts()) {
+                    if (post.docId().equals(body.docId())) {
+                        groupId = post.groupId();
+                    }
+                }
+                for (GroupModel.PostVersion version : run.state().postVersions()) {
+                    if (version.docId().equals(body.docId())) {
+                        groupId = version.groupId();
+                    }
+                }
+                if (groupId == null) {
+                    return true;
+                }
+            }
+            default -> {
+                return false;
+            }
+        }
+        GroupModel.Group group = null;
+        for (GroupModel.Group candidate : run.state().groups()) {
+            if (candidate.groupId().equals(groupId)) {
+                group = candidate;
+            }
+        }
+        if (group == null) {
+            return true;
+        }
+        if (group.joinPolicy() == GroupModel.JoinPolicy.OPEN) {
+            return false;
+        }
+        if (GroupModel.membershipAt(run.state(), groupId, person, now).isPresent()) {
+            return false;
+        }
+        for (GroupModel.Invitation invitation : run.state().invitations()) {
+            if (invitation.groupId().equals(groupId) && invitation.invitee().equals(person)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void requireGroupsEnabled() {
+        if (!manifest.hasGroups() || state.groups() == null) {
+            throw new IllegalStateException("当前运行未启用群组与平台模块：" + manifest.rulesVersion());
+        }
+    }
+
+    private GroupsRun requireGroupsRun() {
+        return requireGroupsRun(state);
+    }
+
+    private GroupsRun requireGroupsRun(WorldState base) {
+        GroupsRun run = base.groups();
+        if (!manifest.hasGroups() || run == null) {
+            throw new IllegalStateException("当前运行未启用群组与平台模块：" + manifest.rulesVersion());
+        }
+        return run;
+    }
+
+    /**
+     * 当前群组子集（只读）：供诊断与定向测试比对，不含正文与阅读账。
+     *
+     * @return 群组子集；未启用时为 null
+     * @throws IOException 读取失败
+     */
+    public synchronized GroupsRun groupsRun() throws IOException {
+        requireOpen();
+        return state.groups();
+    }
+
+    /**
+     * 统一群组读取门：目录、开读与完成都用这一个谓词，判据是真实成员段与版本发布时间。
+     *
+     * @return 绑定当前快照的读取回调
+     */
+    private GroupAccess groupAccess(WorldState base) {
+        GroupsRun run = base.groups();
+        if (!manifest.hasGroups() || run == null) {
+            return GroupAccess.NONE;
+        }
+        long at = base.timeMillis();
+        return (groupId, person, docVersionPublishedAt, checkAt) ->
+                GroupModel.canRead(run.state(), groupId, person, docVersionPublishedAt,
+                        checkAt > 0 ? checkAt : at);
+    }
+
+    /** 读取门绑定当前已确认状态；旧档案恒拒绝群组受众。 */
+    private GroupAccess groupAccess() {
+        return groupAccess(state);
+    }
+
+    /**
+     * 群组受信引用判定：真实读过且此刻仍可回忆，才允许被引用为新帖来源。
+     *
+     * @param person  人物
+     * @param docId   文档
+     * @param version 版本
+     * @param at      判定时刻
+     * @return 可引用返回 true
+     */
+    boolean canCiteAt(String person, String docId, long version, long at) {
+        return citationAllowed(state.information() == null ? null
+                : state.information().information(), person, docId, version, at);
+    }
+
+    /**
+     * 以给定信息状态判定引用资格：恢复重演时用帧内状态，不读当前字段，避免旧观察被新状态重建。
+     *
+     * @param information 判定所用的信息状态；null 视为不可引用
+     * @param person      人物
+     * @param docId       文档
+     * @param version     版本
+     * @param at          判定时刻
+     * @return 真实读过且此刻仍可回忆返回 true
+     */
+    boolean citationAllowed(InformationModel.State information, String person, String docId,
+                            long version, long at) {
+        if (information == null) {
+            return false;
+        }
+        return InformationModel.canCite(information, person, docId, version, at)
+                && recalledFor(information, person, docId, version, at);
+    }
+
+    /** 本人是否有未完成的群组/平台动作。 */
+    private PendingTask groupPendingOf(String person, List<PendingTask> pending) {
+        for (PendingTask task : pending) {
+            if (!GroupsRun.KINDS.contains(task.kind())) {
+                continue;
+            }
+            GroupTaskPayload body = groupBody(task);
+            if (body != null && body.person().equals(person)) {
+                return task;
+            }
+        }
+        return null;
+    }
+
+    /** 全天单焦点：本人不能在群组动作之外同时阅读、采编、采访或发私人消息。 */
+    private void requireGroupFocusFree(String person, WorldState base) {
+        if (groupPendingOf(person, base.pending()) != null) {
+            throw new IllegalArgumentException("本人已有未完成的群组动作");
+        }
+        if (hasPendingReading(person, base.pending())
+                || (base.information() != null && hasActiveReading(person))) {
+            throw new IllegalArgumentException("本人正在阅读资料，不能同时执行群组动作");
+        }
+        if (manifest.hasMedia() && base.media() != null
+                && !mediaPendingOf(person, base.pending()).isEmpty()) {
+            throw new IllegalArgumentException("本人还有未完成的媒体工作，不能同时执行群组动作");
+        }
+        if (manifest.hasSocial() && !socialPendingOf(person, base.pending()).isEmpty()) {
+            throw new IllegalArgumentException("本人还有未完成的社交动作，不能同时执行群组动作");
+        }
+        if (manifest.hasInterviews() && hasActiveInterview(person, base)) {
+            throw new IllegalArgumentException("本人正在进行采访会话，不能同时执行群组动作");
+        }
+    }
+
+    /** 供其它模块复用：群组动作未完成时拒绝同一人物的新动作。 */
+    private void requireNoGroupAction(String person, List<PendingTask> pending) {
+        if (manifest.hasGroups() && groupPendingOf(person, pending) != null) {
+            throw new IllegalArgumentException("本人还有未完成的群组动作");
+        }
+    }
+
+    /** 任务正文：既接受直接负载，也接受经角色动作外壳包装的负载。 */
+    private GroupTaskPayload groupBody(PendingTask task) {
+        try {
+            return mapper.readValue(task.payload(), GroupTaskPayload.class);
+        } catch (IOException direct) {
+            try {
+                RoleActionPayload wrapped = mapper.readValue(task.payload(),
+                        RoleActionPayload.class);
+                return mapper.readValue(wrapped.body(), GroupTaskPayload.class);
+            } catch (IOException unreadable) {
+                return null;
+            }
+        }
+    }
+
+    /**
+     * 会话路径排程：本批原子执行纯核 begin（BEGIN 资格检查确实发生），
+     * 再按冻结工时排 FINISH；发帖类动作在 FINISH 后由系统投递，不占人物焦点。
+     *
+     * @param session         会话（人物与观察任职来源）
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于当前时点加冻结动作工时
+     * @param action          业务动作
+     * @param draft           业务草稿
+     * @return {@code SCHEDULED:clientTaskId}；业务拒绝返回原因码且不建任务
+     * @throws IOException 持久提交失败
+     */
+    String scheduleGroupAction(WorldRoleSession session, String clientCommandId,
+                               String clientTaskId, long dueMillis, String action, Object draft)
+            throws IOException {
+        requireGroupsEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        Objects.requireNonNull(session, "会话");
+        Objects.requireNonNull(draft, "群组动作参数");
+        String person = session.personPartyId();
+        GroupsRun run = requireGroupsRun();
+        long now = state.timeMillis();
+        GroupTaskPayload body = groupPayload(person, action, draft,
+                roleCommandId(person, clientCommandId));
+        long duration = body.durationOf(run);
+        String internalCommand = roleCommandId(person, clientCommandId);
+        String internalTask = roleTaskId(person, clientTaskId);
+        String existing = state.commandContents().get(internalCommand);
+        if (existing != null) {
+            RoleActionPayload stored = mapper.readValue(existing, RoleActionPayload.class);
+            GroupTaskPayload storedBody = mapper.readValue(stored.body(), GroupTaskPayload.class);
+            if (!stored.clientTaskId().equals(clientTaskId) || stored.dueMillis() != dueMillis
+                    || !storedBody.action().equals(action)
+                    || !storedBody.groupId().equals(body.groupId())
+                    || !storedBody.targetId().equals(body.targetId())
+                    || !storedBody.docId().equals(body.docId())) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(internalCommand);
+        }
+        if (dueMillis != now + duration) {
+            throw new IllegalArgumentException("群组动作到期必须等于当前时点加冻结工时："
+                    + duration);
+        }
+        requireGroupFocusFree(person, state);
+        GroupBegun begun = groupBegin(action, run, state.information().information(), person,
+                internalCommand, body, now);
+        GroupsRun groupsAfter = begunRun(run, begun);
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        List<WorldEvent> events = new ArrayList<>();
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        String result;
+        if (begun.accepted()) {
+            GroupTaskPayload derived = withDerived(body, begun);
+            PendingTask task = new PendingTask(internalTask, dueMillis,
+                    WorldScheduler.Phase.COMPLETION, GroupsRun.KIND_FINISH,
+                    mapper.writeValueAsString(derived));
+            pending.add(task);
+            used.add(internalTask);
+            events.add(new WorldEvent("schedule:" + internalTask, "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(task)));
+            result = "SCHEDULED:" + clientTaskId;
+        } else {
+            groupsAfter = groupsAfter.withReport(new GroupsRun.GroupReport(
+                    "group-begin:" + internalCommand, person, GroupsRun.KIND_FINISH, action, false,
+                    begun.detail(), begun.subject(), now, state.position() + 1));
+            result = begun.reason();
+        }
+        RoleActionPayload payload = new RoleActionPayload(internalCommand, clientCommandId,
+                clientTaskId, person, dueMillis, new TreeMap<>(session.appointments()),
+                GroupsRun.KIND_FINISH, mapper.writeValueAsString(body),
+                session.observedPosition());
+        String content = mapper.writeValueAsString(payload);
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(internalCommand, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        outcomes.put(internalCommand, result);
+        WorldState candidate = next(now, state.lastPhase(), state.accounts(), pending,
+                state.delivered(), used, contents, outcomes, state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), state.information(),
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(),
+                state.media(), state.interviews(), state.evidence(), state.social(),
+                state.engineering(), groupsAfter);
+        commitAndApply(internalCommand, content, result, events, candidate);
+        return result;
+    }
+
+    /** 由会话草稿构造业务负载；actor 一律来自会话，模型不能自授。 */
+    private GroupTaskPayload groupPayload(String person, String action, Object draft,
+                                          String commandId) {
+        return switch (action) {
+            case "JOIN" -> {
+                WorldRoleSession.GroupJoinDraft value = (WorldRoleSession.GroupJoinDraft) draft;
+                yield new GroupTaskPayload(person, commandId, action, value.groupId(), "", "", "",
+                        List.of(), 0L, false, "", "", 0L);
+            }
+            case "INVITE" -> {
+                WorldRoleSession.GroupInviteDraft value = (WorldRoleSession.GroupInviteDraft) draft;
+                yield new GroupTaskPayload(person, commandId, action, value.groupId(),
+                        value.inviteePartyId(), "", "", List.of(), 0L, false, "", "", 0L);
+            }
+            case "RESPOND" -> {
+                WorldRoleSession.GroupRespondDraft value =
+                        (WorldRoleSession.GroupRespondDraft) draft;
+                yield new GroupTaskPayload(person, commandId, action, "", value.inviteId(), "",
+                        "", List.of(), 0L, value.accept(), "", "", 0L);
+            }
+            case "LEAVE" -> {
+                WorldRoleSession.GroupLeaveDraft value = (WorldRoleSession.GroupLeaveDraft) draft;
+                yield new GroupTaskPayload(person, commandId, action, value.groupId(), "", "", "",
+                        List.of(), 0L, false, "", "", 0L);
+            }
+            case "POST" -> {
+                WorldRoleSession.GroupPostDraft value = (WorldRoleSession.GroupPostDraft) draft;
+                yield new GroupTaskPayload(person, commandId, action, value.groupId(), "",
+                        value.title(), value.body(), citations(value.cites()), 0L, false, "", "",
+                        0L);
+            }
+            case "CORRECTION" -> {
+                WorldRoleSession.GroupCorrectDraft value =
+                        (WorldRoleSession.GroupCorrectDraft) draft;
+                yield new GroupTaskPayload(person, commandId, action, "", "", value.title(),
+                        value.body(), citations(value.cites()), value.basedOnVersion(), false, "",
+                        value.docId(), 0L);
+            }
+            case "PLATFORM_POST" -> {
+                WorldRoleSession.PlatformPostDraft value =
+                        (WorldRoleSession.PlatformPostDraft) draft;
+                yield new GroupTaskPayload(person, commandId, action, "", "", value.title(),
+                        value.body(), citations(value.cites()), 0L, false, "", "", 0L);
+            }
+            case "PLATFORM_CORRECTION" -> {
+                WorldRoleSession.PlatformCorrectDraft value =
+                        (WorldRoleSession.PlatformCorrectDraft) draft;
+                yield new GroupTaskPayload(person, commandId, action, "", "", value.title(),
+                        value.body(), citations(value.cites()), value.basedOnVersion(), false, "",
+                        value.docId(), 0L);
+            }
+            default -> throw new IllegalArgumentException("未知群组业务动作：" + action);
+        };
+    }
+
+    private static List<GroupModel.Ref> citations(List<WorldRoleSession.Citation> cites) {
+        List<GroupModel.Ref> refs = new ArrayList<>();
+        for (WorldRoleSession.Citation cite : cites == null ? List.<WorldRoleSession.Citation>of()
+                : cites) {
+            refs.add(new GroupModel.Ref(cite.docId(), cite.version()));
+        }
+        return refs;
+    }
+
+    /** 把 begin 派生的确定性标识（帖子/文档/版本）补进负载，供完成帧与投递帧使用。 */
+    private static GroupTaskPayload withDerived(GroupTaskPayload body, GroupBegun begun) {
+        String postId = begun.postId().isEmpty() ? body.postId() : begun.postId();
+        String docId = begun.docId().isEmpty() ? body.docId() : begun.docId();
+        long version = begun.version() > 0 ? begun.version() : body.version();
+        return new GroupTaskPayload(body.person(), body.commandId(), body.action(), body.groupId(),
+                body.targetId(), body.title(), body.body(), body.refs(), body.basedOnVersion(),
+                body.accept(), postId, docId, version);
+    }
+
+    /** 在纯核里执行一次 begin；拒绝返回原因码，绝不产生半条记录。 */
+    private GroupBegun groupBegin(String action, GroupsRun run, InformationModel.State info,
+                                  String person, String commandId, GroupTaskPayload body,
+                                  long now) {
+        if (groupHiddenFrom(action, run, person, body, now)) {
+            // 无合法知情资格：私群与未知群给出完全相同的不可用结果，不泄露存在性
+            return GroupBegun.rejected("NOT_AVAILABLE", run.state());
+        }
+        GroupModel.Context context = run.context(info, this);
+        switch (action) {
+            case "JOIN" -> {
+                GroupModel.JoinOutcome outcome = GroupModel.beginJoin(run.state(), context,
+                        person, body.groupId(), commandId, now);
+                if (outcome.status() != GroupModel.JoinStatus.STARTED) {
+                    return GroupBegun.rejected(outcome.status().name(), outcome.state());
+                }
+                return new GroupBegun(null, outcome.state(), null, body.groupId(), "", "", 0L, null);
+            }
+            case "INVITE" -> {
+                GroupModel.InviteOutcome outcome = GroupModel.beginInvite(run.state(), context,
+                        person, body.groupId(), body.targetId(), commandId, now);
+                if (outcome.status() != GroupModel.InviteStatus.STARTED) {
+                    return GroupBegun.rejected(outcome.status().name(), outcome.state());
+                }
+                return new GroupBegun(null, outcome.state(), null, outcome.inviteId(), "", "", 0L, null);
+            }
+            case "RESPOND" -> {
+                GroupModel.RespondOutcome outcome = GroupModel.beginRespond(run.state(), context,
+                        person, body.targetId(), body.accept(), commandId, now);
+                if (outcome.status() != GroupModel.RespondStatus.STARTED) {
+                    return GroupBegun.rejected(outcome.status().name(), outcome.state());
+                }
+                return new GroupBegun(null, outcome.state(), null, body.targetId(), "", "", 0L, null);
+            }
+            case "LEAVE" -> {
+                GroupModel.LeaveOutcome outcome = GroupModel.beginLeave(run.state(), context,
+                        person, body.groupId(), commandId, now);
+                if (outcome.status() != GroupModel.LeaveStatus.STARTED) {
+                    return GroupBegun.rejected(outcome.status().name(), outcome.state());
+                }
+                return new GroupBegun(null, outcome.state(), null, body.groupId(), "", "", 0L, null);
+            }
+            case "POST" -> {
+                GroupModel.PostBeginOutcome outcome = GroupModel.beginPost(run.state(), context,
+                        person, body.groupId(), commandId, body.title(), body.body(),
+                        body.refs(), now);
+                if (outcome.status() != GroupModel.PostBeginStatus.STARTED) {
+                    return GroupBegun.rejected(outcome.status().name(), outcome.state());
+                }
+                return new GroupBegun(null, outcome.state(), null, outcome.payload().docId(),
+                        outcome.payload().postId(), outcome.payload().docId(), 1L, null);
+            }
+            case "CORRECTION" -> {
+                GroupModel.CorrectionBeginOutcome outcome = GroupModel.beginCorrection(
+                        run.state(), context, person, body.docId(), body.basedOnVersion(),
+                        commandId, body.title(), body.body(), body.refs(), now);
+                if (outcome.status() != GroupModel.CorrectionBeginStatus.STARTED) {
+                    // 非作者/未知帖对外同一不可用：不得凭原因码推断某条帖是否存在
+                    String author = groupPostAuthor(run.state(), body.docId());
+                    return author != null && author.equals(person)
+                            ? GroupBegun.rejected(outcome.status().name(), outcome.state())
+                            : GroupBegun.rejectedHidden(outcome.status().name(),
+                                    outcome.state());
+                }
+                return new GroupBegun(null, outcome.state(), null, outcome.payload().docId(), "",
+                        outcome.payload().docId(), outcome.payload().version(), null);
+            }
+            case "PLATFORM_POST" -> {
+                PlatformPostModel.BeginOutcome outcome = PlatformPostModel.beginPost(
+                        run.publication().platform(), run.platformContext(info, this), person,
+                        commandId, body.title(), body.body(), platformRefs(body.refs()), now);
+                if (outcome.status() != PlatformPostModel.BeginStatus.STARTED) {
+                    return GroupBegun.rejected(outcome.status().name(), run.state());
+                }
+                return new GroupBegun(null, run.state(), outcome.state(),
+                        outcome.payload().docId(), "", outcome.payload().docId(),
+                        outcome.payload().version(), null);
+            }
+            case "PLATFORM_CORRECTION" -> {
+                PlatformPostModel.BeginOutcome outcome = PlatformPostModel.beginCorrection(
+                        run.publication().platform(), run.platformContext(info, this), person,
+                        body.docId(), body.basedOnVersion(), commandId, body.title(), body.body(),
+                        platformRefs(body.refs()), now);
+                if (outcome.status() != PlatformPostModel.BeginStatus.STARTED) {
+                    PlatformPostModel.Post existing = platformPostByDocId(
+                            run.publication().platform(), body.docId());
+                    return existing != null && existing.author().equals(person)
+                            ? GroupBegun.rejected(outcome.status().name(), run.state())
+                            : GroupBegun.rejectedHidden(outcome.status().name(), run.state());
+                }
+                return new GroupBegun(null, run.state(), outcome.state(),
+                        outcome.payload().docId(), "", outcome.payload().docId(),
+                        outcome.payload().version(), null);
+            }
+            default -> throw new IllegalStateException("未知群组业务动作：" + action);
+        }
+    }
+
+    private static List<PlatformPostModel.Ref> platformRefs(List<GroupModel.Ref> refs) {
+        List<PlatformPostModel.Ref> converted = new ArrayList<>();
+        for (GroupModel.Ref ref : refs) {
+            converted.add(new PlatformPostModel.Ref(ref.docId(), ref.version()));
+        }
+        return converted;
+    }
+
+    /** 平台状态更新：begin 只改平台状态，群状态沿用。 */
+    private GroupsRun withPlatform(GroupsRun run, PlatformPostModel.State platform) {
+        return run.withPublication(new PublicationRun.Run(platform, run.publication().frames()));
+    }
+
+    /** 完成一个群组任务：纯核、资料与待办放进同一个候选一次提交。 */
+    private void completeGroupTask(PendingTask task) throws IOException {
+        GroupFrame frame = computeGroupFrame(state, task);
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.add(new WorldEvent("group-task:" + task.taskId(), "GROUP_TASK_V1",
+                mapper.writeValueAsString(task)));
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        if (frame.scheduled() != null) {
+            events.add(new WorldEvent("schedule:" + frame.scheduled().taskId(),
+                    "TASK_SCHEDULED_V1", mapper.writeValueAsString(frame.scheduled())));
+            used.add(frame.scheduled().taskId());
+        }
+        WorldState candidate = next(frame.atMillis(), task.phase().name(), state.accounts(),
+                frame.pending(), state.delivered(), used, state.commandContents(),
+                state.commandOutcomes(), state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), frame.information(),
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(),
+                state.media(), state.interviews(), state.evidence(), state.social(),
+                state.engineering(), frame.groups());
+        commitAndApply("task:" + task.taskId(), task.payload(), frame.reason(), events, candidate);
+    }
+
+    /** 从给定基准状态重算一次群组完成；不做任何 I/O 提交。 */
+    private GroupFrame computeGroupFrame(WorldState base, PendingTask task) throws IOException {
+        GroupsRun run = requireGroupsRun(base);
+        GroupTaskPayload body = groupBody(task);
+        if (body == null) {
+            throw new IOException("群组任务正文无法解析：" + task.taskId());
+        }
+        String person = body.person();
+        long now = Math.max(task.dueTimeMillis(), base.timeMillis());
+        InformationRun infoRun = base.information();
+        InformationModel.State info = infoRun == null ? null : infoRun.information();
+        GroupsRun after = run;
+        List<PendingTask> pending = new ArrayList<>(base.pending());
+        pending.remove(task);
+        PendingTask scheduled = null;
+        boolean accepted = false;
+        String reason;
+        String detail = null;
+        String subject = body.groupId().isEmpty() ? body.docId() : body.groupId();
+        switch (task.kind()) {
+            case PendingTask.GROUP_BEGIN_V1 -> {
+                String busy = groupBeginConflict(base, task, person);
+                if (busy != null) {
+                    reason = busy;
+                    break;
+                }
+                GroupBegun begun = groupBegin(body.action(), run, info, person, body.commandId(),
+                        body, now);
+                after = begunRun(run, begun);
+                accepted = begun.accepted();
+                reason = begun.accepted() ? GroupsRun.REASON_OK : begun.reason();
+                detail = begun.accepted() ? GroupsRun.REASON_OK : begun.detail();
+                if (begun.accepted()) {
+                    GroupTaskPayload derived = withDerived(body, begun);
+                    subject = derived.groupId().isEmpty() ? derived.docId() : derived.groupId();
+                    String finishTaskId = freeTaskId(base, task.taskId() + ":finish");
+                    scheduled = new PendingTask(finishTaskId, now + body.durationOf(run),
+                            WorldScheduler.Phase.COMPLETION, GroupsRun.KIND_FINISH,
+                            mapper.writeValueAsString(derived));
+                    pending.add(scheduled);
+                }
+            }
+            case PendingTask.GROUP_FINISH_V1 -> {
+                GroupFinish finished = groupFinish(body.action(), run, info, person,
+                        body.commandId(), body, now);
+                after = finished.groups();
+                accepted = finished.accepted();
+                reason = finished.reason();
+                subject = finished.subject().isEmpty() ? subject : finished.subject();
+                if (finished.publishAt() > 0) {
+                    String publishTaskId = freeTaskId(base, task.taskId() + ":publish");
+                    scheduled = new PendingTask(publishTaskId, finished.publishAt(),
+                            WorldScheduler.Phase.COMPLETION, GroupsRun.KIND_PUBLISH,
+                            mapper.writeValueAsString(body));
+                    pending.add(scheduled);
+                }
+            }
+            case PendingTask.GROUP_PUBLISH_V1 -> {
+                GroupPublish published = groupPublish(body, run, info, now);
+                after = published.groups();
+                if (published.information() != null) {
+                    infoRun = infoRun.withInformation(published.information());
+                }
+                accepted = published.accepted();
+                reason = published.reason();
+                subject = body.docId().isEmpty() ? subject : body.docId();
+            }
+            default -> throw new IllegalStateException("未登记的群组任务：" + task.kind());
+        }
+        after = after.withReport(new GroupsRun.GroupReport(task.taskId(), person, task.kind(),
+                body.action(), accepted, detail == null ? reason : detail, subject, now,
+                base.position() + 1));
+        return new GroupFrame(accepted, reason, after, infoRun, List.copyOf(pending), scheduled,
+                subject, now);
+    }
+
+    /**
+     * BEGIN 帧的全世界单焦点重核：豁免自身这一条，避免把已排程的同批动作当冲突。
+     *
+     * @return 冲突原因码；无冲突返回 null
+     */
+    private String groupBeginConflict(WorldState base, PendingTask task, String person) {
+        for (PendingTask other : base.pending()) {
+            if (other.taskId().equals(task.taskId()) || !GroupsRun.KINDS.contains(other.kind())) {
+                continue;
+            }
+            GroupTaskPayload body = groupBody(other);
+            if (body != null && body.person().equals(person)) {
+                return "BUSY";
+            }
+        }
+        if (hasPendingReading(person, base.pending())
+                || (base.information() != null && hasActiveReading(person))) {
+            return "BUSY";
+        }
+        if (manifest.hasMedia() && base.media() != null
+                && !mediaPendingOf(person, base.pending()).isEmpty()) {
+            return "BUSY";
+        }
+        if (manifest.hasSocial() && !socialPendingOf(person, base.pending()).isEmpty()) {
+            return "BUSY";
+        }
+        return null;
+    }
+
+    /** 完成帧结果：是否受理、原因码、后续状态与可选发布时刻。 */
+    private record GroupFinish(boolean accepted, String reason, GroupsRun groups, String subject,
+                               long publishAt) {
+    }
+
+    /** 完成帧：只在真实到期时刻复核资格，拒绝不产生半条记录。 */
+    private GroupFinish groupFinish(String action, GroupsRun run, InformationModel.State info,
+                                    String person, String commandId, GroupTaskPayload body,
+                                    long now) {
+        GroupModel.Context context = run.context(info, this);
+        switch (action) {
+            case "JOIN" -> {
+                GroupModel.JoinOutcome outcome = GroupModel.finishJoin(run.state(), context,
+                        person, commandId, now);
+                boolean ok = outcome.status() == GroupModel.JoinStatus.JOINED;
+                return new GroupFinish(ok, ok ? GroupsRun.REASON_OK : outcome.status().name(),
+                        run.withState(outcome.state()), body.groupId(), 0L);
+            }
+            case "INVITE" -> {
+                GroupModel.InviteOutcome outcome = GroupModel.finishInvite(run.state(), context,
+                        person, commandId, now);
+                boolean ok = outcome.status() == GroupModel.InviteStatus.INVITED;
+                return new GroupFinish(ok, ok ? GroupsRun.REASON_OK : outcome.status().name(),
+                        run.withState(outcome.state()), outcome.inviteId(), 0L);
+            }
+            case "RESPOND" -> {
+                GroupModel.RespondOutcome outcome = GroupModel.finishRespond(run.state(), context,
+                        person, commandId, now);
+                boolean ok = outcome.status() == GroupModel.RespondStatus.ACCEPTED
+                        || outcome.status() == GroupModel.RespondStatus.DECLINED;
+                return new GroupFinish(ok, outcome.status().name(), run.withState(outcome.state()),
+                        body.targetId(), 0L);
+            }
+            case "LEAVE" -> {
+                GroupModel.LeaveOutcome outcome = GroupModel.finishLeave(run.state(), context,
+                        person, commandId, now);
+                boolean ok = outcome.status() == GroupModel.LeaveStatus.LEFT;
+                return new GroupFinish(ok, ok ? GroupsRun.REASON_OK : outcome.status().name(),
+                        run.withState(outcome.state()), body.groupId(), 0L);
+            }
+            case "POST" -> {
+                GroupModel.PostFinishOutcome outcome = GroupModel.finishPost(run.state(), context,
+                        person, commandId, now);
+                boolean ok = outcome.status() == GroupModel.PostFinishStatus.QUEUED;
+                long publishAt = ok && outcome.post() != null ? outcome.post().publishAt() : 0L;
+                return new GroupFinish(ok, ok ? GroupsRun.REASON_OK : outcome.status().name(),
+                        run.withState(outcome.state()), body.docId(), publishAt);
+            }
+            case "CORRECTION" -> {
+                GroupModel.CorrectionFinishOutcome outcome = GroupModel.finishCorrection(
+                        run.state(), context, person, commandId, now);
+                boolean ok = outcome.status() == GroupModel.CorrectionFinishStatus.QUEUED;
+                long publishAt = ok && outcome.version() != null
+                        ? outcome.version().publishAt() : 0L;
+                return new GroupFinish(ok, ok ? GroupsRun.REASON_OK : outcome.status().name(),
+                        run.withState(outcome.state()), body.docId(), publishAt);
+            }
+            case "PLATFORM_POST", "PLATFORM_CORRECTION" -> {
+                PlatformPostModel.FinishOutcome outcome = "PLATFORM_POST".equals(action)
+                        ? PlatformPostModel.finishPost(run.publication().platform(),
+                                run.platformContext(info, this), person, commandId, now)
+                        : PlatformPostModel.finishCorrection(run.publication().platform(),
+                                run.platformContext(info, this), person, commandId, now);
+                boolean ok = outcome.status() == PlatformPostModel.FinishStatus.QUEUED;
+                long publishAt = ok && outcome.post() != null ? outcome.post().publishAt() : 0L;
+                return new GroupFinish(ok, ok ? GroupsRun.REASON_OK : outcome.status().name(),
+                        withPlatform(run, outcome.state()), body.docId(), publishAt);
+            }
+            default -> throw new IllegalStateException("未知群组业务动作：" + action);
+        }
+    }
+
+    /** 投递帧结果。 */
+    private record GroupPublish(boolean accepted, String reason, GroupsRun groups,
+                                InformationModel.State information) {
+    }
+
+    /**
+     * 系统投递：按冻结发布时刻落正文，再用同一帧的真实文档做发布绑定校验。
+     *
+     * <p>投递不占人物焦点，也不再核作者当前成员资格：已合法完成的动作不因退群撤回。</p>
+     */
+    private GroupPublish groupPublish(GroupTaskPayload body, GroupsRun run,
+                                      InformationModel.State info, long now) {
+        if (info == null) {
+            return new GroupPublish(false, "NOT_AVAILABLE", run, null);
+        }
+        switch (body.action()) {
+            case "POST" -> {
+                GroupModel.PublishOutcome outcome = GroupModel.publishPost(run.state(),
+                        body.postId(), now);
+                GroupsRun next = run.withState(outcome.state());
+                if (outcome.status() != GroupModel.PublishStatus.PUBLISHED) {
+                    return new GroupPublish(false, outcome.status().name(), next, null);
+                }
+                GroupModel.Post post = groupPostOf(outcome.state(), body.postId());
+                if (post == null) {
+                    return new GroupPublish(false, "NOT_AVAILABLE", next, null);
+                }
+                InformationModel.State published = InformationModel.publish(info, post.docId(),
+                        post.author(), InformationModel.Audience.group(post.groupId()),
+                        new InformationModel.VersionDraft(body.title(), body.body(), "群内发言",
+                                post.publishedAt(), groupReadMillis, List.of()));
+                String check = requirePublishedBinding(post, published);
+                if (check != null) {
+                    return new GroupPublish(false, check, next, null);
+                }
+                return new GroupPublish(true, GroupsRun.REASON_OK, next, published);
+            }
+            case "CORRECTION" -> {
+                long documentVersionAtFrame = informationVersionOf(info, body.docId());
+                GroupModel.CorrectionPublishOutcome outcome = GroupModel.publishCorrection(
+                        run.state(), body.docId(), body.version(), documentVersionAtFrame, now);
+                GroupsRun next = run.withState(outcome.state());
+                if (outcome.status() != GroupModel.PublishStatus.PUBLISHED) {
+                    return new GroupPublish(false, outcome.status().name(), next, null);
+                }
+                GroupModel.PostVersion version = outcome.version();
+                if (version == null) {
+                    return new GroupPublish(false, "NOT_AVAILABLE", next, null);
+                }
+                InformationModel.State published = InformationModel.publishVersion(info,
+                        version.docId(), new InformationModel.VersionDraft(body.title(),
+                                body.body(), "群内更正", version.publishedAt(), groupReadMillis,
+                                List.of()));
+                String check = requirePublishedBinding(version, published);
+                if (check != null) {
+                    return new GroupPublish(false, check, next, null);
+                }
+                return new GroupPublish(true, GroupsRun.REASON_OK, next, published);
+            }
+            case "PLATFORM_POST", "PLATFORM_CORRECTION" -> {
+                long documentVersionAtFrame = informationVersionOf(info, body.docId());
+                PlatformPostModel.PublishOutcome outcome = PlatformPostModel.publish(
+                        run.publication().platform(), body.docId(), body.version(),
+                        documentVersionAtFrame, now);
+                GroupsRun next = withPlatform(run, outcome.state());
+                if (outcome.status() != PlatformPostModel.PublishStatus.PUBLISHED) {
+                    return new GroupPublish(false, outcome.status().name(), next, null);
+                }
+                PlatformPostModel.Post post = outcome.post();
+                if (post == null) {
+                    return new GroupPublish(false, "NOT_AVAILABLE", next, null);
+                }
+                InformationModel.State published = post.version() == 1
+                        ? InformationModel.publish(info, post.docId(), post.author(),
+                                InformationModel.Audience.publicAudience(),
+                                new InformationModel.VersionDraft(body.title(), body.body(),
+                                        "平台公开帖", post.publishedAt(), groupReadMillis,
+                                        List.of()))
+                        : InformationModel.publishVersion(info, post.docId(),
+                                new InformationModel.VersionDraft(body.title(), body.body(),
+                                        "平台更正", post.publishedAt(), groupReadMillis,
+                                        List.of()));
+                String check = requirePublishedBinding(post, published);
+                if (check != null) {
+                    return new GroupPublish(false, check, next, null);
+                }
+                return new GroupPublish(true, GroupsRun.REASON_OK, next, published);
+            }
+            default -> throw new IllegalStateException("未登记的投递动作：" + body.action());
+        }
+    }
+
+    /** 真实发布绑定：文档、版本、发布者、受众、时刻与摘要必须全部一致。 */
+    private String requirePublishedBinding(GroupModel.Post post, InformationModel.State published) {
+        Optional<PublicationBinding.PublishedDocument> doc =
+                PublicationBinding.fromInformation(published, post.docId(), 1L);
+        if (doc.isEmpty()) {
+            return PublicationBinding.DOC_MISMATCH;
+        }
+        String result = PublicationBinding.verify(post, doc.get());
+        return PublicationBinding.OK.equals(result) ? null : result;
+    }
+
+    private String requirePublishedBinding(GroupModel.PostVersion version,
+                                           InformationModel.State published) {
+        Optional<PublicationBinding.PublishedDocument> doc =
+                PublicationBinding.fromInformation(published, version.docId(), version.version());
+        if (doc.isEmpty()) {
+            return PublicationBinding.DOC_MISMATCH;
+        }
+        String result = PublicationBinding.verify(version, doc.get());
+        return PublicationBinding.OK.equals(result) ? null : result;
+    }
+
+    private String requirePublishedBinding(PlatformPostModel.Post post,
+                                           InformationModel.State published) {
+        Optional<PublicationBinding.PublishedDocument> doc =
+                PublicationBinding.fromInformation(published, post.docId(), post.version());
+        if (doc.isEmpty()) {
+            return PublicationBinding.DOC_MISMATCH;
+        }
+        String result = PublicationBinding.verify(post, doc.get());
+        return PublicationBinding.OK.equals(result) ? null : result;
+    }
+
+    private static GroupModel.Post groupPostOf(GroupModel.State state, String postId) {
+        for (GroupModel.Post post : state.posts()) {
+            if (post.postId().equals(postId)) {
+                return post;
+            }
+        }
+        return null;
+    }
+
+    /** 某文档版本的作者：v1 在 posts，更正版在 postVersions；未知返回 null。 */
+    private static String groupPostAuthor(GroupModel.State state, String docId) {
+        for (GroupModel.Post post : state.posts()) {
+            if (post.docId().equals(docId)) {
+                return post.author();
+            }
+        }
+        for (GroupModel.PostVersion version : state.postVersions()) {
+            if (version.docId().equals(docId)) {
+                return version.author();
+            }
+        }
+        return null;
+    }
+
+    /** 平台帖最新版本记录；未知返回 null。 */
+    private static PlatformPostModel.Post platformPostByDocId(PlatformPostModel.State platform,
+                                                              String docId) {
+        PlatformPostModel.Post best = null;
+        for (PlatformPostModel.Post post : platform.posts()) {
+            if (post.docId().equals(docId)
+                    && (best == null || post.version() > best.version())) {
+                best = post;
+            }
+        }
+        return best;
+    }
+
+    private static long informationVersionOf(InformationModel.State info, String docId) {
+        for (InformationModel.Document document : info.documents()) {
+            if (document.docId().equals(docId)) {
+                return document.versions().get(document.versions().size() - 1).version();
+            }
+        }
+        return 0L;
+    }
+
+    /** 普通发布不得伪造群帖/平台帖保留前缀。 */
+    private static void requireNotReservedDocId(String docId) {
+        if (docId == null) {
+            return;
+        }
+        if (docId.startsWith("GDOC-") || docId.startsWith(PlatformPostModel.DOC_PREFIX)) {
+            throw new IllegalArgumentException("该资料标识为群组/平台保留前缀，不能普通发布："
+                    + docId);
+        }
+    }
+
+    /**
+     * 决定输入里的群组/平台投影：只给本人真实成员段、发给本人的待处理邀请与真实平台目录。
+     *
+     * @param info 本次提交使用的信息状态
+     * @return 投影节点；未启用群组模块时为 null
+     */
+    private com.fasterxml.jackson.databind.JsonNode groupsInput(WorldState base,
+            InformationModel.State info, String person, long at) {
+        GroupsRun run = base.groups();
+        if (!manifest.hasGroups() || run == null) {
+            return null;
+        }
+        com.fasterxml.jackson.databind.node.ObjectNode root = mapper.createObjectNode();
+        com.fasterxml.jackson.databind.node.ArrayNode memberships = root.putArray("memberships");
+        for (GroupModel.Group group : run.state().groups()) {
+            Optional<GroupModel.Membership> segment = GroupModel.membershipAt(run.state(),
+                    group.groupId(), person, at);
+            if (segment.isEmpty()) {
+                continue;
+            }
+            com.fasterxml.jackson.databind.node.ObjectNode node = memberships.addObject();
+            node.put("groupId", group.groupId());
+            node.put("joinPolicy", group.joinPolicy().name());
+            node.put("historyPolicy", group.historyPolicy().name());
+            node.put("joinedAt", segment.get().joinedAt());
+            node.put("owner", group.ownerPartyId().equals(person));
+        }
+        com.fasterxml.jackson.databind.node.ArrayNode invitations = root.putArray("invitations");
+        for (GroupModel.Invitation invitation : run.state().invitations()) {
+            if (!invitation.invitee().equals(person)
+                    || invitation.status() != GroupModel.InvitationStatus.PENDING) {
+                continue;
+            }
+            com.fasterxml.jackson.databind.node.ObjectNode node = invitations.addObject();
+            node.put("inviteId", invitation.inviteId());
+            node.put("groupId", invitation.groupId());
+            node.put("inviter", invitation.inviter());
+            node.put("invitedAt", invitation.invitedAt());
+        }
+        com.fasterxml.jackson.databind.node.ArrayNode posts = root.putArray("myPosts");
+        for (GroupModel.Post post : run.state().posts()) {
+            if (!post.author().equals(person)) {
+                continue;
+            }
+            com.fasterxml.jackson.databind.node.ObjectNode node = posts.addObject();
+            node.put("postId", post.postId());
+            node.put("docId", post.docId());
+            node.put("groupId", post.groupId());
+            node.put("status", post.status().name());
+            node.put("publishedAt", post.publishedAt());
+        }
+        for (GroupModel.PostVersion version : run.state().postVersions()) {
+            if (!version.author().equals(person)) {
+                continue;
+            }
+            com.fasterxml.jackson.databind.node.ObjectNode node = posts.addObject();
+            node.put("postId", "");
+            node.put("docId", version.docId());
+            node.put("groupId", version.groupId());
+            node.put("version", version.version());
+            node.put("status", version.status().name());
+            node.put("publishedAt", version.publishedAt());
+        }
+        com.fasterxml.jackson.databind.node.ArrayNode mine = root.putArray("myPlatformPosts");
+        for (PlatformPostModel.Post post : run.publication().platform().posts()) {
+            if (!post.author().equals(person)) {
+                continue;
+            }
+            com.fasterxml.jackson.databind.node.ObjectNode node = mine.addObject();
+            node.put("docId", post.docId());
+            node.put("version", post.version());
+            node.put("status", post.status().name());
+            node.put("publishedAt", post.publishedAt());
+        }
+        com.fasterxml.jackson.databind.node.ArrayNode feed = root.putArray("feed");
+        for (GroupFeedItem item : publicationFeed(base, info, at)) {
+            com.fasterxml.jackson.databind.node.ObjectNode node = feed.addObject();
+            node.put("rank", item.rank());
+            node.put("docId", item.docId());
+            node.put("version", item.version());
+            node.put("title", item.title());
+            node.put("publisher", item.publisherPartyId());
+            node.put("publishedAt", item.publishedAt());
+            node.put("kind", item.kind());
+        }
+        return root;
+    }
+
+    /** 真实平台目录：平台公开帖 + 媒体公开发布成稿，按冻结顺序排列并截到冻结上限。 */
+    private List<GroupFeedItem> publicationFeed(WorldState base, InformationModel.State info,
+                                                long at) {
+        GroupsRun run = base.groups();
+        if (!manifest.hasGroups() || run == null || info == null) {
+            return List.of();
+        }
+        List<PublicationRun.FeedEntry> entries = PublicationRun.feed(
+                run.publication().platform(), mediaForFeed(base.media()), info, at,
+                run.feedLimit());
+        List<GroupFeedItem> items = new ArrayList<>();
+        for (PublicationRun.FeedEntry entry : entries) {
+            items.add(new GroupFeedItem(entry.rank(), entry.docId(), entry.version(),
+                    entry.title(), entry.publisherPartyId(), entry.publishedAt(),
+                    entry.kind().name()));
+        }
+        return items;
+    }
+
+    /** 平台目录用的媒体视图：单机构直接用其状态；多机构合并稿件与版本，策略沿用第一份。 */
+    private static MediaModel.State mediaForFeed(MediaRun media) {
+        if (media == null || media.states().isEmpty()) {
+            return null;
+        }
+        if (media.states().size() == 1) {
+            return media.states().get(0);
+        }
+        List<MediaModel.Story> stories = new ArrayList<>();
+        List<MediaModel.Revision> revisions = new ArrayList<>();
+        List<MediaModel.Lineage> lineage = new ArrayList<>();
+        for (MediaModel.State state : media.states()) {
+            stories.addAll(state.stories());
+            revisions.addAll(state.revisions());
+            lineage.addAll(state.lineage());
+        }
+        return new MediaModel.State(stories, revisions, lineage, media.states().get(0).policy());
+    }
+
+    /** 本次决定输入实际包含的平台目录条目（与投影同一实现）。 */
+    private List<PublicationRun.FeedEntry> publicationFeedEntries(WorldState base,
+            InformationModel.State info, long at) {
+        GroupsRun run = base.groups();
+        if (!manifest.hasGroups() || run == null || info == null) {
+            return List.of();
+        }
+        return PublicationRun.feed(run.publication().platform(), mediaForFeed(base.media()), info,
+                at, run.feedLimit());
+    }
+
+    // ------------------------------------------------------------------
+    // 群组/平台恢复校验：逐帧重演 begin/finish/publish，并核对冻结配置
+    // ------------------------------------------------------------------
+
+    private void validateGroups(WorldState candidate, WorldState previous, WorldCommit commit)
+            throws IOException {
+        if (!manifest.hasGroups()) {
+            if (candidate.groups() != null) {
+                throw new IOException("旧档案不得包含群组子集状态");
+            }
+            for (PendingTask task : candidate.pending()) {
+                if (GroupsRun.KINDS.contains(task.kind())) {
+                    throw new IOException("旧档案不得包含群组待办：" + task.taskId());
+                }
+            }
+            return;
+        }
+        GroupsRun after = candidate.groups();
+        if (after == null) {
+            throw new IOException("群组档案缺少群组子集状态");
+        }
+        if (groupConfig == null || !groupConfig.equals(after.config())) {
+            throw new IOException("群组配置与冻结开局不一致");
+        }
+        if (platformConfig == null || !platformConfig.equals(after.platformConfig())) {
+            throw new IOException("平台配置与冻结开局不一致");
+        }
+        if (after.feedLimit() != groupFeedLimit || after.readMillis() != groupReadMillis) {
+            throw new IOException("平台目录上限或阅读耗时与冻结开局不一致");
+        }
+        GroupsRun before = previous == null ? null : previous.groups();
+        if (before == null) {
+            GroupsRun expected = GroupsRun.open(groupConfig, platformConfig, groupFeedLimit,
+                    groupReadMillis, registeredPersons(), 0L);
+            if (!expected.equals(after)) {
+                throw new IOException("群组开局子集与冻结配置不一致");
+            }
+            return;
+        }
+        List<PendingTask> completed = new ArrayList<>();
+        for (PendingTask task : previous.pending()) {
+            if (!GroupsRun.KINDS.contains(task.kind())) {
+                continue;
+            }
+            boolean stillPending = false;
+            for (PendingTask now : candidate.pending()) {
+                if (now.taskId().equals(task.taskId())) {
+                    stillPending = true;
+                    break;
+                }
+            }
+            if (!stillPending) {
+                completed.add(task);
+            }
+        }
+        completed.sort(Comparator.comparingLong(PendingTask::dueTimeMillis)
+                .thenComparing(PendingTask::taskId));
+        GroupsRun expectedGroups = before;
+        InformationRun expectedInformation = previous.information();
+        List<PendingTask> expectedPending = new ArrayList<>(previous.pending());
+        for (PendingTask task : completed) {
+            WorldState step = groupStep(previous, expectedGroups, expectedInformation,
+                    expectedPending);
+            GroupFrame frame;
+            try {
+                frame = computeGroupFrame(step, task);
+            } catch (RuntimeException invalid) {
+                throw new IOException("群组帧重算失败：" + task.taskId(), invalid);
+            }
+            expectedGroups = frame.groups();
+            expectedInformation = frame.information();
+            expectedPending = frame.pending();
+        }
+        if (!expectedGroups.equals(after)) {
+            boolean decisionsChanged = !Objects.equals(previous.decisions(), candidate.decisions());
+            if (!decisionsChanged) {
+                GroupsRun replay = replayGroupScheduling(previous, candidate, commit);
+                if (!replay.equals(after)) {
+                    throw new IOException("群组子集与逐帧重算不一致：expected="
+                            + expectedGroups + " actual=" + after);
+                }
+                expectedGroups = replay;
+            }
+        }
+        if (!completed.isEmpty()
+                && !Objects.equals(expectedInformation, candidate.information())) {
+            throw new IOException("资料子集与群组逐帧重算不一致");
+        }
+        Map<String, PendingTask> expectedById = new TreeMap<>();
+        for (PendingTask task : expectedPending) {
+            if (GroupsRun.KINDS.contains(task.kind())) {
+                expectedById.put(task.taskId(), task);
+            }
+        }
+        Map<String, PendingTask> actualById = new TreeMap<>();
+        for (PendingTask task : candidate.pending()) {
+            if (GroupsRun.KINDS.contains(task.kind())) {
+                actualById.put(task.taskId(), task);
+            }
+        }
+        for (Map.Entry<String, PendingTask> entry : actualById.entrySet()) {
+            PendingTask expectedTask = expectedById.get(entry.getKey());
+            if (expectedTask != null) {
+                if (!expectedTask.equals(entry.getValue())) {
+                    throw new IOException("在途群组任务被改写：" + entry.getKey());
+                }
+                continue;
+            }
+            requireGroupSchedulingRequest(previous, candidate, commit, entry.getValue());
+        }
+        for (String expectedId : expectedById.keySet()) {
+            if (!actualById.containsKey(expectedId)) {
+                throw new IOException("群组待办被删除或漏排：" + expectedId);
+            }
+        }
+    }
+
+    /** 逐帧重算的工作副本：只替换群组与资料分量。 */
+    private static WorldState groupStep(WorldState previous, GroupsRun groups,
+                                        InformationRun information, List<PendingTask> pending) {
+        return new WorldState(previous.schemaVersion(), previous.runId(), previous.position(),
+                previous.timeMillis(), previous.lastPhase(), previous.accounts(),
+                List.copyOf(pending), previous.delivered(), previous.usedTaskIds(),
+                previous.commandContents(), previous.commandOutcomes(), previous.securities(),
+                previous.exchange(), previous.manufacturing(), previous.governance(),
+                previous.roles(), information, previous.trading(), previous.decisions(),
+                previous.dividends(), previous.beliefs(), previous.media(), previous.interviews(),
+                previous.evidence(), previous.social(), previous.engineering(), groups);
+    }
+
+    /** 排程批的群组重算：只从本批原命令重放 begin，其它动作不改群组状态。 */
+    private GroupsRun replayGroupScheduling(WorldState previous, WorldState candidate,
+                                            WorldCommit commit) throws IOException {
+        GroupsRun before = previous.groups();
+        String content = candidate.commandContents().get(commit.commandId());
+        if (content == null) {
+            content = commit.commandContent();
+        }
+        RoleActionPayload payload;
+        try {
+            payload = mapper.readValue(content, RoleActionPayload.class);
+        } catch (IOException unreadable) {
+            // 任务帧的原命令就是 GroupTaskPayload 本身（无角色外壳）：本批不产生排程变更
+            GroupTaskPayload direct;
+            try {
+                direct = mapper.readValue(content, GroupTaskPayload.class);
+            } catch (IOException notAGroupTask) {
+                throw new IOException("群组排程命令无法解析", unreadable);
+            }
+            if (direct == null || !before.equals(candidate.groups())) {
+                throw new IOException("群组任务帧不得自行改写群组状态");
+            }
+            return before;
+        }
+        if (!GroupsRun.KIND_FINISH.equals(payload.kind())
+                && !GroupsRun.KIND_BEGIN.equals(payload.kind())) {
+            if (!before.equals(candidate.groups())) {
+                throw new IOException("群组排程批不得在没有动作的情况下改动群组状态");
+            }
+            return before;
+        }
+        GroupTaskPayload body;
+        try {
+            body = mapper.readValue(payload.body(), GroupTaskPayload.class);
+        } catch (IOException unreadable) {
+            throw new IOException("群组动作参数无法解析", unreadable);
+        }
+        if (body.publishes()) {
+            // 发帖类在排程批只产生 Draft；正文投递在 FINISH/PUBLISH 帧
+            GroupBegun begun = groupBegin(body.action(), before,
+                    previous.information().information(), payload.personPartyId(),
+                    payload.commandId(), body, previous.timeMillis());
+            GroupsRun replay = begunRun(before, begun);
+            if (!begun.accepted()) {
+                replay = replay.withReport(new GroupsRun.GroupReport(
+                        "group-begin:" + payload.commandId(), payload.personPartyId(),
+                        GroupsRun.KIND_FINISH, body.action(), false, begun.detail(),
+                        begun.subject(), previous.timeMillis(), previous.position() + 1));
+            }
+            return replay;
+        }
+        GroupBegun begun = groupBegin(body.action(), before,
+                previous.information().information(), payload.personPartyId(),
+                payload.commandId(), body, previous.timeMillis());
+        GroupsRun replay = begunRun(before, begun);
+        if (!begun.accepted()) {
+            replay = replay.withReport(new GroupsRun.GroupReport(
+                    "group-begin:" + payload.commandId(), payload.personPartyId(),
+                    GroupsRun.KIND_FINISH, body.action(), false, begun.detail(),
+                    begun.subject(), previous.timeMillis(), previous.position() + 1));
+        }
+        return replay;
+    }
+
+    /** 新增群组待办必须能回到本批真实命令与排程事件。 */
+    private void requireGroupSchedulingRequest(WorldState previous, WorldState candidate,
+                                               WorldCommit commit, PendingTask task)
+            throws IOException {
+        String json = mapper.writeValueAsString(task);
+        boolean scheduled = false;
+        boolean decisionScheduled = false;
+        for (WorldEvent event : commit.events()) {
+            if ("TASK_SCHEDULED_V1".equals(event.type()) && event.payload().equals(json)) {
+                scheduled = true;
+            }
+            if ("DECISION_ACTION_SCHEDULED_V1".equals(event.type())
+                    && event.payload().equals(task.payload())) {
+                decisionScheduled = true;
+            }
+        }
+        if (!scheduled && !decisionScheduled) {
+            throw new IOException("群组待办缺少真实排程请求：" + task.taskId());
+        }
+        if (task.phase() != WorldScheduler.Phase.COMPLETION) {
+            throw new IOException("群组待办必须落在 COMPLETION 阶段：" + task.taskId());
+        }
+        String recorded = candidate.commandContents().get(commit.commandId());
+        if (recorded == null) {
+            recorded = commit.commandContent();
+        }
+        boolean samePayload = decisionScheduled || task.payload().equals(recorded);
+        if (!samePayload) {
+            try {
+                RoleActionPayload wrapped = mapper.readValue(recorded, RoleActionPayload.class);
+                GroupTaskPayload body = groupBody(task);
+                GroupTaskPayload stored = mapper.readValue(wrapped.body(),
+                        GroupTaskPayload.class);
+                samePayload = body != null && body.person().equals(stored.person())
+                        && body.commandId().equals(stored.commandId())
+                        && body.action().equals(stored.action())
+                        && body.groupId().equals(stored.groupId())
+                        && body.targetId().equals(stored.targetId())
+                        && body.title().equals(stored.title())
+                        && body.body().equals(stored.body())
+                        && body.refs().equals(stored.refs())
+                        && body.basedOnVersion() == stored.basedOnVersion()
+                        && body.accept() == stored.accept();
+            } catch (IOException unreadable) {
+                throw new IOException("群组排程命令无法解析", unreadable);
+            }
+        }
+        if (!samePayload) {
+            throw new IOException("群组待办参数与本批命令不一致：" + task.taskId());
+        }
+        if (previous.commandContents().containsKey(commit.commandId())) {
+            throw new IOException("群组排程命令不得复用已记录命令：" + commit.commandId());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 决定工具：群组/平台动作翻译与冻结工时核对
+    // ------------------------------------------------------------------
+
+    /** v6 群组工具的计划结果：要么可排程，要么是业务拒绝原因。 */
+    private record GroupPlanned(String kind, Object payload, String reject) {
+
+        static GroupPlanned rejected(String reason) {
+            return new GroupPlanned("", null, reason);
+        }
+    }
+
+    /**
+     * 把 v6 群组/平台工具翻译成真实任务：人物取观察绑定，正文与来源只从模型参数读一次。
+     *
+     * <p>这里只做静态翻译：成员资格、邀请授权、引用资格与发布绑定都在真实 BEGIN/FINISH/
+     * PUBLISH 帧按当时状态复核，因此后续合法的退群/重入不会改写原计划。</p>
+     */
+    private GroupPlanned planGroupTool(String tool, com.fasterxml.jackson.databind.JsonNode args,
+            DecisionRun.Binding binding, DecisionModel.Decision recorded, DecisionModel.State model,
+            WorldState base) throws IOException {
+        String person = binding.personPartyId();
+        String commandId = DecisionRun.actionCommandId(recorded.actionId());
+        GroupsRun run = base.groups();
+        String action = switch (tool) {
+            case RoleTradingView.TOOL_GROUP_JOIN -> "JOIN";
+            case RoleTradingView.TOOL_GROUP_INVITE -> "INVITE";
+            case RoleTradingView.TOOL_GROUP_RESPOND -> "RESPOND";
+            case RoleTradingView.TOOL_GROUP_LEAVE -> "LEAVE";
+            case RoleTradingView.TOOL_GROUP_POST -> "POST";
+            case RoleTradingView.TOOL_GROUP_CORRECT -> "CORRECTION";
+            case RoleTradingView.TOOL_PLATFORM_POST -> "PLATFORM_POST";
+            case RoleTradingView.TOOL_PLATFORM_CORRECT -> "PLATFORM_CORRECTION";
+            default -> throw new IOException("未知群组工具：" + tool);
+        };
+        String groupId = textArg(args, "groupId");
+        String title = textArg(args, "title");
+        String body = textArg(args, "body");
+        String docId = textArg(args, "docId");
+        String target = "INVITE".equals(action) ? textArg(args, "inviteePartyId")
+                : "RESPOND".equals(action) ? textArg(args, "inviteId") : "";
+        List<GroupModel.Ref> refs = new ArrayList<>();
+        com.fasterxml.jackson.databind.JsonNode cites = args.get("cites");
+        if (cites != null && cites.isArray()) {
+            for (com.fasterxml.jackson.databind.JsonNode cite : cites) {
+                String citeDoc = textArg(cite, "docId");
+                long citeVersion = longArg(cite, "version");
+                if (citeDoc == null || citeVersion < 1) {
+                    return GroupPlanned.rejected("INVALID_ARGUMENT");
+                }
+                refs.add(new GroupModel.Ref(citeDoc, citeVersion));
+            }
+        }
+        long basedOnVersion = longArg(args, "basedOnVersion");
+        boolean accept = args.has("accept") && args.get("accept").asBoolean(false);
+        GroupTaskPayload payload;
+        try {
+            payload = new GroupTaskPayload(person, commandId, action, groupId == null ? "" : groupId,
+                    target == null ? "" : target, title == null ? "" : title,
+                    body == null ? "" : body, refs, basedOnVersion, accept, "", docId == null ? ""
+                            : docId, 0L);
+        } catch (RuntimeException invalid) {
+            return GroupPlanned.rejected("INVALID_ARGUMENT");
+        }
+        long due = DecisionModel.actionDueMillis(model, recorded.actionId());
+        if (due != recorded.barrierAtMillis() + payload.durationOf(run)) {
+            return GroupPlanned.rejected("ACTION_MILLIS_INVALID");
+        }
+        return new GroupPlanned(PendingTask.GROUP_BEGIN_V1, payload, null);
+    }
+
+    /** 群组工具工时必须与冻结配置一致（构造期拒绝，不留两套真值）。 */
+    private void requireGroupActionMillis(DecisionModel.Config decisions) {
+        GroupModel.Config config = groupConfig;
+        PlatformPostModel.Config platform = platformConfig;
+        Map<String, Long> expected = new java.util.LinkedHashMap<>();
+        expected.put(RoleTradingView.TOOL_GROUP_JOIN, config.joinMillis());
+        expected.put(RoleTradingView.TOOL_GROUP_INVITE, config.inviteMillis());
+        expected.put(RoleTradingView.TOOL_GROUP_RESPOND, config.respondMillis());
+        expected.put(RoleTradingView.TOOL_GROUP_LEAVE, config.leaveMillis());
+        expected.put(RoleTradingView.TOOL_GROUP_POST, config.postMillis());
+        expected.put(RoleTradingView.TOOL_GROUP_CORRECT, config.postMillis());
+        expected.put(RoleTradingView.TOOL_PLATFORM_POST, platform.postMillis());
+        expected.put(RoleTradingView.TOOL_PLATFORM_CORRECT, platform.postMillis());
+        for (Map.Entry<String, Long> entry : expected.entrySet()) {
+            Long actual = decisions == null ? null
+                    : decisions.actionMillisByTool().get(entry.getKey());
+            if (actual == null || !actual.equals(entry.getValue())) {
+                throw new IllegalArgumentException("群组工具工时必须等于冻结配置："
+                        + entry.getKey() + " 期望 " + entry.getValue() + "，收到 " + actual);
+            }
+        }
+    }
+
+    /** 开局校验：预置群、群主与初始成员必须是已登记人物，历史策略只允许两种。 */
+    private void validateGroupsOpening() {
+        List<String> persons = registeredPersons();
+        for (GroupModel.Group group : groupConfig.groups()) {
+            if (!persons.contains(group.ownerPartyId())) {
+                throw new IllegalArgumentException("群主未登记为人物：" + group.ownerPartyId());
+            }
+            for (String member : group.initialMembers()) {
+                if (!persons.contains(member)) {
+                    throw new IllegalArgumentException("初始成员未登记为人物：" + member);
+                }
+            }
+        }
+    }
 }

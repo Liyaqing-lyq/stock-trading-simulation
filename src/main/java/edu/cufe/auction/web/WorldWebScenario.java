@@ -7,6 +7,7 @@ import edu.cufe.auction.world.CognitionRecall;
 import edu.cufe.auction.world.DecisionModel;
 import edu.cufe.auction.world.EngineeringRun;
 import edu.cufe.auction.world.EvidenceRun;
+import edu.cufe.auction.world.GroupModel;
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.InformationRun;
 import edu.cufe.auction.world.InterviewModel;
@@ -17,6 +18,7 @@ import edu.cufe.auction.world.ManufacturingRun;
 import edu.cufe.auction.world.MediaModel;
 import edu.cufe.auction.world.MediaRun;
 import edu.cufe.auction.world.OpeningRegistry;
+import edu.cufe.auction.world.PlatformPostModel;
 import edu.cufe.auction.world.RoleAccess;
 import edu.cufe.auction.world.RoleRun;
 import edu.cufe.auction.world.RoleTradingView;
@@ -1039,6 +1041,17 @@ public final class WorldWebScenario {
      * @return 已打开的世界
      * @throws Exception 打开失败
      */
+    public static WorldWebHost.Opened openGroups(Path journal) throws Exception {
+        boolean freshArchive = !java.nio.file.Files.exists(journal)
+                || java.nio.file.Files.size(journal) == 0L;
+        WorldRuntime runtime = groupsRuntime(journal);
+        if (freshArchive) {
+            // 与工程档同一开局公开说明/机会链；已有档重开不新增，不虚构经理、不放宽 BOARD 发文
+            publishOpeningDocuments(runtime);
+        }
+        return new WorldWebHost.Opened(runtime, groupsManifest().runId());
+    }
+
     public static WorldWebHost.Opened openEngineering(Path journal) throws Exception {
         // 是否为新档必须在打开日志之前确定：已存在的日志（哪怕世界时点仍是 0）不算新档，
         // 重开不得偷偷新增开局说明。相同新档重开时，原已排程命令仍在命令表里，保持幂等。
@@ -1048,16 +1061,24 @@ public final class WorldWebScenario {
         WorldRuntime runtime = engineeringRuntime(journal, engineeringConfig(),
                 engineeringOpenings());
         if (freshArchive) {
-            // 这是显式的模拟公司治理说明：只公布公司标识、实际公开章程席位/法定人数、
-            // 开局经理空缺与既有任免规则；不含开局机构任职列表、私预算、余额、评分或候选人资历。
-            // 作者身沿用既有登记读者（同一夹具作者），受众为公开，任何人从自己的目录取用。
-            runtime.schedulePublishDocument("gov-note:" + COMPANY, "gov-note-task:" + COMPANY,
-                    150L, GOVERNANCE_NOTE_DOC, INVESTOR,
-                    InformationModel.Audience.publicAudience(),
-                    "制造公司开局治理说明（模拟冻结配置）", governanceNoteBody(),
-                    "开局冻结章程与任免规则（模拟，不是真实披露）",
-                    GOVERNANCE_NOTE_READ_MILLIS, List.of());
+            publishOpeningDocuments(runtime);
         }
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
+    /**
+     * 新空档的开局公开发表：公司治理说明 + 冻结工程机会。只在新档调用；已有档重开不新增。
+     *
+     * <p>工程档与群组档共用同一实现，保证两类档的公开说明/机会资料一致；旧 social 等档不调用。
+     * 仍走普通公开发布入口，不改变 BOARD/周期授权，也不虚构经理。</p>
+     */
+    private static void publishOpeningDocuments(WorldRuntime runtime) throws Exception {
+        runtime.schedulePublishDocument("gov-note:" + COMPANY, "gov-note-task:" + COMPANY,
+                150L, GOVERNANCE_NOTE_DOC, INVESTOR,
+                InformationModel.Audience.publicAudience(),
+                "制造公司开局治理说明（模拟冻结配置）", governanceNoteBody(),
+                "开局冻结章程与任免规则（模拟，不是真实披露）",
+                GOVERNANCE_NOTE_READ_MILLIS, List.of());
         for (EngineeringRun.CompanySpec spec : engineeringConfig().companies()) {
             for (EngineeringRun.ContractPlan plan : spec.contracts()) {
                 runtime.schedulePublishDocument("opp:" + spec.companyPartyId() + ":"
@@ -1070,7 +1091,6 @@ public final class WorldWebScenario {
                         List.of());
             }
         }
-        return new WorldWebHost.Opened(runtime, manifest.runId());
     }
 
     /**
@@ -1252,6 +1272,139 @@ public final class WorldWebScenario {
                 decision, null, mediaConfig(), interviewConfig(),
                 dialogueConfig(), evidenceConfig(), socialConfig(), SOCIAL_BLOCK_MILLIS,
                 contacts, engineering);
+    }
+
+    /** schema20 群组档运行标识（与工程档分开，旧档字节不变）。 */
+    public static final String GROUPS_RUN_ID = "web-groups";
+    /** 预置公开群。 */
+    public static final String GROUPS_OPEN = "group:open";
+    /** 预置仅邀请群。 */
+    public static final String GROUPS_INVITE_ONLY = "group:invite-only";
+    /** 群组加入工时。 */
+    public static final long GROUPS_JOIN_MILLIS = 10L;
+    /** 群组邀请工时。 */
+    public static final long GROUPS_INVITE_MILLIS = 10L;
+    /** 群组处理邀请工时。 */
+    public static final long GROUPS_RESPOND_MILLIS = 10L;
+    /** 群组退出工时。 */
+    public static final long GROUPS_LEAVE_MILLIS = 10L;
+    /** 群组发帖工时。 */
+    public static final long GROUPS_POST_MILLIS = 20L;
+    /** 群/平台完成到发布的等待。 */
+    public static final long GROUPS_DELIVERY_MILLIS = 5L;
+    /** 群/平台帖固定阅读耗时。 */
+    public static final long GROUPS_READ_MILLIS = 10L;
+    /** 平台写帖工时。 */
+    public static final long GROUPS_PLATFORM_POST_MILLIS = 15L;
+    /** 平台目录上限。 */
+    public static final int GROUPS_FEED_LIMIT = 20;
+
+    /**
+     * 群组冻结配置：两个三人群，初始成员是明确的开局禀赋。
+     *
+     * <p>公开群 {@code group:open}：alice 为群主，bob、carol 为初始成员；
+     * 仅邀请群 {@code group:invite-only}：bob 为群主，alice 为初始成员，carol 是外人。
+     * 运行期不建群、不踢人、不改历史策略。</p>
+     *
+     * @return 冻结群组配置
+     */
+    public static GroupModel.Config groupsConfig() {
+        return new GroupModel.Config(List.of(
+                new GroupModel.Group(GROUPS_OPEN, "alice", GroupModel.JoinPolicy.OPEN,
+                        GroupModel.HistoryPolicy.JOIN_TIME, 0L, List.of("bob", "carol")),
+                new GroupModel.Group(GROUPS_INVITE_ONLY, "bob", GroupModel.JoinPolicy.INVITE_ONLY,
+                        GroupModel.HistoryPolicy.JOIN_TIME, 0L, List.of("alice"))),
+                GROUPS_JOIN_MILLIS, GROUPS_INVITE_MILLIS, GROUPS_RESPOND_MILLIS,
+                GROUPS_LEAVE_MILLIS, GROUPS_POST_MILLIS, GROUPS_DELIVERY_MILLIS);
+    }
+
+    /** @return 平台写帖冻结配置 */
+    public static PlatformPostModel.Config groupsPlatformConfig() {
+        return new PlatformPostModel.Config(GROUPS_PLATFORM_POST_MILLIS, GROUPS_DELIVERY_MILLIS);
+    }
+
+    /** @return schema20 群组档：工程全链模块 + groups + publication */
+    public static RunManifest groupsManifest() {
+        Map<String, Integer> modules = new TreeMap<>(engineeringManifest().moduleVersions());
+        modules.put("groups", 1);
+        modules.put("publication", 1);
+        return new RunManifest(GROUPS_RUN_ID, 11L,
+                RunManifest.RULES_GROUPS_PLATFORM_EXPERIMENT_V1, modules,
+                Map.of("profile", ENGINEERING_PROFILE), RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    /** @return 群组工具的冻结工时与群组/平台配置逐项一致 */
+    public static DecisionModel.Config groupsDecisionConfig() {
+        DecisionModel.Config base = engineeringDecisionConfig();
+        Map<String, Long> actions = new TreeMap<>(base.actionMillisByTool());
+        actions.put(RoleTradingView.TOOL_GROUP_JOIN, GROUPS_JOIN_MILLIS);
+        actions.put(RoleTradingView.TOOL_GROUP_INVITE, GROUPS_INVITE_MILLIS);
+        actions.put(RoleTradingView.TOOL_GROUP_RESPOND, GROUPS_RESPOND_MILLIS);
+        actions.put(RoleTradingView.TOOL_GROUP_LEAVE, GROUPS_LEAVE_MILLIS);
+        actions.put(RoleTradingView.TOOL_GROUP_POST, GROUPS_POST_MILLIS);
+        actions.put(RoleTradingView.TOOL_GROUP_CORRECT, GROUPS_POST_MILLIS);
+        actions.put(RoleTradingView.TOOL_PLATFORM_POST, GROUPS_PLATFORM_POST_MILLIS);
+        actions.put(RoleTradingView.TOOL_PLATFORM_CORRECT, GROUPS_PLATFORM_POST_MILLIS);
+        return new DecisionModel.Config(base.providerKind(), base.providerId(),
+                base.pricingVersion(), base.thinkMillisByWake(), actions, base.limits(),
+                base.budget(), base.profile());
+    }
+
+    /**
+     * 群组档真实构造接缝：同一套登记/任期/阅读，换 schema20 清单与群组配置。
+     *
+     * @param journal 独立日志
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldRuntime groupsRuntime(Path journal) throws Exception {
+        return groupsRuntime(journal, groupsConfig(), groupsPlatformConfig(), GROUPS_FEED_LIMIT,
+                GROUPS_READ_MILLIS);
+    }
+
+    /**
+     * 群组档受控接缝：可替换群组冻结配置（例如把记者加入初始成员），其余登记/任期不变。
+     *
+     * @param journal 独立日志
+     * @param groups  群组冻结配置
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldRuntime groupsRuntime(Path journal, GroupModel.Config groups)
+            throws Exception {
+        return groupsRuntime(journal, groups, groupsPlatformConfig(), GROUPS_FEED_LIMIT,
+                GROUPS_READ_MILLIS);
+    }
+
+    private static WorldRuntime groupsRuntime(Path journal, GroupModel.Config groups,
+            PlatformPostModel.Config platform, int feedLimit, long readMillis) throws Exception {
+        OpeningRegistry registry = engineeringRegistry();
+        List<RoleAccess.Appointment> appointments = new ArrayList<>(roles().appointments());
+        long end = 30L * 86_400_000L;
+        for (int i = 0; i < MEDIA_PERSONS.size(); i++) {
+            appointments.add(new RoleAccess.Appointment("MEDIA-" + i, MEDIA_PERSONS.get(i),
+                    i < 2 ? "wire" : "investigative",
+                    i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
+                    0L, end, null));
+        }
+        List<String> readers = new ArrayList<>(information().readers());
+        readers.addAll(MEDIA_PERSONS);
+        readers.addAll(SOCIAL_PERSONS);
+        InformationRun.Config info = new InformationRun.Config(readers, COGNITION_POLICY,
+                new BeliefModel.Policy(200, 8, end, 20, 200, 3, end));
+        List<InterviewRun.ContactEntry> contacts = new ArrayList<>(interviewConfig().contacts());
+        for (String person : SOCIAL_PERSONS) {
+            contacts.add(new InterviewRun.ContactEntry("私信", person,
+                    "公开联系说明：可一对一私人消息", SOCIAL_CONTACT_DOC, 1L));
+        }
+        return new WorldRuntime(journal, groupsManifest(), engineeringOpenings(), registry,
+                new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
+                        "SUP", "CUS", "OPS"), SYMBOL), charter(),
+                new RoleRun.Config(roles().mandates(), appointments), info,
+                groupsDecisionConfig(), null, mediaConfig(), interviewConfig(),
+                dialogueConfig(), evidenceConfig(), socialConfig(), SOCIAL_BLOCK_MILLIS,
+                contacts, engineeringConfig(), groups, platform,
+                feedLimit, readMillis);
     }
 
     private static BigDecimal money(String value) {

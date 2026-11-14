@@ -86,6 +86,10 @@ public final class WorldWebServer implements AutoCloseable {
     /** 阅读命令：阅读者只由会话决定，body 不接收人物字段。 */
     private static final Set<String> READ_FIELDS = Set.of("expectedPosition", "commandId",
             "taskId", "dueTimeMillis", "docId", "version");
+    /** 群组动作：人物只由会话决定，body 不接收人物字段。 */
+    private static final Set<String> GROUP_FIELDS = Set.of("expectedPosition", "commandId",
+            "taskId", "dueTimeMillis", "action", "groupId", "inviteePartyId", "inviteId",
+            "accept", "docId", "basedOnVersion", "title", "body", "cites");
     /** 金额只接受最多两位小数的规范十进制。 */
     private static final java.util.regex.Pattern MONEY_TEXT =
             java.util.regex.Pattern.compile("-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?");
@@ -354,6 +358,19 @@ public final class WorldWebServer implements AutoCloseable {
                 requirePerson(exchange, session.get(), () -> socialMe(exchange, session.get()));
                 return;
             }
+            if ("/api/me/groups".equals(path) && "GET".equals(method)) {
+                requirePerson(exchange, session.get(), () -> groupsMe(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/groups/action".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(),
+                        () -> groupAction(exchange, session.get()));
+                return;
+            }
+            if ("/api/admin/groups".equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> groupsAudit(exchange));
+                return;
+            }
             send(exchange, 404, error("NOT_FOUND", "没有这个接口"));
         } catch (StopHandling stop) {
             return;
@@ -403,6 +420,11 @@ public final class WorldWebServer implements AutoCloseable {
             return true;
         }
         if ("/api/me/social".equals(path) && "GET".equals(method)) {
+            return true;
+        }
+        if (("/api/me/groups".equals(path) && "GET".equals(method))
+                || ("/api/me/groups/action".equals(path) && "POST".equals(method))
+                || ("/api/admin/groups".equals(path) && "GET".equals(method))) {
             return true;
         }
         if ("/api/admin/social".equals(path) && "GET".equals(method)) {
@@ -1298,6 +1320,101 @@ public final class WorldWebServer implements AutoCloseable {
         send(exchange, 200, mapper.writeValueAsString(view));
     }
 
+    /** 本人群组页：只返回本人有权限的群、邀请、帖子与公开目录。 */
+    private void groupsMe(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        Object view;
+        try {
+            view = host.groupPage(session.personId());
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /** 群组动作：人物只取会话；解析失败 400，越权由世界统一拒绝。 */
+    private void groupAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        WorldWebHost.GroupActionRequest command;
+        try {
+            command = groupCommand(jsonBody(exchange, GROUP_FIELDS));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "请求参数不合法" : invalid.getMessage()));
+            return;
+        }
+        Object view;
+        try {
+            view = host.groupAction(session.personId(), command);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, "{\"error\":\"POSITION_MISMATCH\",\"message\":\"记录已变化，请刷新\","
+                    + "\"position\":\"" + mismatch.position() + "\"}");
+            return;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "请求参数不合法" : invalid.getMessage()));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /** 上帝群组审计：含成员段、邀请、帖子版本、呈现帧与报告细分原因。 */
+    private void groupsAudit(HttpExchange exchange) throws IOException,
+            WorldWebHost.BusyException {
+        Object view;
+        try {
+            view = host.groupAudit();
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    private WorldWebHost.GroupActionRequest groupCommand(JsonNode body) {
+        Long expected = strictLong(body.get("expectedPosition"));
+        Long due = strictLong(body.get("dueTimeMillis"));
+        Long basedOn = strictLong(body.get("basedOnVersion"));
+        if (expected == null || expected < 0) {
+            throw new IllegalArgumentException("expectedPosition 必须是规范整数");
+        }
+        if (due == null || due < 0) {
+            throw new IllegalArgumentException("dueTimeMillis 必须是规范整数");
+        }
+        JsonNode accept = body.get("accept");
+        if (accept != null && !accept.isNull() && !accept.isBoolean()) {
+            throw new IllegalArgumentException("accept 必须是布尔值");
+        }
+        List<WorldWebHost.GroupRef> cites = new ArrayList<>();
+        JsonNode node = body.get("cites");
+        if (node != null && !node.isNull()) {
+            if (!node.isArray()) {
+                throw new IllegalArgumentException("cites 必须是数组");
+            }
+            for (JsonNode cite : node) {
+                Long version = strictLong(cite.get("version"));
+                if (version == null || version < 1) {
+                    throw new IllegalArgumentException("引用版本必须从 1 开始");
+                }
+                cites.add(new WorldWebHost.GroupRef(requiredText(cite, "docId"), version));
+            }
+        }
+        return new WorldWebHost.GroupActionRequest(expected,
+                requiredText(body, "commandId"), requiredText(body, "taskId"), due,
+                requiredText(body, "action"), optionalText(body, "groupId", ""),
+                optionalText(body, "inviteePartyId", ""), optionalText(body, "inviteId", ""),
+                accept != null && accept.asBoolean(false), optionalText(body, "docId", ""),
+                basedOn == null ? 0L : basedOn, optionalText(body, "title", ""),
+                optionalText(body, "body", ""), List.copyOf(cites));
+    }
+
     private WorldWebHost.ReadingCommand readCommand(JsonNode body) {
         Long expected = strictLong(body.get("expectedPosition"));
         Long due = strictLong(body.get("dueTimeMillis"));
@@ -1602,6 +1719,7 @@ public final class WorldWebServer implements AutoCloseable {
         String name = switch (path) {
             case "/", "/index.html" -> "index.html";
             case "/app.js" -> "app.js";
+            case "/groups.js" -> "groups.js";
             case "/style.css" -> "style.css";
             default -> null;
         };

@@ -10,9 +10,14 @@ import edu.cufe.auction.world.LiveCompletionInbox;
 import edu.cufe.auction.world.EngineeringModel;
 import edu.cufe.auction.world.EngineeringRun;
 import edu.cufe.auction.world.EvidenceRun;
+import edu.cufe.auction.world.GroupModel;
+import edu.cufe.auction.world.GroupsRun;
 import edu.cufe.auction.world.InformationModel;
+import edu.cufe.auction.world.PlatformPostModel;
+import edu.cufe.auction.world.PublicationRun;
 import edu.cufe.auction.world.MediaEvidence;
 import edu.cufe.auction.world.InformationRun;
+import edu.cufe.auction.world.WorldRoleSession;
 import edu.cufe.auction.world.InterviewDialogue;
 import edu.cufe.auction.world.InterviewModel;
 import edu.cufe.auction.world.InterviewRun;
@@ -40,6 +45,8 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -2860,6 +2867,402 @@ public final class WorldWebHost implements AutoCloseable {
      * @return 本人投影
      * @throws Exception 世界读取失败
      */
+    // ---------------------------------------------------------------- 群组与平台（schema20）
+
+    /** 本人可见群（开放成员段）。 */
+    public record GroupSummaryView(String groupId, String joinPolicy, String historyPolicy,
+                                   String joinedAt, boolean owner) {
+    }
+
+    /** 发给本人的待处理邀请。 */
+    public record GroupInviteView(String inviteId, String groupId, String inviter,
+                                  String invitedAt) {
+    }
+
+    /** 本人有权看到的群帖/平台帖；正文只在真实读完且可回忆时下发。 */
+    public record GroupPostView(String docId, String version, String groupId, String author,
+                                String title, String body, String publishedAt, boolean mine,
+                                boolean read, List<String> refs) {
+    }
+
+    /** 公开平台目录条目（不含群内帖）。 */
+    public record GroupFeedView(String docId, String version, String title, String publisher,
+                                String publishedAt, String kind) {
+    }
+
+    /** 本人群组页：只含本人有权限的群、邀请、帖子与公开目录。 */
+    public record GroupPageView(String runId, String position, String timeMillis, String personId, boolean enabled,
+                                List<GroupSummaryView> groups, List<GroupInviteView> invitations,
+                                List<GroupPostView> posts, List<GroupFeedView> feed,
+                                Map<String, String> actionMillis) {
+    }
+
+    /** 群组动作回执：只表示已排程，完成与否以世界记录为准。 */
+    public record GroupActionView(String runId, String position, String timeMillis, String action,
+                                  String receipt) {
+    }
+
+    /** 上帝审计：群、成员段、邀请、帖子版本、呈现帧与报告（含拒绝细分原因）。 */
+    public record GroupAuditView(String runId, String position, String timeMillis,
+                                 boolean enabled, List<Map<String, Object>> groups,
+                                 List<Map<String, Object>> memberships,
+                                 List<Map<String, Object>> invitations,
+                                 List<Map<String, Object>> posts,
+                                 List<Map<String, Object>> versions,
+                                 List<Map<String, Object>> platformPosts,
+                                 List<Map<String, Object>> frames,
+                                 List<Map<String, Object>> pending,
+                                 List<Map<String, Object>> reports) {
+    }
+
+    /**
+     * 本人群组页：只列本人开放成员段、发给本人的待处理邀请、本人可读的群帖与公开平台目录。
+     *
+     * @param personId 会话绑定人物
+     * @return 本人视图；未启用 groups 时 enabled=false 且各表为空
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public GroupPageView groupPage(String personId) throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            GroupsRun run = current.groupsRun();
+            if (run == null) {
+                return new GroupPageView(runId, num(snapshot.position()), num(snapshot.timeMillis()), personId, false,
+                        List.of(), List.of(), List.of(), List.of(), Map.of());
+            }
+            long now = snapshot.timeMillis();
+            List<GroupSummaryView> groups = new ArrayList<>();
+            for (GroupModel.Membership segment : run.state().memberships()) {
+                if (!segment.person().equals(personId) || !segment.open()) {
+                    continue;
+                }
+                run.group(segment.groupId()).ifPresent(group -> groups.add(
+                        new GroupSummaryView(group.groupId(), group.joinPolicy().name(),
+                                group.historyPolicy().name(), num(segment.joinedAt()),
+                                group.ownerPartyId().equals(personId))));
+            }
+            List<GroupInviteView> invitations = new ArrayList<>();
+            for (GroupModel.Invitation invitation : run.state().invitations()) {
+                if (invitation.invitee().equals(personId)
+                        && invitation.status() == GroupModel.InvitationStatus.PENDING) {
+                    invitations.add(new GroupInviteView(invitation.inviteId(),
+                            invitation.groupId(), invitation.inviter(),
+                            num(invitation.invitedAt())));
+                }
+            }
+            Set<String> mine = new HashSet<>();
+            for (GroupSummaryView group : groups) {
+                mine.add(group.groupId());
+            }
+            RoleView view = current.roleView(personId);
+            Set<String> visible = new HashSet<>();
+            for (InformationModel.CatalogEntry entry : view.catalog()) {
+                visible.add(entry.docId() + "#" + entry.version());
+            }
+            Map<String, RoleView.Experience> experiences = new HashMap<>();
+            for (RoleView.Experience experience : view.observations()) {
+                experiences.put(experience.ref().docId() + "#" + experience.ref().version(),
+                        experience);
+            }
+            List<GroupPostView> posts = new ArrayList<>();
+            for (InformationModel.CatalogEntry entry : view.catalog()) {
+                InformationModel.Document document = documentOf(snapshot, entry.docId());
+                if (document == null
+                        || document.audience().kind() != InformationModel.AudienceKind.GROUP
+                        || !mine.contains(document.audience().partyId())) {
+                    continue;
+                }
+                RoleView.Experience experience = experiences.get(
+                        entry.docId() + "#" + entry.version());
+                boolean read = experience != null;
+                GroupModel.Post post = null;
+                for (GroupModel.Post candidate : run.state().posts()) {
+                    if (candidate.docId().equals(entry.docId())) {
+                        post = candidate;
+                    }
+                }
+                List<String> refs = new ArrayList<>();
+                if (post != null) {
+                    for (GroupModel.Ref ref : post.declaredRefs()) {
+                        // 只公开读者本人此刻可访问/可引用的来源表示；God 审计另列真实根
+                        String key = ref.docId() + "#" + ref.version();
+                        if (visible.contains(key)) {
+                            refs.add(key);
+                        }
+                    }
+                }
+                posts.add(new GroupPostView(entry.docId(), num(entry.version()),
+                        document.audience().partyId(), document.publisherPartyId(), entry.title(),
+                        read ? experience.body() : null, num(document.versions()
+                                .get(document.versions().size() - 1).publishedAt()),
+                        document.publisherPartyId().equals(personId), read, List.copyOf(refs)));
+            }
+            List<GroupFeedView> feed = new ArrayList<>();
+            for (PublicationRun.FeedEntry entry : PublicationRun.feed(
+                    run.publication().platform(), mediaForFeed(snapshot), infoOf(snapshot), now,
+                    run.feedLimit())) {
+                feed.add(new GroupFeedView(entry.docId(), num(entry.version()), entry.title(),
+                        entry.publisherPartyId(), num(entry.publishedAt()), entry.kind().name()));
+            }
+            return new GroupPageView(runId, num(snapshot.position()), num(snapshot.timeMillis()), personId, true,
+                    List.copyOf(groups), List.copyOf(invitations), List.copyOf(posts),
+                    List.copyOf(feed), Map.of(
+                    "JOIN", num(run.config().joinMillis()),
+                    "INVITE", num(run.config().inviteMillis()),
+                    "RESPOND", num(run.config().respondMillis()),
+                    "LEAVE", num(run.config().leaveMillis()),
+                    "POST", num(run.config().postMillis()),
+                    "CORRECTION", num(run.config().postMillis()),
+                    "PLATFORM_POST", num(run.platformConfig().postMillis()),
+                    "PLATFORM_CORRECTION", num(run.platformConfig().postMillis())));
+        });
+    }
+
+    /**
+     * 会话人物执行一次群/平台动作：人物只来自会话，正工时与资格由世界复核。
+     *
+     * @param personId 会话绑定人物
+     * @param request  严格解析的动作请求
+     * @return 排程回执
+     * @throws BusyException       队列满
+     * @throws PositionMismatch    客户端位置已过期
+     * @throws Exception           世界读取/持久失败
+     */
+    public GroupActionView groupAction(String personId, GroupActionRequest request)
+            throws BusyException, Exception {
+        if (request == null) {
+            throw new IllegalArgumentException("群组动作不能为空");
+        }
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            if (snapshot.position() != request.expectedPosition()) {
+                throw new PositionMismatch(snapshot.position());
+            }
+            WorldRoleSession session = current.openRoleSession(personId);
+            List<WorldRoleSession.Citation> cites = new ArrayList<>();
+            for (GroupRef ref : request.cites()) {
+                cites.add(new WorldRoleSession.Citation(ref.docId(), ref.version()));
+            }
+            String receipt = switch (request.action()) {
+                case "JOIN" -> session.joinGroup(request.commandId(), request.taskId(),
+                        request.dueTimeMillis(),
+                        new WorldRoleSession.GroupJoinDraft(request.groupId()));
+                case "INVITE" -> session.inviteToGroup(request.commandId(), request.taskId(),
+                        request.dueTimeMillis(),
+                        new WorldRoleSession.GroupInviteDraft(request.groupId(),
+                                request.inviteePartyId()));
+                case "RESPOND" -> session.respondInvitation(request.commandId(), request.taskId(),
+                        request.dueTimeMillis(),
+                        new WorldRoleSession.GroupRespondDraft(request.inviteId(),
+                                request.accept()));
+                case "LEAVE" -> session.leaveGroup(request.commandId(), request.taskId(),
+                        request.dueTimeMillis(),
+                        new WorldRoleSession.GroupLeaveDraft(request.groupId()));
+                case "POST" -> session.postToGroup(request.commandId(), request.taskId(),
+                        request.dueTimeMillis(),
+                        new WorldRoleSession.GroupPostDraft(request.groupId(), request.title(),
+                                request.body(), cites));
+                case "CORRECTION" -> session.correctGroupPost(request.commandId(),
+                        request.taskId(), request.dueTimeMillis(),
+                        new WorldRoleSession.GroupCorrectDraft(request.docId(),
+                                request.basedOnVersion(), request.title(), request.body(),
+                                cites));
+                case "PLATFORM_POST" -> session.postToPlatform(request.commandId(),
+                        request.taskId(), request.dueTimeMillis(),
+                        new WorldRoleSession.PlatformPostDraft(request.title(), request.body(),
+                                cites));
+                case "PLATFORM_CORRECTION" -> session.correctPlatformPost(request.commandId(),
+                        request.taskId(), request.dueTimeMillis(),
+                        new WorldRoleSession.PlatformCorrectDraft(request.docId(),
+                                request.basedOnVersion(), request.title(), request.body(),
+                                cites));
+                default -> throw new IllegalArgumentException("未知群组动作：" + request.action());
+            };
+            return new GroupActionView(runId, num(snapshot.position()),
+                    num(snapshot.timeMillis()), request.action(), receipt);
+        });
+    }
+
+    /**
+     * 上帝审计：群定义、成员段、邀请、帖子与版本、呈现帧、系统待办与报告。
+     *
+     * <p>只有管理员路由可调用；人物视图不含报告细分原因与来源根缓存。</p>
+     */
+    public GroupAuditView groupAudit() throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            GroupsRun run = current.groupsRun();
+            if (run == null) {
+                return new GroupAuditView(runId, num(snapshot.position()),
+                        num(snapshot.timeMillis()), false, List.of(), List.of(), List.of(),
+                        List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+            }
+            List<Map<String, Object>> groups = new ArrayList<>();
+            for (GroupModel.Group group : run.state().groups()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("groupId", group.groupId());
+                row.put("owner", group.ownerPartyId());
+                row.put("joinPolicy", group.joinPolicy().name());
+                row.put("historyPolicy", group.historyPolicy().name());
+                row.put("initialMembers", group.initialMembers());
+                groups.add(row);
+            }
+            List<Map<String, Object>> memberships = new ArrayList<>();
+            for (GroupModel.Membership segment : run.state().memberships()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("groupId", segment.groupId());
+                row.put("person", segment.person());
+                row.put("joinedAt", num(segment.joinedAt()));
+                row.put("leftAt", segment.open() ? "" : num(segment.leftAt()));
+                row.put("inviteId", segment.inviteId());
+                memberships.add(row);
+            }
+            List<Map<String, Object>> invitations = new ArrayList<>();
+            for (GroupModel.Invitation invitation : run.state().invitations()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("inviteId", invitation.inviteId());
+                row.put("groupId", invitation.groupId());
+                row.put("inviter", invitation.inviter());
+                row.put("invitee", invitation.invitee());
+                row.put("status", invitation.status().name());
+                row.put("invitedAt", num(invitation.invitedAt()));
+                row.put("decidedAt", invitation.decidedAt() < 0 ? ""
+                        : num(invitation.decidedAt()));
+                invitations.add(row);
+            }
+            List<Map<String, Object>> posts = new ArrayList<>();
+            for (GroupModel.Post post : run.state().posts()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("postId", post.postId());
+                row.put("docId", post.docId());
+                row.put("groupId", post.groupId());
+                row.put("author", post.author());
+                row.put("status", post.status().name());
+                row.put("publishedAt", num(post.publishedAt()));
+                row.put("declaredRefs", refs(post.declaredRefs()));
+                row.put("originRefs", refs(post.originRefs()));
+                row.put("contentDigest", post.contentDigest());
+                posts.add(row);
+            }
+            List<Map<String, Object>> versions = new ArrayList<>();
+            for (GroupModel.PostVersion version : run.state().postVersions()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("docId", version.docId());
+                row.put("version", num(version.version()));
+                row.put("basedOnVersion", num(version.basedOnVersion()));
+                row.put("author", version.author());
+                row.put("status", version.status().name());
+                row.put("publishedAt", num(version.publishedAt()));
+                row.put("declaredRefs", refs(version.declaredRefs()));
+                row.put("originRefs", refs(version.originRefs()));
+                versions.add(row);
+            }
+            List<Map<String, Object>> platformPosts = new ArrayList<>();
+            for (PlatformPostModel.Post post : run.publication().platform().posts()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("docId", post.docId());
+                row.put("version", num(post.version()));
+                row.put("author", post.author());
+                row.put("status", post.status().name());
+                row.put("publishedAt", num(post.publishedAt()));
+                row.put("originRefs", refs(post.originRefs()));
+                platformPosts.add(row);
+            }
+            List<Map<String, Object>> frames = new ArrayList<>();
+            for (PublicationRun.PresentationFrame frame : run.publication().frames()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("actionId", frame.actionId());
+                row.put("attemptId", frame.attemptId());
+                row.put("inputDigest", frame.inputDigest());
+                row.put("observedAt", num(frame.observedAt()));
+                List<String> entries = new ArrayList<>();
+                for (PublicationRun.FeedEntry entry : frame.entries()) {
+                    entries.add(entry.rank() + ":" + entry.docId() + "#" + entry.version());
+                }
+                row.put("entries", entries);
+                frames.add(row);
+            }
+            List<Map<String, Object>> pending = new ArrayList<>();
+            for (PendingTask task : snapshot.pending()) {
+                if (!GroupsRun.KINDS.contains(task.kind())) {
+                    continue;
+                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("taskId", task.taskId());
+                row.put("kind", task.kind());
+                row.put("dueTimeMillis", num(task.dueTimeMillis()));
+                pending.add(row);
+            }
+            List<Map<String, Object>> reports = new ArrayList<>();
+            for (GroupsRun.GroupReport report : run.reports()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("taskId", report.taskId());
+                row.put("person", report.person());
+                row.put("kind", report.kind());
+                row.put("action", report.action());
+                row.put("accepted", report.accepted());
+                row.put("reason", report.reason());
+                row.put("subject", report.subject());
+                row.put("atMillis", num(report.atMillis()));
+                reports.add(row);
+            }
+            return new GroupAuditView(runId, num(snapshot.position()),
+                    num(snapshot.timeMillis()), true, List.copyOf(groups),
+                    List.copyOf(memberships), List.copyOf(invitations), List.copyOf(posts),
+                    List.copyOf(versions), List.copyOf(platformPosts), List.copyOf(frames),
+                    List.copyOf(pending), List.copyOf(reports));
+        });
+    }
+
+    private static List<String> refs(List<?> values) {
+        List<String> out = new ArrayList<>();
+        for (Object value : values) {
+            if (value instanceof GroupModel.Ref ref) {
+                out.add(ref.docId() + "#" + ref.version());
+            } else if (value instanceof PlatformPostModel.Ref ref) {
+                out.add(ref.docId() + "#" + ref.version());
+            }
+        }
+        return out;
+    }
+
+    private static InformationModel.State infoOf(WorldRuntime.Snapshot snapshot) {
+        return snapshot.information().orElseThrow().information();
+    }
+
+    private static MediaModel.State mediaForFeed(WorldRuntime.Snapshot snapshot) {
+        if (snapshot.media().isEmpty() || snapshot.media().orElseThrow().states().isEmpty()) {
+            return null;
+        }
+        return snapshot.media().orElseThrow().states().get(0);
+    }
+
+    private static InformationModel.Document documentOf(WorldRuntime.Snapshot snapshot,
+                                                        String docId) {
+        for (InformationModel.Document document : infoOf(snapshot).documents()) {
+            if (document.docId().equals(docId)) {
+                return document;
+            }
+        }
+        return null;
+    }
+
+    /** 一人可见的引用版本。 */
+    public record GroupRef(String docId, long version) {
+    }
+
+    /** 严格解析的群组动作请求；人物不在请求里。 */
+    public record GroupActionRequest(long expectedPosition, String commandId, String taskId,
+                                     long dueTimeMillis, String action, String groupId,
+                                     String inviteePartyId, String inviteId, boolean accept,
+                                     String docId, long basedOnVersion, String title, String body,
+                                     List<GroupRef> cites) {
+    }
+
     public SocialPersonView socialView(String personId) throws Exception {
         return call(() -> {
             WorldRuntime current = readyNow();

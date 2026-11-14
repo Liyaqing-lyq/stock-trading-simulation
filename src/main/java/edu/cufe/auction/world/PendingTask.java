@@ -264,6 +264,13 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 社交：到期解除本人对目标的屏蔽（COMPLETION，schema17）。 */
     public static final String SOCIAL_UNBLOCK_V1 = "SOCIAL_UNBLOCK_V1";
 
+    /** 群/平台：barrier 到达后才真正开始动作（COMPLETION，schema20）。 */
+    public static final String GROUP_BEGIN_V1 = "GROUP_BEGIN_V1";
+    /** 群/平台：正工时到期结算动作（COMPLETION，schema20）。 */
+    public static final String GROUP_FINISH_V1 = "GROUP_FINISH_V1";
+    /** 群/平台：系统按冻结发布时刻投递正文，不占人物焦点（COMPLETION，schema20）。 */
+    public static final String GROUP_PUBLISH_V1 = "GROUP_PUBLISH_V1";
+
     /** 采访：记者到期提出预约邀请，形成 PROPOSED（COMPLETION，schema14）。 */
     public static final String INTERVIEW_INVITE_V1 = "INTERVIEW_INVITE_V1";
 
@@ -392,7 +399,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  INTERVIEW_INVITE_V1, INTERVIEW_RESPOND_V1,
                  INTERVIEW_CANCEL_V1, INTERVIEW_END_V1, INTERVIEW_SPEAK_V1,
                  MEDIA_EVIDENCE_SHARE_V1, SOCIAL_BEGIN_V1, SOCIAL_FINISH_V1, SOCIAL_DELIVER_V1,
-                 SOCIAL_BLOCK_V1, SOCIAL_UNBLOCK_V1 -> {
+                 SOCIAL_BLOCK_V1, SOCIAL_UNBLOCK_V1,
+                 GROUP_BEGIN_V1, GROUP_FINISH_V1, GROUP_PUBLISH_V1 -> {
                 if (phase != WorldScheduler.Phase.COMPLETION) {
                     throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }

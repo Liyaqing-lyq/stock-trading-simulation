@@ -59,11 +59,13 @@ public final class WorldWebApp {
         if (!mode.equals("live") && !mode.equals("scripted") && !mode.equals("cognition")
                 && !mode.equals("belief") && !mode.equals("media") && !mode.equals("interview")
                 && !mode.equals("dialogue") && !mode.equals("evidence")
-                && !mode.equals("social") && !mode.equals("engineering")) {
+                && !mode.equals("social") && !mode.equals("engineering")
+                && !mode.equals("groups")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social或engineering");
+                            + "evidence、social、engineering或groups");
         }
+        boolean groups = mode.equals("groups");
         boolean live = mode.equals("live");
         boolean cognition = mode.equals("cognition");
         boolean belief = mode.equals("belief");
@@ -86,7 +88,11 @@ public final class WorldWebApp {
         }
 
         SceneRoutes routes = SceneRoutes.open(workDir);
-        WorldWebHost host = engineering
+        WorldWebHost host = groups
+                ? new WorldWebHost(() -> WorldWebScenario.openGroups(
+                        workDir.resolve("world-groups.journal")),
+                        routes, new LiveDecisionProvider(keys))
+                : engineering
                 ? new WorldWebHost(() -> WorldWebScenario.openEngineering(
                         workDir.resolve("world-engineering.journal")),
                         routes, new LiveDecisionProvider(keys))
@@ -151,7 +157,10 @@ public final class WorldWebApp {
         System.out.println("场景配置：" + workDir.resolve(SceneRoutes.FILE_NAME).toAbsolutePath()
                 .normalize());
         System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
-        System.out.println(engineering
+        System.out.println(groups
+                ? "模式：群组与平台实验（schema20，独立 world-groups.journal）；未自动调用模型。"
+                        + "全部场景默认关闭，请在页面核对场景配置并明确开始一轮。"
+                : engineering
                 ? "模式：工程经营实验（schema18，独立 world-engineering.journal）；未自动调用模型。"
                         + "全部场景默认关闭，请在页面核对场景配置并明确开始一轮。"
                 : social

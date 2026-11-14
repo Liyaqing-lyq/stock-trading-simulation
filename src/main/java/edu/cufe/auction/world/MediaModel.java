@@ -20,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -440,6 +441,7 @@ public final class MediaModel {
      * @param privateEvidence 私有证据（作者本人真实读过且仍可回忆）
      * @param evidence        既有别名与身份共享，新结果在其基础上追加
      * @param aliases         本版要绑定的别名
+     * @param ledger          解析真实根用的绑定账本；跨机构转发时含其他分支的绑定
      */
     public record EvidenceContext(List<ReadingRef> privateEvidence, MediaEvidence.State evidence,
                                   List<MediaEvidence.AliasBinding> aliases,
@@ -453,16 +455,78 @@ public final class MediaModel {
             ledger = ledger == null ? evidence : ledger;
         }
 
-        /** 三参构造：绑定账本与持久状态同一份（单机构即如此）。 */
+        /**
+         * 三参构造：绑定账本与持久状态同一份（单机构即如此）。
+         *
+         * @param privateEvidence 私有证据
+         * @param evidence        既有别名与身份共享
+         * @param aliases         本版要绑定的别名
+         */
         public EvidenceContext(List<ReadingRef> privateEvidence, MediaEvidence.State evidence,
                                List<MediaEvidence.AliasBinding> aliases) {
             this(privateEvidence, evidence, aliases, evidence);
         }
 
-        /** 无私有证据、无别名的旧路径上下文。 */
+        /**
+         * 无私有证据、无别名的旧路径上下文。
+         *
+         * @return 空上下文
+         */
         public static EvidenceContext none() {
             return new EvidenceContext(List.of(), MediaEvidence.empty(), List.of());
         }
+    }
+
+    /**
+     * 受信来源解析：把群帖/平台帖的资料版本映射到<b>规范根</b>。
+     *
+     * <p>由受信运行层注入，不来自模型工具参数，因此模型无法自带任意根集合。本接口只表达
+     * 「哪一版本声明了哪些来源」，多层转发链的规范闭包、成环检测与时间校验仍由本类完成，
+     * 不存在第二份来源图。</p>
+     *
+     * <p>{@link #covers(String)} 返回 false 的资料完全走既有公开/私有规则，旧行为逐字不变；
+     * {@code true} 表示该资料属于群帖/平台帖空间，必须由
+     * {@link #originsOf(InformationModel.State, String, long)} 回答：
+     * {@code Optional.empty()} 是「谱系未知」，调用方必须拒绝，绝不能猜成 v1 的根；
+     * 空列表是「该版本本身即独立陈述」，以自身为根。</p>
+     *
+     * <p>解析随调用传入<b>本次提交正在使用的</b> {@link InformationModel.State}，解析器无法被喂进
+     * 另一份信息状态；受信实现因此可以用它核对群帖↔文档的发布者、受众与首版时点。</p>
+     */
+    public interface SourceOrigins {
+
+        /** 不接管任何资料；旧入口 {@link #submitWithEvidence} 使用。 */
+        SourceOrigins NONE = new SourceOrigins() {
+            @Override
+            public boolean covers(String docId) {
+                return false;
+            }
+
+            @Override
+            public Optional<List<Ref>> originsOf(InformationModel.State information, String docId,
+                                                 long version) {
+                return Optional.empty();
+            }
+        };
+
+        /**
+         * 是否接管该资料。
+         *
+         * @param docId 资料标识
+         * @return 接管返回 true
+         */
+        boolean covers(String docId);
+
+        /**
+         * 某版本的声明来源。
+         *
+         * @param information 本次提交使用的信息状态（受信实现据此绑定文档事实）
+         * @param docId       资料标识
+         * @param version     版本
+         * @return 空 {@link Optional} 表示谱系未知（必须拒绝）；空列表表示独立陈述
+         */
+        Optional<List<Ref>> originsOf(InformationModel.State information, String docId,
+                                      long version);
     }
 
     /**
@@ -738,6 +802,49 @@ public final class MediaModel {
                                                            String author, SubmitRequest request,
                                                            List<State> mediaContext,
                                                            EvidenceContext context) {
+        return submitWithSources(state, policy, access, information, author, request, mediaContext,
+                context, SourceOrigins.NONE);
+    }
+
+    /**
+     * 群组/平台传播接缝的显式入口：在私有证据之上，允许受信解析器把群帖/平台帖版本
+     * 映射到规范根，使同一条原始事实的多次转述只算一个独立来源。
+     *
+     * <p>与 {@link #submitWithEvidence} 的区别只有来源解析的来源：其余校验（冻结策略、双时点授权、
+     * 真实读完 + 序号 + 可回忆、谱系展开、身份共享根、`inheritPrivate`）完全同一实现。
+     * 未知版本、缺失谱系、成环、晚于转述的根或媒体成稿根一律拒绝，不产生部分写入。</p>
+     *
+     * @param state        当前媒体状态
+     * @param policy       冻结策略
+     * @param access       当前授权
+     * @param information  当前信息状态
+     * @param author       作者（受信上下文）
+     * @param request      提交请求（公开证据）
+     * @param mediaContext 其他媒体已确认状态
+     * @param context      私有证据、既有证据状态与新别名
+     * @param origins      受信群/平台帖来源解析；不可为 null
+     * @return 三态结果；失败时三态与入参一致
+     */
+    public static EvidenceBridgeOutcome submitWithGroupSources(State state, Policy policy,
+                                                               RoleAccess.State access,
+                                                               InformationModel.State information,
+                                                               String author, SubmitRequest request,
+                                                               List<State> mediaContext,
+                                                               EvidenceContext context,
+                                                               SourceOrigins origins) {
+        Objects.requireNonNull(origins, "群/平台来源解析");
+        return submitWithSources(state, policy, access, information, author, request, mediaContext,
+                context, origins);
+    }
+
+    /** 私有证据提交的唯一实现；来源解析由入口决定。 */
+    private static EvidenceBridgeOutcome submitWithSources(State state, Policy policy,
+                                                           RoleAccess.State access,
+                                                           InformationModel.State information,
+                                                           String author, SubmitRequest request,
+                                                           List<State> mediaContext,
+                                                           EvidenceContext context,
+                                                           SourceOrigins origins) {
         Objects.requireNonNull(context, "证据上下文");
         requireState(state);
         requirePolicy(policy);
@@ -783,7 +890,7 @@ public final class MediaModel {
         List<Ref> roots;
         try {
             roots = rootsFor(state, mediaContext, information, request.evidence(),
-                    context.privateEvidence(), context.ledger(), true);
+                    context.privateEvidence(), context.ledger(), true, origins);
         } catch (IllegalArgumentException invalidProvenance) {
             return evidenceReject(state, information, context.evidence(),
                     REASON_EVIDENCE_PROVENANCE);
@@ -1359,7 +1466,7 @@ public final class MediaModel {
     private static List<Ref> rootsFor(State state, List<State> mediaContext,
                                       InformationModel.State information, List<ReadingRef> evidence) {
         return rootsFor(state, mediaContext, information, evidence, List.of(),
-                MediaEvidence.empty(), false);
+                MediaEvidence.empty(), false, SourceOrigins.NONE);
     }
 
     /**
@@ -1369,11 +1476,14 @@ public final class MediaModel {
      * 是否允许非 PUBLIC，由 {@code inheritPrivate} 决定：新证据路径为 true（转述者无需读过原私证），
      * 旧 {@code submit} 为 false（严格旧行为）。身份共享文档不被当作独立事实源：引用它时沿
      * {@link MediaEvidence.State} 的真实 binding 递归回到原始根，避免两位分享者被算成两个来源。</p>
+     *
+     * <p>群帖/平台帖由 {@code origins} 接管：其声明来源被展开到规范闭包（多层转述只留原始根），
+     * 缺失谱系、成环、未来根或未获公开授权的根一律抛异常，由入口转成拒绝码。</p>
      */
     private static List<Ref> rootsFor(State state, List<State> mediaContext,
                                       InformationModel.State information, List<ReadingRef> evidence,
                                       List<ReadingRef> privateEvidence, MediaEvidence.State shares,
-                                      boolean inheritPrivate) {
+                                      boolean inheritPrivate, SourceOrigins origins) {
         List<State> contexts = new ArrayList<>(Objects.requireNonNull(mediaContext, "媒体来源上下文"));
         contexts.add(state);
         Set<String> privateKeys = new LinkedHashSet<>();
@@ -1418,7 +1528,13 @@ public final class MediaModel {
                 if (!fromPrivate && document.audience().kind() != AudienceKind.PUBLIC) {
                     throw new IllegalArgumentException("公开证据必须是公开资料");
                 }
-                roots.add(resolveShared(bindings, information, new Ref(ref.docId(), ref.version())));
+                if (origins.covers(ref.docId())) {
+                    collectOrigins(bindings, information, new Ref(ref.docId(), ref.version()),
+                            origins, fromPrivate, inheritPrivate, catalog, new ArrayList<>(), roots);
+                } else {
+                    roots.add(resolveShared(bindings, information,
+                            new Ref(ref.docId(), ref.version())));
+                }
             } else {
                 DocumentVersion cited = versionOf(information, ref.docId(), ref.version());
                 for (Ref root : lineage.roots()) {
@@ -1438,6 +1554,116 @@ public final class MediaModel {
             }
         }
         return canonicalRefs(roots);
+    }
+
+    /**
+     * 群/平台帖的来源闭包：逐层展开声明来源直到非接管资料；声明为空表示自身即独立陈述。
+     *
+     * <p>路径栈而不是全局 visited：合法的汇合 DAG（P→B→G 与 P→C→G 共享祖先 G）只在同一条
+     * 路径上重复才算环，真环（X→Y→X）仍拒绝；最终根集合由 {@link #canonicalRefs} 去重，
+     * 同一祖先不会重复计数。</p>
+     *
+     * <p>声明根若本身是已发表媒体成稿，沿<b>同一</b> {@code catalog}（版本化 {@link Lineage}）
+     * 展开到它的原始根：媒体成稿不是根，也不因此获得任何新来源；catalog 的发布者/受众/版本
+     * 校验在 {@link #rootsFor} 构造时已完成，这里不重复也不放宽。</p>
+     *
+     * <p>任何无法确定的情形都抛异常（由入口转成 {@code EVIDENCE_PROVENANCE}），绝不把转述者
+     * 当成新的独立来源，也不把缺失元数据当成「原创」。</p>
+     */
+    private static void collectOrigins(Map<String, IdentityBinding> bindings,
+                                       InformationModel.State information, Ref ref,
+                                       SourceOrigins origins, boolean fromPrivate,
+                                       boolean inheritPrivate, Map<Ref, Lineage> catalog,
+                                       List<Ref> path, List<Ref> roots) {
+        if (path.contains(ref)) {
+            throw new IllegalArgumentException("群/平台来源链成环");
+        }
+        Optional<List<Ref>> declared = origins.originsOf(information, ref.docId(), ref.version());
+        if (declared.isEmpty()) {
+            throw new IllegalArgumentException("群/平台帖缺少可信版本来源");
+        }
+        if (declared.get().isEmpty()) {
+            roots.add(resolveShared(bindings, information, ref));
+            return;
+        }
+        DocumentVersion cited = versionOf(information, ref.docId(), ref.version());
+        if (cited == null) {
+            throw new IllegalArgumentException("转述版本不存在");
+        }
+        path.add(ref);
+        try {
+            for (Ref root : canonicalRefs(declared.get())) {
+                expandRoot(bindings, information, ref, cited.publishedAt(), root, origins,
+                        fromPrivate, inheritPrivate, catalog, path, roots);
+            }
+        } finally {
+            path.remove(path.size() - 1);
+        }
+    }
+
+    /**
+     * 展开单个声明根：群/平台帖继续递归，媒体成稿沿既有 Lineage 展开，其余作为规范根。
+     *
+     * @param parentPublishedAt 引用它的那一版的发布时间；根不得晚于该时刻
+     */
+    private static void expandRoot(Map<String, IdentityBinding> bindings,
+                                   InformationModel.State information, Ref parent,
+                                   long parentPublishedAt, Ref root, SourceOrigins origins,
+                                   boolean fromPrivate, boolean inheritPrivate,
+                                   Map<Ref, Lineage> catalog, List<Ref> path, List<Ref> roots) {
+        if (root.equals(parent)) {
+            throw new IllegalArgumentException("来源不能引用自身");
+        }
+        if (path.contains(root)) {
+            throw new IllegalArgumentException("群/平台来源链成环");
+        }
+        DocumentVersion rootVersion = versionOf(information, root.docId(), root.version());
+        Document document = documentOf(information, root.docId());
+        if (document == null || rootVersion == null || rootVersion.publishedAt() > parentPublishedAt) {
+            throw new IllegalArgumentException("来源根不存在或晚于转述");
+        }
+        if (!fromPrivate && !inheritPrivate && document.audience().kind() != AudienceKind.PUBLIC) {
+            throw new IllegalArgumentException("来源根未获公开授权");
+        }
+        if (root.docId().startsWith(PUBLIC_PREFIX)) {
+            Lineage lineage = catalog.get(root);
+            if (lineage == null) {
+                throw new IllegalArgumentException("媒体成稿缺少已确认谱系");
+            }
+            path.add(root);
+            try {
+                for (Ref deep : lineage.roots()) {
+                    if (deep.docId().startsWith(PUBLIC_PREFIX) || catalog.containsKey(deep)) {
+                        throw new IllegalArgumentException("媒体来源根未展开");
+                    }
+                    DocumentVersion original = versionOf(information, deep.docId(), deep.version());
+                    Document deepDoc = documentOf(information, deep.docId());
+                    if (deepDoc == null || original == null
+                            || original.publishedAt() > rootVersion.publishedAt()) {
+                        throw new IllegalArgumentException("媒体来源根晚于成稿");
+                    }
+                    if (!fromPrivate && !inheritPrivate
+                            && deepDoc.audience().kind() != AudienceKind.PUBLIC) {
+                        throw new IllegalArgumentException("媒体来源根不是公开资料");
+                    }
+                    if (origins.covers(deep.docId())) {
+                        collectOrigins(bindings, information, deep, origins, fromPrivate,
+                                inheritPrivate, catalog, path, roots);
+                    } else {
+                        roots.add(resolveShared(bindings, information, deep));
+                    }
+                }
+            } finally {
+                path.remove(path.size() - 1);
+            }
+            return;
+        }
+        if (origins.covers(root.docId())) {
+            collectOrigins(bindings, information, root, origins, fromPrivate, inheritPrivate,
+                    catalog, path, roots);
+        } else {
+            roots.add(resolveShared(bindings, information, root));
+        }
     }
 
     /** 独立来源组数：根资料的不同发布人物个数。 */

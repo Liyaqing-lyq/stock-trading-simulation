@@ -31,6 +31,8 @@ const state = {
   personDialogue: null,
   evidence: null,
   social: null,
+  groups: null,
+  personGroups: null,
   personSocial: null,
   personEvidence: null,
   engineering: null,
@@ -191,6 +193,7 @@ function clearPersonDom() {
 }
 
 function showMode(mode) {
+  clearGroupsDom();
   state.mode = mode;
   document.body.dataset.mode = mode;
   $("navigation").hidden = mode !== "admin";
@@ -207,9 +210,11 @@ function showMode(mode) {
   show("admin", mode === "admin");
   show("person", mode === "person");
   $("logout").hidden = mode === "login";
+  placeGroupsPanel();
 }
 
 function sessionLost() {
+  clearGroupsDom();
   showMode("login");
   setStatus("会话已失效，请重新登录");
   setMessage("login-error", "会话已失效，请使用新的引导凭据重新登录。");
@@ -278,6 +283,9 @@ async function refreshAdmin() {
   }
   if (state.page === "social" && current()) {
     await loadSocial(generation, pageVersion);
+  }
+  if (state.page === "groups" && current()) {
+    await loadGroups(generation, pageVersion);
   }
   if (state.page === "engineering" && current()) {
     await loadEngineering(generation, pageVersion);
@@ -500,6 +508,8 @@ async function refreshPerson() {
   setMessage("person-error", "");
   const view = result.payload;
   renderPersonalMedia(view.media);
+  await loadGroups(generation, null);
+  if (!isCurrent(generation) || state.mode !== "person") return;
   await renderPersonalInterview((view.media && view.media.tools) || view.tools, generation);
   if (!isCurrent(generation) || state.mode !== "person") return;
   $("context-time").textContent = "人物观察 · " + view.timeMillis + " 毫秒";
@@ -637,7 +647,8 @@ const pages = {
   settings: ["模型与密钥", "为五类场景配置模型、密钥槽位和调用预算。"],
   interview: ["采访预约", "查看采访预约、逐轮对话、实际阅读与机构工时。"],
   evidence: ["证据与共享", "查看真实证据根、公开标签与实际共享；共享不等于已读。"],
-  social: ["消息", "查看真实送达、未送达原因与实际阅读；未送达不显示原因。"]
+  social: ["消息", "查看真实送达、未送达原因与实际阅读；未送达不显示原因。"],
+  groups: ["群组与平台", "审计群成员、邀请、帖子版本与传播来源；人物视角按本人权限单独显示。"]
 };
 function selectPage(page, refresh = true) {
   if (!pages[page]) return;
@@ -648,6 +659,7 @@ function selectPage(page, refresh = true) {
   if (state.page === "interview" && page !== "interview") clearInterviewDom();
   if (state.page === "evidence" && page !== "evidence") clearEvidenceDom();
   if (state.page === "social" && page !== "social") clearSocialDom();
+  if (state.page === "groups" && page !== "groups") clearGroupsDom();
   if (state.page === "engineering" && page !== "engineering") clearEngineeringDom();
   if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
   state.page = page;
@@ -655,6 +667,7 @@ function selectPage(page, refresh = true) {
   $("page-title").textContent = pages[page][0];
   $("page-description").textContent = pages[page][1];
   document.querySelectorAll("[data-panel]").forEach(node => { node.hidden = node.dataset.panel !== page; });
+  placeGroupsPanel();
   document.querySelectorAll("[data-page]").forEach(node => {
     if (node.dataset.page === page) node.setAttribute("aria-current", "page");
     else node.removeAttribute("aria-current");
