@@ -131,6 +131,7 @@ if node --check src/main/resources/web/app.js > "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/governance-live-scene-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/history-page-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/history-ui-async-probe.cjs >> "$LOG/web-chart.log" 2>&1 \
+    && node src/test/js/branch-ui-async-probe.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/groups-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/groups-entry-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && PYTHONIOENCODING=utf-8 python scripts/test-interview-layout.py >> "$LOG/web-chart.log" 2>&1; then

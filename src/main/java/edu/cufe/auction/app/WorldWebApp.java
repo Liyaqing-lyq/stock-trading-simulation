@@ -2,6 +2,7 @@ package edu.cufe.auction.app;
 
 import edu.cufe.auction.web.KeySlots;
 import edu.cufe.auction.web.LiveDecisionProvider;
+import edu.cufe.auction.web.RunLauncher;
 import edu.cufe.auction.web.SceneRoutes;
 import edu.cufe.auction.web.WorldWebHost;
 import edu.cufe.auction.web.WorldWebScenario;
@@ -37,6 +38,14 @@ public final class WorldWebApp {
             "C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt";
     /** 默认端口。 */
     public static final int DEFAULT_PORT = 18080;
+    /** 本机分支子进程端口区间（与既有 18080/18081 错开；被占用就跳过，不杀进程）。 */
+    public static final int BRANCH_PORT_FROM = 18100;
+    /** 分支子进程端口区间上界。 */
+    public static final int BRANCH_PORT_TO = 18109;
+    /** 同时运行的本机分支子进程上限。 */
+    public static final int MAX_BRANCH_RUNS = 2;
+    /** 分支子进程启动健康核验超时（毫秒）。 */
+    public static final long BRANCH_START_TIMEOUT_MILLIS = 30_000L;
 
     private WorldWebApp() {
     }
@@ -140,12 +149,19 @@ public final class WorldWebApp {
         }
 
         String bootstrap = newBootstrap();
-        WorldWebServer server = new WorldWebServer(host, keys, routes, port, bootstrap);
+        RunLauncher launcher = new RunLauncher(new RunLauncher.Config(workDir.toAbsolutePath(),
+                workDir.toAbsolutePath().resolve("runs"), keyFile.toAbsolutePath(),
+                BRANCH_PORT_FROM, BRANCH_PORT_TO, MAX_BRANCH_RUNS, BRANCH_START_TIMEOUT_MILLIS,
+                childClasspath()), host::branchProfile);
+        WorldWebServer server = new WorldWebServer(host, keys, routes, port, bootstrap, null,
+                System.out::println, host.runId(), null);
+        server.attachLauncher(launcher);
         try {
             server.start();
         } catch (IOException failure) {
             System.err.println("端口 " + port + " 监听失败（可能已被占用）：" + failure.getMessage());
             System.err.println("未终止任何已有进程；请换端口或先自行释放。");
+            launcher.close();
             server.close();
             host.close();
             routes.close();
@@ -157,6 +173,8 @@ public final class WorldWebApp {
         System.out.println("场景配置：" + workDir.resolve(SceneRoutes.FILE_NAME).toAbsolutePath()
                 .normalize());
         System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
+        System.out.println("分支运行管理：本机端口 " + BRANCH_PORT_FROM + "-" + BRANCH_PORT_TO
+                + "，最多 " + MAX_BRANCH_RUNS + " 个；创建不等于启动，页面按真实状态显示。");
         System.out.println(groups
                 ? "模式：群组与平台实验（schema20，独立 world-groups.journal）；未自动调用模型。"
                         + "全部场景默认关闭，请在页面核对场景配置并明确开始一轮。"
@@ -185,12 +203,41 @@ public final class WorldWebApp {
 
         CountDownLatch stopped = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            launcher.close();
             server.close();
             host.close();
             routes.close();
             stopped.countDown();
         }, "world-web-shutdown"));
         stopped.await();
+    }
+
+    /**
+     * 子进程 classpath：优先 surefire 给出的完整测试 classpath，其次本进程 java.class.path，
+     * 并补上本类的代码位置（目录形态）。子进程只跑固定主类，不接受调用方指定 classpath。
+     *
+     * @return 平台分隔的 classpath 字符串
+     */
+    static String childClasspath() {
+        String explicit = System.getProperty("surefire.test.class.path");
+        String base = explicit != null && !explicit.isBlank() ? explicit
+                : System.getProperty("java.class.path", "");
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        if (!base.isBlank()) {
+            parts.add(base);
+        }
+        try {
+            var source = WorldWebApp.class.getProtectionDomain().getCodeSource();
+            if (source != null) {
+                Path location = Path.of(source.getLocation().toURI());
+                if (Files.isDirectory(location) && !base.contains(location.toString())) {
+                    parts.add(location.toString());
+                }
+            }
+        } catch (Exception ignored) {
+            // 取不到代码位置时只用已有 classpath；子进程启动失败会给出真实原因
+        }
+        return String.join(java.io.File.pathSeparator, parts);
     }
 
     private static String newBootstrap() {

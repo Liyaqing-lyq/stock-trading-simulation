@@ -106,6 +106,22 @@
 <div class="table-wrap"><table id="history-index"><thead><tr><th scope="col">位置</th><th scope="col">命令</th><th scope="col">回报</th><th scope="col">事件数</th><th scope="col">操作</th></tr></thead><tbody></tbody></table></div>
 <p id="history-index-empty" class="empty" hidden>该区间没有已确认记录。</p>
 </section>
+<section class="card"><h2>运行与分支（本机受控）</h2>
+<p class="hint">当前运行、父来源与切点都来自服务端真实状态。创建只落子档与运行索引，不等于启动；启动只认已登记的子档，最多两个本机进程；进入用父持有的凭据向子运行换发它自己的会话，不伪造成功。</p>
+<dl class="grid"><div><dt>当前运行</dt><dd id="branch-run">—</dd></div><div><dt>父来源</dt><dd id="branch-parent">—</dd></div><div><dt>父切点</dt><dd id="branch-parent-position">—</dd></div><div><dt>已确认位置</dt><dd id="branch-position">—</dd></div><div><dt>本机子进程</dt><dd id="branch-active">—</dd></div></dl>
+<p id="branch-note" class="hint" hidden></p>
+<div class="toolbar"><label for="branch-cut">切点位置</label><input id="branch-cut" type="text" inputmode="numeric" autocomplete="off" placeholder="例如 12">
+<button id="branch-check" type="button">检查能否切</button><span id="branch-support" class="hint"></span></div>
+<div class="toolbar"><label for="branch-child-id">新运行标识</label><input id="branch-child-id" type="text" autocomplete="off" placeholder="小写字母开头，如 run-a1">
+<label for="branch-kind">种类</label><select id="branch-kind"><option value="operator">操作员派生</option><option value="god">上帝接管</option></select>
+<label for="branch-note-input">注记</label><input id="branch-note-input" type="text" autocomplete="off" maxlength="200">
+<button id="branch-create" type="button" class="primary" disabled>创建（不启动）</button></div>
+<p id="branch-error" class="error" role="alert" hidden></p>
+<p id="branch-status" role="status"></p>
+<div class="table-wrap"><table id="branch-runs"><thead><tr><th scope="col">运行</th><th scope="col">父运行</th><th scope="col">切点</th><th scope="col">首帧</th><th scope="col">状态</th><th scope="col">端口</th><th scope="col">说明</th><th scope="col">操作</th></tr></thead><tbody></tbody></table></div>
+<p id="branch-runs-empty" class="empty" hidden>还没有子运行。</p>
+<p class="hint">子运行的位置 1 到父切点属于父运行原帧，不是本运行的检查点，也不能从子运行导出。</p>
+</section>
 <section class="card"><h2>查看某个确认位置</h2>
 <div class="toolbar"><label for="history-position-input">确认位置</label><input id="history-position-input" type="text" inputmode="numeric" autocomplete="off" placeholder="例如 12">
 <button id="history-open" type="button" class="primary">查看该位置</button><button id="history-live" type="button">回到实时</button></div>

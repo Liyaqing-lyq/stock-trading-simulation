@@ -5,6 +5,7 @@ import edu.cufe.auction.world.CashLedger.CashAccount;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -201,6 +202,22 @@ public final class EngineeringModel {
         @Override
         public long[] trancheUnits() {
             return trancheUnits.clone();
+        }
+
+        /** 按条款与阶段数值比较，持久化重建的数组仍代表同一份条款。 */
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Terms terms && advanceBp == terms.advanceBp
+                    && retentionBp == terms.retentionBp && netDays == terms.netDays
+                    && retentionNetDays == terms.retentionNetDays && mode == terms.mode
+                    && Arrays.equals(trancheUnits, terms.trancheUnits);
+        }
+
+        /** @return 与条款内容相等语义一致的散列值 */
+        @Override
+        public int hashCode() {
+            return 31 * Objects.hash(advanceBp, retentionBp, netDays, retentionNetDays, mode)
+                    + Arrays.hashCode(trancheUnits);
         }
 
         /** @return 阶段单位总数 */

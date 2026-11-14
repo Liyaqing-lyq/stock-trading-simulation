@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
+import edu.cufe.auction.world.BranchOrigin;
+import edu.cufe.auction.world.BranchRejectedException;
 import edu.cufe.auction.world.RoleView;
 import edu.cufe.auction.world.ValuationModel;
 import edu.cufe.auction.world.WorldRuntime;
@@ -49,7 +51,7 @@ public final class WorldWebServer implements AutoCloseable {
     /** 单请求体上限 16 KiB。 */
     public static final int MAX_BODY_BYTES = 16 * 1024;
 
-    private static final String COOKIE = "world_session";
+    private static final String LEGACY_COOKIE = "world_session";
     private static final String REQUEST_MARKER = "X-World-Request";
     private static final String CONTENT_SECURITY_POLICY =
             "default-src 'self'; frame-ancestors 'none'";
@@ -82,6 +84,13 @@ public final class WorldWebServer implements AutoCloseable {
     private static final String HISTORY_VIEW_PATH = "/api/admin/history/view";
     private static final String HISTORY_CHECKPOINT_PATH = "/api/admin/history/checkpoint";
     private static final String HISTORY_VERIFY_PATH = "/api/admin/history/verify";
+    /** 分支运行管理端点：列表 / 创建 / 启动 / 停止 / 进入。 */
+    private static final String BRANCHES_PATH = "/api/admin/branches";
+    private static final String RUNS_PATH = "/api/admin/runs";
+    private static final Set<String> BRANCH_QUERY = Set.of("position");
+    private static final Set<String> BRANCH_CREATE_FIELDS = Set.of("position", "childRunId", "kind",
+            "note");
+    private static final Set<String> HANDOFF_FIELDS = Set.of("token", "probe");
     private static final Set<String> ROUTE_FIELDS = Set.of("scene", "slotId", "model", "enabled",
             "maxCalls", "maxTotalTokens", "maxOutputTokens", "maxConcurrency");
     /** 工程页公司选择：只接受一个公司标识。 */
@@ -131,6 +140,11 @@ public final class WorldWebServer implements AutoCloseable {
     });
     private HttpServer server;
     private int port = -1;
+    /** 本实例的会话 cookie 名：分支子运行用 {@code world_session_<runId>}，普通运行沿用旧名。 */
+    private final String cookieName;
+    /** 分支子进程的一次性 handoff 凭据；只有子进程非空，父进程为 null（该端点 404）。 */
+    private final String handoffToken;
+    private RunLauncher launcher;
 
     /**
      * 构造（尚未监听），静态资源取自 classpath /web/。
@@ -159,6 +173,25 @@ public final class WorldWebServer implements AutoCloseable {
      */
     public WorldWebServer(WorldWebHost host, KeySlots keys, SceneRoutes routes, int port,
                           String bootstrap, Path staticDir, Consumer<String> consoleSink) {
+        this(host, keys, routes, port, bootstrap, staticDir, consoleSink, null, null);
+    }
+
+    /**
+     * 构造（尚未监听）；分支子运行用这一层指定“按运行分名”的 cookie 与 handoff 凭据。
+     *
+     * @param host         唯一 writer 宿主
+     * @param keys         凭据槽位
+     * @param routes       五场景路由配置
+     * @param port         端口；0 表示由系统分配
+     * @param bootstrap    本机管理员一次性引导凭据（不写日志、不进 DTO）
+     * @param staticDir    静态资源目录；null 表示从 classpath /web/ 读取
+     * @param consoleSink  本机控制台输出（用于轮换后的新引导凭据）
+     * @param runId        本实例运行的标识；非空时 cookie 名为 {@code world_session_<runId>}
+     * @param handoffToken 父进程交给本子进程的 handoff 凭据；null 表示本进程不接受换发
+     */
+    public WorldWebServer(WorldWebHost host, KeySlots keys, SceneRoutes routes, int port,
+                          String bootstrap, Path staticDir, Consumer<String> consoleSink,
+                          String runId, String handoffToken) {
         if (host == null || keys == null || routes == null) {
             throw new IllegalArgumentException("Web 服务参数不合法");
         }
@@ -175,6 +208,31 @@ public final class WorldWebServer implements AutoCloseable {
         this.staticDir = staticDir;
         this.consoleSink = consoleSink == null ? System.out::println : consoleSink;
         this.bootstrap = new AtomicReference<>(bootstrap);
+        this.cookieName = cookieNameFor(runId);
+        this.handoffToken = handoffToken == null || handoffToken.isBlank() ? null : handoffToken;
+    }
+
+    /**
+     * 本实例使用的会话 cookie 名。
+     *
+     * <p>cookie 按 host 作用域、<b>忽略端口</b>：同一台机器上的父运行与子运行如果共用
+     * {@code world_session}，登录会互相覆盖。因此每条运行一个名字；普通运行仍用旧名，
+     * 既有服务与旧测试行为不变。</p>
+     *
+     * @param runId 运行标识；空表示普通运行
+     * @return cookie 名
+     */
+    public static String cookieNameFor(String runId) {
+        return runId == null || runId.isBlank() ? LEGACY_COOKIE : LEGACY_COOKIE + "_" + runId;
+    }
+
+    /**
+     * 挂上本机分支运行管理器（必须在 {@link #start()} 之前调用）。
+     *
+     * @param launcher 启动器；null 表示本进程不提供运行管理端点
+     */
+    public void attachLauncher(RunLauncher launcher) {
+        this.launcher = launcher;
     }
 
     /**
@@ -243,6 +301,11 @@ public final class WorldWebServer implements AutoCloseable {
             }
             if ("/api/session".equals(path) && "POST".equals(method)) {
                 login(exchange);
+                return;
+            }
+            if ("/api/session/handoff".equals(path) && "POST".equals(method)
+                    && handoffToken != null) {
+                handoff(exchange);
                 return;
             }
             if (!knownRoute(path, method)) {
@@ -317,6 +380,22 @@ public final class WorldWebServer implements AutoCloseable {
             }
             if (HISTORY_VERIFY_PATH.equals(path) && "POST".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> historyVerify(exchange));
+                return;
+            }
+            if (BRANCHES_PATH.equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> branchList(exchange));
+                return;
+            }
+            if (BRANCHES_PATH.equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> createBranch(exchange));
+                return;
+            }
+            if (RUNS_PATH.equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> runsView(exchange));
+                return;
+            }
+            if (runActionPath(path) != null) {
+                requireAdmin(exchange, session.get(), () -> runAction(exchange, path));
                 return;
             }
             if ("/api/admin/keys".equals(path) && "GET".equals(method)) {
@@ -493,6 +572,11 @@ public final class WorldWebServer implements AutoCloseable {
         if (HISTORY_VERIFY_PATH.equals(path) && "POST".equals(method)) {
             return true;
         }
+        if ((BRANCHES_PATH.equals(path) && ("GET".equals(method) || "POST".equals(method)))
+                || (RUNS_PATH.equals(path) && "GET".equals(method))
+                || runActionPath(path) != null) {
+            return true;
+        }
         if ("/api/admin/keys".equals(path) && "GET".equals(method)) {
             return true;
         }
@@ -531,10 +615,10 @@ public final class WorldWebServer implements AutoCloseable {
         for (String header : headers) {
             for (String part : header.split(";")) {
                 String trimmed = part.trim();
-                if (!trimmed.startsWith(COOKIE + "=")) {
+                if (!trimmed.startsWith(cookieName + "=")) {
                     continue;
                 }
-                String value = trimmed.substring(COOKIE.length() + 1);
+                String value = trimmed.substring(cookieName.length() + 1);
                 if (token != null) {
                     return Optional.empty();
                 }
@@ -624,7 +708,7 @@ public final class WorldWebServer implements AutoCloseable {
     private void logout(HttpExchange exchange, WebSessions.Session session) throws IOException {
         sessions.invalidate(tokenOf(exchange));
         exchange.getResponseHeaders().add("Set-Cookie",
-                COOKIE + "=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/");
+                cookieName + "=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/");
         send(exchange, 200, "{\"role\":\"NONE\"}");
     }
 
@@ -907,6 +991,265 @@ public final class WorldWebServer implements AutoCloseable {
             throw new WorldIoFailure();
         }
         send(exchange, 200, mapper.writeValueAsString(verdict));
+    }
+
+    /**
+     * GET /api/admin/branches?position=：该位置能否派生（与创建同一谓词），并列出已登记子运行。
+     *
+     * @param exchange 请求
+     * @throws IOException               写响应失败
+     * @throws WorldWebHost.BusyException 队列满
+     */
+    private void branchList(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        Long position = queryLong(exchange, "position", null, BRANCH_QUERY);
+        if (position == null) {
+            return;
+        }
+        WorldRuntime.BranchSupport support;
+        try {
+            support = host.branchSupport(position);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "位置不合法"));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        List<RunLauncher.View> runs;
+        try {
+            runs = launcher == null ? List.of() : launcher.list();
+        } catch (IOException unreadable) {
+            send(exchange, 503, error("RUN_INDEX_UNREADABLE", "运行索引不可读"));
+            return;
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("parentRunId", host.runId());
+        body.put("position", Long.toString(position));
+        body.put("cutPosition", Long.toString(support.cutPosition()));
+        body.put("supported", support.supported());
+        body.put("reasons", support.reasons());
+        body.put("branches", runs);
+        body.put("launcher", launcher != null);
+        send(exchange, 200, mapper.writeValueAsString(body));
+    }
+
+    /**
+     * POST /api/admin/branches：在父运行已确认边界创建子档（只落子档与索引，不启动进程）。
+     *
+     * @param exchange 请求
+     * @throws IOException 写响应失败
+     */
+    private void createBranch(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        JsonNode body = jsonBody(exchange, BRANCH_CREATE_FIELDS);
+        Long position = strictLong(body.get("position"));
+        JsonNode child = body.get("childRunId");
+        JsonNode kindNode = body.get("kind");
+        JsonNode noteNode = body.get("note");
+        if (position == null || position < 1) {
+            send(exchange, 400, error("INVALID", "位置必须是已确认的正整数"));
+            return;
+        }
+        if (child == null || !child.isTextual() || child.textValue().isBlank()) {
+            send(exchange, 400, error("INVALID", "子运行标识不能为空"));
+            return;
+        }
+        if (kindNode == null || !kindNode.isTextual()
+                || noteNode == null || !noteNode.isTextual()) {
+            send(exchange, 400, error("INVALID", "kind 与 note 必须是字符串"));
+            return;
+        }
+        if (noteNode.textValue().length() > 200) {
+            send(exchange, 400, error("INVALID", "注记不能超过 200 字"));
+            return;
+        }
+        BranchOrigin.Kind kind = switch (kindNode.textValue()) {
+            case "operator" -> BranchOrigin.Kind.OPERATOR_BRANCH;
+            case "god" -> BranchOrigin.Kind.GOD_TAKEOVER;
+            default -> null;
+        };
+        if (kind == null) {
+            send(exchange, 400, error("INVALID", "kind 只能是 operator 或 god"));
+            return;
+        }
+        WorldRuntime.BranchReceipt receipt;
+        try {
+            receipt = host.createBranch(child.textValue(), position, kind, noteNode.textValue());
+        } catch (BranchRejectedException rejected) {
+            send(exchange, 409, rejection(rejected.code(), rejected.getMessage()));
+            return;
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "分支参数不合法"));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("runId", receipt.childRunId());
+        result.put("status", "CREATED");
+        result.put("firstPosition", Long.toString(receipt.firstPosition()));
+        result.put("parentPosition", Long.toString(receipt.parentPosition()));
+        send(exchange, 200, mapper.writeValueAsString(result));
+    }
+
+    /**
+     * GET /api/admin/runs：当前运行来源 + 本进程管理的子运行真实状态。
+     *
+     * @param exchange 请求
+     * @throws IOException               写响应失败
+     * @throws WorldWebHost.BusyException 队列满
+     */
+    private void runsView(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        WorldWebHost.RunIdentity identity;
+        try {
+            identity = host.runIdentity();
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        List<RunLauncher.View> runs;
+        try {
+            runs = launcher == null ? List.of() : launcher.list();
+        } catch (IOException unreadable) {
+            send(exchange, 503, error("RUN_INDEX_UNREADABLE", "运行索引不可读"));
+            return;
+        }
+        Map<String, Object> current = new LinkedHashMap<>();
+        current.put("runId", identity.runId());
+        current.put("parentRunId", identity.parentRunId());
+        current.put("parentPosition", Long.toString(identity.parentPosition()));
+        current.put("position", Long.toString(identity.position()));
+        current.put("firstPosition", Long.toString(identity.firstPosition()));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("current", current);
+        body.put("launcher", launcher != null);
+        body.put("maxRuns", launcher == null ? 0 : launcher.config().maxRuns());
+        body.put("active", launcher == null ? 0 : launcher.activeCount());
+        body.put("runs", runs);
+        send(exchange, 200, mapper.writeValueAsString(body));
+    }
+
+    /**
+     * 解析 {@code /api/admin/runs/<id>/(start|stop|enter)}；形状不符返回 null（走 404）。
+     *
+     * @param path 请求路径
+     * @return 动作名；不是运行动作路径时为 null
+     */
+    private static String runActionPath(String path) {
+        if (!path.startsWith(RUNS_PATH + "/")) {
+            return null;
+        }
+        String rest = path.substring(RUNS_PATH.length() + 1);
+        String action = rest.endsWith("/start") ? "start"
+                : rest.endsWith("/stop") ? "stop"
+                : rest.endsWith("/enter") ? "enter" : null;
+        if (action == null) {
+            return null;
+        }
+        String id = rest.substring(0, rest.length() - action.length() - 1);
+        return id.isEmpty() || id.contains("/") ? null : action;
+    }
+
+    /**
+     * POST /api/admin/runs/&lt;id&gt;/(start|stop|enter)：只操作本进程自有的子运行。
+     *
+     * @param exchange 请求
+     * @param path     请求路径
+     * @throws IOException 写响应失败
+     */
+    private void runAction(HttpExchange exchange, String path) throws IOException {
+        String action = runActionPath(path);
+        String rest = path.substring(RUNS_PATH.length() + 1);
+        String runId = rest.substring(0, rest.length() - action.length() - 1);
+        if (launcher == null) {
+            send(exchange, 409, error("LAUNCHER_UNAVAILABLE",
+                    "本进程没有启动器（创建可以，启动需要父进程带启动器）"));
+            return;
+        }
+        if ("enter".equals(action)) {
+            RunLauncher.Entry entry;
+            try {
+                entry = launcher.enter(runId);
+            } catch (RunLauncher.Rejected rejected) {
+                send(exchange, 409, rejection(rejected.code(), rejected.getMessage()));
+                return;
+            }
+            exchange.getResponseHeaders().add("Set-Cookie", entry.setCookie());
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("location", entry.location());
+            send(exchange, 200, mapper.writeValueAsString(body));
+            return;
+        }
+        RunLauncher.View view;
+        try {
+            view = "start".equals(action) ? launcher.start(runId) : launcher.stop(runId);
+        } catch (RunLauncher.Rejected rejected) {
+            int status = "RUN_NOT_FOUND".equals(rejected.code()) ? 404 : 409;
+            send(exchange, status, rejection(rejected.code(), rejected.getMessage()));
+            return;
+        } catch (IOException unreadable) {
+            send(exchange, 503, error("RUN_INDEX_UNREADABLE", "运行索引不可读"));
+            return;
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /**
+     * POST /api/session/handoff：分支子进程专用。凭据正确时签发本运行的新会话，或（probe）
+     * 只回报身份供父进程健康核验。
+     *
+     * <p>凭据不因 logout 失效、也不一次用尽：它绑的是子进程生命期，所以重复进入与
+     * “子进程内退出后再进入”都能拿到新 cookie；子进程退出后父进程只剩明确的
+     * {@code HANDOFF_EXPIRED}。</p>
+     *
+     * @param exchange 请求
+     * @throws IOException 写响应失败
+     */
+    private void handoff(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        JsonNode body = jsonBody(exchange, HANDOFF_FIELDS);
+        JsonNode tokenNode = body.get("token");
+        JsonNode probeNode = body.get("probe");
+        if (tokenNode == null || !tokenNode.isTextual()) {
+            send(exchange, 400, error("INVALID", "凭据格式不合法"));
+            return;
+        }
+        if (probeNode != null && !probeNode.isBoolean()) {
+            send(exchange, 400, error("INVALID", "probe 必须是布尔值"));
+            return;
+        }
+        boolean probe = probeNode != null && probeNode.booleanValue();
+        if (!RunLauncher.tokenMatches(handoffToken, tokenNode.textValue())) {
+            send(exchange, 401, error("UNAUTHENTICATED", "此次启动的进入凭据无效或已失效"));
+            return;
+        }
+        WorldWebHost.RunIdentity identity;
+        try {
+            identity = host.runIdentity();
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        if (!probe) {
+            // 每次进入都换一个新会话；不清空既有会话，父/子在各自端口退出互不影响。
+            setCookie(exchange, sessions.create(WebSessions.Role.ADMIN, null));
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("runId", identity.runId());
+        result.put("parentRunId", identity.parentRunId());
+        result.put("parentPosition", Long.toString(identity.parentPosition()));
+        result.put("position", Long.toString(identity.position()));
+        result.put("firstPosition", Long.toString(identity.firstPosition()));
+        send(exchange, 200, mapper.writeValueAsString(result));
+    }
+
+    /** 带稳定原因码的拒绝响应体（页面按码显示，不解析自由文本）。 */
+    private static String rejection(String code, String message) {
+        return "{\"error\":\"REJECTED\",\"code\":\"" + escape(code) + "\",\"message\":\""
+                + escape(message) + "\"}";
     }
 
     /** 读取核验请求体：只收 JSON 文本，按专门上限有界读取，不接触任何文件路径。 */
@@ -1989,8 +2332,8 @@ public final class WorldWebServer implements AutoCloseable {
         for (String header : headers) {
             for (String part : header.split(";")) {
                 String trimmed = part.trim();
-                if (trimmed.startsWith(COOKIE + "=")) {
-                    return trimmed.substring(COOKIE.length() + 1);
+                if (trimmed.startsWith(cookieName + "=")) {
+                    return trimmed.substring(cookieName.length() + 1);
                 }
             }
         }
@@ -1999,7 +2342,7 @@ public final class WorldWebServer implements AutoCloseable {
 
     private void setCookie(HttpExchange exchange, String token) {
         exchange.getResponseHeaders().add("Set-Cookie",
-                COOKIE + "=" + token + "; HttpOnly; SameSite=Strict; Path=/");
+                cookieName + "=" + token + "; HttpOnly; SameSite=Strict; Path=/");
     }
 
     private String newBootstrap() {
