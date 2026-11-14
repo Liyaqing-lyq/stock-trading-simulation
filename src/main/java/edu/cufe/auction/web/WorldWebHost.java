@@ -3,6 +3,8 @@ package edu.cufe.auction.web;
 import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.BeliefModel;
 import edu.cufe.auction.world.BoardRun;
+import edu.cufe.auction.world.CashLedger;
+import edu.cufe.auction.world.SecuritiesLedger;
 import edu.cufe.auction.world.DecisionModel;
 import edu.cufe.auction.world.DecisionRun;
 import edu.cufe.auction.world.DividendModel;
@@ -190,6 +192,10 @@ public final class WorldWebHost implements AutoCloseable {
     private boolean sessionBegun;
     /** 上一轮结束时的跳过原因（有界，保留给状态页）。 */
     private List<SkipReason> lastSkips = List.of();
+    /** 最近一次显式开始的轮次摘要（本轮场景/人员/公司）；未开始时为空。 */
+    private String lastRoundScene;
+    private List<String> lastRoundPersons = List.of();
+    private String lastRoundCompany;
 
     /**
      * 启动 writer 线程并在其中创建运行。
@@ -546,6 +552,324 @@ public final class WorldWebHost implements AutoCloseable {
                     snapshot.decisions().isPresent() && current.pendingBarrier().isPresent(), pending.size(),
                     snapshot.delivered().size());
         });
+    }
+
+    /**
+     * 历史索引行：位置与条数为精确字符串，命令与回报为当时的原文。
+     *
+     * @param position   确认位置
+     * @param commandId  当时的命令标识
+     * @param result     当时的回报原文
+     * @param eventCount 该批次事件条数
+     */
+    public record HistoryRow(String position, String commandId, String result, String eventCount) {
+    }
+
+    /**
+     * 历史索引页：只列记录元数据，不展开正文，也不改世界。
+     *
+     * @param runId       运行标识
+     * @param cutPosition 读取时的确认截止位置
+     * @param entries     本页索引行（按位置升序）
+     * @param nextAfter   下一页起点；本页为空时为 -1
+     */
+    public record HistoryIndexView(String runId, String cutPosition, List<HistoryRow> entries,
+                                   String nextAfter) {
+
+        /** 冻结索引行。 */
+        public HistoryIndexView {
+            entries = List.copyOf(entries);
+        }
+    }
+
+    /**
+     * 固定位置的历史只读视图：全部分区来自同一份已解码快照。
+     *
+     * @param runId        运行标识
+     * @param position     所选确认位置
+     * @param cutPosition  读取时的确认截止位置
+     * @param timeMillis   该位置的模拟时点
+     * @param lastPhase    该位置最后完成的阶段
+     * @param historical   所选位置是否早于当前确认位置
+     * @param overview     运行总览
+     * @param accounts     现金账户
+     * @param securities   证券批次与卖出预留
+     * @param pending      该位置的待办
+     * @param roles        任职
+     * @param information  资料索引（只给元数据，不给正文）
+     * @param engineering  按公司的工程经营
+     * @param groups       群组与平台事实
+     * @param unsupported  本位置没有的模块（明确列出，不显示当前值）
+     * @param notes        口径说明
+     */
+    public record HistoryView(String runId, String position, String cutPosition, String timeMillis,
+                              String lastPhase, boolean historical, Section overview,
+                              Section accounts, Section securities, Section pending,
+                              Section roles, Section information, Section engineering,
+                              Section groups, List<String> unsupported, List<String> notes) {
+
+        /** 冻结无权限/缺失说明。 */
+        public HistoryView {
+            unsupported = List.copyOf(unsupported);
+            notes = List.copyOf(notes);
+        }
+    }
+
+    /**
+     * 历史索引（管理端只读、单 writer 任务）。
+     *
+     * @param afterPosition 只返回位置严格大于此值的批次
+     * @param limit         单页条数，1..{@link WorldRuntime#MAX_HISTORY_PAGE}
+     * @return 索引页
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public HistoryIndexView historyIndex(long afterPosition, int limit)
+            throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            long cut = current.snapshot().position();
+            List<HistoryRow> rows = new ArrayList<>();
+            long next = -1L;
+            for (WorldRuntime.HistoryEntry entry : current.historyIndex(afterPosition, limit)) {
+                rows.add(new HistoryRow(Long.toString(entry.position()), entry.commandId(),
+                        entry.result(), Integer.toString(entry.eventCount())));
+                next = entry.position();
+            }
+            return new HistoryIndexView(runId, Long.toString(cut), rows,
+                    next < 0L ? "-1" : Long.toString(next));
+        });
+    }
+
+    /**
+     * 固定确认位置的历史只读视图。
+     *
+     * <p>只解码该批次自带的快照；不调用估值、回忆、表现区间等实时 accessor，
+     * 因此不会把当前值冒充历史值，也不产生阅读/回忆/预算消耗。</p>
+     *
+     * @param position 确认位置
+     * @return 历史视图
+     * @throws BusyException 队列满
+     * @throws Exception     位置未确认或解码失败
+     */
+    public HistoryView historyView(long position) throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            long cut = current.snapshot().position();
+            WorldRuntime.HistoryFrame frame = current.historyFrame(position);
+            WorldRuntime.Snapshot snapshot = frame.snapshot();
+
+            List<String> unsupported = new ArrayList<>();
+            List<String> notes = new ArrayList<>();
+            notes.add("本页只读取位置 " + position + " 的已确认快照；不推进世界、不写日志、不调用模型。");
+            notes.add("金额、数量、位置、时点均为精确字符串；净资产、表现指数、回忆正文等实时派生项本页不提供。");
+
+            List<Map<String, Object>> overviewRows = new ArrayList<>();
+            Map<String, Object> head = new LinkedHashMap<>();
+            head.put("runId", runId);
+            head.put("position", num(snapshot.position()));
+            head.put("cutPosition", num(cut));
+            head.put("timeMillis", num(snapshot.timeMillis()));
+            head.put("lastPhase", snapshot.lastPhase());
+            head.put("accounts", Integer.toString(snapshot.accounts().size()));
+            BigDecimal totalCash = BigDecimal.ZERO;
+            for (CashLedger.CashAccount account : snapshot.accounts().values()) {
+                totalCash = totalCash.add(account.cash());
+            }
+            head.put("totalCash", dec(totalCash));
+            head.put("pending", Integer.toString(snapshot.pending().size()));
+            head.put("delivered", Integer.toString(snapshot.delivered().size()));
+            head.put("usedTaskIds", Integer.toString(snapshot.usedTaskIds().size()));
+            List<String> modules = new ArrayList<>();
+            if (snapshot.securities().isPresent()) {
+                modules.add("securities");
+            }
+            if (snapshot.exchange().isPresent()) {
+                modules.add("matching");
+            }
+            if (snapshot.manufacturing().isPresent()) {
+                modules.add("manufacturing");
+            }
+            if (snapshot.governance().isPresent()) {
+                modules.add("governance");
+            }
+            if (snapshot.roles().isPresent()) {
+                modules.add("roles");
+            }
+            if (snapshot.information().isPresent()) {
+                modules.add("information");
+            }
+            if (snapshot.engineering().isPresent()) {
+                modules.add("engineering");
+            }
+            if (frame.groups().isPresent()) {
+                modules.add("groups");
+            }
+            head.put("modules", String.join(",", modules));
+            overviewRows.add(head);
+            if (snapshot.securities().isEmpty()) {
+                unsupported.add("本运行未启用证券子账，证券分区不显示。");
+            }
+            if (snapshot.roles().isEmpty()) {
+                unsupported.add("本运行未启用任职授权，任职分区不显示。");
+            }
+            if (snapshot.information().isEmpty()) {
+                unsupported.add("本运行未启用资料阅读，资料分区不显示。");
+            }
+            if (snapshot.engineering().isEmpty()) {
+                unsupported.add("本运行未启用按公司工程经营，工程分区不显示。");
+            }
+            if (frame.groups().isEmpty()) {
+                unsupported.add("本运行未启用群组与平台，群组分区不显示。");
+            }
+
+            List<Map<String, Object>> accountRows = new ArrayList<>();
+            for (Map.Entry<String, CashLedger.CashAccount> entry : snapshot.accounts().entrySet()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("accountId", entry.getKey());
+                row.put("ownerId", entry.getValue().ownerId());
+                row.put("cash", dec(entry.getValue().cash()));
+                row.put("source", entry.getValue().source());
+                accountRows.add(row);
+            }
+
+            List<Map<String, Object>> securitiesRows = new ArrayList<>();
+            snapshot.securities().ifPresent(state -> {
+                for (SecuritiesLedger.Lot lot : state.lots()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("kind", "LOT");
+                    row.put("lotId", lot.lotId());
+                    row.put("accountId", lot.accountId());
+                    row.put("symbol", lot.symbol());
+                    row.put("remaining", num(lot.remaining()));
+                    row.put("costPrice", dec(lot.costPrice()));
+                    row.put("eligibleFromDay", num(lot.eligibleFromDay()));
+                    row.put("acquiredPosition", num(lot.acquiredPosition()));
+                    securitiesRows.add(row);
+                }
+                for (SecuritiesLedger.SellReservation reservation : state.reservations()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("kind", "RESERVATION");
+                    row.put("lotId", reservation.reservationId());
+                    row.put("accountId", reservation.accountId());
+                    row.put("symbol", reservation.symbol());
+                    row.put("remaining", num(reservation.allocations().stream()
+                            .mapToLong(SecuritiesLedger.LotQuantity::quantity).sum()));
+                    securitiesRows.add(row);
+                }
+            });
+
+            List<Map<String, Object>> pendingRows = new ArrayList<>();
+            for (PendingTask task : snapshot.pending()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("taskId", task.taskId());
+                row.put("dueTimeMillis", num(task.dueTimeMillis()));
+                row.put("phase", task.phase().name());
+                row.put("kind", task.kind());
+                pendingRows.add(row);
+            }
+
+            List<Map<String, Object>> roleRows = new ArrayList<>();
+            snapshot.roles().ifPresent(run -> {
+                for (RoleAccess.Appointment appointment : run.access().appointments()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("appointmentId", appointment.id());
+                    row.put("personPartyId", appointment.personPartyId());
+                    row.put("organizationPartyId", appointment.organizationPartyId());
+                    row.put("role", appointment.role().name());
+                    row.put("startsAt", num(appointment.startsAt()));
+                    row.put("endsAt", num(appointment.endsAt()));
+                    row.put("revokedAt", appointment.revokedAt() == null
+                            ? "" : num(appointment.revokedAt()));
+                    roleRows.add(row);
+                }
+            });
+
+            List<Map<String, Object>> informationRows = new ArrayList<>();
+            snapshot.information().ifPresent(run -> {
+                for (InformationModel.Document document : run.information().documents()) {
+                    InformationModel.DocumentVersion latest =
+                            document.versions().get(document.versions().size() - 1);
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("docId", document.docId());
+                    row.put("publisherPartyId", document.publisherPartyId());
+                    row.put("audience", document.audience().kind().name());
+                    row.put("audiencePartyId", document.audience().partyId() == null
+                            ? "" : document.audience().partyId());
+                    row.put("version", num(latest.version()));
+                    row.put("title", latest.title());
+                    row.put("publishedAtMillis", num(latest.publishedAt()));
+                    row.put("readDurationMillis", num(latest.readDurationMillis()));
+                    informationRows.add(row);
+                }
+            });
+
+            List<Map<String, Object>> engineeringRows = new ArrayList<>();
+            snapshot.engineering().ifPresent(run -> {
+                for (Map.Entry<String, EngineeringModel.State> entry : run.companies().entrySet()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("companyPartyId", entry.getKey());
+                    row.put("contracts", Integer.toString(entry.getValue().contracts().size()));
+                    row.put("workOrders", Integer.toString(entry.getValue().workOrders().size()));
+                    row.put("claims", Integer.toString(entry.getValue().claims().size()));
+                    row.put("payable", dec(entry.getValue().payable()));
+                    row.put("hasBoard", Boolean.toString(run.boards().containsKey(entry.getKey())));
+                    engineeringRows.add(row);
+                }
+            });
+
+            List<Map<String, Object>> groupRows = new ArrayList<>();
+            frame.groups().ifPresent(run -> {
+                GroupModel.State state = run.state();
+                for (GroupModel.Group group : state.groups()) {
+                    long openMembers = state.memberships().stream()
+                            .filter(membership -> membership.groupId().equals(group.groupId()))
+                            .filter(GroupModel.Membership::open).count();
+                    long posts = state.posts().stream()
+                            .filter(post -> post.groupId().equals(group.groupId())).count();
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("groupId", group.groupId());
+                    row.put("ownerPartyId", group.ownerPartyId());
+                    row.put("joinPolicy", group.joinPolicy().name());
+                    row.put("historyPolicy", group.historyPolicy().name());
+                    row.put("createdAt", num(group.createdAt()));
+                    row.put("openMembers", Long.toString(openMembers));
+                    row.put("posts", Long.toString(posts));
+                    groupRows.add(row);
+                }
+            });
+
+            return new HistoryView(runId, num(snapshot.position()), num(cut),
+                    num(snapshot.timeMillis()), snapshot.lastPhase(), snapshot.position() < cut,
+                    bounded(overviewRows), bounded(accountRows), bounded(securitiesRows),
+                    bounded(pendingRows), bounded(roleRows), bounded(informationRows),
+                    bounded(engineeringRows), bounded(groupRows), unsupported, notes);
+        });
+    }
+
+    /**
+     * 导出所选确认位置的检查点信封（管理端只读）。
+     *
+     * @param position 确认位置
+     * @return 信封
+     * @throws BusyException 队列满
+     * @throws Exception     位置未确认或序列化失败
+     */
+    public WorldRuntime.Checkpoint checkpoint(long position) throws BusyException, Exception {
+        return call(() -> readyNow().checkpoint(position));
+    }
+
+    /**
+     * 核验检查点信封：只对照本运行同一确认位置的原始批次。
+     *
+     * @param envelopeJson 信封 JSON 原文
+     * @return 核验结论
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public WorldRuntime.CheckpointVerdict verifyCheckpoint(String envelopeJson)
+            throws BusyException, Exception {
+        return call(() -> readyNow().verifyCheckpoint(envelopeJson));
     }
 
     /**
@@ -2068,6 +2392,17 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     /**
+     * 显式场景开始被拒（无副作用）：原因只含服务端生成的固定文案与请求中已校验的人物标识，
+     * 不回显公司标识原文，也不含任何凭据。
+     */
+    public static final class SceneRejected extends Exception {
+        /** @param reason 可公开展示的中文原因 */
+        public SceneRejected(String reason) {
+            super(reason);
+        }
+    }
+
+    /**
      * 关闭：在同一把锁内标记关闭并投递结束标记，然后在锁外等待 writer 退出。
      *
      * <p>若由 writer 线程自身调用（任务内部关闭宿主），只标记与投递，不自 join。</p>
@@ -2197,15 +2532,33 @@ public final class WorldWebHost implements AutoCloseable {
     public static final List<String> LIVE_ROLE_PERSONS =
             List.of("alice", "bob", "carol", "dave");
 
-    /** 可参与本轮模型决定的真实人物及其已接入场景。 */
-    public record LivePerson(String personPartyId, String name, String sceneId) { }
+    /**
+     * 可参与本轮模型决定的真实人物。
+     *
+     * @param personPartyId      人物
+     * @param name               展示名
+     * @param sceneId            未指定本轮场景时的旧自动路由（逐字保持既有行为）
+     * @param scenes             本人可显式选择的场景：旧自动路由 + 具备真实资格时的公司治理
+     * @param governanceCompanies 本人此刻真正可治理的公司（只来自真实席位/经理任职）
+     */
+    public record LivePerson(String personPartyId, String name, String sceneId,
+                             List<String> scenes, List<String> governanceCompanies) { }
 
     /** 当前档案的实际执行能力；五个配置槽位不等于五类场景都已接入。 */
     public record LiveCapabilities(String position, String timeMillis, boolean mediaAvailable,
-                                   List<String> supportedScenes, List<LivePerson> persons) { }
+                                   List<String> supportedScenes, List<LivePerson> persons,
+                                   List<LivePerson> governancePersons) { }
+
+    /** 治理场景标识（与 {@link SceneRoutes.Scene#GOVERNANCE} 一致）。 */
+    public static final String SCENE_GOVERNANCE = "governance";
 
     /**
      * 查询同一截止的场景及人物能力，不调用提供方。
+     *
+     * <p>只列出真正具备执行器的场景：治理场景要求同一档案同时有工程子集（真实任务/命令执行）
+     * 与治理董事会；评估场景没有执行器，因此永不出现。人物可选场景与 God 视图共用
+     * {@link WorldRuntime#governanceCompanies(String)} 这一唯一资格源。</p>
+     *
      * @return 已接入场景和当前有效岗位人物
      * @throws Exception 世界读取失败
      */
@@ -2213,19 +2566,73 @@ public final class WorldWebHost implements AutoCloseable {
         return call(() -> {
             WorldRuntime.Snapshot snapshot = readyNow().snapshot();
             List<String> scenes = workers == null || !liveRuntime() ? List.of()
-                    : snapshot.media().isPresent() ? List.of("research", "trading", "media")
-                    : List.of("research", "trading");
+                    : wiredScenes(snapshot);
+            List<LivePerson> persons = scenes.isEmpty() ? List.of() : livePeople(snapshot);
+            List<LivePerson> governancePersons = scenes.contains(SCENE_GOVERNANCE)
+                    ? governancePersons(snapshot) : List.of();
             return new LiveCapabilities(num(snapshot.position()), num(snapshot.timeMillis()),
-                    snapshot.media().isPresent(), scenes,
-                    scenes.isEmpty() ? List.of() : livePeople(snapshot));
+                    snapshot.media().isPresent(), scenes, persons, governancePersons);
         });
+    }
+
+    /**
+     * 公司治理场景的可选人物：从真实登记自然人 + 当前真实董事席位/有效经理任职生成，
+     * 与 {@link #livePeople(WorldRuntime.Snapshot)} 的自动路由名单相互独立。
+     *
+     * <p>纯董事（如 erin：真实席位、没有四岗任职）只出现在这里；旧三字段自动路由仍只认
+     * {@code livePeople}，不会因为进入本名单而被自动派发。这里不新增任职、不伪造机构，
+     * 每个人的公司都来自 {@link WorldRuntime#governanceCompanies(String)}。</p>
+     */
+    private List<LivePerson> governancePersons(WorldRuntime.Snapshot snapshot) {
+        OpeningRegistry registry = runtime.openingRegistry().orElse(null);
+        Map<String, LivePerson> legacy = new LinkedHashMap<>();
+        for (LivePerson row : livePeople(snapshot)) {
+            legacy.put(row.personPartyId(), row);
+        }
+        List<LivePerson> rows = new ArrayList<>();
+        List<OpeningRegistry.Party> parties = registry == null ? List.of() : registry.parties();
+        for (OpeningRegistry.Party party : parties) {
+            if (party.kind() != OpeningRegistry.PartyKind.PERSON) {
+                continue;
+            }
+            LivePerson known = legacy.get(party.partyId());
+            if (known != null) {
+                if (!known.governanceCompanies().isEmpty() && !known.scenes().isEmpty()) {
+                    rows.add(known);
+                }
+                continue;
+            }
+            List<String> companies = runtime.governanceCompanies(party.partyId());
+            if (companies.isEmpty()) {
+                continue;
+            }
+            // 没有四岗任职的人没有旧自动路由：sceneId 保持为 null，只提供显式治理选择。
+            rows.add(new LivePerson(party.partyId(), partyName(registry, party.partyId()), null,
+                    List.of(SCENE_GOVERNANCE), companies));
+        }
+        rows.sort(java.util.Comparator.comparing(LivePerson::personPartyId));
+        return List.copyOf(rows);
+    }
+
+    /** 本档案真正具备执行器的场景（顺序固定）；评估场景没有执行器，永不在此出现。 */
+    private static List<String> wiredScenes(WorldRuntime.Snapshot snapshot) {
+        List<String> wired = new ArrayList<>();
+        wired.add("research");
+        wired.add("trading");
+        if (snapshot.media().isPresent()) {
+            wired.add("media");
+        }
+        if (snapshot.engineering().isPresent() && snapshot.governance().isPresent()) {
+            wired.add(SCENE_GOVERNANCE);
+        }
+        return List.copyOf(wired);
     }
 
     private List<LivePerson> livePeople(WorldRuntime.Snapshot snapshot) {
         OpeningRegistry registry = runtime.openingRegistry().orElse(null);
         Map<String, LivePerson> people = new LinkedHashMap<>();
         for (String person : LIVE_ROLE_PERSONS) {
-            people.put(person, new LivePerson(person, partyName(registry, person),
+            people.put(person, livePersonOf(registry, person,
                     person.equals("alice") ? "research" : "trading"));
         }
         if (snapshot.media().isPresent() && snapshot.roles().isPresent()) {
@@ -2238,8 +2645,7 @@ public final class WorldWebHost implements AutoCloseable {
                             && appointment.role() != RoleAccess.Role.EDITOR)) continue;
                 // 既有四岗的路由不因新增媒体任职被静默替换。
                 people.putIfAbsent(appointment.personPartyId(),
-                        new LivePerson(appointment.personPartyId(),
-                                partyName(registry, appointment.personPartyId()), "media"));
+                        livePersonOf(registry, appointment.personPartyId(), "media"));
             }
         }
         // schema15：已配置联系目标与真实预约参与者（含尚未接受）走 media 技术路由；
@@ -2286,8 +2692,25 @@ public final class WorldWebHost implements AutoCloseable {
                 .anyMatch(p -> p.partyId().equals(person)
                         && p.kind() == OpeningRegistry.PartyKind.PERSON);
         if (natural) {
-            people.putIfAbsent(person, new LivePerson(person, partyName(registry, person), "media"));
+            people.putIfAbsent(person, livePersonOf(registry, person, "media"));
         }
+    }
+
+    /**
+     * 人物能力行：旧自动场景逐字保留，另给本人真实可选的场景与可治理公司。
+     *
+     * <p>可选场景来自唯一资格源 {@link WorldRuntime#governanceCompanies(String)}；没有真实席位或
+     * 当前经理任职的人不会得到治理选项，这里也不因任何界面输入而授予身份。</p>
+     */
+    private LivePerson livePersonOf(OpeningRegistry registry, String person, String autoScene) {
+        List<String> companies = runtime.governanceCompanies(person);
+        List<String> scenes = new ArrayList<>();
+        scenes.add(autoScene);
+        if (!companies.isEmpty() && !scenes.contains(SCENE_GOVERNANCE)) {
+            scenes.add(SCENE_GOVERNANCE);
+        }
+        return new LivePerson(person, partyName(registry, person), autoScene,
+                List.copyOf(scenes), companies);
     }
 
     /** 媒体上帝审计视图：所有分区来自同一确认截止，条数真实且明确限制展示量。 */
@@ -3531,12 +3954,16 @@ public final class WorldWebHost implements AutoCloseable {
      * @param scenes          五场景累计用量与上限
      * @param skips           本轮跳过原因
      * @param decisions       最近最多 10 条决定
+     * @param roundScene      最近一次开始的本轮显式场景；按人物原路由开始或未开始时为 null
+     * @param roundPersons    本轮参与人物（本轮开始时冻结）；未开始时为空
+     * @param roundCompany    公司治理轮绑定的真实公司；其它轮为 null
      */
     public record LiveStatus(String runId, String position, String timeMillis, String phase,
                              boolean paused, String fault, List<String> pendingPersons,
                              int physicalInFlight, int completionSlots, BudgetUsage runBudget,
                              List<PersonBudget> personBudgets, List<SceneState> scenes,
-                             List<SkipReason> skips, List<DecisionView> decisions) {
+                             List<SkipReason> skips, List<DecisionView> decisions,
+                             String roundScene, List<String> roundPersons, String roundCompany) {
     }
 
     /** 一轮的 writer 私有状态。 */
@@ -3545,29 +3972,66 @@ public final class WorldWebHost implements AutoCloseable {
         private final LinkedHashSet<String> pending;
         private final Map<String, String> skipped = new LinkedHashMap<>();
         private final Map<String, InputSize> inputSizes = new LinkedHashMap<>();
+        /** 本轮显式场景；null 表示沿人物原自动路由。 */
+        private final String scene;
+        /** 治理轮绑定的真实公司；其它轮为 null。 */
+        private final String company;
         private boolean stopping;
 
         private LiveRound(String roundId, List<String> persons) {
+            this(roundId, persons, null, null);
+        }
+
+        private LiveRound(String roundId, List<String> persons, String scene, String company) {
             this.roundId = roundId;
             this.pending = new LinkedHashSet<>(persons);
+            this.scene = scene;
+            this.company = company;
         }
     }
 
     /**
      * 显式开始一次有界角色轮次；这是本进程唯一的模型调用入口。
      *
+     * <p>等价于 {@code startLiveRound(pos, rev, persons, null, null)}：不指定本轮场景，逐字沿用
+     * 人物原有自动路由。</p>
+     *
      * @param expectedPosition 调用方看到的世界位置
      * @param expectedRevision 调用方看到的场景配置修订
      * @param persons          1..4 个不同四岗人物
      * @throws BusyException            队列满
+     * @throws SceneRejected            场景/公司/资格拒绝（本重载不触发）
      * @throws IllegalArgumentException 位置/修订/人物非法（无副作用）
      * @throws IllegalStateException    Host 未接线 live、暂停、故障、已有轮次或有屏障
      * @throws Exception                世界读写失败
      */
     public void startLiveRound(long expectedPosition, long expectedRevision, List<String> persons)
-            throws BusyException, Exception {
+            throws BusyException, SceneRejected, Exception {
+        startLiveRound(expectedPosition, expectedRevision, persons, null, null);
+    }
+
+    /**
+     * 显式指定本轮场景开始一次有界角色轮次。
+     *
+     * <p>场景只决定本轮 attempt 的模型、Key 槽位与预算配置；人物信息与工具权限仍由真实观察与
+     * BEGIN/FINISH 资格决定。{@code scene} 为空时逐字沿用旧自动路由。</p>
+     *
+     * @param expectedPosition 调用方看到的世界位置
+     * @param expectedRevision 调用方看到的场景配置修订
+     * @param persons          1..4 个不同人物
+     * @param scene            本轮场景；null 表示按人物原路由
+     * @param companyId        公司治理轮绑定的真实公司；其它场景必须为 null
+     * @throws BusyException            队列满
+     * @throws SceneRejected            未知/未接入/未启用的场景、缺公司或公司/资格不符（无副作用）
+     * @throws IllegalArgumentException 位置/修订/人物非法（无副作用）
+     * @throws IllegalStateException    Host 未接线 live、暂停、故障、已有轮次或有屏障
+     * @throws Exception                世界读写失败
+     */
+    public void startLiveRound(long expectedPosition, long expectedRevision, List<String> persons,
+                               String scene, String companyId)
+            throws BusyException, SceneRejected, Exception {
         call(() -> {
-            startLiveRoundOnWriter(expectedPosition, expectedRevision, persons);
+            startLiveRoundOnWriter(expectedPosition, expectedRevision, persons, scene, companyId);
             return null;
         });
     }
@@ -3671,8 +4135,9 @@ public final class WorldWebHost implements AutoCloseable {
     // ---------------------------------------------------------------- writer 内部
 
     private void startLiveRoundOnWriter(long expectedPosition, long expectedRevision,
-                                        List<String> persons)
-            throws IOException, PositionMismatch, SceneRoutes.RevisionMismatch {
+                                        List<String> persons, String scene, String companyId)
+            throws IOException, PositionMismatch, SceneRejected,
+            SceneRoutes.RevisionMismatch {
         WorldRuntime current = readyNow();
         if (workers == null || !liveRuntime()) {
             throw new IllegalStateException("当前 Host 未接线 live 场景");
@@ -3693,20 +4158,78 @@ public final class WorldWebHost implements AutoCloseable {
         if (revision != expectedRevision) {
             throw new SceneRoutes.RevisionMismatch(revision);
         }
-        List<String> allowed = livePeople(current.snapshot()).stream()
+        // 可选人物按本轮场景取：显式治理认“真实登记 + 席位/有效经理任职”，其余（含旧三字段
+        // 自动路由）逐字沿用原四岗/媒体/社交名单；纯董事不会因为治理名单而进入自动路由。
+        boolean governanceScene = SCENE_GOVERNANCE.equals(scene);
+        List<String> allowed = (governanceScene ? governancePersons(current.snapshot())
+                : livePeople(current.snapshot())).stream()
                 .map(LivePerson::personPartyId).toList();
         if (persons == null || persons.isEmpty() || persons.size() > allowed.size()) {
             throw new IllegalArgumentException("本轮人数必须在 1.." + allowed.size());
         }
         Set<String> distinct = new LinkedHashSet<>(persons);
-        if (distinct.size() != persons.size() || !allowed.containsAll(distinct)) {
-            throw new IllegalArgumentException("人物必须来自当前档案已接入的不同岗位人物");
+        if (distinct.size() != persons.size()) {
+            throw new IllegalArgumentException("同一人物不能在一个轮次里出现两次");
+        }
+        for (String person : distinct) {
+            if (allowed.contains(person)) {
+                continue;
+            }
+            if (governanceScene) {
+                throw new SceneRejected(
+                        "该人物当前没有任何可治理公司（无真实董事席位或经理任职）：" + person);
+            }
+            throw new IllegalArgumentException(
+                    "该人物不在当前档案的自动路由名单（纯董事只能显式选择公司治理）：" + person);
         }
         if (liveRound != null && (!liveRound.pending.isEmpty()
                 || !physicalInFlight.isEmpty())) {
             throw new IllegalStateException("已有活动轮次或未结算调用");
         }
-        String roundId = "live:" + expectedPosition + ":" + expectedRevision;
+        // 本轮显式场景只决定本次 attempt 的模型/Key/预算配置；人物信息与工具仍由真实观察与
+        // BEGIN/FINISH 资格决定，因此这里只校验“配置可用 + 人物真实资格”，不授予任何身份。
+        String roundScene = null;
+        String roundCompany = null;
+        if (scene != null) {
+            SceneRoutes.Snapshot view = routes.view();
+            SceneRoutes.Route chosen = routeOf(view, scene);
+            if (chosen == null) {
+                throw new SceneRejected("未知场景");
+            }
+            if (!wiredScenes(current.snapshot()).contains(scene)) {
+                throw new SceneRejected("当前档案没有该场景的执行器");
+            }
+            if (!chosen.enabled()) {
+                throw new SceneRejected("该场景尚未启用");
+            }
+            if (SCENE_GOVERNANCE.equals(scene)) {
+                if (companyId == null || companyId.isBlank()) {
+                    throw new SceneRejected("公司治理场景必须绑定真实公司");
+                }
+                for (String person : distinct) {
+                    if (!current.governanceCompanies(person).contains(companyId)) {
+                        throw new SceneRejected(
+                                "该人物当前没有此公司的董事席位或经理任职：" + person);
+                    }
+                }
+                roundCompany = companyId;
+            } else if (companyId != null) {
+                throw new SceneRejected("只有公司治理场景可以绑定公司");
+            } else {
+                for (String person : distinct) {
+                    if (!scene.equals(sceneFor(person))) {
+                        throw new SceneRejected(
+                                "该场景不是此人物当前的模型路由：" + person);
+                    }
+                }
+            }
+            roundScene = scene;
+        } else if (companyId != null) {
+            throw new SceneRejected("未指定本轮场景时不能绑定公司");
+        }
+        String roundId = "live:" + expectedPosition + ":" + expectedRevision
+                + (roundScene == null ? ""
+                : ":" + roundScene + (roundCompany == null ? "" : ":" + roundCompany));
         lastSkips = List.of();
         // 先接续旧代次（保守结算），再检查剩余业务屏障与残留工作：
         // 新进程的旧未结算决定不得永久挡住显式接续。
@@ -3721,7 +4244,11 @@ public final class WorldWebHost implements AutoCloseable {
             throw new IllegalStateException("仍有未解决屏障");
         }
         liveRound = new LiveRound(roundId,
-                fairOrder(current.snapshot().decisions().orElseThrow().state().seed(), persons));
+                fairOrder(current.snapshot().decisions().orElseThrow().state().seed(), persons),
+                roundScene, roundCompany);
+        lastRoundScene = roundScene;
+        lastRoundPersons = List.copyOf(persons);
+        lastRoundCompany = roundCompany;
         pumpLive();
     }
 
@@ -3797,8 +4324,15 @@ public final class WorldWebHost implements AutoCloseable {
                 break;
             }
             String person = iterator.next();
-            String scene = sceneFor(person);
+            String scene = round.scene == null ? sceneFor(person) : round.scene;
             if (scene == null) {
+                round.skipped.put(person, "PERSON_NOT_ELIGIBLE");
+                iterator.remove();
+                continue;
+            }
+            if (SCENE_GOVERNANCE.equals(round.scene)
+                    && !current.governanceCompanies(person).contains(round.company)) {
+                // 开始后失席/经理任职到期：派发前用当前快照复核，不派发也不重试。
                 round.skipped.put(person, "PERSON_NOT_ELIGIBLE");
                 iterator.remove();
                 continue;
@@ -4034,7 +4568,8 @@ public final class WorldWebHost implements AutoCloseable {
         return new LiveStatus(runId, Long.toString(snapshot.position()),
                 Long.toString(snapshot.timeMillis()), phase, livePaused, liveFault,
                 pending, physicalInFlight.size(), current.liveCompletionSlots(), runBudget,
-                personBudgets, scenes, skips, decisions);
+                personBudgets, scenes, skips, decisions,
+                lastRoundScene, lastRoundPersons, lastRoundCompany);
     }
 
     /** 预算视图：已结算 + 未结算预留 + 冻结上限。 */

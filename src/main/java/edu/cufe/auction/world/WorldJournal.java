@@ -119,6 +119,48 @@ public final class WorldJournal implements AutoCloseable {
         return List.copyOf(history);
     }
 
+    /**
+     * 读取一条已确认批次；越界返回空。
+     *
+     * <p>只读访问器：不复制整段历史，供固定位置的历史回看使用。</p>
+     *
+     * @param position 从 1 开始的确认位置
+     * @return 该位置批次；未确认时为空
+     */
+    public synchronized java.util.Optional<WorldCommit> commitAt(long position) {
+        if (position < 1 || position > history.size()) {
+            return java.util.Optional.empty();
+        }
+        WorldCommit candidate = history.get((int) (position - 1));
+        return candidate.position() == position
+                ? java.util.Optional.of(candidate) : java.util.Optional.empty();
+    }
+
+    /**
+     * 按位置升序读取一段已确认批次，只复制被选中的条目。
+     *
+     * @param afterPosition 只返回位置严格大于此值的批次；0 表示从头开始
+     * @param limit         本次最多返回条数，必须为正
+     * @return 不可变批次列表，可能不足 limit
+     */
+    public synchronized List<WorldCommit> commitsAfter(long afterPosition, int limit) {
+        if (afterPosition < 0) {
+            throw new IllegalArgumentException("起始位置不能为负：" + afterPosition);
+        }
+        if (limit <= 0) {
+            throw new IllegalArgumentException("分页条数必须为正：" + limit);
+        }
+        int start = (int) Math.min(afterPosition, (long) history.size());
+        List<WorldCommit> page = new ArrayList<>();
+        for (int index = start; index < history.size() && page.size() < limit; index++) {
+            WorldCommit commit = history.get(index);
+            if (commit.position() > afterPosition) {
+                page.add(commit);
+            }
+        }
+        return List.copyOf(page);
+    }
+
     /** 关闭日志并释放文件锁；不会删除日志。 */
     @Override
     public synchronized void close() throws IOException {

@@ -38,6 +38,7 @@ const state = {
   engineering: null,
   engineeringCompany: "",
   engineeringRequest: 0,
+  history: null,
   personEngineering: null
 };
 
@@ -202,6 +203,7 @@ function showMode(mode) {
   nextGeneration();
   if (mode !== "admin") {
     clearAdminDom();
+    clearHistoryDom();
   }
   if (mode !== "person") {
     clearPersonDom();
@@ -289,6 +291,9 @@ async function refreshAdmin() {
   }
   if (state.page === "engineering" && current()) {
     await loadEngineering(generation, pageVersion);
+  }
+  if (state.page === "history" && current()) {
+    await loadHistoryIndex();
   }
 }
 
@@ -648,7 +653,8 @@ const pages = {
   interview: ["采访预约", "查看采访预约、逐轮对话、实际阅读与机构工时。"],
   evidence: ["证据与共享", "查看真实证据根、公开标签与实际共享；共享不等于已读。"],
   social: ["消息", "查看真实送达、未送达原因与实际阅读；未送达不显示原因。"],
-  groups: ["群组与平台", "审计群成员、邀请、帖子版本与传播来源；人物视角按本人权限单独显示。"]
+  groups: ["群组与平台", "审计群成员、邀请、帖子版本与传播来源；人物视角按本人权限单独显示。"],
+  history: ["历史回看", "在已确认记录上按位置只读回看：不推进世界、不写日志、不调用模型。"]
 };
 function selectPage(page, refresh = true) {
   if (!pages[page]) return;
@@ -662,6 +668,7 @@ function selectPage(page, refresh = true) {
   if (state.page === "groups" && page !== "groups") clearGroupsDom();
   if (state.page === "engineering" && page !== "engineering") clearEngineeringDom();
   if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
+  if (state.page === "history" && page !== "history") clearHistoryDom();
   state.page = page;
   state.pageVersion += 1;
   $("page-title").textContent = pages[page][0];
@@ -1067,6 +1074,327 @@ function guard(promise) {
   });
 }
 
+// ---------------------------------------------------------------- 历史回看（上帝只读）
+// 只读约束：本页的任何异步分支都不得调用 /api/admin/advance、模型、阅读或回忆入口；
+// 迟到的历史响应必须同时满足身份代次、页面代次与所选请求号，否则一律丢弃。
+
+/** 历史回看的本地状态；离开页面时整体清空。 */
+function historyState() {
+  if (!state.history) {
+    state.history = { after: 0, limit: 50, cut: null, entries: [], selected: null,
+      request: 0, exportRequest: 0 };
+  }
+  return state.history;
+}
+
+/** 清空历史页 DOM 与本地状态（切页、切身份、退出时调用）。 */
+function clearHistoryDom() {
+  state.history = { after: 0, limit: 50, cut: null, entries: [], selected: null,
+    request: 0, exportRequest: 0 };
+  ["history-run", "history-cut", "history-run-pos", "history-position", "history-position-cut",
+    "history-time", "history-phase"].forEach(id => { $(id).textContent = "—"; });
+  ["history-count", "history-checkpoint-status", "history-verify-result", "history-note",
+    "history-unsupported"].forEach(id => { $(id).textContent = ""; });
+  // 导出上下文属于本页：离页/切身份后不得留下上一身份的检查点正文。
+  $("history-checkpoint-text").value = "";
+  $("history-mode").textContent = "选择某个已确认位置后只读回看。";
+  setMessage("history-error", "");
+  fillTable("history-index", [], () => undefined);
+  fillTable("history-overview", [], () => undefined);
+  fillTable("history-accounts", [], () => undefined);
+  fillTable("history-securities", [], () => undefined);
+  fillTable("history-pending", [], () => undefined);
+  fillTable("history-roles", [], () => undefined);
+  fillTable("history-information", [], () => undefined);
+  fillTable("history-engineering", [], () => undefined);
+  fillTable("history-groups", [], () => undefined);
+}
+
+/** 读取一个严格非负整数字段；非法时给出可见提示并返回 null。 */
+function historyIntField(id, minimum, message) {
+  const raw = String($(id).value || "").trim();
+  if (!/^[0-9]{1,18}$/.test(raw)) {
+    setMessage("history-error", message);
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    setMessage("history-error", message);
+    return null;
+  }
+  return value;
+}
+
+/** 当前输入框里的确认位置；非法时返回 null。 */
+function historyPositionValue() {
+  return historyIntField("history-position-input", 1, "确认位置必须是大于 0 的整数。");
+}
+
+/** 读取历史索引页（只读）。 */
+async function loadHistoryIndex() {
+  const after = historyIntField("history-after", 0, "起始位置必须是非负整数。");
+  if (after === null) return;
+  const limit = historyIntField("history-limit", 1, "每页条数必须是正整数。");
+  if (limit === null) return;
+  const history = historyState();
+  history.after = after;
+  history.limit = Math.min(limit, 200);
+  const generation = state.generation;
+  const pageVersion = state.pageVersion;
+  const current = () => isCurrent(generation) && state.mode === "admin"
+    && state.page === "history" && pageVersion === state.pageVersion;
+  let result;
+  try {
+    result = await request("GET",
+      "/api/admin/history?after=" + history.after + "&limit=" + history.limit);
+  } catch (failure) {
+    if (current()) setMessage("history-error", failure.message);
+    return;
+  }
+  if (!current()) return;
+  if (result.status === 401 || result.status === 403) {
+    sessionLost();
+    return;
+  }
+  if (result.status !== 200 || !result.payload) {
+    setMessage("history-error", "读取历史索引失败（" + result.status + "）。");
+    return;
+  }
+  setMessage("history-error", "");
+  renderHistoryIndex(result.payload);
+}
+
+/** 渲染历史索引（位置为精确字符串）。 */
+function renderHistoryIndex(view) {
+  const history = historyState();
+  history.cut = Number(view.cutPosition);
+  history.entries = view.entries || [];
+  $("history-run").textContent = view.runId || "—";
+  $("history-cut").textContent = view.cutPosition;
+  $("history-count").textContent = history.entries.length + " 条（每页上限 200）";
+  fillTable("history-index", history.entries, (tr, row) => {
+    cell(tr, row.position);
+    cell(tr, row.commandId);
+    cell(tr, row.result);
+    cell(tr, row.eventCount);
+    const td = document.createElement("td");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "回看";
+    button.addEventListener("click", () => guard(openHistoryPosition(Number(row.position))));
+    td.appendChild(button);
+    tr.appendChild(td);
+  });
+  show("history-index-empty", history.entries.length === 0);
+}
+
+/** 打开某个确认位置的只读历史视图。 */
+async function openHistoryPosition(position) {
+  if (!Number.isSafeInteger(position) || position < 1) {
+    setMessage("history-error", "请先选择一个有效的确认位置。");
+    return;
+  }
+  const history = historyState();
+  const requestId = ++history.request;
+  const generation = state.generation;
+  const pageVersion = state.pageVersion;
+  const current = () => isCurrent(generation) && state.mode === "admin"
+    && state.page === "history" && pageVersion === state.pageVersion
+    && requestId === history.request;
+  $("history-mode").textContent = "正在读取位置 " + position + "…";
+  let result;
+  try {
+    result = await request("GET", "/api/admin/history/view?position=" + position);
+  } catch (failure) {
+    if (current()) setMessage("history-error", failure.message);
+    return;
+  }
+  if (!current()) return;
+  if (result.status === 401 || result.status === 403) {
+    sessionLost();
+    return;
+  }
+  if (result.status !== 200 || !result.payload) {
+    setMessage("history-error", "读取位置 " + position + " 失败（" + result.status + "）。");
+    $("history-mode").textContent = "该位置没有可显示的历史帧。";
+    return;
+  }
+  setMessage("history-error", "");
+  history.selected = position;
+  renderHistoryView(result.payload);
+}
+
+/** 历史总览字段顺序（固定，避免对象键序漂移）。 */
+const HISTORY_OVERVIEW_FIELDS = [
+  ["runId", "运行"], ["position", "确认位置"], ["cutPosition", "读取时确认截止"],
+  ["timeMillis", "模拟时点（毫秒）"], ["lastPhase", "最后阶段"], ["accounts", "账户数"],
+  ["totalCash", "现金合计（元）"], ["pending", "待办数"], ["delivered", "已投递回报"],
+  ["usedTaskIds", "已用任务标识"], ["modules", "已启用模块"]
+];
+
+/** 渲染固定位置的历史视图；全部分区来自服务端同一份快照。 */
+function renderHistoryView(view) {
+  $("history-run-pos").textContent = view.runId || "—";
+  $("history-position").textContent = view.position;
+  $("history-position-cut").textContent = view.cutPosition;
+  $("history-time").textContent = view.timeMillis;
+  $("history-phase").textContent = view.lastPhase || "—";
+  $("history-mode").textContent = view.historical
+    ? "回看模式：位置 " + view.position + " 早于当前确认截止 " + view.cutPosition + "。"
+    : "回看模式：位置 " + view.position + " 就是当前确认截止。";
+  $("history-note").textContent = (view.notes || []).join(" ");
+  $("history-unsupported").textContent = (view.unsupported || []).join(" ");
+
+  const overview = (view.overview && view.overview.rows && view.overview.rows[0]) || {};
+  fillTable("history-overview", HISTORY_OVERVIEW_FIELDS, (tr, field) => {
+    cell(tr, field[1]);
+    cell(tr, overview[field[0]] === undefined ? "" : overview[field[0]]);
+  });
+
+  const rows = panel => (panel && panel.rows) || [];
+  fillTable("history-accounts", rows(view.accounts), (tr, row) => {
+    cell(tr, row.accountId); cell(tr, row.ownerId); cell(tr, row.cash); cell(tr, row.source);
+  });
+  show("history-accounts-empty", rows(view.accounts).length === 0);
+  fillTable("history-securities", rows(view.securities), (tr, row) => {
+    cell(tr, row.kind); cell(tr, row.lotId); cell(tr, row.accountId); cell(tr, row.symbol);
+    cell(tr, row.remaining); cell(tr, row.costPrice === undefined ? "" : row.costPrice);
+    cell(tr, row.acquiredPosition === undefined ? "" : row.acquiredPosition);
+  });
+  show("history-securities-empty", rows(view.securities).length === 0);
+  fillTable("history-pending", rows(view.pending), (tr, row) => {
+    cell(tr, row.taskId); cell(tr, row.dueTimeMillis); cell(tr, row.phase); cell(tr, row.kind);
+  });
+  show("history-pending-empty", rows(view.pending).length === 0);
+  fillTable("history-roles", rows(view.roles), (tr, row) => {
+    cell(tr, row.appointmentId); cell(tr, row.personPartyId); cell(tr, row.organizationPartyId);
+    cell(tr, row.role); cell(tr, row.startsAt); cell(tr, row.endsAt); cell(tr, row.revokedAt);
+  });
+  show("history-roles-empty", rows(view.roles).length === 0);
+  fillTable("history-information", rows(view.information), (tr, row) => {
+    cell(tr, row.docId); cell(tr, row.publisherPartyId); cell(tr, row.audience);
+    cell(tr, row.version); cell(tr, row.title); cell(tr, row.publishedAtMillis);
+    cell(tr, row.readDurationMillis);
+  });
+  show("history-information-empty", rows(view.information).length === 0);
+  fillTable("history-engineering", rows(view.engineering), (tr, row) => {
+    cell(tr, row.companyPartyId); cell(tr, row.contracts); cell(tr, row.workOrders);
+    cell(tr, row.claims); cell(tr, row.payable); cell(tr, row.hasBoard);
+  });
+  show("history-engineering-empty", rows(view.engineering).length === 0);
+  fillTable("history-groups", rows(view.groups), (tr, row) => {
+    cell(tr, row.groupId); cell(tr, row.ownerPartyId); cell(tr, row.joinPolicy);
+    cell(tr, row.historyPolicy); cell(tr, row.createdAt); cell(tr, row.openMembers);
+    cell(tr, row.posts);
+  });
+  show("history-groups-empty", rows(view.groups).length === 0);
+}
+
+/** 取回检查点信封原文（保持服务端字节，不重新序列化）。 */
+async function fetchHistoryCheckpoint(position) {
+  const response = await fetch("/api/admin/history/checkpoint?position=" + position,
+    { credentials: "same-origin" });
+  if (response.status !== 200) {
+    return { status: response.status, text: null };
+  }
+  return { status: 200, text: await response.text() };
+}
+
+/**
+ * 导出检查点：位置以**当前成功显示的确认帧**为准。
+ *
+ * <p>没有成功显示的历史帧时先要求回看，输入框不能另行改变导出对象。</p>
+ */
+
+async function downloadHistoryCheckpoint() {
+  const history = historyState();
+  const displayed = Number.isSafeInteger(history.selected) && history.selected > 0
+    ? history.selected : null;
+  const position = displayed;
+  if (position === null) {
+    $("history-checkpoint-status").textContent = "请先回看一个已确认位置，再导出检查点。";
+    return;
+  }
+  const exportRequest = ++history.exportRequest;
+  const generation = state.generation;
+  const pageVersion = state.pageVersion;
+  const current = () => state.history === history && isCurrent(generation)
+    && state.mode === "admin" && state.page === "history"
+    && pageVersion === state.pageVersion && exportRequest === history.exportRequest
+    && history.selected === displayed;
+  $("history-checkpoint-status").textContent = "正在导出显示中的位置 " + position + "…";
+  let result;
+  try {
+    result = await fetchHistoryCheckpoint(position);
+  } catch (failure) {
+    if (current()) $("history-checkpoint-status").textContent = failure.message;
+    return;
+  }
+  if (!current()) {
+    // 离页、切身份、换位置或又发了一次导出：迟到的回包不写文本、不触发下载。
+    return;
+  }
+  if (result.status !== 200 || !result.text) {
+    $("history-checkpoint-status").textContent = "导出失败（" + result.status + "）。";
+    return;
+  }
+  let envelope = null;
+  try {
+    envelope = JSON.parse(result.text);
+  } catch (ignored) {
+    envelope = null;
+  }
+  if (!envelope || String(envelope.position) !== String(position)) {
+    $("history-checkpoint-status").textContent = "导出信封与所选位置不一致，已拒绝落盘。";
+    return;
+  }
+  $("history-checkpoint-text").value = result.text;
+  $("history-checkpoint-status").textContent =
+    "已导出位置 " + position + "（" + result.text.length + " 字符）";
+  const blob = new Blob([result.text], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "world-checkpoint-" + position + ".json";
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+/** 核验一份检查点信封：只与当前运行同一确认批次对照。 */
+async function verifyHistoryCheckpointText(text) {
+  const generation = state.generation;
+  const pageVersion = state.pageVersion;
+  const current = () => isCurrent(generation) && state.mode === "admin"
+    && state.page === "history" && pageVersion === state.pageVersion;
+  let envelope;
+  try {
+    envelope = JSON.parse(String(text || ""));
+  } catch (failure) {
+    $("history-verify-result").textContent = "这不是合法 JSON。";
+    return;
+  }
+  $("history-verify-result").textContent = "正在核验…";
+  let result;
+  try {
+    result = await request("POST", "/api/admin/history/verify", envelope);
+  } catch (failure) {
+    if (current()) $("history-verify-result").textContent = failure.message;
+    return;
+  }
+  if (!current()) return;
+  if (result.status === 401 || result.status === 403) {
+    sessionLost();
+    return;
+  }
+  if (result.status !== 200 || !result.payload) {
+    $("history-verify-result").textContent = "核验请求失败（" + result.status + "）。";
+    return;
+  }
+  const verdict = result.payload;
+  $("history-verify-result").textContent = verdict.ok
+    ? "核验通过：运行 " + verdict.runId + " 位置 " + verdict.position + " 与本地已确认批次一致。"
+    : "核验未通过：" + verdict.reason + "（位置 " + verdict.position + "）。";
+}
+
 $("login-form").addEventListener("submit", (event) => guard(login(event)));
 $("advance-form").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1088,6 +1416,12 @@ document.querySelectorAll("[data-page]").forEach(button => {
   button.addEventListener("click", () => selectPage(button.dataset.page));
 });
 $("routes-form").addEventListener("submit", event => guard(saveRoutes(event)));
+$("history-load").addEventListener("click", () => guard(loadHistoryIndex()));
+$("history-open").addEventListener("click", () => guard(openHistoryPosition(historyPositionValue())));
+$("history-live").addEventListener("click", () => selectPage("overview"));
+$("history-checkpoint").addEventListener("click", () => guard(downloadHistoryCheckpoint()));
+$("history-verify").addEventListener("click",
+  () => guard(verifyHistoryCheckpointText($("history-checkpoint-text").value)));
 $("refresh").addEventListener("click", () => guard(state.mode === "admin" ? refreshAdmin() : refreshPerson()));
 $("market-symbol").addEventListener("change", () => guard(loadMarketHistory()));
 $("market-period").addEventListener("change", () => guard(loadMarketHistory()));
@@ -2258,7 +2592,6 @@ async function refreshCapabilities(generation, current) {
   if (result.status === 401 || result.status === 403) { sessionLost(); return false; }
   if (result.status !== 200 || !result.payload) throw new Error("当前档案能力读取失败，请刷新。");
   const first = state.capabilities === null;
-  const selected = new Set(Array.from(document.querySelectorAll('input[name="live-person"]:checked'), node => node.value));
   state.capabilities = result.payload;
   const scenesNote = $("live-scenes-note");
   if (scenesNote) {
@@ -2268,15 +2601,8 @@ async function refreshCapabilities(generation, current) {
         + "。清单来自当前档案能力接口；未列出的场景只保存配置，保存不会产生模型调用。"
       : "当前档案没有接入场景执行器：保存配置不会产生模型调用。";
   }
-  const list = $("live-persons"); list.replaceChildren();
-  const legend = document.createElement("legend"); legend.textContent = "本轮参与人物"; list.appendChild(legend);
-  for (const person of result.payload.persons) {
-    const label = document.createElement("label"), input = document.createElement("input");
-    input.type = "checkbox"; input.name = "live-person"; input.value = person.personPartyId;
-    input.checked = selected.has(person.personPartyId) || (first && person.personPartyId === "alice");
-    label.append(input, document.createTextNode(person.name + " · " + (LIVE_SCENES[person.sceneId] || person.sceneId)));
-    list.appendChild(label);
-  }
+  renderLivePersons(first ? "alice" : undefined);
+  renderLiveSceneChoices();
   return true;
 }
 $("media-story-select").addEventListener("change", () => guard(loadMediaStory()));
@@ -2288,8 +2614,8 @@ guard(boot());
 // 模型运行：只读轮询用于显示，服务端独立处理完成结果。
 const LIVE_PHASES = { SCRIPTED: "脚本模式 · 未接模型", IDLE: "等待开始", READY: "等待开始",
   RUNNING: "本轮运行中", STOPPING: "等待已发请求结束", PAUSED: "已暂停处理", FAULT: "需要重启恢复" };
-const LIVE_SCENES = { research: "机构研究", trading: "交易执行", governance: "公司治理（待接入）",
-  media: "媒体采编", evaluation: "评估实验（待接入）" };
+const LIVE_SCENES = { research: "机构研究", trading: "交易执行", governance: "公司治理",
+  media: "媒体采编", evaluation: "评估实验（未接入）" };
 function stopLivePoll() {
   if (state.liveTimer) clearTimeout(state.liveTimer);
   state.liveTimer = null;
@@ -2303,6 +2629,14 @@ function clearLiveDom() {
   fillTable("live-budgets", [], () => undefined);
   $("live-decisions").replaceChildren();
   $("live-skips").replaceChildren();
+  $("live-round").textContent = "尚未开始本轮。";
+  const scene = $("live-scene");
+  if (scene) { scene.replaceChildren(); const auto = document.createElement("option");
+    auto.value = ""; auto.textContent = "按人物原路由"; scene.appendChild(auto); scene.value = ""; }
+  $("live-company").replaceChildren();
+  $("live-company").value = "";
+  $("live-company-field").hidden = true;
+  $("live-scene-note").textContent = "";
   $("live-cut").textContent = "尚未读取运行状态。";
   $("live-phase").textContent = "—";
   $("live-summary").textContent = "";
@@ -2318,11 +2652,156 @@ function liveButtons() {
   $("live-pause").disabled = state.liveBusy || !connected || v.paused;
   $("live-resume").disabled = state.liveBusy || !connected || !v.paused;
 }
+/** 当前勾选的本轮人物（真实点击路径）。 */
+function liveCheckedPersons() {
+  return Array.from(document.querySelectorAll('input[name="live-person"]:checked'), node => node.value);
+}
+/** 单个人物可按能力的显式场景；缺字段时退回旧自动场景，不猜测。 */
+function livePersonScenes(person) {
+  if (!person) return [];
+  return Array.isArray(person.scenes) && person.scenes.length ? person.scenes : [person.sceneId];
+}
+/** 人物能力行：自动路由名单与治理名单是两份真实数据，不能互相补人。 */
+function liveSelected(personPartyId) {
+  const payload = state.capabilities || {};
+  const pools = [payload.persons || [], payload.governancePersons || []];
+  for (const pool of pools) {
+    for (const person of pool) {
+      if (person.personPartyId === personPartyId) return person;
+    }
+  }
+  return null;
+}
+/** 本轮可选人物池：显式公司治理才用真实席位/经理名单，其余（含默认自动路由）用旧名单。 */
+function livePersonPool() {
+  const payload = state.capabilities || {};
+  const scene = ($("live-scene") && $("live-scene").value) || "";
+  if (scene === "governance") return payload.governancePersons || [];
+  return payload.persons || [];
+}
+/**
+ * 重建人物勾选列表：换池时只保留仍在池里的人（切回自动路由会清掉纯董事），
+ * 不伪造机构或四岗任职。
+ */
+function renderLivePersons(defaultId) {
+  const list = $("live-persons");
+  if (!list) return [];
+  const pool = livePersonPool();
+  const previous = new Set(liveCheckedPersons());
+  let kept = pool.map(person => person.personPartyId).filter(id => previous.has(id));
+  if (!kept.length && defaultId && pool.some(person => person.personPartyId === defaultId)) {
+    kept = [defaultId];
+  }
+  list.replaceChildren();
+  const legend = document.createElement("legend");
+  legend.textContent = "本轮参与人物";
+  list.appendChild(legend);
+  for (const person of pool) {
+    const label = document.createElement("label"), input = document.createElement("input");
+    input.type = "checkbox"; input.name = "live-person"; input.value = person.personPartyId;
+    input.checked = kept.includes(person.personPartyId);
+    const scenes = livePersonScenes(person).map(id => LIVE_SCENES[id] || id).join("、");
+    label.append(input, document.createTextNode(person.name + " · " + scenes));
+    list.appendChild(label);
+  }
+  if (!pool.length) {
+    const hint = document.createElement("p");
+    hint.textContent = "当前场景没有可选人物。";
+    list.appendChild(hint);
+  }
+  return kept;
+}
+/**
+ * 重建“本轮场景”选项：只列当前档案已接入、且所选人物都能用的场景；默认按人物原路由。
+ * 一个人都不选时只保留默认项，避免把“未选人物”误显示成场景不可用。
+ */
+function renderLiveSceneChoices(persons) {
+  const select = $("live-scene");
+  if (!select) return [];
+  const people = persons !== undefined ? persons : liveCheckedPersons();
+  const supported = (state.capabilities && state.capabilities.supportedScenes) || [];
+  const usable = people.length === 0 ? [] : supported.filter(scene => people.every(id => {
+    const person = liveSelected(id);
+    return person !== null && livePersonScenes(person).includes(scene);
+  }));
+  const previous = select.value;
+  select.replaceChildren();
+  const auto = document.createElement("option");
+  auto.value = ""; auto.textContent = "按人物原路由";
+  select.appendChild(auto);
+  for (const scene of usable) {
+    const option = document.createElement("option");
+    option.value = scene; option.textContent = LIVE_SCENES[scene] || scene;
+    select.appendChild(option);
+  }
+  select.value = usable.includes(previous) ? previous : "";
+  renderLiveCompanyChoices(people);
+  return usable;
+}
+/** 治理轮可选公司：所选人物真实可治理公司的交集；无交集则不提供治理选项。 */
+function renderLiveCompanyChoices(persons) {
+  const select = $("live-company");
+  const field = $("live-company-field");
+  const note = $("live-scene-note");
+  if (!select || !field) return [];
+  const people = persons !== undefined ? persons : liveCheckedPersons();
+  let companies = [];
+  if (people.length) {
+    for (const id of people) {
+      const person = liveSelected(id);
+      const own = (person && person.governanceCompanies) || [];
+      companies = companies.length === 0 ? own.slice() : companies.filter(c => own.includes(c));
+    }
+  }
+  const previous = select.value;
+  select.replaceChildren();
+  for (const company of companies) {
+    const option = document.createElement("option");
+    option.value = company; option.textContent = company;
+    select.appendChild(option);
+  }
+  select.value = companies.includes(previous) ? previous : (companies[0] || "");
+  const governance = $("live-scene").value === "governance";
+  field.hidden = !governance;
+  if (note) {
+    note.textContent = governance
+      ? (companies.length
+        ? "本轮用“公司治理”配置：只影响模型、Key 与预算；人物的观察与工具仍由其真实席位/任职决定。"
+        : "所选人物没有共同的公司：董事席位与经理任职都来自真实世界状态，不能在这里补授。")
+      : "";
+  }
+  return companies;
+}
+/** 本轮开始请求体：只在显式选择场景时带上 scene；治理轮才带 companyId。 */
+function liveStartBody(persons) {
+  if (!state.live) return null;
+  const body = { expectedPosition: state.live.position, persons };
+  body.expectedRevision = state.routeRevision;
+  const scene = ($("live-scene") && $("live-scene").value) || "";
+  if (scene) {
+    body.scene = scene;
+    if (scene === "governance") {
+      const company = ($("live-company") && $("live-company").value) || "";
+      if (!company) { setMessage("live-error", "请选择本轮治理公司。"); return null; }
+      body.companyId = company;
+    }
+  }
+  return body;
+}
+/** 本轮摘要：场景/人员/公司都取服务端同一确认截止的值，不按界面状态猜测。 */
+function liveRoundSummary(v) {
+  if (!v || !v.roundPersons || v.roundPersons.length === 0) return "尚未开始本轮。";
+  const scene = v.roundScene ? (LIVE_SCENES[v.roundScene] || v.roundScene) : "按人物原路由";
+  return "本轮：" + scene + (v.roundCompany ? " · 公司 " + v.roundCompany : "")
+    + " · 人物 " + v.roundPersons.join("、") + "（预算见下表）";
+}
 function renderLive(v) {
   state.live = v;
   renderAdminCut(v);
   $("live-cut").textContent = "运行 " + v.runId + " · 确认记录 " + v.position + " · 模拟时点 " + v.timeMillis + " 毫秒";
   $("live-phase").textContent = LIVE_PHASES[v.phase] || v.phase;
+  $("live-round").textContent = liveRoundSummary(v);
+  renderLiveSceneChoices();
   $("live-summary").textContent = v.phase === "FAULT" ? "本地记录保存失败，须关闭并重启恢复。普通继续不会解除故障。"
     : "尚未发起 " + v.pendingPersons.length + " 人 · 网络请求 " + v.physicalInFlight
       + " 个 · 结果处理占用 " + v.completionSlots + " 个";
@@ -2406,12 +2885,14 @@ async function liveAction(action, event) {
   if (event) event.preventDefault();
   if (state.mode !== "admin" || !state.live || state.liveBusy) return;
   const generation = state.generation;
-  const body = { expectedPosition: state.live.position };
-  if (action === "start") {
-    const persons = Array.from(document.querySelectorAll('input[name="live-person"]:checked'), node => node.value);
+  let body;
+  if (action !== "start") {
+    body = { expectedPosition: state.live.position };
+  } else {
+    const persons = liveCheckedPersons();
     if (!persons.length) { setMessage("live-error", "请选择至少一位人物。"); return; }
-    body.persons = persons;
-    body.expectedRevision = state.routeRevision;
+    body = liveStartBody(persons);
+    if (body === null) return; // liveStartBody 已给出具体原因（如未选治理公司）
   }
   state.liveBusy = true;
   liveButtons();
@@ -2432,6 +2913,10 @@ async function liveAction(action, event) {
   }
 }
 $("live-start-form").addEventListener("submit", event => guard(liveAction("start", event)));
+// 人物勾选与场景选择都只重建本地选项；真正的资格与路由由服务端在同一确认截止判定。
+$("live-persons").addEventListener("change", () => renderLiveSceneChoices());
+// 换场景就换人物池：切到公司治理才出现纯董事，切回自动路由立即清掉不兼容的人。
+$("live-scene").addEventListener("change", () => { renderLivePersons(); renderLiveCompanyChoices(); });
 for (const action of ["stop", "pause", "resume"]) $("live-" + action).addEventListener("click", () => guard(liveAction(action)));
 
 function clearInterviewDom() {

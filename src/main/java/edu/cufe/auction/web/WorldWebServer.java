@@ -10,6 +10,7 @@ import com.sun.net.httpserver.HttpServer;
 
 import edu.cufe.auction.world.RoleView;
 import edu.cufe.auction.world.ValuationModel;
+import edu.cufe.auction.world.WorldRuntime;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -62,13 +63,25 @@ public final class WorldWebServer implements AutoCloseable {
     /** 表现历史请求字段：主体与所选区间的起止确认位置。 */
     private static final Set<String> PERFORMANCE_HISTORY_FIELDS = Set.of("ownerId", "startPosition",
             "endPosition");
-    private static final Set<String> LIVE_START_FIELDS = Set.of("expectedPosition", "expectedRevision", "persons");
+    private static final Set<String> LIVE_START_FIELDS = Set.of("expectedPosition", "expectedRevision",
+            "persons", "scene", "companyId");
     private static final Set<String> LIVE_CONTROL_FIELDS = Set.of("expectedPosition");
     private static final Set<String> LIVE_ACTIONS = Set.of("/api/admin/live/start", "/api/admin/live/stop",
             "/api/admin/live/pause", "/api/admin/live/resume");
     private static final Set<String> ADVANCE_FIELDS = Set.of("expectedPosition", "targetMillis");
     private static final Set<String> REVEAL_FIELDS = Set.of("confirm");
     private static final Set<String> ROUTE_REPLACE_FIELDS = Set.of("expectedRevision", "routes");
+    /** 历史索引查询参数：只允许起点与条数。 */
+    private static final Set<String> HISTORY_INDEX_QUERY = Set.of("after", "limit");
+    /** 历史视图查询参数：只允许位置。 */
+    private static final Set<String> HISTORY_VIEW_QUERY = Set.of("position");
+    /** 检查点核验请求体上限：信封含整份状态，比普通命令体大，但仍严格有界。 */
+    public static final int MAX_CHECKPOINT_BYTES = 4 * 1024 * 1024;
+    /** 历史端点路径（只读，仅管理员）。 */
+    private static final String HISTORY_INDEX_PATH = "/api/admin/history";
+    private static final String HISTORY_VIEW_PATH = "/api/admin/history/view";
+    private static final String HISTORY_CHECKPOINT_PATH = "/api/admin/history/checkpoint";
+    private static final String HISTORY_VERIFY_PATH = "/api/admin/history/verify";
     private static final Set<String> ROUTE_FIELDS = Set.of("scene", "slotId", "model", "enabled",
             "maxCalls", "maxTotalTokens", "maxOutputTokens", "maxConcurrency");
     /** 工程页公司选择：只接受一个公司标识。 */
@@ -290,6 +303,22 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> beliefView(exchange));
                 return;
             }
+            if (HISTORY_INDEX_PATH.equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> historyIndex(exchange));
+                return;
+            }
+            if (HISTORY_VIEW_PATH.equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> historyView(exchange));
+                return;
+            }
+            if (HISTORY_CHECKPOINT_PATH.equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> historyCheckpoint(exchange));
+                return;
+            }
+            if (HISTORY_VERIFY_PATH.equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> historyVerify(exchange));
+                return;
+            }
             if ("/api/admin/keys".equals(path) && "GET".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> listKeys(exchange));
                 return;
@@ -455,6 +484,13 @@ public final class WorldWebServer implements AutoCloseable {
             return true;
         }
         if ("/api/admin/beliefs".equals(path) && "POST".equals(method)) {
+            return true;
+        }
+        if ((HISTORY_INDEX_PATH.equals(path) || HISTORY_VIEW_PATH.equals(path)
+                || HISTORY_CHECKPOINT_PATH.equals(path)) && "GET".equals(method)) {
+            return true;
+        }
+        if (HISTORY_VERIFY_PATH.equals(path) && "POST".equals(method)) {
             return true;
         }
         if ("/api/admin/keys".equals(path) && "GET".equals(method)) {
@@ -750,6 +786,221 @@ public final class WorldWebServer implements AutoCloseable {
         send(exchange, 200, mapper.writeValueAsString(view));
     }
 
+    /**
+     * GET /api/admin/history?after=&limit=：已确认历史索引页（只读，仅管理员）。
+     *
+     * @param exchange 请求
+     * @throws IOException              写响应失败
+     * @throws WorldWebHost.BusyException 队列满
+     */
+    private void historyIndex(HttpExchange exchange) throws IOException,
+            WorldWebHost.BusyException {
+        Long after = queryLong(exchange, "after", 0L, HISTORY_INDEX_QUERY);
+        if (after == null) {
+            return;
+        }
+        Long limit = queryLong(exchange, "limit", 50L, HISTORY_INDEX_QUERY);
+        if (limit == null) {
+            return;
+        }
+        if (limit < 1 || limit > WorldRuntime.MAX_HISTORY_PAGE) {
+            send(exchange, 400, error("INVALID", "limit 必须在 1 到 "
+                    + WorldRuntime.MAX_HISTORY_PAGE + " 之间"));
+            return;
+        }
+        Object view;
+        try {
+            view = host.historyIndex(after, limit.intValue());
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "请求参数不合法" : invalid.getMessage()));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /**
+     * GET /api/admin/history/view?position=：固定位置的历史只读视图。
+     *
+     * @param exchange 请求
+     * @throws IOException              写响应失败
+     * @throws WorldWebHost.BusyException 队列满
+     */
+    private void historyView(HttpExchange exchange) throws IOException,
+            WorldWebHost.BusyException {
+        Long position = queryLong(exchange, "position", null, HISTORY_VIEW_QUERY);
+        if (position == null) {
+            return;
+        }
+        Object view;
+        try {
+            view = host.historyView(position);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "位置不合法" : invalid.getMessage()));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /**
+     * GET /api/admin/history/checkpoint?position=：下载该位置的检查点信封。
+     *
+     * <p>文件名与内容都由服务端生成；不接受任何客户端路径或文件名参数。</p>
+     *
+     * @param exchange 请求
+     * @throws IOException              写响应失败
+     * @throws WorldWebHost.BusyException 队列满
+     */
+    private void historyCheckpoint(HttpExchange exchange) throws IOException,
+            WorldWebHost.BusyException {
+        Long position = queryLong(exchange, "position", null, HISTORY_VIEW_QUERY);
+        if (position == null) {
+            return;
+        }
+        String body;
+        String run;
+        try {
+            WorldRuntime.Checkpoint checkpoint = host.checkpoint(position);
+            run = checkpoint.runId();
+            body = mapper.writeValueAsString(checkpoint);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "位置不合法" : invalid.getMessage()));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        sendAttachment(exchange, "world-checkpoint-" + safeName(run) + "-" + position + ".json",
+                body);
+    }
+
+    /**
+     * POST /api/admin/history/verify：核验上传的检查点信封。
+     *
+     * @param exchange 请求
+     * @throws IOException              写响应失败
+     * @throws WorldWebHost.BusyException 队列满
+     */
+    private void historyVerify(HttpExchange exchange) throws IOException,
+            WorldWebHost.BusyException {
+        String body = checkpointBody(exchange);
+        if (body == null) {
+            return;
+        }
+        Object verdict;
+        try {
+            verdict = host.verifyCheckpoint(body);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(verdict));
+    }
+
+    /** 读取核验请求体：只收 JSON 文本，按专门上限有界读取，不接触任何文件路径。 */
+    private String checkpointBody(HttpExchange exchange) throws IOException {
+        requireJsonType(exchange);
+        String length = exchange.getRequestHeaders().getFirst("Content-Length");
+        if (length != null) {
+            try {
+                if (Long.parseLong(length) > MAX_CHECKPOINT_BYTES) {
+                    send(exchange, 413, error("BODY_TOO_LARGE", "检查点过大"));
+                    return null;
+                }
+            } catch (NumberFormatException malformed) {
+                send(exchange, 400, error("INVALID", "请求头不合法"));
+                return null;
+            }
+        }
+        byte[] raw = readBounded(exchange.getRequestBody(), MAX_CHECKPOINT_BYTES);
+        if (raw == null) {
+            send(exchange, 413, error("BODY_TOO_LARGE", "检查点过大"));
+            return null;
+        }
+        return new String(raw, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 解析单个十进制查询参数。
+     *
+     * <p>只接受十进制数字；未列出的参数、重复参数、非法数字与缺失必填项一律 400。</p>
+     *
+     * @param exchange 请求
+     * @param name     参数名
+     * @param fallback 缺省值；为 null 表示必填
+     * @param allowed  允许出现的参数名集合
+     * @return 参数值；已发送错误响应时返回 null
+     * @throws IOException 写响应失败
+     */
+    private Long queryLong(HttpExchange exchange, String name, Long fallback, Set<String> allowed)
+            throws IOException {
+        String raw = exchange.getRequestURI().getRawQuery();
+        String found = null;
+        if (raw != null && !raw.isEmpty()) {
+            for (String part : raw.split("&")) {
+                if (part.isEmpty()) {
+                    continue;
+                }
+                int eq = part.indexOf('=');
+                String key = eq < 0 ? part : part.substring(0, eq);
+                if (!allowed.contains(key)) {
+                    send(exchange, 400, error("INVALID", "存在未知参数：" + key));
+                    return null;
+                }
+                if (key.equals(name)) {
+                    if (found != null) {
+                        send(exchange, 400, error("INVALID", "参数重复：" + name));
+                        return null;
+                    }
+                    found = eq < 0 ? "" : part.substring(eq + 1);
+                }
+            }
+        }
+        if (found == null) {
+            if (fallback == null) {
+                send(exchange, 400, error("INVALID", "缺少参数：" + name));
+                return null;
+            }
+            return fallback;
+        }
+        if (!found.matches("[0-9]{1,18}")) {
+            send(exchange, 400, error("INVALID", name + " 必须是十进制整数"));
+            return null;
+        }
+        return Long.parseLong(found);
+    }
+
+    /** 附件名只保留安全字符：文件名由服务端生成，客户端无法指定。 */
+    private static String safeName(String raw) {
+        return raw == null ? "run" : raw.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    /** 以附件形式返回服务端生成的 JSON 文本；不落盘。 */
+    private void sendAttachment(HttpExchange exchange, String fileName, String body)
+            throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        exchange.getResponseHeaders().set("Content-Disposition",
+                "attachment; filename=\"" + fileName + "\"");
+        securityHeaders(exchange);
+        exchange.sendResponseHeaders(200, bytes.length);
+        try (OutputStream output = exchange.getResponseBody()) {
+            output.write(bytes);
+        }
+    }
+
     /** 两个只读管理员入口都经过统一身份验证，不开放角色原始审计。 */
     private void mediaOverview(HttpExchange exchange, String path)
             throws IOException, WorldWebHost.BusyException {
@@ -970,6 +1221,8 @@ public final class WorldWebServer implements AutoCloseable {
             return;
         }
         List<String> persons = new ArrayList<>();
+        String scene = null;
+        String companyId = null;
         if (start) {
             JsonNode array = body.get("persons");
             if (array == null || !array.isArray() || array.size() < 1 || array.size() > 4) {
@@ -984,16 +1237,51 @@ public final class WorldWebServer implements AutoCloseable {
                 }
                 persons.add(person.textValue());
             }
+            JsonNode sceneNode = body.get("scene");
+            if (sceneNode != null) {
+                if (!sceneNode.isTextual() || sceneNode.textValue().isBlank()) {
+                    send(exchange, 400, error("INVALID", "本轮场景必须是已知场景标识"));
+                    return;
+                }
+                try {
+                    SceneRoutes.Scene.fromId(sceneNode.textValue());
+                } catch (RuntimeException unknown) {
+                    send(exchange, 400, error("INVALID", "本轮场景必须是已知场景标识"));
+                    return;
+                }
+                scene = sceneNode.textValue();
+            }
+            JsonNode companyNode = body.get("companyId");
+            if (companyNode != null) {
+                if (!companyNode.isTextual() || companyNode.textValue().isBlank()) {
+                    send(exchange, 400, error("INVALID", "公司标识必须是非空文本"));
+                    return;
+                }
+                companyId = companyNode.textValue();
+            }
+            boolean governance = WorldWebHost.SCENE_GOVERNANCE.equals(scene);
+            if (companyId != null && !governance) {
+                send(exchange, 400, error("INVALID", "只有公司治理轮可以绑定公司"));
+                return;
+            }
+            if (governance && companyId == null) {
+                send(exchange, 400, error("INVALID", "公司治理轮必须绑定真实公司"));
+                return;
+            }
         }
         try {
             switch (path) {
-                case "/api/admin/live/start" -> host.startLiveRound(position, revision, persons);
+                case "/api/admin/live/start" -> host.startLiveRound(position, revision, persons,
+                        scene, companyId);
                 case "/api/admin/live/stop" -> host.stopLiveRound(position);
                 case "/api/admin/live/pause" -> host.pauseLive(position);
                 case "/api/admin/live/resume" -> host.resumeLive(position);
                 default -> throw new IllegalArgumentException("未知操作");
             }
             send(exchange, 200, mapper.writeValueAsString(liveState()));
+        } catch (WorldWebHost.SceneRejected rejected) {
+            // 场景/公司/资格拒绝：无副作用，回显服务端自述的可公开原因。
+            send(exchange, 400, error("INVALID", rejected.getMessage()));
         } catch (WorldWebHost.PositionMismatch mismatch) {
             send(exchange, 409, error("POSITION_MISMATCH", "世界记录已变化，请刷新后重新选择操作"));
         } catch (SceneRoutes.RevisionMismatch mismatch) {
@@ -1669,6 +1957,11 @@ public final class WorldWebServer implements AutoCloseable {
     }
 
     private static byte[] readBounded(InputStream input) throws IOException {
+        return readBounded(input, MAX_BODY_BYTES);
+    }
+
+    /** 按指定上限读取请求体；超过上限返回 null（由调用方明确回 413）。 */
+    private static byte[] readBounded(InputStream input, int limit) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         byte[] buffer = new byte[1024];
         int total = 0;
@@ -1679,7 +1972,7 @@ public final class WorldWebServer implements AutoCloseable {
                     break;
                 }
                 total += read;
-                if (total > MAX_BODY_BYTES) {
+                if (total > limit) {
                     return null;
                 }
                 output.write(buffer, 0, read);
