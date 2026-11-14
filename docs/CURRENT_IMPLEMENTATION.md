@@ -4,9 +4,9 @@
 
 ## 已接入的最新增量
 
-新指令原意批次已正式验收：1847项、CSV47/131/7、Node/真实GUI/JavaDoc通过；独立网页intent模式、父子恢复与停止竞态修复实测通过，待本批PR/部署记录更新。银行组合与三类制造pure仍分别验收，详见§95–97。
+最新持久[本机Web](http://127.0.0.1:18080/)为代码65a78bb、[草稿PR50](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/50)，依赖PR49。正式1847项零失败/错误/跳过、CSV47/131/7、Node/真实GUI/JavaDoc通过，CI43576078384核对精确代码success。完整指令原意新档与停止竞态修复已接入；实际新档浏览器建支/推进/停止重启通过。原网页仍groups规则、17/100000ms、15账户4待办，五Key配置保留且五场景OFF；不隐式迁移。详情§95–98。人工review另列；银行组合与其它公司模板仍未交付。
 
-最新持久[本机 Web](http://127.0.0.1:18080/)为代码d1ed4a7、[草稿PR49](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/49)（依赖PR48）。已加入历史位置派生独立子世界、有限本机进程启动/进入/停止/重启、父子会话隔离，保留原记录17/100000ms。正式1807项零失败/错误/跳过、CSV45/124/7、全部Web Node/结构、真实GUI及JavaDoc通过；CI43572652734对精确代码提交completed/success。独立预览实际人物发帖后子运行重启仍9/25/PUBLISHED，父5/0不变；正式网页切点17可用，五Key配置齐全且五场景OFF。首轮文件锁备份失败已回退并成功重试，详情§94。人工review仍待，不自动合并；下述旧版仅为历史证据。
+此前分支版本[本机 Web](http://127.0.0.1:18080/)为代码d1ed4a7、[草稿PR49](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/49)（依赖PR48）。已加入历史位置派生独立子世界、有限本机进程启动/进入/停止/重启、父子会话隔离，保留原记录17/100000ms。正式1807项零失败/错误/跳过、CSV45/124/7、全部Web Node/结构、真实GUI及JavaDoc通过；CI43572652734对精确代码提交completed/success。独立预览实际人物发帖后子运行重启仍9/25/PUBLISHED，父5/0不变；正式网页切点17可用，五Key配置齐全且五场景OFF。首轮文件锁备份失败已回退并成功重试，详情§94。人工review仍待，不自动合并；下述旧版仅为历史证据。
 
 此前0356058版[本机 Web](http://127.0.0.1:18080/)交付治理专门场景、历史回看/检查点与通用任职恢复修复，代码0356058、[草稿PR48](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/48)，依赖PR47，人工review待完成。正式1744/0、CSV49/128/7、Node/GUI/JavaDoc通过；CI43550045119核对精确代码提交completed/success。新进程保留原100000ms/记录17及群帖，历史记录8显示25ms时的真实发表状态。独审关闭首次撤权回填及历史信封/导出4项缺口；浏览器验证导出绑定已显示位置、改时间拒绝、回实时清空信封。详情见§81–83。以下是此前交付证据，不是另一个在线入口。
 
