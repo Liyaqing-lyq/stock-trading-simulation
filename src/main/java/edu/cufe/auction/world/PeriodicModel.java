@@ -1347,6 +1347,26 @@ public final class PeriodicModel {
      * @return 候选结果；同席同内容重复为幂等
      */
     public static Outcome approve(State state, Approval approval, Access access, long now) {
+        return approve(state, approval, access, now, -1L);
+    }
+
+    /**
+     * 带真实会议窗口的批准入口。
+     *
+     * <p>窗口语义：{@code windowClosesAt > 0} 时，{@code now >= windowClosesAt} 一律按
+     * {@link #REASON_REVIEW_WINDOW_CLOSED} 拒绝，并且<b>先于</b>「已有授权 / 未实读 / 本人是编制人」
+     * 等机器状态门判定，避免用后者的理由冒充「窗口已关」。{@code windowClosesAt <= 0} 表示
+     * 旧入口语义（无窗口），逐字保持已发布旧规则的行为。</p>
+     *
+     * @param state          周期状态
+     * @param approval       董事批准
+     * @param access         真实证据访问
+     * @param now            提交时点
+     * @param windowClosesAt 冻结会议窗口右端点；{@code <=0} 表示不启用窗口检查
+     * @return 纯核结果
+     */
+    public static Outcome approve(State state, Approval approval, Access access, long now,
+            long windowClosesAt) {
         requireState(state);
         Objects.requireNonNull(approval, "董事批准");
         requireTime(now);
@@ -1365,6 +1385,9 @@ public final class PeriodicModel {
         }
         if (approval.approvedAt() != now) {
             return rejected(state, REASON_BEHAVIOUR_TIME_MISMATCH);
+        }
+        if (windowClosesAt > 0 && now >= windowClosesAt) {
+            return rejected(state, REASON_REVIEW_WINDOW_CLOSED);
         }
         if (approval.approvedAt() < draft.preparedAt()) {
             return rejected(state, REASON_FUTURE_EVIDENCE);

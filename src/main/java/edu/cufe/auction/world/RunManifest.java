@@ -110,6 +110,71 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1 =
             "interview-dialogue-experiment-v1";
 
+    /** schema19：在登记档案之上启用显式银行与托管模块（B5 真实开局/恢复，EXP）。 */
+    public static final String RULES_BANKING_WORLD_EXPERIMENT_V1 = "banking-world-experiment-v1";
+
+    /**
+     * schema19：在银行与托管之上再加真实任职与资料阅读（B6 银行人物动作，EXP）。
+     *
+     * <p>版本号仍是 19：角色语义由<b>模块集合</b>冻结，不由 schema 推断；因此同一 schema 下
+     * 只有该档案才允许出现银行人物动作、贷款台账与 BEGIN/FINISH 任务。</p>
+     */
+    public static final String RULES_BANKING_ROLES_EXPERIMENT_V1 = "banking-roles-experiment-v1";
+
+    /**
+     * schema19：在银行角色档之上把证券订单的资金腿接到现金/存款桶（B7a 资金桶结算，EXP）。
+     *
+     * <p>能力由<b>模块集合</b>显式冻结：{@code cash, scheduler, registry, roles, information,
+     * banking, custody, securities, matching, funding}，各 1。{@code funding} 与 {@code groups}
+     * 互不隐含；本档不含 {@code manufacturing/governance/trading}，因此不声称经营付款、四岗
+     * 交易或群平台能力。schema 仍是 19（唯一由 {@code banking} 模块决定）。</p>
+     */
+    public static final String RULES_BANKING_FUNDS_EXPERIMENT_V1 = "banking-funds-experiment-v1";
+
+    /**
+     * schema24：群组 20 档全部模块与银行三模块的并集组合档（EXP，不迁移旧档）。
+     *
+     * <p>本档案是<b>一次定版</b>的组合：模块表 = 群组 20 档 23 个模块 + {@code banking/custody/
+     * funding}（共 26）。托管<b>模块</b>存在不等于托管<b>成交能力</b>启用：本档不开 CUSTODY
+     * 资金桶、不实现 B7b 客户受益权成交。任何加模块都必须新开组合版本，不得在本档追加。</p>
+     */
+    public static final String RULES_COMPOSED_BANK_WORLD_V1 = "composed-v1";
+
+    /**
+     * schema24：组合档加上 {@code command-intent} 模块（27 模块）的显式新版本。
+     *
+     * <p>按组合合同「加模块必须新开版本」的约定，本档不是往 {@code composed-v1} 追加：
+     * {@code composed-v1} 的 26 模块表逐字不变，旧运行仍按原契约读取。本档在同样的银行 + 群组
+     * 世界里把外部排程命令正文升级为完整原意信封（命令/待办/种类/阶段/到期/工时），恢复时按
+     * 原命令重演真实排程入口，不再由当前待办反推时点。</p>
+     */
+    public static final String RULES_COMPOSED_BANK_WORLD_V2 = "composed-v2";
+
+    /**
+     * schema24：组合档再加 {@code custody-fill} 模块（{@code composed-v2} 原集合 + 1）的显式新版本。
+     *
+     * <p>客户托管受益权成交（B7b）由<b>显式模块</b> {@code custody-fill} 冻结，不由
+     * {@code custody} 模块、schema 号或档案名反推。{@code composed-v1} 与 {@code composed-v2}
+     * 的模块表、旧 JSON 与“拒绝 CUSTODY 资金桶”的行为逐字不变：它们的档案里可能已有被拒绝的
+     * CUSTODY 订单或付款尝试，因此不能把“以前不会有成功托管订单”当作重演不变的依据。</p>
+     *
+     * <p>本档继承 {@code composed-v2} 的完整原意（命令意图信封、默认周期治理、规范序列化与
+     * 分支子世界身份）；区别只有真实托管三账可用于订单资金腿。schema 结构不变，不重编号。</p>
+     */
+    public static final String RULES_COMPOSED_BANK_WORLD_V3 = "composed-v3";
+
+    /**
+     * schema19：在 B7a 资金桶档之上把<b>客户托管受益权</b>接入证券成交（B7b，EXP）。
+     *
+     * <p>模块集合 = B7a 十项 + {@code custody-fill}，各 1。{@code custody-fill} 只表示
+     * “订单/付款可以用 {@code CUSTODY|托管人|客户} 桶结算”，客户明细仍是
+     * {@link edu.cufe.auction.world.bank.CustodyBook} 一份，随 {@code BankRun.custodyJson}
+     * 同批提交。它不打开经营付款、四岗交易、治理或群平台；schema 仍由 {@code banking}
+     * 模块决定为 19。</p>
+     */
+    public static final String RULES_BANKING_CUSTODY_EXPERIMENT_V1 =
+            "banking-custody-experiment-v1";
+
     /** live 决定档案唯一允许的模型配置版本；与真实 HTTP 提供方严格成对。 */
     public static final String LIVE_DECISIONS_V1 = "live-decisions-v1";
 
@@ -331,6 +396,106 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("publication");
     }
 
+    /**
+     * 是否启用银行账与贷款台账模块。
+     *
+     * @return 模块表包含 banking 时返回 true
+     */
+    public boolean hasBank() {
+        return moduleVersions.containsKey("banking");
+    }
+
+    /**
+     * 是否启用真实任职的银行人物动作。
+     *
+     * <p>资金桶档与组合档都是“银行角色 + 证券/撮合/资金模块”，因此具备银行人物动作入口
+     * （存款/取现/支付/借贷仍受真实任职与主体约束）。只看规则档案名，不看 schema：同是 19 的
+     * {@code banking-world-experiment-v1} 没有任职，必须返回 false。</p>
+     *
+     * @return 规则档案是银行角色实验档、B7a 资金桶档或组合档时返回 true
+     */
+    public boolean hasBankRoles() {
+        return RULES_BANKING_ROLES_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_BANKING_FUNDS_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_BANKING_CUSTODY_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V1.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+    }
+
+    /**
+     * 是否启用托管明细模块。
+     *
+     * <p>本档可以存在托管<b>模块</b>，但客户受益权成交能力未启用；见 {@link #hasFunding()} 的说明。</p>
+     *
+     * @return 模块表包含 custody 时返回 true
+     */
+    public boolean hasCustody() {
+        return moduleVersions.containsKey("custody");
+    }
+
+    /**
+     * 是否启用组合档（{@code composed-v1} 与带意图信封的 {@code composed-v2}）。
+     *
+     * @return 规则档案为任一组合档时返回 true
+     */
+    public boolean hasComposedBankWorld() {
+        return RULES_COMPOSED_BANK_WORLD_V1.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+    }
+
+    /**
+     * 是否启用「默认定期治理」：额外治理公司开局自动排第 1 期期末采样，之后由实际采样任务派生。
+     *
+     * <p>只对 {@code composed-v2} 为真：{@code composed-v1} 与更旧档案的行为、JSON 与待办集合
+     * 一律不变，不因为升级组合版本就给旧运行补任务。</p>
+     *
+     * @return 规则档案是带意图信封的组合档时返回 true
+     */
+    public boolean hasDefaultPeriodicGovernance() {
+        return RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+    }
+
+    /**
+     * 是否启用额外公司治理容器（目前仅组合档的 north）。
+     *
+     * <p>只认冻结模块表，不由档案名或 schema 推断；旧档案一律 false，状态里也不会出现该组件。</p>
+     *
+     * @return 模块表包含 company-governance 时返回 true
+     */
+    public boolean hasCompanyGovernance() {
+        return moduleVersions.containsKey("company-governance");
+    }
+
+    /**
+     * 是否启用证券订单的资金桶结算模块（B7a）。
+     *
+     * <p>只看模块表，不由规则档案名或 schema 反推：旧 1–19 档一律返回 false，
+     * 因此旧档订单不会进入资金桶校验/结算路径；{@code groups} 与 {@code funding} 也互不隐含。</p>
+     *
+     * @return 模块表包含 funding 时返回 true
+     */
+    public boolean hasFunding() {
+        return moduleVersions.containsKey("funding");
+    }
+
+    /**
+     * 是否启用<b>客户托管受益权成交</b>模块（B7b）。
+     *
+     * <p>只看模块表，不由规则档案名、schema 或 {@link #hasCustody()} 反推。
+     * {@code hasCustody()} 在 B5/B6/B7a/组合档已为 true（那是“托管明细账存在”），
+     * 本方法只认 B7b 的 {@code custody-fill}：旧档因此继续拒绝 {@code CUSTODY} 资金桶，
+     * 行为逐字不变。{@code composed-v3} 是显式把该模块加入的新组合；{@code composed-v1/v2}
+     * 的模块表里没有它，继续按旧契约拒绝。</p>
+     *
+     * @return 模块表包含 custody-fill 时返回 true
+     */
+    public boolean hasCustodyFill() {
+        return moduleVersions.containsKey("custody-fill");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -354,6 +519,13 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_MEDIA_EVIDENCE_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_BANKING_WORLD_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_BANKING_ROLES_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_BANKING_FUNDS_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_COMPOSED_BANK_WORLD_V1.equals(rulesVersion)
+                && !RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
+                && !RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)
+                && !RULES_BANKING_CUSTODY_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_COMMAND_INTENT_EXPERIMENT_V1.equals(rulesVersion)) {
@@ -379,8 +551,22 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         Map<String, Integer> expected = new TreeMap<>();
         expected.put("cash", 1);
         expected.put("scheduler", 1);
-        boolean withGroups = RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_COMMAND_INTENT_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withIntent = RULES_COMMAND_INTENT_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+        boolean withBankCustody = RULES_BANKING_CUSTODY_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withFunds = RULES_BANKING_FUNDS_EXPERIMENT_V1.equals(rulesVersion)
+                || withBankCustody
+                || RULES_COMPOSED_BANK_WORLD_V1.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+        boolean withBankWorld = RULES_BANKING_WORLD_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withBankRoles = RULES_BANKING_ROLES_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withComposed = RULES_COMPOSED_BANK_WORLD_V1.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+        boolean withGroups = withComposed || withIntent
+                || RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion);
         boolean withEngineering = withGroups
                 || RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion);
         boolean withSocial = withEngineering || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion);
@@ -418,9 +604,20 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         boolean withSecurities = withLive
                 || RULES_SECURITIES_CLEARING_EXPERIMENT_V1.equals(rulesVersion)
                 || withMatching;
+        boolean withBanking = withBankWorld || withBankRoles;
         boolean withRegistry = withLive
                 || RULES_CASH_REGISTRY_WORLD_V1.equals(rulesVersion)
-                || withSecurities;
+                || withSecurities
+                || withBanking;
+        // 银行三条旧档（world/roles/funds）各自是独立分支：只在完整公司派生链算完之后增补，
+        // 不能参与上面的 withRoles→withGovernance→withManufacturing→withMatching 派生，
+        // 否则“有 roles”会被误读成“有治理/制造/撮合”，纯银行运行会被迫提供制造开局。
+        withRoles = withRoles || withBankRoles;
+        withRoles = withRoles || withFunds;
+        withMatching = withMatching || withFunds;
+        withSecurities = withSecurities || withFunds;
+        withRegistry = withRegistry || withFunds;
+        withBanking = withBanking || withFunds;
         if (withRegistry) {
             expected.put("registry", 1);
         }
@@ -443,7 +640,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         if (withTrading) {
             expected.put("trading", 1);
         }
-        if (RULES_COMMAND_INTENT_EXPERIMENT_V1.equals(rulesVersion)) {
+        if (withIntent) {
             expected.put("command-intent", 1);
         }
         if (RULES_DECISION_EXPERIMENT_V1.equals(rulesVersion) || withDividend) {
@@ -486,6 +683,34 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         if (withGroups) {
             expected.put("groups", 1);
             expected.put("publication", 1);
+        }
+        if (withBanking) {
+            // 显式银行档案：银行与托管各是一个模块，不由 schema 推断
+            expected.put("banking", 1);
+            expected.put("custody", 1);
+        }
+        if (withComposed) {
+            // 组合档额外公司（目前 north）的真实董事会与周期容器；与 engineering/manufacturing 不相交
+            expected.put("company-governance", 1);
+        }
+        if (withBankCustody) {
+            // B7b 是独立分支：只加任职与阅读，不派生治理/制造/四岗交易。
+            expected.put("information", 1);
+            expected.put("roles", 1);
+        }
+        if (withFunds) {
+            // 资金桶结算必须与银行/证券/撮合/任职/阅读同时存在（成对，不靠编号猜）
+            if (!expected.containsKey("banking") || !expected.containsKey("securities")
+                    || !expected.containsKey("matching") || !expected.containsKey("roles")
+                    || !expected.containsKey("information")) {
+                throw new IllegalArgumentException("资金桶档案缺少成对模块："
+                        + rulesVersion + " 需要 banking/custody/securities/matching/roles/information");
+            }
+            expected.put("funding", 1);
+        }
+        if (withBankCustody || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)) {
+            // 客户托管受益权成交由显式模块冻结；v1/v2 没有该模块，继续拒绝 CUSTODY。
+            expected.put("custody-fill", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "

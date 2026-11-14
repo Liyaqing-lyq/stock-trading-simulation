@@ -128,6 +128,14 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
 
     /** schema18b：公司经理经营动作（签约/开工/开票/终止/付款等）。 */
     public static final String ENGINEERING_ACTION_V1 = "ENGINEERING_ACTION_V1";
+
+    /**
+     * 组合档 v2：显式资金经营动作（预收/投入/回款/质保/追索）。
+     *
+     * <p>与 {@link #ENGINEERING_ACTION_V1} 并列的第二种类，**不改动**旧 payload 形状：
+     * 只有这个 kind 才携带显式资金桶与政策标签，旧档不会出现它，也不需要迁移。</p>
+     */
+    public static final String ENGINEERING_FUND_V1 = "ENGINEERING_FUND_V1";
     /** schema18b：冻结客户响应事件（验收/拒验/延迟/付款/逾期）。 */
     public static final String CUSTOMER_EVENT_V1 = "CUSTOMER_EVENT_V1";
 
@@ -301,6 +309,22 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 逐轮访谈：回复期限门，到期结束真实会话（RULES，schema15）。 */
     public static final String INTERVIEW_DIALOGUE_DEADLINE_V1 = "INTERVIEW_DIALOGUE_DEADLINE_V1";
 
+    /**
+     * 银行人物动作的真实 BEGIN 屏障（RULES，schema19 银行角色档案）。
+     *
+     * <p>排程只落意图与屏障：屏障到期复核人物任职、银行绑定与焦点，通过后才排真正的
+     * {@link #BANK_ACTION_V1} 完成帧；被拒时只留一条业务拒绝事件，不留完成帧、不占焦点。</p>
+     */
+    public static final String BANK_ACTION_BEGIN_V1 = "BANK_ACTION_BEGIN_V1";
+
+    /**
+     * 银行人物动作的完成帧（COMPLETION，schema19 银行角色档案）。
+     *
+     * <p>到期时从上一帧的现金账户、银行三态与贷款台账重新执行一次纯动作，结果与待办、
+     * 命令记录、事件一起在同一次世界提交里落盘。</p>
+     */
+    public static final String BANK_ACTION_V1 = "BANK_ACTION_V1";
+
     /** 校验必需字段与 kind/phase 对应关系。 */
     public PendingTask {
         if (taskId == null || taskId.isBlank()) {
@@ -374,9 +398,9 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                 }
             }
             case ENGINEERING_BEGIN_V1, ENGINEERING_BOARD_V1, BOARD_ATTEND_V1,
-                 ENGINEERING_ACTION_V1, ENGINEERING_PERIODIC_V1,
+                 ENGINEERING_ACTION_V1, ENGINEERING_FUND_V1, ENGINEERING_PERIODIC_V1,
                  PERIOD_CLOSE_V1,
-                 PERIOD_DISCLOSURE_DEADLINE_V1 -> {
+                 PERIOD_DISCLOSURE_DEADLINE_V1, BANK_ACTION_BEGIN_V1 -> {
                 if (phase != WorldScheduler.Phase.RULES) {
                     throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
                 }
@@ -400,7 +424,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  INTERVIEW_CANCEL_V1, INTERVIEW_END_V1, INTERVIEW_SPEAK_V1,
                  MEDIA_EVIDENCE_SHARE_V1, SOCIAL_BEGIN_V1, SOCIAL_FINISH_V1, SOCIAL_DELIVER_V1,
                  SOCIAL_BLOCK_V1, SOCIAL_UNBLOCK_V1,
-                 GROUP_BEGIN_V1, GROUP_FINISH_V1, GROUP_PUBLISH_V1 -> {
+                 BANK_ACTION_V1, GROUP_BEGIN_V1, GROUP_FINISH_V1, GROUP_PUBLISH_V1 -> {
                 if (phase != WorldScheduler.Phase.COMPLETION) {
                     throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }

@@ -123,6 +123,7 @@ public final class GovernanceProposalTamperProbe {
                     String stateJson = event.path("payload").asText();
                     String tampered = tamperState(stateJson, kind);
                     if (!tampered.equals(stateJson)) {
+                        MAPPER.readTree(tampered); // 负例必须是合法 JSON，不能以语法错误冒充语义拒绝。
                         ((ObjectNode) event).put("payload", tampered);
                         mutated = true;
                     }
@@ -176,9 +177,11 @@ public final class GovernanceProposalTamperProbe {
                 + "\"commandId\":\"system:close-period:1\","
                 + "\"kind\":\"MANUFACTURING_PERIOD_CLOSE_V1\",\"meetingId\":\"appt-2\","
                 + "\"accepted\":true,\"reason\":\"OK\",\"timeMillis\":" + P
-                + ",\"position\":4},";
+                + ",\"position\":4}";
         int insertAt = governance[0] + reports[0] + 1;
-        return stateJson.substring(0, insertAt) + report + stateJson.substring(insertAt);
+        boolean empty = within.substring(reports[0] + 1, reports[1] - 1).isBlank();
+        return stateJson.substring(0, insertAt) + report + (empty ? "" : ",")
+                + stateJson.substring(insertAt);
     }
 
     /** 找到 key 后紧跟对象的位置，返回其花括号范围 [start,end)（含字符串转义处理）。 */

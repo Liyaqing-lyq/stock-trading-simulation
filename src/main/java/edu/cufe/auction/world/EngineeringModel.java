@@ -1,6 +1,8 @@
 package edu.cufe.auction.world;
 
 import edu.cufe.auction.world.CashLedger.CashAccount;
+import edu.cufe.auction.world.bank.BankingProfile;
+import edu.cufe.auction.world.bank.FundState;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -121,6 +123,18 @@ public final class EngineeringModel {
     public static final String REASON_OVERFLOW = "OVERFLOW";
     /** 合同级成本/人工尾差无法闭合成非负值。 */
     public static final String REASON_ALLOCATION_INVALID = "ALLOCATION_INVALID";
+
+    /** 资金腿出款主体与业务配置的公司所有者不一致。 */
+    public static final String REASON_FUND_OWNER_MISMATCH = "FUND_OWNER_MISMATCH";
+
+    /** 资金腿收款主体与业务配置的供应商所有者不一致。 */
+    public static final String REASON_PAYEE_MISMATCH = "PAYEE_MISMATCH";
+
+    /** 资金层已有同标识记录而业务层没有：受控拒绝，不把零移动当新付款。 */
+    public static final String REASON_FUND_ID_ALREADY_RECORDED = "FUND_ID_ALREADY_RECORDED";
+
+    /** 业务层与资金层对同标识的成功/失败不一致：明示分叉，不返回成功。 */
+    public static final String REASON_FUND_RECORD_DIVERGED = "FUND_RECORD_DIVERGED";
 
     private static final BigDecimal ZERO = new BigDecimal("0.00");
 
@@ -618,6 +632,27 @@ public final class EngineeringModel {
     }
 
     /**
+     * 带资金腿的纯候选结果。
+     *
+     * <p>业务状态与资金三态来自同一次候选：拒绝时三态经济字段与入参相同（资金层只可能多一条
+     * 拒绝回执），调用方不得只提交其中一部分，也不得把旧三态与本次业务状态拼在一起。</p>
+     *
+     * @param accepted 业务是否成功
+     * @param reason   结果代码
+     * @param state    候选业务状态
+     * @param funds    候选资金三态（现金 + 银行 + 托管明细）
+     */
+    public record FundOutcome(boolean accepted, String reason, State state, FundState funds) {
+
+        /** 校验结果码与两者非空。 */
+        public FundOutcome {
+            Objects.requireNonNull(reason, "结果代码");
+            Objects.requireNonNull(state, "候选状态");
+            Objects.requireNonNull(funds, "候选资金三态");
+        }
+    }
+
+    /**
      * 经营报表。
      *
      * @param companyCash     公司现金
@@ -662,15 +697,34 @@ public final class EngineeringModel {
      * @param netExternalCapital 净外部资本（净注资为正、净退还为负）
      * @param declaredDividends  累计已宣告分红，非负
      * @param unpaidDividends    未付分红，非负且不超过已宣告
+     * @param externalAssets     组合派生资产（存款 + 应收存款利息 + 证券成本）；旧档为 0
+     * @param externalLiabilities 组合派生负债（借款本金 + 应计未付利息）；旧档为 0
+     * @param externalEquity     组合派生权益（已实现投资损益 + 利息净额 + 开局证券成本）；旧档为 0
      */
     public record ReportContext(BigDecimal netExternalCapital, BigDecimal declaredDividends,
-                                BigDecimal unpaidDividends) {
+                                BigDecimal unpaidDividends, BigDecimal externalAssets,
+                                BigDecimal externalLiabilities, BigDecimal externalEquity) {
+
+        /**
+         * 旧三参上下文：无组合派生项，口径与历史逐字一致。
+         *
+         * @param netExternalCapital 净外部资本
+         * @param declaredDividends  累计已宣告分红
+         * @param unpaidDividends    未付分红
+         */
+        public ReportContext(BigDecimal netExternalCapital, BigDecimal declaredDividends,
+                             BigDecimal unpaidDividends) {
+            this(netExternalCapital, declaredDividends, unpaidDividends, ZERO, ZERO, ZERO);
+        }
 
         /** 校验金额符号、精度与未付不超过宣告。 */
         public ReportContext {
             netExternalCapital = CashLedger.money(netExternalCapital);
             declaredDividends = CashLedger.money(declaredDividends);
             unpaidDividends = CashLedger.money(unpaidDividends);
+            externalAssets = CashLedger.money(externalAssets);
+            externalLiabilities = CashLedger.money(externalLiabilities);
+            externalEquity = CashLedger.money(externalEquity);
             if (declaredDividends.signum() < 0 || unpaidDividends.signum() < 0) {
                 throw new IllegalArgumentException("宣告分红与未付分红不能为负");
             }
@@ -701,6 +755,113 @@ public final class EngineeringModel {
         BigDecimal cash = accounts.get(config.companyAccountId()).cash();
         return new State(config, Map.of(), Map.of(), Map.of(), ZERO, cash, worldCash(accounts),
                 Set.of(), Map.of(), Map.of());
+    }
+
+    /**
+     * 开局（受信纯数字，trusted）：存款余额由调用方给出，模型无法证明它与银行账簿一致。
+     *
+     * <p>旧两参 {@link #open(Config, Map)} 完全保留（只认现金）；本重载只用于纯数字夹具。
+     * 接 World 时必须改用 {@link #open(Config, Map, FundState)}，从真实账簿派生，
+     * 否则公司其它银行存款会被漏计。后续存取款、付款都不重置初始权益。</p>
+     *
+     * @param config         配置
+     * @param accounts       账户表
+     * @param openingDeposit 调用方声明的存款余额（非负、两位小数；无存款传 0）
+     * @return 初始状态
+     * @throws IllegalArgumentException 账户结构或存款金额不合法
+     */
+    public static State open(Config config, Map<String, CashAccount> accounts,
+                             BigDecimal openingDeposit) {
+        Objects.requireNonNull(config, "配置");
+        requireAccounts(config, accounts);
+        BigDecimal deposit = CashLedger.money(openingDeposit);
+        if (deposit.signum() < 0) {
+            throw new IllegalArgumentException("开局存款不能为负");
+        }
+        BigDecimal cash = accounts.get(config.companyAccountId()).cash();
+        return new State(config, Map.of(), Map.of(), Map.of(), ZERO,
+                CashLedger.money(cash.add(deposit)), worldCash(accounts), Set.of(), Map.of(),
+                Map.of());
+    }
+
+    /**
+     * 开局（从真实账簿派生）：现金、公司在本行**全部**存款、作为客户持有的托管受益权各计一次。
+     *
+     * <p>与受信纯数字版本的区别只在数据来源：这里按公司 ownerId 在档案里找到唯一主体 key，
+     * 再逐行累加所有银行的存款科目（不是只数某个付款桶），并叠加它在各托管经营人处的客户明细；
+     * 托管经营人自己的池存款属于该经营人，绝不重复计成客户的受益权。存款/存取款/付款都不重置
+     * 初始权益。</p>
+     *
+     * @param config   配置
+     * @param accounts 账户表
+     * @param funds    当前资金三态（真实账簿）
+     * @return 初始状态
+     * @throws IllegalArgumentException 账户结构不合法
+     */
+    public static State open(Config config, Map<String, CashAccount> accounts, FundState funds) {
+        Objects.requireNonNull(config, "配置");
+        Objects.requireNonNull(funds, "资金三态");
+        requireAccounts(config, accounts);
+        BigDecimal cash = accounts.get(config.companyAccountId()).cash();
+        BigDecimal deposits = depositsOf(funds, config.companyOwnerId());
+        BigDecimal beneficial = beneficialOf(funds, config.companyOwnerId());
+        return new State(config, Map.of(), Map.of(), Map.of(), ZERO,
+                CashLedger.money(cash.add(deposits).add(beneficial)), worldCash(accounts),
+                Set.of(), Map.of(), Map.of());
+    }
+
+    /**
+     * 公司在本行**全部**银行存款合计（含它作为托管经营人持有的池存款）。
+     *
+     * @param funds        资金三态
+     * @param companyOwnerId 公司真实财产主体
+     * @return 存款合计；档案里找不到公司主体时为零
+     */
+    private static BigDecimal depositsOf(FundState funds, String companyOwnerId) {
+        String partyKey = companyPartyOf(funds, companyOwnerId);
+        if (partyKey == null) {
+            return ZERO;
+        }
+        BankingProfile.PartyRef party =
+                funds.bank().chart().profile().parties().get(partyKey);
+        if (party.depositGl() == null) {
+            return ZERO;
+        }
+        BigDecimal total = ZERO;
+        for (String bankKey : funds.bank().chart().banks()) {
+            total = total.add(funds.deposit(bankKey, partyKey));
+        }
+        return CashLedger.money(total);
+    }
+
+    /**
+     * 公司作为客户在各托管经营人处的受益权合计（池资产属于经营人，不计成客户受益权）。
+     *
+     * @param funds        资金三态
+     * @param companyOwnerId 公司真实财产主体
+     * @return 受益权合计；档案里找不到公司主体时为零
+     */
+    private static BigDecimal beneficialOf(FundState funds, String companyOwnerId) {
+        String partyKey = companyPartyOf(funds, companyOwnerId);
+        if (partyKey == null) {
+            return ZERO;
+        }
+        BigDecimal total = ZERO;
+        for (String custodian : funds.bank().chart().profile().custodians().keySet()) {
+            total = total.add(funds.book().detailOf(custodian, partyKey));
+        }
+        return CashLedger.money(total);
+    }
+
+    /** 由 ownerId 反查档案里唯一的主体 key（档案保证 owner 唯一）；找不到返回 null。 */
+    private static String companyPartyOf(FundState funds, String companyOwnerId) {
+        for (Map.Entry<String, BankingProfile.PartyRef> entry
+                : new TreeMap<>(funds.bank().chart().profile().parties()).entrySet()) {
+            if (entry.getValue().ownerId().equals(companyOwnerId)) {
+                return entry.getKey();
+            }
+        }
+        return null;
     }
 
     /**
@@ -760,43 +921,78 @@ public final class EngineeringModel {
     public static Outcome receiveAdvance(State state, String commandId, String actorOwnerId,
                                          String contractId, BigDecimal amount, long now,
                                          Map<String, CashAccount> accounts) {
+        return advance(state, commandId, actorOwnerId, contractId, amount, now,
+                Funding.cash(accounts)).outcome();
+    }
+
+    /**
+     * 客户预收（显式资金腿）：钱从客户真实资金桶进公司真实资金桶，义务与收入口径不变。
+     *
+     * <p>与现金版 {@link #receiveAdvance(State, String, String, String, BigDecimal, long, Map)}
+     * 的差别只有“钱怎么走”：合同必须存在且生效、金额为正、累计预收不超过合同条款上限，
+     * 收到即增加合同负债（**不确认收入**）、同时累加合同的已收预收额。付款方必须是配置里
+     * 客户账户的真实主体，收款方必须是公司；两者都由当前资金三态派生，不采信任何自报 owner。</p>
+     *
+     * @param state        当前状态
+     * @param commandId    命令标识（同时是资金腿幂等标识）
+     * @param actorOwnerId 发起人
+     * @param contractId   合同标识
+     * @param amount       预收金额
+     * @param now          当前模拟毫秒
+     * @param funds        当前资金三态（显式传入，不得复用旧结果）
+     * @param payer        资金腿（只含路由与档案，不含账簿）
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome receiveAdvance(State state, String commandId, String actorOwnerId,
+                                             String contractId, BigDecimal amount, long now,
+                                             FundState funds, FundPayer payer) {
+        return advance(state, commandId, actorOwnerId, contractId, amount, now,
+                Funding.explicit(funds, payer)).funded();
+    }
+
+    private static Settlement advance(State state, String commandId, String actorOwnerId,
+                                      String contractId, BigDecimal amount, long now,
+                                      Funding funding) {
         Objects.requireNonNull(state, "状态");
         requireText(commandId, "命令标识");
         requireTime(now);
         if (!authorized(state, actorOwnerId)) {
-            return new Outcome(false, REASON_NOT_AUTHORIZED, state, accounts);
+            return funding.at(state, false, REASON_NOT_AUTHORIZED);
         }
-        requireAccounts(state.config(), accounts);
-        String content = content("ADVANCE", commandId, contractId, amount);
-        Outcome replay = replay(state, commandId, content, accounts);
+        requireAccounts(state.config(), funding.accounts());
+        String content = funding.content("ADVANCE", commandId, contractId, amount);
+        Settlement replay = funding.replay(state, commandId, content);
         if (replay != null) {
             return replay;
         }
         Draft draft = new Draft(state);
         Contract contract = state.contracts().get(contractId);
         if (contract == null) {
-            return finish(draft, false, REASON_UNKNOWN_CONTRACT, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_UNKNOWN_CONTRACT, null, commandId,
+                    content);
         }
         BigDecimal money = moneyOrNull(amount);
         if (money == null || money.signum() <= 0) {
-            return finish(draft, false, REASON_INVALID_AMOUNT, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_INVALID_AMOUNT, null, commandId, content);
         }
         if (contract.status() != ContractStatus.ACTIVE) {
-            return finish(draft, false, REASON_CONTRACT_NOT_ACTIVE, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_CONTRACT_NOT_ACTIVE, null,
+                    commandId, content);
         }
         BigDecimal cap = CashLedger.money(contractValue(contract)
                 .multiply(BigDecimal.valueOf(contract.terms().advanceBp()))
                 .divide(BigDecimal.valueOf(10000), 2, RoundingMode.HALF_UP));
         BigDecimal received = contract.advanceReceived().add(money);
         if (received.compareTo(cap) > 0) {
-            return finish(draft, false, REASON_ADVANCE_EXCEEDS_TERMS, accounts,
+            return finishLeg(funding, draft, false, REASON_ADVANCE_EXCEEDS_TERMS, null,
                     commandId, content);
         }
-        CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
-                accounts.get(state.config().customerAccountId()).ownerId(),
-                state.config().customerAccountId(), state.config().companyAccountId(), money);
-        if (!transfer.accepted()) {
-            return finish(draft, false, transfer.reason(), accounts, commandId, content);
+        Leg leg = funding.pay(commandId, money,
+                funding.accounts().get(state.config().customerAccountId()).ownerId(),
+                state.config().customerAccountId(), state.config().companyOwnerId(),
+                state.config().companyAccountId());
+        if (!leg.accepted()) {
+            return finishLeg(funding, draft, false, leg.reason(), null, commandId, content);
         }
         Claim claim = state.claims().get(contractId);
         draft.claims.put(contractId, new Claim(claim.contractAsset(),
@@ -808,8 +1004,7 @@ public final class EngineeringModel {
                 contract.acceptedUnits(), contract.invoicedTranches(), received,
                 contract.retentionWithheld(), contract.appliedByTranche(),
                 contract.invoices(), contract.status()));
-        return finish(draft, true, REASON_ADVANCE_RECEIVED, transfer.accounts(),
-                commandId, content);
+        return finishLeg(funding, draft, true, REASON_ADVANCE_RECEIVED, leg, commandId, content);
     }
 
     /**
@@ -828,32 +1023,67 @@ public final class EngineeringModel {
     public static Outcome investWork(State state, String commandId, String actorOwnerId,
                                      String contractId, String workId, long units, long now,
                                      Map<String, CashAccount> accounts) {
+        return invest(state, commandId, actorOwnerId, contractId, workId, units, now,
+                Funding.cash(accounts)).outcome();
+    }
+
+    /**
+     * 履约投入（显式资金腿）：现场人工从真实资金桶付给作业方，分包部分仍计应付。
+     *
+     * <p>与现金版 {@link #investWork(State, String, String, String, String, long, long, Map)}
+     * 的差别只有人工怎么付：单位上限、合同状态、排程、成本/人工尾差分配、WIP 资本化、
+     * 应付累加与命令记录全部逐字相同。人工为零时不动任何桶（不调资金腿）。</p>
+     *
+     * @param state     当前状态
+     * @param commandId 命令标识（同时是资金腿幂等标识）
+     * @param actorOwnerId 发起人
+     * @param contractId 合同标识
+     * @param workId    开工任务标识
+     * @param units     投入单位
+     * @param now       当前模拟毫秒
+     * @param funds     当前资金三态（显式传入，不得复用旧结果）
+     * @param payer     资金腿（只含路由与档案，不含账簿）
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome investWork(State state, String commandId, String actorOwnerId,
+                                         String contractId, String workId, long units, long now,
+                                         FundState funds, FundPayer payer) {
+        return invest(state, commandId, actorOwnerId, contractId, workId, units, now,
+                Funding.explicit(funds, payer)).funded();
+    }
+
+    private static Settlement invest(State state, String commandId, String actorOwnerId,
+                                     String contractId, String workId, long units, long now,
+                                     Funding funding) {
         Objects.requireNonNull(state, "状态");
         requireText(commandId, "命令标识");
         requireText(workId, "开工任务标识");
         requireTime(now);
         if (!authorized(state, actorOwnerId)) {
-            return new Outcome(false, REASON_NOT_AUTHORIZED, state, accounts);
+            return funding.at(state, false, REASON_NOT_AUTHORIZED);
         }
-        requireAccounts(state.config(), accounts);
-        String content = content("WORK", commandId, contractId, workId, units);
-        Outcome replay = replay(state, commandId, content, accounts);
+        requireAccounts(state.config(), funding.accounts());
+        String content = funding.content("WORK", commandId, contractId, workId, units);
+        Settlement replay = funding.replay(state, commandId, content);
         if (replay != null) {
             return replay;
         }
         Draft draft = new Draft(state);
         Contract contract = state.contracts().get(contractId);
         if (contract == null) {
-            return finish(draft, false, REASON_UNKNOWN_CONTRACT, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_UNKNOWN_CONTRACT, null, commandId,
+                    content);
         }
         if (contract.status() != ContractStatus.ACTIVE) {
-            return finish(draft, false, REASON_CONTRACT_NOT_ACTIVE, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_CONTRACT_NOT_ACTIVE, null, commandId,
+                    content);
         }
         if (units <= 0) {
-            return finish(draft, false, REASON_INVALID_QUANTITY, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_INVALID_QUANTITY, null, commandId,
+                    content);
         }
         if (state.usedIds().contains(workId)) {
-            return finish(draft, false, REASON_ID_REUSED, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_ID_REUSED, null, commandId, content);
         }
         long inProgress = 0;
         for (WorkOrder order : state.workOrders().values()) {
@@ -864,7 +1094,7 @@ public final class EngineeringModel {
         }
         long available = contract.terms().totalUnits() - contract.completedUnits() - inProgress;
         if (units > available) {
-            return finish(draft, false, REASON_EXCEEDS_CONTRACT_UNITS, accounts,
+            return finishLeg(funding, draft, false, REASON_EXCEEDS_CONTRACT_UNITS, null,
                     commandId, content);
         }
         long completesAt;
@@ -891,20 +1121,23 @@ public final class EngineeringModel {
                     .divide(BigDecimal.valueOf(10000), 2, RoundingMode.HALF_UP));
             labor = targetLabor.subtract(allocatedLabor);
         } catch (ArithmeticException overflow) {
-            return finish(draft, false, REASON_OVERFLOW, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_OVERFLOW, null, commandId, content);
         }
         if (cost.signum() < 0 || labor.signum() < 0 || labor.compareTo(cost) > 0) {
-            return finish(draft, false, REASON_ALLOCATION_INVALID, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_ALLOCATION_INVALID, null, commandId,
+                    content);
         }
-        Map<String, CashAccount> nextAccounts = accounts;
+        Leg leg;
         if (labor.signum() > 0) {
-            CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
-                    state.config().companyOwnerId(), state.config().companyAccountId(),
-                    state.config().opsAccountId(), labor);
-            if (!transfer.accepted()) {
-                return finish(draft, false, transfer.reason(), accounts, commandId, content);
+            leg = funding.pay(commandId, labor, state.config().companyOwnerId(),
+                    state.config().companyAccountId(),
+                    funding.accounts().get(state.config().opsAccountId()).ownerId(),
+                    state.config().opsAccountId());
+            if (!leg.accepted()) {
+                return finishLeg(funding, draft, false, leg.reason(), null, commandId, content);
             }
-            nextAccounts = transfer.accounts();
+        } else {
+            leg = funding.untouched();
         }
         WorkOrder order = new WorkOrder(workId, contractId, units, now, completesAt, cost,
                 labor, 0, cost, WorkStatus.IN_PROGRESS);
@@ -917,7 +1150,7 @@ public final class EngineeringModel {
                 claim.cogs(), claim.impairmentLoss(), claim.recoveryIncome(),
                 claim.terminationLoss(), claim.waiverLoss()));
         draft.payable = state.payable().add(cost.subtract(labor));
-        return finish(draft, true, REASON_WORK_STARTED, nextAccounts, commandId, content);
+        return finishLeg(funding, draft, true, REASON_WORK_STARTED, leg, commandId, content);
     }
 
     /**
@@ -1176,7 +1409,31 @@ public final class EngineeringModel {
                                      String contractId, int trancheIndex, BigDecimal amount,
                                      long now, Map<String, CashAccount> accounts) {
         return collect(state, commandId, actorOwnerId, contractId, trancheIndex, amount, now,
-                accounts, false);
+                Funding.cash(accounts), false).outcome();
+    }
+
+    /**
+     * 到期应收回款（显式资金腿）：钱从客户真实资金桶进公司真实资金桶。
+     *
+     * <p>收入已在验收时确认，回款只做资产置换（AR↓、现金/存款↑），**不再确认收入**。
+     * 未到期、超额、主体不符一律整笔拒绝且一分不动。</p>
+     *
+     * @param state        当前状态
+     * @param commandId    命令标识（同时是资金腿幂等标识）
+     * @param actorOwnerId 发起人
+     * @param contractId   合同标识
+     * @param trancheIndex 期次
+     * @param amount       金额
+     * @param now          当前模拟毫秒
+     * @param funds        当前资金三态（显式传入，不得复用旧结果）
+     * @param payer        资金腿（只含路由与档案，不含账簿）
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome collectDue(State state, String commandId, String actorOwnerId,
+                                         String contractId, int trancheIndex, BigDecimal amount,
+                                         long now, FundState funds, FundPayer payer) {
+        return collect(state, commandId, actorOwnerId, contractId, trancheIndex, amount, now,
+                Funding.explicit(funds, payer), false).funded();
     }
 
     /**
@@ -1196,53 +1453,76 @@ public final class EngineeringModel {
                                            String contractId, int trancheIndex, BigDecimal amount,
                                            long now, Map<String, CashAccount> accounts) {
         return collect(state, commandId, actorOwnerId, contractId, trancheIndex, amount, now,
-                accounts, true);
+                Funding.cash(accounts), true).outcome();
     }
 
-    private static Outcome collect(State state, String commandId, String actorOwnerId,
-                                   String contractId, int trancheIndex, BigDecimal amount,
-                                   long now, Map<String, CashAccount> accounts,
-                                   boolean retention) {
+    /**
+     * 质保到期回款（显式资金腿）：同应收回款，只动质保段，收入不二次确认。
+     *
+     * @param state        当前状态
+     * @param commandId    命令标识（同时是资金腿幂等标识）
+     * @param actorOwnerId 发起人
+     * @param contractId   合同标识
+     * @param trancheIndex 期次
+     * @param amount       金额
+     * @param now          当前模拟毫秒
+     * @param funds        当前资金三态（显式传入，不得复用旧结果）
+     * @param payer        资金腿（只含路由与档案，不含账簿）
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome collectRetention(State state, String commandId, String actorOwnerId,
+                                               String contractId, int trancheIndex,
+                                               BigDecimal amount, long now, FundState funds,
+                                               FundPayer payer) {
+        return collect(state, commandId, actorOwnerId, contractId, trancheIndex, amount, now,
+                Funding.explicit(funds, payer), true).funded();
+    }
+
+    private static Settlement collect(State state, String commandId, String actorOwnerId,
+                                      String contractId, int trancheIndex, BigDecimal amount,
+                                      long now, Funding funding, boolean retention) {
         Objects.requireNonNull(state, "状态");
         requireText(commandId, "命令标识");
         requireTime(now);
         if (!authorized(state, actorOwnerId)) {
-            return new Outcome(false, REASON_NOT_AUTHORIZED, state, accounts);
+            return funding.at(state, false, REASON_NOT_AUTHORIZED);
         }
-        requireAccounts(state.config(), accounts);
-        String content = content(retention ? "COLLECT_RETENTION" : "COLLECT_DUE", commandId,
-                contractId, trancheIndex, amount);
-        Outcome replay = replay(state, commandId, content, accounts);
+        requireAccounts(state.config(), funding.accounts());
+        String content = funding.content(retention ? "COLLECT_RETENTION" : "COLLECT_DUE",
+                commandId, contractId, trancheIndex, amount);
+        Settlement replay = funding.replay(state, commandId, content);
         if (replay != null) {
             return replay;
         }
         Draft draft = new Draft(state);
         Contract contract = state.contracts().get(contractId);
         if (contract == null) {
-            return finish(draft, false, REASON_UNKNOWN_CONTRACT, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_UNKNOWN_CONTRACT, null, commandId,
+                    content);
         }
         Invoice invoice = invoiceAt(contract, trancheIndex);
         if (invoice == null) {
-            return finish(draft, false, REASON_INVOICE_ORDER, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_INVOICE_ORDER, null, commandId, content);
         }
         BigDecimal money = moneyOrNull(amount);
         if (money == null || money.signum() <= 0) {
-            return finish(draft, false, REASON_INVALID_AMOUNT, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_INVALID_AMOUNT, null, commandId, content);
         }
         long dueAt = retention ? invoice.retentionDueAt() : invoice.dueAt();
         if (now < dueAt) {
-            return finish(draft, false, REASON_NOT_DUE, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_NOT_DUE, null, commandId, content);
         }
         BigDecimal outstanding = retention ? invoice.retentionOutstanding()
                 : invoice.currentOutstanding();
         if (money.compareTo(outstanding) > 0) {
-            return finish(draft, false, REASON_OVER_COLLECT, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_OVER_COLLECT, null, commandId, content);
         }
-        CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
-                accounts.get(state.config().customerAccountId()).ownerId(),
-                state.config().customerAccountId(), state.config().companyAccountId(), money);
-        if (!transfer.accepted()) {
-            return finish(draft, false, transfer.reason(), accounts, commandId, content);
+        Leg leg = funding.pay(commandId, money,
+                funding.accounts().get(state.config().customerAccountId()).ownerId(),
+                state.config().customerAccountId(), state.config().companyOwnerId(),
+                state.config().companyAccountId());
+        if (!leg.accepted()) {
+            return finishLeg(funding, draft, false, leg.reason(), null, commandId, content);
         }
         Claim claim = state.claims().get(contractId);
         draft.claims.put(contractId, new Claim(claim.contractAsset(),
@@ -1264,9 +1544,8 @@ public final class EngineeringModel {
                 contract.acceptedUnits(), contract.invoicedTranches(),
                 contract.advanceReceived(), contract.retentionWithheld(),
                 contract.appliedByTranche(), invoices, contract.status()));
-        return finish(draft, true,
-                retention ? REASON_RETENTION_COLLECTED : REASON_COLLECTED,
-                transfer.accounts(), commandId, content);
+        return finishLeg(funding, draft, true,
+                retention ? REASON_RETENTION_COLLECTED : REASON_COLLECTED, leg, commandId, content);
     }
 
     /**
@@ -1392,37 +1671,69 @@ public final class EngineeringModel {
     public static Outcome recover(State state, String commandId, String actorOwnerId,
                                   String contractId, BigDecimal amount, long now,
                                   Map<String, CashAccount> accounts) {
+        return recoverFrom(state, commandId, actorOwnerId, contractId, amount, now,
+                Funding.cash(accounts)).outcome();
+    }
+
+    /**
+     * 已核销备查部分回款（显式资金腿）：钱从客户真实资金桶进公司真实资金桶。
+     *
+     * <p>只冲减备查金额、累加追回收益（与现金版逐字相同），不重开已核销的应收。
+     * 超额与主体不符整笔拒绝，一分不动。</p>
+     *
+     * @param state        当前状态
+     * @param commandId    命令标识（同时是资金腿幂等标识）
+     * @param actorOwnerId 发起人
+     * @param contractId   合同标识
+     * @param amount       金额
+     * @param now          当前模拟毫秒
+     * @param funds        当前资金三态（显式传入，不得复用旧结果）
+     * @param payer        资金腿（只含路由与档案，不含账簿）
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome recover(State state, String commandId, String actorOwnerId,
+                                      String contractId, BigDecimal amount, long now,
+                                      FundState funds, FundPayer payer) {
+        return recoverFrom(state, commandId, actorOwnerId, contractId, amount, now,
+                Funding.explicit(funds, payer)).funded();
+    }
+
+    private static Settlement recoverFrom(State state, String commandId, String actorOwnerId,
+                                          String contractId, BigDecimal amount, long now,
+                                          Funding funding) {
         Objects.requireNonNull(state, "状态");
         requireText(commandId, "命令标识");
         requireTime(now);
         if (!authorized(state, actorOwnerId)) {
-            return new Outcome(false, REASON_NOT_AUTHORIZED, state, accounts);
+            return funding.at(state, false, REASON_NOT_AUTHORIZED);
         }
-        requireAccounts(state.config(), accounts);
-        String content = content("RECOVER", commandId, contractId, amount);
-        Outcome replay = replay(state, commandId, content, accounts);
+        requireAccounts(state.config(), funding.accounts());
+        String content = funding.content("RECOVER", commandId, contractId, amount);
+        Settlement replay = funding.replay(state, commandId, content);
         if (replay != null) {
             return replay;
         }
         Draft draft = new Draft(state);
         Contract contract = state.contracts().get(contractId);
         if (contract == null) {
-            return finish(draft, false, REASON_UNKNOWN_CONTRACT, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_UNKNOWN_CONTRACT, null, commandId,
+                    content);
         }
         BigDecimal money = moneyOrNull(amount);
         if (money == null || money.signum() <= 0) {
-            return finish(draft, false, REASON_INVALID_AMOUNT, accounts, commandId, content);
+            return finishLeg(funding, draft, false, REASON_INVALID_AMOUNT, null, commandId, content);
         }
         Claim claim = state.claims().get(contractId);
         if (money.compareTo(claim.memo()) > 0) {
-            return finish(draft, false, REASON_RECOVERY_EXCEEDS_MEMO, accounts,
+            return finishLeg(funding, draft, false, REASON_RECOVERY_EXCEEDS_MEMO, null,
                     commandId, content);
         }
-        CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
-                accounts.get(state.config().customerAccountId()).ownerId(),
-                state.config().customerAccountId(), state.config().companyAccountId(), money);
-        if (!transfer.accepted()) {
-            return finish(draft, false, transfer.reason(), accounts, commandId, content);
+        Leg leg = funding.pay(commandId, money,
+                funding.accounts().get(state.config().customerAccountId()).ownerId(),
+                state.config().customerAccountId(), state.config().companyOwnerId(),
+                state.config().companyAccountId());
+        if (!leg.accepted()) {
+            return finishLeg(funding, draft, false, leg.reason(), null, commandId, content);
         }
         draft.claims.put(contractId, new Claim(claim.contractAsset(),
                 claim.contractLiability(), claim.contractCost(), claim.arCurrent(),
@@ -1430,7 +1741,7 @@ public final class EngineeringModel {
                 claim.revenue(), claim.cogs(), claim.impairmentLoss(),
                 claim.recoveryIncome().add(money), claim.terminationLoss(),
                 claim.waiverLoss()));
-        return finish(draft, true, REASON_RECOVERED, transfer.accounts(), commandId, content);
+        return finishLeg(funding, draft, true, REASON_RECOVERED, leg, commandId, content);
     }
 
     /**
@@ -1607,6 +1918,89 @@ public final class EngineeringModel {
                 commandId, content);
     }
 
+    /**
+     * 供应商付款（显式资金腿，v2）：付款来自真实资金桶（例如同一家银行的存款）。
+     *
+     * <p>与现金版 {@link #paySupplier(State, String, String, BigDecimal, long, Map)} 的差别只有
+     * “钱从哪来”：业务前置条件（授权、金额、应付上限）完全相同，业务状态推进也相同（应付减少）。
+     * 存款付款不需要先取现，因此本行准备金为 0 时同样成立；也不会把存款复制成现金账户。</p>
+     *
+     * <p>幂等与两表一致性：同一标识必须同时绑定本业务的规范内容与资金源/目标桶。业务层已有记录时
+     * 只在两层成功/失败一致的情况下重放当前候选；资金层已有记录而业务层没有，则受控拒绝，
+     * 绝不把零移动当新付款；两层结论相反则明示分叉（{@link #REASON_FUND_RECORD_DIVERGED}）。
+     * 原命令真实性重演由 World 负责，此处不另建历史账。</p>
+     *
+     * <p>付款方必须是公司所有者、收款方必须是配置里供应商账户的所有者；两者的真实主体都由
+     * 当前资金三态派生（现金看账户 owner，存款/托管看档案），任何自报 owner 都不参与判断。</p>
+     *
+     * @param state        当前状态
+     * @param commandId    命令标识（同一标识同时用于资金腿幂等）
+     * @param actorOwnerId 发起人
+     * @param amount       付款金额
+     * @param now          当前模拟毫秒
+     * @param funds        当前资金三态（显式传入，不得复用旧结果）
+     * @param payer        资金腿（只含路由与档案，不含账簿）
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome paySupplier(State state, String commandId, String actorOwnerId,
+                                          BigDecimal amount, long now, FundState funds,
+                                          FundPayer payer) {
+        Objects.requireNonNull(state, "状态");
+        Objects.requireNonNull(funds, "资金三态");
+        Objects.requireNonNull(payer, "资金腿");
+        requireText(commandId, "命令标识");
+        requireTime(now);
+        if (!authorized(state, actorOwnerId)) {
+            return new FundOutcome(false, REASON_NOT_AUTHORIZED, state, funds);
+        }
+        requireAccounts(state.config(), funds.accounts());
+        String content = content("PAY_SUPPLIER_FUND", commandId, amount,
+                payer.source().token(), payer.target().token());
+        String existingContent = state.commandContents().get(commandId);
+        if (existingContent != null) {
+            if (!existingContent.equals(content)) {
+                throw new IllegalArgumentException("COMMAND_CONTENT_CONFLICT");
+            }
+            String recorded = state.commandOutcomes().get(commandId);
+            boolean recordedAccepted = recorded != null && recorded.startsWith("1|");
+            String recordedReason = recorded == null ? "REPLAYED" : recorded.substring(2);
+            if (recordedAccepted != payer.hasAcceptedRecord(commandId, funds)) {
+                return new FundOutcome(false, REASON_FUND_RECORD_DIVERGED, state, funds);
+            }
+            return new FundOutcome(recordedAccepted, recordedReason, state, funds);
+        }
+        if (payer.hasRecord(commandId, funds)) {
+            // 资金层已有同标识记录、业务层没有：候选在提交前丢了，不能当新付款继续
+            return new FundOutcome(false, REASON_FUND_ID_ALREADY_RECORDED, state, funds);
+        }
+        Draft draft = new Draft(state);
+        BigDecimal money = moneyOrNull(amount);
+        if (money == null || money.signum() <= 0) {
+            return finishFunded(draft, false, REASON_INVALID_AMOUNT, funds, commandId, content);
+        }
+        if (money.compareTo(state.payable()) > 0) {
+            return finishFunded(draft, false, REASON_PAYMENT_EXCEEDS_PAYABLE, funds, commandId,
+                    content);
+        }
+        String sourceOwner = funds.ownerIdOf(payer.source());
+        if (!state.config().companyOwnerId().equals(sourceOwner)) {
+            return finishFunded(draft, false, REASON_FUND_OWNER_MISMATCH, funds, commandId,
+                    content);
+        }
+        String supplierOwner = funds.accounts().get(state.config().supplierAccountId()).ownerId();
+        String targetOwner = funds.ownerIdOf(payer.target());
+        if (targetOwner == null || !targetOwner.equals(supplierOwner)) {
+            return finishFunded(draft, false, REASON_PAYEE_MISMATCH, funds, commandId, content);
+        }
+        FundPayer.Result paid = payer.pay(commandId, money, funds);
+        if (!paid.accepted()) {
+            // 资金腿拒绝：业务经济字段原样，资金层只多一条拒绝回执（随候选提交以便审计）
+            return finishFunded(draft, false, paid.reason(), paid.funds(), commandId, content);
+        }
+        draft.payable = state.payable().subtract(money);
+        return finishFunded(draft, true, REASON_SUPPLIER_PAID, paid.funds(), commandId, content);
+    }
+
     // ------------------------------------------------------------------ 报表与校验
 
     /**
@@ -1673,13 +2067,14 @@ public final class EngineeringModel {
         BigDecimal netClaim = CashLedger.money(gross.subtract(allowance).add(asset));
         BigDecimal obligation = CashLedger.money(gross.add(asset).add(memo));
         BigDecimal assets = CashLedger.money(cash.add(gross).subtract(allowance)
-                .add(asset).add(cost));
+                .add(asset).add(cost).add(context.externalAssets()));
         BigDecimal liabilities = CashLedger.money(state.payable().add(liability)
-                .add(context.unpaidDividends()));
+                .add(context.unpaidDividends()).add(context.externalLiabilities()));
         BigDecimal profit = CashLedger.money(revenue.subtract(cogs).subtract(impairment)
                 .add(recovery).subtract(termination).subtract(waiver));
         BigDecimal equity = CashLedger.money(state.initialEquity().add(profit)
-                .add(context.netExternalCapital()).subtract(context.declaredDividends()));
+                .add(context.netExternalCapital()).subtract(context.declaredDividends())
+                .add(context.externalEquity()));
         BigDecimal world = worldCash(accounts);
         boolean balanced = assets.compareTo(liabilities.add(equity)) == 0
                 && world.compareTo(state.initialWorldCash()) == 0;
@@ -1691,6 +2086,82 @@ public final class EngineeringModel {
                 CashLedger.money(impairment), CashLedger.money(recovery),
                 CashLedger.money(termination), CashLedger.money(waiver), profit, equity,
                 world, balanced);
+    }
+
+    /**
+     * 带存款与托管受益权的派生报表：现金、全部银行存款、客户受益权分列，只各计一次。
+     *
+     * <p>旧 {@link Report#companyCash()} 仍只表示真实现金，语义不变。本类型把公司在本行
+     * **全部**银行存款（含它作为托管经营人持有的池存款）与它作为客户持有的受益权单列；
+     * 池资产与客户受益权分属两个主体，不会给同一客户计两次。托管经营人若同时是主体，
+     * 还需另列客户明细负债，本档案模型不允许经营人与主体同名，故这里不出现该行。</p>
+     *
+     * <p><b>来源互斥</b>：存款与受益权只从资金三态派生；{@link ReportContext} 里的组合派生项
+     * 必须<b>不含</b>这些已由 funds 计入的余额（例如不能把同一笔银行存款既写进
+     * {@code externalAssets} 又通过 funds 计入）。本类型不做去重，两个来源各加一次；
+     * 组合层若重复传入就会双计，因此 World 只能择一：存款走 funds，其它独立外部资产负债
+     * （证券成本、借款本金、已实现损益等）走 context。</p>
+     *
+     * @param cash        公司真实现金
+     * @param deposits    公司全部银行存款
+     * @param beneficial  公司作为客户持有的托管受益权
+     * @param assets      资产合计（现金 + 存款 + 受益权 + 应收 − 准备 + 合同资产 + 履约成本 + 组合派生资产）
+     * @param liabilities 负债合计（供应商应付 + 合同负债 + 未付分红 + 组合派生负债）
+     * @param equity      期末权益（来自状态与只读上下文，不重设；已含组合派生权益）
+     * @param worldCash   世界现金合计
+     * @param balanced    资产=负债+权益且世界现金守恒
+     */
+    public record FundedReport(BigDecimal cash, BigDecimal deposits, BigDecimal beneficial,
+                               BigDecimal assets, BigDecimal liabilities, BigDecimal equity,
+                               BigDecimal worldCash, boolean balanced) {
+    }
+
+    /**
+     * 派生“现金 + 存款 + 托管受益权”报表；不修改状态，也不改旧报表的现金口径。
+     *
+     * @param state          状态
+     * @param accounts       账户表
+     * @param context        外部资本/分红只读上下文
+     * @param depositBalance 调用方声明的存款余额（受信纯数字；接 World 用三态版本）
+     * @return 带存款的派生报表（受益权恒为零）
+     */
+    public static FundedReport fundedReport(State state, Map<String, CashAccount> accounts,
+                                            ReportContext context, BigDecimal depositBalance) {
+        Report base = report(state, accounts, context);
+        BigDecimal deposit = CashLedger.money(depositBalance);
+        if (deposit.signum() < 0) {
+            throw new IllegalArgumentException("存款余额不能为负");
+        }
+        return build(base, state, context, deposit, ZERO);
+    }
+
+    /**
+     * 从真实资金三态派生报表：存款覆盖公司全部银行，受益权只算它作为客户的部分。
+     *
+     * @param state   状态
+     * @param funds   当前资金三态
+     * @param context 外部资本/分红只读上下文
+     * @return 带存款与受益权的派生报表
+     */
+    public static FundedReport fundedReport(State state, FundState funds, ReportContext context) {
+        Objects.requireNonNull(funds, "资金三态");
+        Report base = report(state, funds.accounts(), context);
+        return build(base, state, context, depositsOf(funds, state.config().companyOwnerId()),
+                beneficialOf(funds, state.config().companyOwnerId()));
+    }
+
+    private static FundedReport build(Report base, State state, ReportContext context,
+                                      BigDecimal deposits, BigDecimal beneficial) {
+        BigDecimal assets = CashLedger.money(base.companyCash().add(deposits).add(beneficial)
+                .add(base.arGross()).subtract(base.allowance())
+                .add(base.contractAsset()).add(base.contractCost())
+                .add(context.externalAssets()));
+        BigDecimal liabilities = CashLedger.money(base.payable().add(base.contractLiability())
+                .add(context.unpaidDividends()).add(context.externalLiabilities()));
+        boolean balanced = assets.compareTo(liabilities.add(base.equity())) == 0
+                && base.worldCash().compareTo(state.initialWorldCash()) == 0;
+        return new FundedReport(CashLedger.money(base.companyCash()), deposits, beneficial, assets,
+                liabilities, base.equity(), base.worldCash(), balanced);
     }
 
     /**
@@ -1730,6 +2201,183 @@ public final class EngineeringModel {
     }
 
     // ------------------------------------------------------------------ 内部
+
+    /**
+     * 一次业务候选的资金上下文：旧现金路径只带账户表；显式路径带当前三态与资金腿。
+     *
+     * <p>两条路径共用同一份业务算法（校验顺序、阈值、状态推进、命令记录内容），差别只在钱
+     * 怎么走：旧路径仍走 {@link CashLedger#computeTransfer}（唯一现金权威，行为逐字不变），
+     * 显式路径走 {@link FundPayer#pay}（严格按出款桶/收款桶，不跨桶补足）。这样不会出现
+     * 两套经营规则各自漂移。</p>
+     *
+     * @param accounts 当前现金账户表
+     * @param funds    当前资金三态；旧现金路径为 null
+     * @param payer    资金腿；旧现金路径为 null
+     */
+    private record Funding(Map<String, CashAccount> accounts, FundState funds, FundPayer payer) {
+
+        static Funding cash(Map<String, CashAccount> accounts) {
+            Objects.requireNonNull(accounts, "账户表");
+            return new Funding(accounts, null, null);
+        }
+
+        static Funding explicit(FundState funds, FundPayer payer) {
+            Objects.requireNonNull(funds, "资金三态");
+            Objects.requireNonNull(payer, "资金腿");
+            return new Funding(funds.accounts(), funds, payer);
+        }
+
+        /** @return 是否显式资金腿路径 */
+        boolean explicit() {
+            return funds != null;
+        }
+
+        /**
+         * 命令内容：两种路径的标签与业务字段相同，显式路径额外绑定实际源/目标桶。
+         *
+         * <p>因此同标识换桶（甚至现金版换桶版）都会在旧记录上撞成
+         * {@code COMMAND_CONTENT_CONFLICT}，而不是被当成同一条命令重放。</p>
+         *
+         * @param tag   命令标签
+         * @param parts 业务字段
+         * @return 规范化内容
+         */
+        String content(String tag, Object... parts) {
+            int extra = explicit() ? 2 : 0;
+            Object[] all = new Object[parts.length + 1 + extra];
+            all[0] = tag;
+            System.arraycopy(parts, 0, all, 1, parts.length);
+            if (explicit()) {
+                all[parts.length + 1] = payer.source().token();
+                all[parts.length + 2] = payer.target().token();
+            }
+            return EngineeringModel.content(all);
+        }
+
+        /**
+         * 不移动任何钱时的候选：显式路径保持入参三态，旧路径保持入参账户表。
+         *
+         * @param state    业务状态
+         * @param accepted 是否成功
+         * @param reason   结果码
+         * @return 候选
+         */
+        Settlement at(State state, boolean accepted, String reason) {
+            return new Settlement(accepted, reason, state, accounts, funds);
+        }
+
+        /** @return 业务成功但本次不需要动钱（金额为零）的腿结果 */
+        Leg untouched() {
+            return new Leg(true, null, accounts, funds);
+        }
+
+        /**
+         * 业务/资金两层一致性检查。
+         *
+         * @param state     当前状态
+         * @param commandId 命令标识
+         * @param content   本次命令内容（含桶绑定）
+         * @return 需要原样返回的候选；返回 null 表示这是新命令，可以继续推进业务
+         */
+        Settlement replay(State state, String commandId, String content) {
+            String existing = state.commandContents().get(commandId);
+            if (existing != null) {
+                if (!existing.equals(content)) {
+                    throw new IllegalArgumentException("COMMAND_CONTENT_CONFLICT");
+                }
+                String outcome = state.commandOutcomes().get(commandId);
+                boolean accepted = outcome != null && outcome.startsWith("1|");
+                String reason = outcome == null ? "REPLAYED" : outcome.substring(2);
+                if (explicit() && accepted != payer.hasAcceptedRecord(commandId, funds)) {
+                    return at(state, false, REASON_FUND_RECORD_DIVERGED);
+                }
+                return at(state, accepted, reason);
+            }
+            if (explicit() && payer.hasRecord(commandId, funds)) {
+                // 资金层已有同标识记录、业务层没有：候选在提交前丢了，不能当新付款继续
+                return at(state, false, REASON_FUND_ID_ALREADY_RECORDED);
+            }
+            return null;
+        }
+
+        /**
+         * 执行一条腿。
+         *
+         * <p>旧路径按原样调用 {@link CashLedger#computeTransfer}（主体不符由现金账本自己拒绝）；
+         * 显式路径先核对<b>真实</b>出款/收款主体（来自当前三态，不采信自报），不符即拒绝且不动钱。</p>
+         *
+         * @param commandId     命令标识（同时是资金腿幂等标识）
+         * @param amount        金额
+         * @param sourceOwner   业务认定的出款主体
+         * @param sourceAccount 旧路径出款账户
+         * @param targetOwner   业务认定的收款主体
+         * @param targetAccount 旧路径收款账户
+         * @return 腿结果；拒绝时经济字段不变
+         */
+        Leg pay(String commandId, BigDecimal amount, String sourceOwner, String sourceAccount,
+                String targetOwner, String targetAccount) {
+            if (!explicit()) {
+                CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
+                        sourceOwner, sourceAccount, targetAccount, amount);
+                return new Leg(transfer.accepted(),
+                        transfer.accepted() ? null : transfer.reason(), transfer.accounts(), null);
+            }
+            if (!sourceOwner.equals(funds.ownerIdOf(payer.source()))) {
+                return new Leg(false, REASON_FUND_OWNER_MISMATCH, accounts, funds);
+            }
+            if (!targetOwner.equals(funds.ownerIdOf(payer.target()))) {
+                return new Leg(false, REASON_PAYEE_MISMATCH, accounts, funds);
+            }
+            FundPayer.Result result = payer.pay(commandId, amount, funds);
+            return new Leg(result.accepted(), result.reason(), result.funds().accounts(),
+                    result.funds());
+        }
+    }
+
+    /**
+     * 一条资金腿的结果。
+     *
+     * @param accepted 是否完成
+     * @param reason   资金腿结果码；旧路径成功时为 null（业务用自己的成功码）
+     * @param accounts 候选现金账户表
+     * @param funds    候选资金三态；旧现金路径为 null
+     */
+    private record Leg(boolean accepted, String reason, Map<String, CashAccount> accounts,
+                       FundState funds) {
+    }
+
+    /**
+     * 内部候选：业务状态 + 资金视图。
+     *
+     * @param accepted 是否成功
+     * @param reason   结果码
+     * @param state    候选业务状态
+     * @param accounts 候选现金账户表
+     * @param funds    候选资金三态；旧现金路径为 null
+     */
+    private record Settlement(boolean accepted, String reason, State state,
+                              Map<String, CashAccount> accounts, FundState funds) {
+
+        /** @return 旧现金接口的结果 */
+        Outcome outcome() {
+            return new Outcome(accepted, reason, state, accounts);
+        }
+
+        /** @return 显式资金腿接口的结果 */
+        FundOutcome funded() {
+            Objects.requireNonNull(funds, "显式路径候选缺少资金三态");
+            return new FundOutcome(accepted, reason, state, funds);
+        }
+    }
+
+    private static Settlement finishLeg(Funding funding, Draft draft, boolean accepted,
+                                        String reason, Leg leg, String commandId, String content) {
+        draft.commandContents.put(commandId, content);
+        draft.commandOutcomes.put(commandId, (accepted ? "1|" : "0|") + reason);
+        Map<String, CashAccount> accounts = leg == null ? funding.accounts() : leg.accounts();
+        FundState funds = leg == null ? funding.funds() : leg.funds();
+        return new Settlement(accepted, reason, draft.build(), accounts, funds);
+    }
 
     private static final class Draft {
         private final Config config;
@@ -1783,6 +2431,13 @@ public final class EngineeringModel {
         boolean accepted = outcome != null && outcome.startsWith("1|");
         String reason = outcome == null ? "REPLAYED" : outcome.substring(2);
         return new Outcome(accepted, reason, state, accounts);
+    }
+
+    private static FundOutcome finishFunded(Draft draft, boolean accepted, String reason,
+                                            FundState funds, String commandId, String content) {
+        draft.commandContents.put(commandId, content);
+        draft.commandOutcomes.put(commandId, (accepted ? "1|" : "0|") + reason);
+        return new FundOutcome(accepted, reason, draft.build(), funds);
     }
 
     private static boolean authorized(State state, String actorOwnerId) {

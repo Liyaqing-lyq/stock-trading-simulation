@@ -4,6 +4,8 @@
 
 ## 已接入的最新增量
 
+银行组合代码`1e8752e`已部署至独立[银行Web工作台](http://127.0.0.1:18083/)，分支`codex/world-bank-composition`依赖PR50，人工review仍待。正式1915项（失败/错误/跳过均0）、CSV45/122/7、全部Node、真实GUI及JavaDoc通过（§102）。新增composed/custody入口、银行全账审计、本人/任职公司存取支付及借贷；实际网页公司取款10.00成功落账。正式入口采用新composed档，开局记录1/0ms，准备金/资产/权益均3000.00，五Key已配置且五场景OFF（§103）。原18080仍为下述PR50旧档。制造完整资金链、其余公司World/Web、行为实验仍待完成。
+
 最新持久[本机Web](http://127.0.0.1:18080/)为代码65a78bb、[草稿PR50](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/50)，依赖PR49。正式1847项零失败/错误/跳过、CSV47/131/7、Node/真实GUI/JavaDoc通过，CI43576078384核对精确代码success。完整指令原意新档与停止竞态修复已接入；实际新档浏览器建支/推进/停止重启通过。原网页仍groups规则、17/100000ms、15账户4待办，五Key配置保留且五场景OFF；不隐式迁移。详情§95–98。人工review另列；银行组合与其它公司模板仍未交付。
 
 此前分支版本[本机 Web](http://127.0.0.1:18080/)为代码d1ed4a7、[草稿PR49](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/49)（依赖PR48）。已加入历史位置派生独立子世界、有限本机进程启动/进入/停止/重启、父子会话隔离，保留原记录17/100000ms。正式1807项零失败/错误/跳过、CSV45/124/7、全部Web Node/结构、真实GUI及JavaDoc通过；CI43572652734对精确代码提交completed/success。独立预览实际人物发帖后子运行重启仍9/25/PUBLISHED，父5/0不变；正式网页切点17可用，五Key配置齐全且五场景OFF。首轮文件锁备份失败已回退并成功重试，详情§94。人工review仍待，不自动合并；下述旧版仅为历史证据。

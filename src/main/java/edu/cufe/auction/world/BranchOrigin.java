@@ -99,7 +99,7 @@ public record BranchOrigin(String parentRunId, long parentPosition, String paren
         if (parentPrefixBytes < 1) {
             throw new IllegalArgumentException("封存父前缀字节数必须为正：" + parentPrefixBytes);
         }
-        if (!BranchProfile.VERSION.equals(profileVersion)) {
+        if (!BranchProfile.knownVersion(profileVersion)) {
             throw new IllegalArgumentException("不支持的分支画像摘要口径：" + profileVersion);
         }
         if (profileDigest == null || !profileDigest.matches("[0-9a-f]{64}")) {
