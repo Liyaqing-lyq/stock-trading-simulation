@@ -2,9 +2,9 @@
 
 本文件只适用于本仓库。可变事实（数量、进度、状态）以当前代码、配置、测试和数据为准。
 
-## 当前接续入口（2026-11-13，b/c整合中）
+## 当前接续入口（2026-11-13，schema17组合验收通过）
 
-先读 `logs/implementation-20261106-continued/interview-runtime-root/current.md`，再读 `docs/CURRENT_IMPLEMENTATION.md`。schema16后端2、Web Root候选4与工程纯核2已接主树，本次正式1468项及CSV/Web/GUI/JavaDoc通过（docs05§47），待本阶段PR/CI与浏览器交付。此前已发布2f24e22/草稿PR43/CI43392262590；18080当前仍旧schema15独立副本，更新结果以后续current.md为准。用户要求持续按Plan完成最高质量Web初版，真实Hermes承担实现/反例检查，Root负责裁定和验收；总体基线未完成。一对一消息纯核在隔离独审，不纳入本次正式数字。以下旧时间段仅为历史。
+先读`logs/implementation-20261106-continued/interview-runtime-root/active.md`与`docs/CURRENT_IMPLEMENTATION.md`。schema17后端6/Web3已接主树，经理任免纯核和工程ReportContext保留；第一次正式测试有5个夹具目录错误，修后clean正式1557/0/0/0、CSV49/123/7、JS25/布局/图表/GUI及JavaDoc通过，Root242SHA与新116XML独立复核。docs05§53保留证据。发布be20fdd/草稿PR45、CI43450645192成功，18080已为冻结schema17 social独立档。浏览器显示小修复已接两文件并再次正式1557通过，见docs05§54，最终代码1e47926/CI43452656669成功，social服务PID59600、1000ms/pos5，空卡与说明浏览器复核通过。银行R1 Root时序假设已据原码纠正，见banking-root-r1-correction.md与tracked银行Plan，不再用核销前付款却套核销后备查上限。董事参与纯核已接受留待18，工程真实WorldRuntime基础与Java银行纯核在隔离目录实施，禁止独立第二Runtime/账户/journal。总体远未完成；真实Hermes承担实现、独审、确定性执行，Root裁定与接入，未变测试不重复。以下旧段为历史。
 
 ## 最新执行偏好（用户本轮明确要求，2026-11-07）
 

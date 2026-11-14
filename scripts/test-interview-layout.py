@@ -85,4 +85,19 @@ for table_id, columns in {"person-evidence-labels": 4, "person-evidence-shares":
     assert table[0] == "table" and inside(table, "id", "person-evidence"), table_id
     descendants = [node for node in layout.nodes if inside(node, "id", table_id)]
     assert sum(node[0] == "th" for node in descendants) == columns, table_id
+
+# 消息（schema17）：管理四表在 admin 的消息面板内；人物三表在 person-social 内
+for table_id, columns in {"social-messages": 10, "social-blocks": 4,
+                          "social-reports": 7, "social-contacts": 5}.items():
+    table = layout.unique("id", table_id)
+    assert table[0] == "table" and inside(table, "data-panel", "social"), table_id
+    descendants = [node for node in layout.nodes if inside(node, "id", table_id)]
+    assert sum(node[0] == "th" for node in descendants) == columns, table_id
+    assert sum(node[0] == "tbody" for node in descendants) == 1, table_id
+for table_id, columns in {"person-social-inbox": 6, "person-social-outbox": 5,
+                          "person-social-contacts": 3}.items():
+    table = layout.unique("id", table_id)
+    assert table[0] == "table" and inside(table, "id", "person-social"), table_id
+    descendants = [node for node in layout.nodes if inside(node, "id", table_id)]
+    assert sum(node[0] == "th" for node in descendants) == columns, table_id
 print("INTERVIEW_LAYOUT=PASS")

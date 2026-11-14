@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonParser;
@@ -156,6 +157,7 @@ public final class BoardModel {
 
     private static final BigDecimal HUNDRED = new BigDecimal("100");
     private static final String AUTHORIZATION_DOMAIN = "board-dividend-v1";
+    private static final String APPOINTMENT_AUTHORIZATION_DOMAIN = "manager-appointment-v1";
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
@@ -166,14 +168,16 @@ public final class BoardModel {
     private BoardModel() {
     }
 
-    /** 议题：预算、经营考核与现金分红授权；各自路径互不替代。 */
+    /** 议题：预算、经营考核、现金分红授权与公司经理任免；各自路径互不替代。 */
     public enum Topic {
         /** 预算授权。 */
         BUDGET,
         /** 经营考核。 */
         OPERATING_REVIEW,
         /** 现金分红授权（只产生授权引用，不派息）。 */
-        DIVIDEND_AUTHORIZATION
+        DIVIDEND_AUTHORIZATION,
+        /** 公司经理任免授权（只产生授权引用，不写任职表）。 */
+        MANAGER_APPOINTMENT
     }
 
     /** 预算类别，对应未来制造新承诺。 */
@@ -610,6 +614,103 @@ public final class BoardModel {
         }
     }
 
+    /** 任免动作：产生任职的任命，或对既有任职的撤销。 */
+    public enum AppointmentAction {
+        /** 任命。 */
+        APPOINT,
+        /** 撤销。 */
+        REVOKE
+    }
+
+    /**
+     * 任免请求：绑定公司、人物、任职标识、动作、精确生效时点与期限。
+     *
+     * <p>APPOINT 时 {@code effectiveAt} 是任职开始，{@code endsAt} 必填且大于开始；
+     * REVOKE 时 {@code effectiveAt} 是撤销生效时点，{@code endsAt} 必须为空。
+     * 纯核不认识真实任职表，本请求只是待董事会授权的对象。</p>
+     *
+     * @param appointmentId 任职标识
+     * @param personPartyId 任职人物
+     * @param companyPartyId 公司组织
+     * @param role 岗位，只允许公司经理
+     * @param action 任命或撤销
+     * @param effectiveAt 任命开始或撤销生效时点
+     * @param endsAt 任命结束（不含）；撤销必须为空
+     */
+    public record AppointmentRequest(String appointmentId, String personPartyId,
+                                     String companyPartyId, RoleAccess.Role role,
+                                     AppointmentAction action, long effectiveAt, Long endsAt) {
+
+        /** 校验标识、岗位、动作与区间。 */
+        public AppointmentRequest {
+            requireText(appointmentId, "任职标识");
+            requireText(personPartyId, "任职人物");
+            requireText(companyPartyId, "公司组织");
+            Objects.requireNonNull(role, "任职岗位");
+            Objects.requireNonNull(action, "任免动作");
+            if (role != RoleAccess.Role.COMPANY_MANAGER) {
+                throw new IllegalArgumentException("任免请求只支持公司经理岗位：" + role);
+            }
+            if (effectiveAt < 0) {
+                throw new IllegalArgumentException("生效时点不能为负");
+            }
+            if (action == AppointmentAction.APPOINT) {
+                if (endsAt == null || endsAt <= effectiveAt) {
+                    throw new IllegalArgumentException("任命期限必须为有效区间");
+                }
+            } else if (endsAt != null) {
+                throw new IllegalArgumentException("撤销请求不得携带任命结束时刻");
+            }
+        }
+
+        /** @return 是否任命；派生判断不参与 JSON 序列化 */
+        @JsonIgnore
+        public boolean isAppointment() {
+            return action == AppointmentAction.APPOINT;
+        }
+    }
+
+    /**
+     * 任免提案：由真实席位在材料窗口内提出。
+     *
+     * @param request 任免请求
+     * @param proposerSeatId 提案席位
+     * @param relatedSeatIds 关联席位；候选人/被撤人若占席，由提案与状态校验自动识别，不依赖本字段
+     * @param proposedAtMillis 提案时点
+     */
+    public record AppointmentProposal(AppointmentRequest request, String proposerSeatId,
+                                      List<String> relatedSeatIds, long proposedAtMillis) {
+
+        /** 校验请求、提案席与时间，并规范化关联席。 */
+        public AppointmentProposal {
+            Objects.requireNonNull(request, "任免请求");
+            requireText(proposerSeatId, "提案席位");
+            if (proposedAtMillis < 0) {
+                throw new IllegalArgumentException("提案时点不能为负");
+            }
+            relatedSeatIds = sortedDistinct(relatedSeatIds == null ? List.of() : relatedSeatIds,
+                    "关联席位");
+        }
+    }
+
+    /**
+     * 已生成的任免授权：只表示董事会授权，不代表任职已写入。
+     *
+     * @param issuedAtMillis 授权签发时点
+     * @param authorizationRef 绑定真实来源的授权引用
+     */
+    public record AppointmentResolution(@JsonProperty(required = true) long issuedAtMillis,
+                                        @JsonProperty(required = true) String authorizationRef) {
+
+        /** 校验时点与引用。 */
+        public AppointmentResolution {
+            if (issuedAtMillis < 0) {
+                throw new IllegalArgumentException("授权签发时点不能为负");
+            }
+            requireText(authorizationRef, "授权引用");
+        }
+    }
+
     /**
      * 会议：召集、材料、表决与结果原文；通过后实施状态单独推进。
      *
@@ -638,10 +739,45 @@ public final class BoardModel {
                           @JsonInclude(JsonInclude.Include.NON_NULL)
                           DividendProposal dividendProposal,
                           @JsonInclude(JsonInclude.Include.NON_NULL)
-                          DividendResolution dividendResolution) {
+                          DividendResolution dividendResolution,
+                          @JsonInclude(JsonInclude.Include.NON_NULL)
+                          AppointmentProposal appointmentProposal,
+                          @JsonInclude(JsonInclude.Include.NON_NULL)
+                          AppointmentResolution appointmentResolution) {
 
         /**
-         * 旧 14 参构造：保持源码兼容，两个分红元数据置空。
+         * 旧 16 参构造：保持源码兼容，两个任免元数据置空。
+         *
+         * @param meetingId        会议标识
+         * @param topic            议题
+         * @param convenerSeatId   召集席位
+         * @param createdAt        召集时刻
+         * @param materialDeadline 材料截止
+         * @param opensAt          开会时刻
+         * @param closesAt         表决截止（不含）
+         * @param status           状态
+         * @param attendeeSeatIds  到会席位
+         * @param recusedSeatIds   回避席位
+         * @param materials        材料
+         * @param proposedLines    预算请求行
+         * @param ballots          选票
+         * @param failureReason    实施失败原因
+         * @param dividendProposal 分红提案
+         * @param dividendResolution 分红授权
+         */
+        public Meeting(String meetingId, Topic topic, String convenerSeatId, long createdAt,
+                       long materialDeadline, long opensAt, long closesAt, MeetingStatus status,
+                       List<String> attendeeSeatIds, List<String> recusedSeatIds,
+                       List<MaterialRef> materials, List<BudgetLine> proposedLines,
+                       Map<String, Ballot> ballots, String failureReason,
+                       DividendProposal dividendProposal, DividendResolution dividendResolution) {
+            this(meetingId, topic, convenerSeatId, createdAt, materialDeadline, opensAt, closesAt,
+                    status, attendeeSeatIds, recusedSeatIds, materials, proposedLines, ballots,
+                    failureReason, dividendProposal, dividendResolution, null, null);
+        }
+
+        /**
+         * 旧 14 参构造：保持源码兼容，四个授权元数据置空。
          *
          * @param meetingId        会议标识
          * @param topic            议题
@@ -665,7 +801,7 @@ public final class BoardModel {
                        Map<String, Ballot> ballots, String failureReason) {
             this(meetingId, topic, convenerSeatId, createdAt, materialDeadline, opensAt, closesAt,
                     status, attendeeSeatIds, recusedSeatIds, materials, proposedLines, ballots,
-                    failureReason, null, null);
+                    failureReason, null, null, null, null);
         }
 
         /** 规范化排序、校验集合深不可变与选票索引一致性。 */
@@ -768,8 +904,82 @@ public final class BoardModel {
                     throw new IllegalArgumentException("有效到会不足时应延期：" + meetingId);
                 }
                 checkDividendOutcome(meetingId, status, attendeeSeatIds, recusedSeatIds, ballotCopy);
+            } else if (topic == Topic.MANAGER_APPOINTMENT) {
+                if (createdAt > materialDeadline || materialDeadline > opensAt || opensAt >= closesAt) {
+                    throw new IllegalArgumentException("任免会议时序不合法：" + meetingId);
+                }
+                if (status == MeetingStatus.REVIEWED || status == MeetingStatus.IMPLEMENTATION_FAILED) {
+                    throw new IllegalArgumentException("任免议题不支持该阶段：" + meetingId);
+                }
+                if (!attendeeSeatIds.containsAll(recusedSeatIds)) {
+                    throw new IllegalArgumentException("回避席位必须到会：" + meetingId);
+                }
+                Set<String> materialIds = new HashSet<>();
+                for (MaterialRef material : materialList) {
+                    if (!materialIds.add(material.materialId()) || material.asOf() > materialDeadline) {
+                        throw new IllegalArgumentException("任免材料重复或晚于截止：" + meetingId);
+                    }
+                }
+                if ((status == MeetingStatus.CONVENED || status == MeetingStatus.MATERIALS_FROZEN)
+                        && !ballotCopy.isEmpty()) {
+                    throw new IllegalArgumentException("表决开始前不能有选票：" + meetingId);
+                }
+                if (!lineList.isEmpty()) {
+                    throw new IllegalArgumentException("任免议题不能携带预算行：" + meetingId);
+                }
+                if (dividendProposal != null || dividendResolution != null) {
+                    throw new IllegalArgumentException("任免议题不能携带分红元数据：" + meetingId);
+                }
+                if (appointmentProposal == null) {
+                    if (status != MeetingStatus.CONVENED && status != MeetingStatus.MATERIALS_FROZEN
+                            && status != MeetingStatus.REJECTED) {
+                        throw new IllegalArgumentException("该阶段必须有任免提案：" + meetingId);
+                    }
+                    if (!ballotCopy.isEmpty()) {
+                        throw new IllegalArgumentException("无提案不能有选票：" + meetingId);
+                    }
+                } else {
+                    if (appointmentProposal.proposedAtMillis() < createdAt
+                            || appointmentProposal.proposedAtMillis() > materialDeadline) {
+                        throw new IllegalArgumentException("任免提案不在会议材料窗口内：" + meetingId);
+                    }
+                    if (closesAt > appointmentProposal.request().effectiveAt()) {
+                        throw new IllegalArgumentException("表决截止晚于任免生效时点：" + meetingId);
+                    }
+                    for (String related : appointmentProposal.relatedSeatIds()) {
+                        if (attendeeSeatIds.contains(related) && !recusedSeatIds.contains(related)) {
+                            throw new IllegalArgumentException("到会的关联席位未登记回避：" + related);
+                        }
+                    }
+                }
+                if (appointmentResolution != null && status != MeetingStatus.IMPLEMENTED) {
+                    throw new IllegalArgumentException("只有已实施会议才能携带授权：" + meetingId);
+                }
+                if (status == MeetingStatus.IMPLEMENTED && appointmentResolution == null) {
+                    throw new IllegalArgumentException("已实施会议必须有授权：" + meetingId);
+                }
+                if (appointmentResolution != null && (appointmentResolution.issuedAtMillis() < closesAt
+                        || appointmentResolution.issuedAtMillis()
+                        > appointmentProposal.request().effectiveAt())) {
+                    throw new IllegalArgumentException("授权生成不在有效窗口内：" + meetingId);
+                }
+                for (Ballot ballot : ballotCopy.values()) {
+                    if (!attendeeSeatIds.contains(ballot.seatId())
+                            || recusedSeatIds.contains(ballot.seatId())
+                            || ballot.castAt() < opensAt || ballot.castAt() >= closesAt) {
+                        throw new IllegalArgumentException("任免会议出现无资格选票：" + ballot.seatId());
+                    }
+                }
+                if (appointmentProposal != null && status == MeetingStatus.REJECTED
+                        && attendeeSeatIds.size() - recusedSeatIds.size() < QUORUM) {
+                    throw new IllegalArgumentException("有效到会不足时应延期：" + meetingId);
+                }
+                checkAppointmentOutcome(meetingId, status, attendeeSeatIds, recusedSeatIds,
+                        ballotCopy);
             } else if (dividendProposal != null || dividendResolution != null) {
                 throw new IllegalArgumentException("非分红议题不能携带分红元数据：" + meetingId);
+            } else if (appointmentProposal != null || appointmentResolution != null) {
+                throw new IllegalArgumentException("非任免议题不能携带任免元数据：" + meetingId);
             }
             materials = List.copyOf(materialList);
             proposedLines = List.copyOf(lineList);
@@ -860,6 +1070,7 @@ public final class BoardModel {
                 }
             }
             checkDividendState(charter, meetingCopy);
+            checkAppointmentState(charter, meetingCopy);
             meetings = Map.copyOf(meetingCopy);
             budgets = List.copyOf(budgetList);
             commitments = List.copyOf(commitmentList);
@@ -1156,7 +1367,9 @@ public final class BoardModel {
         }
         boolean hasProposal = meeting.topic() == Topic.BUDGET
                 ? !meeting.proposedLines().isEmpty()
-                : meeting.dividendProposal() != null;
+                : meeting.topic() == Topic.DIVIDEND_AUTHORIZATION
+                        ? meeting.dividendProposal() != null
+                        : meeting.appointmentProposal() != null;
         if (!hasProposal) {
             return rejected(state, REASON_EMPTY_PROPOSAL);
         }
@@ -1236,6 +1449,13 @@ public final class BoardModel {
             }
             if (meeting.topic() == Topic.DIVIDEND_AUTHORIZATION
                     && meeting.dividendProposal() == null) {
+                Draft rejectedDraft = new Draft(state);
+                rejectedDraft.meetings.put(meetingId, copyWith(meeting, MeetingStatus.REJECTED,
+                        meeting.materials(), meeting.proposedLines(), meeting.ballots(), null));
+                return accepted(rejectedDraft.build(), REASON_EMPTY_PROPOSAL);
+            }
+            if (meeting.topic() == Topic.MANAGER_APPOINTMENT
+                    && meeting.appointmentProposal() == null) {
                 Draft rejectedDraft = new Draft(state);
                 rejectedDraft.meetings.put(meetingId, copyWith(meeting, MeetingStatus.REJECTED,
                         meeting.materials(), meeting.proposedLines(), meeting.ballots(), null));
@@ -1493,6 +1713,185 @@ public final class BoardModel {
         Draft draft = new Draft(state);
         draft.meetings.put(meetingId, withResolution(meeting, resolution));
         return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 提出公司经理任免提案：只写提案，不产生授权、不改任职。
+     *
+     * @param state          当前董事会状态
+     * @param now            当前模拟毫秒
+     * @param meetingId      任免会议标识
+     * @param proposerSeatId 提案席位
+     * @param relatedSeatIds 关联席位事实
+     * @param request        任免请求
+     * @return 候选结果
+     */
+    public static Outcome proposeManagerAppointment(State state, long now, String meetingId,
+                                                    String proposerSeatId,
+                                                    List<String> relatedSeatIds,
+                                                    AppointmentRequest request) {
+        requireState(state);
+        requireTime(now);
+        Meeting meeting = meetingOf(state, meetingId);
+        if (meeting == null) {
+            return rejected(state, REASON_UNKNOWN_MEETING);
+        }
+        if (meeting.topic() != Topic.MANAGER_APPOINTMENT) {
+            return rejected(state, REASON_WRONG_TOPIC);
+        }
+        if (meeting.status() != MeetingStatus.CONVENED) {
+            return rejected(state, REASON_MATERIALS_FROZEN);
+        }
+        if (now < meeting.createdAt()) {
+            return rejected(state, REASON_INVALID_TIMELINE);
+        }
+        if (now > meeting.materialDeadline()) {
+            return rejected(state, REASON_MATERIALS_CLOSED);
+        }
+        if (meeting.appointmentProposal() != null) {
+            return rejected(state, REASON_PROPOSAL_EXISTS);
+        }
+        if (request == null) {
+            return rejected(state, REASON_INVALID_ARGUMENT);
+        }
+        if (!request.companyPartyId().equals(state.charter().companyPartyId())) {
+            return rejected(state, REASON_INVALID_ARGUMENT);
+        }
+        if (blank(proposerSeatId) || !state.charter().hasSeat(proposerSeatId)) {
+            return rejected(state, REASON_INVALID_ATTENDANCE);
+        }
+        List<String> related = relatedSeatIds == null ? List.of() : relatedSeatIds;
+        Set<String> seenRelated = new HashSet<>();
+        for (String seatId : related) {
+            if (blank(seatId) || !state.charter().hasSeat(seatId) || !seenRelated.add(seatId)) {
+                return rejected(state, REASON_INVALID_ATTENDANCE);
+            }
+            if (meeting.attendeeSeatIds().contains(seatId)
+                    && !meeting.recusedSeatIds().contains(seatId)) {
+                return rejected(state, REASON_INVALID_ATTENDANCE);
+            }
+        }
+        String autoSeat = state.charter().seatOf(request.personPartyId());
+        if (autoSeat != null && meeting.attendeeSeatIds().contains(autoSeat)
+                && !meeting.recusedSeatIds().contains(autoSeat)) {
+            return rejected(state, REASON_INVALID_ATTENDANCE);
+        }
+        if (meeting.closesAt() > request.effectiveAt()) {
+            return rejected(state, REASON_INVALID_TIMELINE);
+        }
+        if (request.isAppointment()) {
+            for (Meeting other : state.meetings().values()) {
+                if (other.topic() != Topic.MANAGER_APPOINTMENT
+                        || other.appointmentProposal() == null
+                        || !other.appointmentProposal().request().isAppointment()
+                        || !isActiveAppointment(other.status())) {
+                    continue;
+                }
+                AppointmentRequest existing = other.appointmentProposal().request();
+                if (existing.companyPartyId().equals(request.companyPartyId())
+                        && existing.role() == request.role()) {
+                    return rejected(state, REASON_INVALID_STATE);
+                }
+                if (existing.appointmentId().equals(request.appointmentId())) {
+                    return rejected(state, REASON_INVALID_STATE);
+                }
+            }
+        }
+        AppointmentProposal proposal = new AppointmentProposal(request, proposerSeatId,
+                related, now);
+        Draft draft = new Draft(state);
+        draft.meetings.put(meetingId, withAppointmentProposal(meeting, proposal));
+        return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 实施已通过的任免决议：重新核对章程、会议、选票与生效时点后生成授权引用。
+     *
+     * <p>只产生授权引用，不改 RoleAccess 任职表；授权不得晚于请求生效时点。</p>
+     *
+     * @param state     当前状态
+     * @param now       当前模拟毫秒
+     * @param meetingId 任免会议标识
+     * @return 候选结果
+     */
+    public static Outcome executeAdoptedManagerAppointment(State state, long now,
+                                                           String meetingId) {
+        requireState(state);
+        requireTime(now);
+        Meeting meeting = meetingOf(state, meetingId);
+        if (meeting == null) {
+            return rejected(state, REASON_UNKNOWN_MEETING);
+        }
+        if (meeting.topic() != Topic.MANAGER_APPOINTMENT) {
+            return rejected(state, REASON_WRONG_TOPIC);
+        }
+        if (meeting.status() != MeetingStatus.ADOPTED) {
+            return rejected(state, REASON_NOT_ADOPTED);
+        }
+        AppointmentProposal proposal = meeting.appointmentProposal();
+        if (proposal == null) {
+            return rejected(state, REASON_INVALID_STATE);
+        }
+        if (now < meeting.closesAt()) {
+            return rejected(state, REASON_NOT_DUE);
+        }
+        if (now > proposal.request().effectiveAt()) {
+            return rejected(state, REASON_INVALID_TIMELINE);
+        }
+        List<String> eligible = meeting.eligibleVoters();
+        if (eligible.size() < QUORUM) {
+            return rejected(state, REASON_NO_QUORUM);
+        }
+        if (yesVotes(meeting, eligible) < ORDINARY_YES_VOTES) {
+            return rejected(state, REASON_NOT_ADOPTED);
+        }
+        if (!proposal.request().companyPartyId().equals(state.charter().companyPartyId())) {
+            return rejected(state, REASON_INVALID_STATE);
+        }
+        String authorizationRef = computeAppointmentAuthorizationRef(state.charter(), meeting,
+                now);
+        AppointmentResolution resolution = new AppointmentResolution(now, authorizationRef);
+        Draft draft = new Draft(state);
+        draft.meetings.put(meetingId, withAppointmentResolution(meeting, resolution));
+        return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 核验公司经理任免授权：只有真实已实施、请求逐字段相同且来源可重算时才为真。
+     *
+     * @param state            当前状态
+     * @param authorizationRef 待核验引用
+     * @param request          待核验请求
+     * @return 是否与真实来源一致
+     */
+    public static boolean verifiesManagerAppointmentAuthorization(State state,
+                                                                  String authorizationRef,
+                                                                  AppointmentRequest request) {
+        requireState(state);
+        if (blank(authorizationRef) || request == null) {
+            return false;
+        }
+        for (Meeting meeting : state.meetings().values()) {
+            if (meeting.topic() != Topic.MANAGER_APPOINTMENT
+                    || meeting.status() != MeetingStatus.IMPLEMENTED) {
+                continue;
+            }
+            AppointmentResolution resolution = meeting.appointmentResolution();
+            if (resolution == null
+                    || !resolution.authorizationRef().equals(authorizationRef)
+                    || meeting.appointmentProposal() == null) {
+                continue;
+            }
+            if (!sameAppointmentRequest(meeting.appointmentProposal().request(), request)) {
+                continue;
+            }
+            String recomputed = computeAppointmentAuthorizationRef(state.charter(), meeting,
+                    resolution.issuedAtMillis());
+            if (recomputed.equals(authorizationRef)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1895,7 +2294,8 @@ public final class BoardModel {
                 meeting.createdAt(), meeting.materialDeadline(), meeting.opensAt(),
                 meeting.closesAt(), status, meeting.attendeeSeatIds(), meeting.recusedSeatIds(),
                 materials, lines, ballots, failureReason,
-                meeting.dividendProposal(), meeting.dividendResolution());
+                meeting.dividendProposal(), meeting.dividendResolution(),
+                meeting.appointmentProposal(), meeting.appointmentResolution());
     }
 
     private static Meeting withProposal(Meeting meeting, DividendProposal proposal) {
@@ -1904,7 +2304,8 @@ public final class BoardModel {
                 meeting.closesAt(), meeting.status(), meeting.attendeeSeatIds(),
                 meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
                 meeting.ballots(), meeting.failureReason(), proposal,
-                meeting.dividendResolution());
+                meeting.dividendResolution(), meeting.appointmentProposal(),
+                meeting.appointmentResolution());
     }
 
     private static Meeting withResolution(Meeting meeting, DividendResolution resolution) {
@@ -1913,7 +2314,26 @@ public final class BoardModel {
                 meeting.closesAt(), MeetingStatus.IMPLEMENTED, meeting.attendeeSeatIds(),
                 meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
                 meeting.ballots(), meeting.failureReason(), meeting.dividendProposal(),
-                resolution);
+                resolution, meeting.appointmentProposal(), meeting.appointmentResolution());
+    }
+
+    private static Meeting withAppointmentProposal(Meeting meeting, AppointmentProposal proposal) {
+        return new Meeting(meeting.meetingId(), meeting.topic(), meeting.convenerSeatId(),
+                meeting.createdAt(), meeting.materialDeadline(), meeting.opensAt(),
+                meeting.closesAt(), meeting.status(), meeting.attendeeSeatIds(),
+                meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
+                meeting.ballots(), meeting.failureReason(), meeting.dividendProposal(),
+                meeting.dividendResolution(), proposal, meeting.appointmentResolution());
+    }
+
+    private static Meeting withAppointmentResolution(Meeting meeting,
+                                                     AppointmentResolution resolution) {
+        return new Meeting(meeting.meetingId(), meeting.topic(), meeting.convenerSeatId(),
+                meeting.createdAt(), meeting.materialDeadline(), meeting.opensAt(),
+                meeting.closesAt(), MeetingStatus.IMPLEMENTED, meeting.attendeeSeatIds(),
+                meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
+                meeting.ballots(), meeting.failureReason(), meeting.dividendProposal(),
+                meeting.dividendResolution(), meeting.appointmentProposal(), resolution);
     }
 
     /**
@@ -1992,6 +2412,112 @@ public final class BoardModel {
                 && yes >= ORDINARY_YES_VOTES) {
             throw new IllegalArgumentException("否决状态却满足通过条件：" + meetingId);
         }
+    }
+
+    private static void checkAppointmentOutcome(String meetingId, MeetingStatus status,
+                                                List<String> attendees, List<String> recused,
+                                                Map<String, Ballot> ballots) {
+        List<String> eligible = new ArrayList<>(attendees);
+        eligible.removeAll(recused);
+        int yes = 0;
+        for (Ballot ballot : ballots.values()) {
+            if (ballot.vote() == Vote.YES && eligible.contains(ballot.seatId())) {
+                yes++;
+            }
+        }
+        if (status == MeetingStatus.ADJOURNED_NO_QUORUM && eligible.size() >= QUORUM) {
+            throw new IllegalArgumentException("有效到会达标却标为延期：" + meetingId);
+        }
+        if ((status == MeetingStatus.ADOPTED || status == MeetingStatus.IMPLEMENTED)
+                && (eligible.size() < QUORUM || yes < ORDINARY_YES_VOTES)) {
+            throw new IllegalArgumentException("通过状态与真实选票不一致：" + meetingId);
+        }
+        if (status == MeetingStatus.REJECTED && eligible.size() >= QUORUM
+                && yes >= ORDINARY_YES_VOTES) {
+            throw new IllegalArgumentException("否决状态却满足通过条件：" + meetingId);
+        }
+    }
+
+    private static void checkAppointmentState(Charter charter, Map<String, Meeting> meetings) {
+        Set<String> activeAppointments = new HashSet<>();
+        Map<String, AppointmentRequest> activeIds = new TreeMap<>();
+        for (Meeting meeting : meetings.values()) {
+            if (meeting.topic() != Topic.MANAGER_APPOINTMENT) {
+                continue;
+            }
+            if (!charter.chairSeatId().equals(meeting.convenerSeatId())) {
+                throw new IllegalArgumentException("任免会议必须由主席召集：" + meeting.meetingId());
+            }
+            for (String seatId : meeting.attendeeSeatIds()) {
+                if (!charter.hasSeat(seatId)) {
+                    throw new IllegalArgumentException("到会者不是章程席位：" + seatId);
+                }
+            }
+            AppointmentProposal proposal = meeting.appointmentProposal();
+            if (proposal == null) {
+                continue;
+            }
+            if (!charter.hasSeat(proposal.proposerSeatId())) {
+                throw new IllegalArgumentException("任免提案人不是章程席位："
+                        + proposal.proposerSeatId());
+            }
+            AppointmentRequest request = proposal.request();
+            if (!request.companyPartyId().equals(charter.companyPartyId())) {
+                throw new IllegalArgumentException("任免公司必须等于章程公司："
+                        + request.companyPartyId());
+            }
+            for (String related : proposal.relatedSeatIds()) {
+                if (!charter.hasSeat(related)) {
+                    throw new IllegalArgumentException("关联席位不是章程席位：" + related);
+                }
+            }
+            String autoSeat = charter.seatOf(request.personPartyId());
+            if (autoSeat != null && meeting.attendeeSeatIds().contains(autoSeat)
+                    && !meeting.recusedSeatIds().contains(autoSeat)) {
+                throw new IllegalArgumentException("候选人/被撤人占席未回避：" + autoSeat);
+            }
+            if (request.isAppointment() && isActiveAppointment(meeting.status())) {
+                String key = request.companyPartyId() + "\u0000" + request.role().name();
+                if (!activeAppointments.add(key)) {
+                    throw new IllegalArgumentException("同一公司同岗位存在并行任命提案："
+                            + request.companyPartyId());
+                }
+                AppointmentRequest seen = activeIds.putIfAbsent(request.appointmentId(), request);
+                if (seen != null && !sameAppointmentRequest(seen, request)) {
+                    throw new IllegalArgumentException("同一任职标识的任命内容不一致："
+                            + request.appointmentId());
+                }
+            }
+            if (meeting.status() == MeetingStatus.IMPLEMENTED) {
+                AppointmentResolution resolution = meeting.appointmentResolution();
+                if (resolution == null) {
+                    throw new IllegalArgumentException("已实施任免会议缺少授权："
+                            + meeting.meetingId());
+                }
+                String expected = computeAppointmentAuthorizationRef(charter, meeting,
+                        resolution.issuedAtMillis());
+                if (!expected.equals(resolution.authorizationRef())) {
+                    throw new IllegalArgumentException("任免授权引用与真实来源不一致："
+                            + meeting.meetingId());
+                }
+            }
+        }
+    }
+
+    private static boolean sameAppointmentRequest(AppointmentRequest first,
+                                                  AppointmentRequest second) {
+        return first.appointmentId().equals(second.appointmentId())
+                && first.personPartyId().equals(second.personPartyId())
+                && first.companyPartyId().equals(second.companyPartyId())
+                && first.role() == second.role()
+                && first.action() == second.action()
+                && first.effectiveAt() == second.effectiveAt()
+                && Objects.equals(first.endsAt(), second.endsAt());
+    }
+
+    private static boolean isActiveAppointment(MeetingStatus status) {
+        return status == MeetingStatus.CONVENED || status == MeetingStatus.MATERIALS_FROZEN
+                || status == MeetingStatus.VOTING || status == MeetingStatus.ADOPTED;
     }
 
     private static void checkDividendState(Charter charter, Map<String, Meeting> meetings) {
@@ -2135,6 +2661,84 @@ public final class BoardModel {
             return AUTHORIZATION_DOMAIN + ":" + sha256Hex(MAPPER.writeValueAsString(source));
         } catch (JsonProcessingException failure) {
             throw new IllegalStateException("授权来源无法规范化", failure);
+        }
+    }
+
+    private static String computeAppointmentAuthorizationRef(Charter charter, Meeting meeting,
+                                                              long issuedAtMillis) {
+        AppointmentProposal proposal = meeting.appointmentProposal();
+        if (proposal == null) {
+            throw new IllegalArgumentException("缺少任免提案：" + meeting.meetingId());
+        }
+        AppointmentRequest value = proposal.request();
+        Map<String, Object> source = new TreeMap<>();
+        Map<String, Object> request = new TreeMap<>();
+        request.put("appointmentId", value.appointmentId());
+        request.put("personPartyId", value.personPartyId());
+        request.put("companyPartyId", value.companyPartyId());
+        request.put("role", value.role().name());
+        request.put("action", value.action().name());
+        request.put("effectiveAt", value.effectiveAt());
+        request.put("endsAt", value.endsAt());
+        source.put("request", request);
+
+        Map<String, Object> charterSource = new TreeMap<>();
+        charterSource.put("companyPartyId", charter.companyPartyId());
+        charterSource.put("chairSeatId", charter.chairSeatId());
+        charterSource.put("quorum", charter.quorum());
+        List<Seat> seatList = new ArrayList<>(charter.seats());
+        seatList.sort(Comparator.comparing(Seat::seatId));
+        List<Map<String, Object>> seats = new ArrayList<>();
+        for (Seat seat : seatList) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("seatId", seat.seatId());
+            row.put("partyId", seat.partyId());
+            seats.add(row);
+        }
+        charterSource.put("seats", seats);
+        source.put("charter", charterSource);
+
+        Map<String, Object> meetingSource = new TreeMap<>();
+        meetingSource.put("meetingId", meeting.meetingId());
+        meetingSource.put("topic", meeting.topic().name());
+        meetingSource.put("convenerSeatId", meeting.convenerSeatId());
+        meetingSource.put("createdAt", meeting.createdAt());
+        meetingSource.put("materialDeadline", meeting.materialDeadline());
+        meetingSource.put("opensAt", meeting.opensAt());
+        meetingSource.put("closesAt", meeting.closesAt());
+        meetingSource.put("attendees", List.copyOf(meeting.attendeeSeatIds()));
+        meetingSource.put("recused", List.copyOf(meeting.recusedSeatIds()));
+        meetingSource.put("related", List.copyOf(proposal.relatedSeatIds()));
+        meetingSource.put("proposerSeatId", proposal.proposerSeatId());
+        meetingSource.put("proposedAtMillis", proposal.proposedAtMillis());
+        List<Map<String, Object>> materials = new ArrayList<>();
+        for (MaterialRef material : meeting.materials()) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("materialId", material.materialId());
+            row.put("sourceRef", material.sourceRef());
+            row.put("version", material.version());
+            row.put("asOf", material.asOf());
+            materials.add(row);
+        }
+        meetingSource.put("materials", materials);
+        List<Ballot> ballotList = new ArrayList<>(meeting.ballots().values());
+        ballotList.sort(Comparator.comparing(Ballot::seatId));
+        List<Map<String, Object>> ballots = new ArrayList<>();
+        for (Ballot ballot : ballotList) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("seatId", ballot.seatId());
+            row.put("vote", ballot.vote().name());
+            row.put("castAt", ballot.castAt());
+            ballots.add(row);
+        }
+        meetingSource.put("ballots", ballots);
+        source.put("meeting", meetingSource);
+        source.put("issuedAtMillis", issuedAtMillis);
+        try {
+            return APPOINTMENT_AUTHORIZATION_DOMAIN + ":"
+                    + sha256Hex(MAPPER.writeValueAsString(source));
+        } catch (JsonProcessingException failure) {
+            throw new IllegalStateException("任免授权来源无法规范化", failure);
         }
     }
 

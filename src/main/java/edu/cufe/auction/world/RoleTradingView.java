@@ -35,7 +35,22 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
                               List<ChildView> children, List<Notice> notices, List<String> tools,
                               @com.fasterxml.jackson.annotation.JsonInclude(
                                       com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-                              List<MediaStory> media) {
+                              List<MediaStory> media,
+                              @com.fasterxml.jackson.annotation.JsonInclude(
+                                      com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                              SocialRun.SocialView social) {
+
+    /**
+     * 兼容构造：没有社交子集（schema16 及更旧的视图逐字不变）。
+     */
+    public RoleTradingView(long observedAtMillis, long timeMillis, String personPartyId,
+                           RoleView profile, List<Appointment> appointments,
+                           List<ResearchView> research, List<TargetView> targets,
+                           List<ChildView> children, List<Notice> notices, List<String> tools,
+                           List<MediaStory> media) {
+        this(observedAtMillis, timeMillis, personPartyId, profile, appointments, research,
+                targets, children, notices, tools, media, null);
+    }
 
     /**
      * 兼容构造：没有媒体子集（schema12 及更旧的视图逐字不变）。
@@ -105,6 +120,12 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     public static final String TOOL_MEDIA_CANCEL = "media.work.cancel";
     /** 媒体工具（schema16）：把本人真实读过的材料以身份说明共享给指定接收者。 */
     public static final String TOOL_MEDIA_EVIDENCE_SHARE = "media.evidence.share";
+    /** 社交工具（schema17）：写一封一对一私人消息。 */
+    public static final String TOOL_SOCIAL_SEND = "social.send";
+    /** 社交工具（schema17）：屏蔽某人后续联系。 */
+    public static final String TOOL_SOCIAL_BLOCK = "social.block";
+    /** 社交工具（schema17）：解除屏蔽。 */
+    public static final String TOOL_SOCIAL_UNBLOCK = "social.unblock";
 
     /** 采访工具：记者发起预约邀请。 */
     public static final String TOOL_INTERVIEW_INVITE = "interview.invite";

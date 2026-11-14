@@ -861,6 +861,75 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
     }
 
     /**
+     * 写一封私人消息：只给对象、渠道、标题与正文。
+     *
+     * <p>发送者、消息标识、文档标识与命令标识一律由受信上下文派生，模型不能自填；
+     * 正文是未经核实的个人陈述，不授予任何工具权限。</p>
+     *
+     * @param toPartyId 收件人
+     * @param channel   联系渠道
+     * @param title     信封标题
+     * @param body      正文
+     */
+    public record SocialSendDraft(String toPartyId, String channel, String title, String body) {
+
+        /** 校验字段。 */
+        public SocialSendDraft {
+            requireText(toPartyId, "收件人");
+            requireText(channel, "联系渠道");
+            requireText(title, "标题");
+            requireText(body, "正文");
+        }
+    }
+
+    /**
+     * 写一封私人消息（schema17）：本批原子开始写信并排完成结算。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于当前时点加冻结写信工时
+     * @param draft           业务内容
+     * @return {@code SCHEDULED:clientTaskId}；业务拒绝返回原因码且不建任务
+     * @throws IOException 持久提交失败
+     */
+    public String sendMessage(String clientCommandId, String clientTaskId, long dueMillis,
+                              SocialSendDraft draft) throws IOException {
+        return runtime.scheduleSocialSend(this, clientCommandId, clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 屏蔽某人后续联系（schema17）：正工时动作，到期才改偏好。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于当前时点加冻结屏蔽工时
+     * @param targetPartyId   屏蔽目标
+     * @return {@code SCHEDULED:clientTaskId}；业务拒绝返回原因码且不建任务
+     * @throws IOException 持久提交失败
+     */
+    public String blockPerson(String clientCommandId, String clientTaskId, long dueMillis,
+                              String targetPartyId) throws IOException {
+        return runtime.scheduleSocialBlock(this, clientCommandId, clientTaskId, dueMillis,
+                targetPartyId, false);
+    }
+
+    /**
+     * 解除对某人的屏蔽（schema17）：正工时动作，到期才改偏好。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒，必须等于当前时点加冻结屏蔽工时
+     * @param targetPartyId   解除目标
+     * @return {@code SCHEDULED:clientTaskId}；业务拒绝返回原因码且不建任务
+     * @throws IOException 持久提交失败
+     */
+    public String unblockPerson(String clientCommandId, String clientTaskId, long dueMillis,
+                                String targetPartyId) throws IOException {
+        return runtime.scheduleSocialBlock(this, clientCommandId, clientTaskId, dueMillis,
+                targetPartyId, true);
+    }
+
+    /**
      * 作者提交组织草稿。
      *
      * @param clientCommandId 本人命令标识

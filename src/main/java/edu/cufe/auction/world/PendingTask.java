@@ -228,6 +228,17 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 证据：分享一份本人已读并记得的来源材料（COMPLETION，schema16）。 */
     public static final String MEDIA_EVIDENCE_SHARE_V1 = "MEDIA_EVIDENCE_SHARE_V1";
 
+    /** 社交：写完私人消息，进入排队（COMPLETION，schema17）。 */
+    public static final String SOCIAL_FINISH_V1 = "SOCIAL_FINISH_V1";
+    /** 社交：barrier 到达后才真正开始写信（COMPLETION，schema17）。 */
+    public static final String SOCIAL_BEGIN_V1 = "SOCIAL_BEGIN_V1";
+    /** 社交：计划投递一封已写完的消息（COMPLETION，schema17）。 */
+    public static final String SOCIAL_DELIVER_V1 = "SOCIAL_DELIVER_V1";
+    /** 社交：到期设置本人对目标的屏蔽偏好（COMPLETION，schema17）。 */
+    public static final String SOCIAL_BLOCK_V1 = "SOCIAL_BLOCK_V1";
+    /** 社交：到期解除本人对目标的屏蔽（COMPLETION，schema17）。 */
+    public static final String SOCIAL_UNBLOCK_V1 = "SOCIAL_UNBLOCK_V1";
+
     /** 采访：记者到期提出预约邀请，形成 PROPOSED（COMPLETION，schema14）。 */
     public static final String INTERVIEW_INVITE_V1 = "INTERVIEW_INVITE_V1";
 
@@ -326,7 +337,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  MEDIA_STORY_PUBLISH_V1, MEDIA_STORY_CORRECTION_V1, MEDIA_WORK_CANCEL_V1,
                  INTERVIEW_INVITE_V1, INTERVIEW_RESPOND_V1,
                  INTERVIEW_CANCEL_V1, INTERVIEW_END_V1, INTERVIEW_SPEAK_V1,
-                 MEDIA_EVIDENCE_SHARE_V1 -> {
+                 MEDIA_EVIDENCE_SHARE_V1, SOCIAL_BEGIN_V1, SOCIAL_FINISH_V1, SOCIAL_DELIVER_V1,
+                 SOCIAL_BLOCK_V1, SOCIAL_UNBLOCK_V1 -> {
                 if (phase != WorldScheduler.Phase.COMPLETION) {
                     throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }

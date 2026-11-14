@@ -25,6 +25,8 @@ import edu.cufe.auction.world.RoleAccess;
 import edu.cufe.auction.world.RoleRun;
 import edu.cufe.auction.world.RoleTradingView;
 import edu.cufe.auction.world.RoleView;
+import edu.cufe.auction.world.SocialMessageModel;
+import edu.cufe.auction.world.SocialRun;
 import edu.cufe.auction.world.ValuationModel;
 import edu.cufe.auction.world.WorldExchange;
 import edu.cufe.auction.world.WorldRuntime;
@@ -2251,6 +2253,16 @@ public final class WorldWebHost implements AutoCloseable {
                 }
             }
         }
+        SocialRun social = snapshot.social().orElse(null);
+        if (social != null) {
+            for (InterviewRun.ContactEntry entry : social.contacts()) {
+                addDialoguePerson(people, registry, entry.targetPartyId());
+            }
+            for (SocialMessageModel.Message message : social.state().messages()) {
+                addDialoguePerson(people, registry, message.from());
+                addDialoguePerson(people, registry, message.to());
+            }
+        }
         return List.copyOf(people.values());
     }
 
@@ -2710,6 +2722,201 @@ public final class WorldWebHost implements AutoCloseable {
                     bounded(labels), bounded(shares),
                     java.util.List.of("只显示本人当前可回忆的公开标签与共享说明；未读或已遗忘不出现。",
                             "共享说明只展示实际读到的正文，不授予原始资料的访问权。"));
+        });
+    }
+
+    /** 管理员消息行：真实状态、真实拒因与收件人实际阅读状态（仅管理端）。 */
+    public record SocialMessageRow(String messageId, String from, String to, String channel,
+                                   String status, String docId, long version, long sentAt,
+                                   long dueAt, long statusAt, String title,
+                                   boolean readByReceiver, String rejectReason) { }
+
+    /** 管理员屏蔽行（真实屏蔽方，仅管理端可见）。 */
+    public record SocialBlockRow(String ownerPartyId, String targetPartyId, long since,
+                                 String commandId) { }
+
+    /** 管理员任务报告行：业务拒绝也留痕，reason 为真实原因码。 */
+    public record SocialReportRow(String taskId, String person, String kind, boolean accepted,
+                                  String reason, String messageId, long atMillis, long position) { }
+
+    /** 受信联系入口行（不是全世界人员清单）。 */
+    public record SocialContactRow(String targetPartyId, String channel, String description,
+                                   String docId, long version) { }
+
+    /** 消息审计视图：同一确认截止下的消息、屏蔽、报告与联系入口。 */
+    public record SocialAuditView(String runId, String position, String timeMillis,
+                                  boolean available, long clock, Section messages, Section blocks,
+                                  Section reports, Section contacts,
+                                  java.util.List<String> notes) { }
+
+    /** 人物收件箱行：已送达信封；正文只在本人真正读完并仍可回忆时出现。 */
+    public record SocialInboxRow(String messageId, String from, String channel, String title,
+                                 String docId, long version, long deliveredAt, boolean read,
+                                 String body) { }
+
+    /** 人物发件箱行：未送达对外统一 UNDELIVERED，无屏蔽原因、无对方已读。 */
+    public record SocialOutboxRow(String messageId, String to, String channel, long sentAt,
+                                  long dueAt, String status) { }
+
+    /** 人物消息视图：只本人 inbox/outbox 与合法联系人。 */
+    public record SocialPersonView(String personPartyId, String timeMillis, boolean available,
+                                   Section inbox, Section outbox, Section contacts,
+                                   java.util.List<String> notes) { }
+
+    /**
+     * 上帝视角消息审计：真实送达/屏蔽/业务拒绝与收件人阅读状态。
+     *
+     * @return 同一确认截止的审计
+     * @throws Exception 世界读取失败
+     */
+    public SocialAuditView socialAudit() throws Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            var snapshot = current.snapshot();
+            List<Map<String, Object>> messages = new ArrayList<>();
+            List<Map<String, Object>> blocks = new ArrayList<>();
+            List<Map<String, Object>> reports = new ArrayList<>();
+            List<Map<String, Object>> contacts = new ArrayList<>();
+            SocialRun run = current.socialRun();
+            if (run == null || snapshot.information().isEmpty()) {
+                return new SocialAuditView(runId, num(snapshot.position()),
+                        num(snapshot.timeMillis()), false, -1L, bounded(messages), bounded(blocks),
+                        bounded(reports), bounded(contacts),
+                        java.util.List.of("当前档案未启用消息模块。"));
+            }
+            InformationModel.State info = snapshot.information().orElseThrow().information();
+            for (SocialMessageModel.Message message : run.state().messages()) {
+                boolean read = InformationModel.canCite(info, message.to(), message.docId(),
+                        1L, snapshot.timeMillis());
+                String reject = "";
+                for (SocialRun.SocialReport report : run.reports()) {
+                    if (!report.accepted() && report.messageId().equals(message.messageId())) {
+                        reject = report.reason();
+                    }
+                }
+                InformationModel.DocumentVersion version = versionOf(info, message.docId(), 1L);
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("messageId", message.messageId());
+                row.put("from", message.from());
+                row.put("to", message.to());
+                row.put("channel", message.channel());
+                row.put("status", message.status().name());
+                row.put("docId", message.docId());
+                row.put("version", 1L);
+                row.put("sentAt", message.sentAt());
+                row.put("dueAt", message.dueAt());
+                row.put("statusAt", message.statusAt());
+                row.put("title", version == null ? "" : version.title());
+                row.put("readByReceiver", read);
+                row.put("rejectReason", reject);
+                messages.add(row);
+            }
+            for (SocialMessageModel.Block block : run.state().blocks()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("ownerPartyId", block.ownerPartyId());
+                row.put("targetPartyId", block.targetPartyId());
+                row.put("since", block.since());
+                row.put("commandId", block.commandId());
+                blocks.add(row);
+            }
+            for (SocialRun.SocialReport report : run.reports()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("taskId", report.taskId());
+                row.put("person", report.person());
+                row.put("kind", report.kind());
+                row.put("accepted", report.accepted());
+                row.put("reason", report.reason());
+                row.put("messageId", report.messageId());
+                row.put("atMillis", report.atMillis());
+                row.put("position", report.position());
+                reports.add(row);
+            }
+            for (InterviewRun.ContactEntry entry : run.contacts()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("targetPartyId", entry.targetPartyId());
+                row.put("channel", entry.channel());
+                row.put("description", entry.description());
+                row.put("docId", entry.docId());
+                row.put("version", entry.version());
+                contacts.add(row);
+            }
+            return new SocialAuditView(runId, num(snapshot.position()),
+                    num(snapshot.timeMillis()), true, run.state().clock(),
+                    bounded(messages), bounded(blocks),
+                    bounded(reports), bounded(contacts),
+                    java.util.List.of("送达状态与拒因来自真实报告；收件人是否已读按历史真实阅读判定，"
+                                    + "与当前能否回忆正文/地址无关。",
+                            "未送达对外统一 UNDELIVERED，管理端保留真实原因。"));
+        });
+    }
+
+    /**
+     * 本人消息视图：已送达信封、本人发件结果与合法联系人。
+     *
+     * @param personId 已认证人物
+     * @return 本人投影
+     * @throws Exception 世界读取失败
+     */
+    public SocialPersonView socialView(String personId) throws Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            var snapshot = current.snapshot();
+            List<Map<String, Object>> inbox = new ArrayList<>();
+            List<Map<String, Object>> outbox = new ArrayList<>();
+            List<Map<String, Object>> contacts = new ArrayList<>();
+            if (snapshot.social().isEmpty() || snapshot.information().isEmpty()) {
+                return new SocialPersonView(personId, num(snapshot.timeMillis()), false,
+                        bounded(inbox), bounded(outbox), bounded(contacts),
+                        java.util.List.of("当前档案未启用消息模块。"));
+            }
+            InformationModel.State info = snapshot.information().orElseThrow().information();
+            SocialRun run = snapshot.social().orElseThrow();
+            SocialRun.SocialView view = current.socialView(personId);
+            for (SocialMessageModel.EnvelopeView envelope : view.inbox()) {
+                boolean read = view.read(envelope.messageId());
+                java.util.Optional<String> recalled = read
+                        ? current.recalledSocialBody(personId, envelope.messageId())
+                        : java.util.Optional.empty();
+                InformationModel.DocumentVersion version = versionOf(info, envelope.docId(),
+                        envelope.version());
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("messageId", envelope.messageId());
+                row.put("from", envelope.from());
+                row.put("channel", envelope.channel());
+                row.put("title", version == null ? "" : version.title());
+                row.put("docId", envelope.docId());
+                row.put("version", envelope.version());
+                row.put("deliveredAt", envelope.deliveredAt());
+                row.put("read", read);
+                row.put("bodyAvailable", recalled.isPresent());
+                row.put("body", recalled.orElse(""));
+                inbox.add(row);
+            }
+            for (SocialMessageModel.OutboxView item : view.outbox()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("messageId", item.messageId());
+                row.put("to", item.to());
+                row.put("channel", item.channel());
+                row.put("sentAt", item.sentAt());
+                row.put("dueAt", item.dueAt());
+                row.put("status", item.status() == SocialMessageModel.OutboxStatus.DELIVERED
+                        ? "DELIVERED" : item.status() == SocialMessageModel.OutboxStatus.QUEUED
+                        ? "QUEUED" : "UNDELIVERED");
+                outbox.add(row);
+            }
+            for (InterviewRun.ContactEntry entry : view.contacts()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("targetPartyId", entry.targetPartyId());
+                row.put("channel", entry.channel());
+                row.put("description", entry.description());
+                row.put("docId", entry.docId());
+                row.put("version", entry.version());
+                contacts.add(row);
+            }
+            return new SocialPersonView(personId, num(snapshot.timeMillis()), true,
+                    bounded(inbox), bounded(outbox), bounded(contacts),
+                    java.util.List.of("只显示本人已送达信封、发件结果与合法联系人；"
+                            + "已读按历史真实阅读判定，正文仅在当前可回忆时显示。"));
         });
     }
 

@@ -61,6 +61,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
     public static final String TOOL_CONTRACT_VERSION_V3 = "role-decision-tools-v3";
     /** schema16：匿名私有证据 + 身份共享工具参数的完整合同。 */
     public static final String TOOL_CONTRACT_VERSION_V4 = "role-decision-tools-v4";
+    /** schema17：在一对一消息档案上追加社交工具参数的完整合同。 */
+    public static final String TOOL_CONTRACT_VERSION_V5 = "role-decision-tools-v5";
 
     /** 决定动作内部命令前缀。 */
     private static final String PREFIX_COMMAND = "dec";
@@ -228,6 +230,38 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
     }
 
     /**
+     * 给已持久派发事实补一条业务拒绝（schema17 专用）。
+     *
+     * <p>只允许在原有字段逐字不变的前提下补一次：模型的回执与选择不改写，拒绝作为该次派发的
+     * 独立结果存在。重复补同一内容返回自身，异内容直接拒绝。</p>
+     *
+     * @param attemptId 尝试标识
+     * @param reason    业务拒绝原因（纯核状态名）
+     * @return 新决定子集
+     * @throws IllegalArgumentException 没有该派发事实或拒绝理由不同
+     */
+    public DecisionRun withDispatchRejection(String attemptId, String reason) {
+        requireText(reason, "业务拒绝原因");
+        Dispatch existing = dispatch(attemptId);
+        if (existing == null) {
+            throw new IllegalArgumentException("没有可补拒绝的派发事实：" + attemptId);
+        }
+        Dispatch replaced = new Dispatch(existing.attemptId(), existing.actionId(),
+                existing.attemptNo(), existing.recoveryGeneration(), existing.planDigest(),
+                existing.inputDigest(), existing.dispatchPosition(), existing.dispatchTimeMillis(),
+                existing.authorizedAtEpochMillis(), reason);
+        if (replaced.equals(existing)) {
+            return this;
+        }
+        if (existing.businessReject() != null) {
+            throw new IllegalArgumentException("同一派发事实的拒绝理由不得改写：" + attemptId);
+        }
+        Map<String, Dispatch> next = new TreeMap<>(dispatches);
+        next.put(attemptId, replaced);
+        return new DecisionRun(state, bindings, actionRefs, archives, next);
+    }
+
+    /**
      * 归档里是否已有同一身份同一内容的记录。
      *
      * @param key 待查归档
@@ -331,7 +365,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         ObjectNode root = MAPPER.createObjectNode();
         root.put("toolContractVersion", toolContractVersion);
         if ((TOOL_CONTRACT_VERSION_V3.equals(toolContractVersion)
-                || TOOL_CONTRACT_VERSION_V4.equals(toolContractVersion)) && interview != null) {
+                || TOOL_CONTRACT_VERSION_V4.equals(toolContractVersion)
+                || TOOL_CONTRACT_VERSION_V5.equals(toolContractVersion)) && interview != null) {
             root.set("interview", interview);
         }
         root.put("person", view.personPartyId());
@@ -584,6 +619,43 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             }
         }
 
+        if (TOOL_CONTRACT_VERSION_V5.equals(toolContractVersion) && view.social() != null) {
+            // schema17 人物社交投影：只本人 inbox/outbox 与合法联系人，不含正文与他人消息
+            ObjectNode social = root.putObject("social");
+            ArrayNode inbox = social.putArray("inbox");
+            for (SocialMessageModel.EnvelopeView envelope : sorted(view.social().inbox(),
+                    item -> item.messageId())) {
+                ObjectNode node = inbox.addObject();
+                node.put("messageId", envelope.messageId());
+                node.put("docId", envelope.docId());
+                node.put("version", envelope.version());
+                node.put("from", envelope.from());
+                node.put("channel", envelope.channel());
+                node.put("deliveredAt", envelope.deliveredAt());
+                node.put("read", view.social().read(envelope.messageId()));
+            }
+            ArrayNode outbox = social.putArray("outbox");
+            for (SocialMessageModel.OutboxView entry : sorted(view.social().outbox(),
+                    item -> item.messageId())) {
+                ObjectNode node = outbox.addObject();
+                node.put("messageId", entry.messageId());
+                node.put("to", entry.to());
+                node.put("channel", entry.channel());
+                node.put("sentAt", entry.sentAt());
+                node.put("dueAt", entry.dueAt());
+                node.put("status", entry.status().name());
+            }
+            ArrayNode contacts = social.putArray("contacts");
+            for (InterviewRun.ContactEntry entry : sorted(view.social().contacts(),
+                    item -> item.targetPartyId() + "|" + item.channel() + "|" + item.docId())) {
+                ObjectNode node = contacts.addObject();
+                node.put("targetPartyId", entry.targetPartyId());
+                node.put("channel", entry.channel());
+                node.put("docId", entry.docId());
+                node.put("version", entry.version());
+            }
+        }
+
         ArrayNode pendingActions = root.putArray("pendingActions");
         List<PendingAction> ordered = new ArrayList<>(pending == null ? List.of() : pending);
         ordered.sort((left, right) -> {
@@ -724,7 +796,22 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         if (tool == null) {
             return List.of();
         }
-        if (TOOL_CONTRACT_VERSION_V4.equals(version)) {
+        if (TOOL_CONTRACT_VERSION_V5.equals(version)) {
+            switch (tool) {
+                case RoleTradingView.TOOL_SOCIAL_SEND -> {
+                    return List.of(new String[]{"toPartyId", "string"},
+                            new String[]{"channel", "string"},
+                            new String[]{"title", "string"}, new String[]{"body", "string"});
+                }
+                case RoleTradingView.TOOL_SOCIAL_BLOCK,
+                     RoleTradingView.TOOL_SOCIAL_UNBLOCK -> {
+                    return List.<String[]>of(new String[]{"targetPartyId", "string"});
+                }
+                default -> {
+                }
+            }
+        }
+        if (TOOL_CONTRACT_VERSION_V4.equals(version) || TOOL_CONTRACT_VERSION_V5.equals(version)) {
             switch (tool) {
                 case RoleTradingView.TOOL_MEDIA_EVIDENCE_SHARE -> {
                     return List.of(new String[]{"rootDocId", "string"},
@@ -744,7 +831,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 }
             }
         }
-        if (TOOL_CONTRACT_VERSION_V3.equals(version) || TOOL_CONTRACT_VERSION_V4.equals(version)) {
+        if (TOOL_CONTRACT_VERSION_V3.equals(version) || TOOL_CONTRACT_VERSION_V4.equals(version)
+                || TOOL_CONTRACT_VERSION_V5.equals(version)) {
             switch (tool) {
                 case RoleTradingView.TOOL_INTERVIEW_INVITE -> {
                     return List.of(new String[]{"requestClientId", "string"},
@@ -902,10 +990,22 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
     public record Dispatch(String attemptId, String actionId, int attemptNo,
                            long recoveryGeneration, String planDigest, String inputDigest,
                            long dispatchPosition, long dispatchTimeMillis,
-                           long authorizedAtEpochMillis) {
+                           long authorizedAtEpochMillis,
+                           @JsonInclude(JsonInclude.Include.NON_NULL) String businessReject) {
 
         private static final java.util.regex.Pattern DIGEST =
                 java.util.regex.Pattern.compile("[0-9a-f]{64}");
+
+        /**
+         * 旧九参构造：没有业务拒绝（schema1–16 的 JSON 形状逐字不变）。
+         */
+        public Dispatch(String attemptId, String actionId, int attemptNo,
+                        long recoveryGeneration, String planDigest, String inputDigest,
+                        long dispatchPosition, long dispatchTimeMillis,
+                        long authorizedAtEpochMillis) {
+            this(attemptId, actionId, attemptNo, recoveryGeneration, planDigest, inputDigest,
+                    dispatchPosition, dispatchTimeMillis, authorizedAtEpochMillis, null);
+        }
 
         /** 校验身份、序号、位置时间与 64 位小写十六进制摘要。 */
         public Dispatch {

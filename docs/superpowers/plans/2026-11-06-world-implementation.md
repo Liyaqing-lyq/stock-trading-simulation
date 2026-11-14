@@ -598,9 +598,16 @@ B2c2代码b2fb23d1f209b0466448744df2e6a3c580bdc7c5已建立草稿[PR32](https://
 - [x] [M4i.1双边采访协调纯核](2026-11-07-interview-coordination.md)：最终主树2ba8fc7f…，29新JUnit，正式1350/CSV48/125/7/Node/GUI/JavaDoc通过，e7852d独立109检查通过。首稿18个真实失败、v2新增5失败已修；旧作者JavaDoc零警告误报已据原始日志纠正。纯核本地验收，草稿PR/人工review另记，尚未接世界/Web。
 - [x] [M4i.2a预约运行与Web](2026-11-07-interview-runtime.md)：schema15已补新档联系资料与普通受访者入口；2f24e22/PR43、正式1428与CI43392262590通过，持续Web18080已升级。浏览器新档与HTTP完整动作链的证据范围分别见docs05§45；人工review另列。
 - [x] [M4i.2b逐轮访谈](2026-11-07-interview-dialogue.md)：纯核与schema15运行/双方实际阅读/Web已整合，输入驱动10动作HTTP及正式组合通过，2f24e22/PR43；详见docs05§45，不把脚本Provider测试称真实模型自主实验。
-- [x] [M4i.2c匿名证据运行桥](2026-11-13-evidence-runtime.md)：后端2/Web候选4已整合，正式1468及独审输入/故障/旧档/权限/版本链通过，详见docs05§47；浏览器交付与PR人工review另记。
+- [x] [M4i.2c匿名证据运行桥](2026-11-13-evidence-runtime.md)：后端2/Web候选4已整合，正式1468及独审输入/故障/旧档/权限/版本链通过，详见docs05§47；1b1be87/PR44/CI43422225061成功，浏览器新档推进/权限/五Key展示通过（§48），待人工review。
 - [x] [M5a工程回款纯核](2026-11-13-engineering-core.md)：候选2修复验收游标、拆单尾差、终止在途；25专项、独立320前缀和正式组合通过。未接世界经营/银行/Web，不视为公司全链完成。
-- [ ] [M4j.1一对一消息纯核](2026-11-13-social-messaging-core.md)：隔离候选27专项通过，独审中；尚未主树接入或接世界/Web。
+- [ ] [M4j.1一对一消息纯核](2026-11-13-social-messaging-core.md)：最终Root候选4接入主树，42专项及独立命令/时序/阅读反例通过，已修完整命令绑定与系统标识占用；待与桥组合正式验收，不称社交闭环完成。
+- [ ] [M4j.2消息运行与Web](2026-11-13-social-runtime.md)：独审已关闭伪造决定批与命令碰撞，六组写入故障及历史反填验证通过；候选4投影/Web3权限及九信已读通过，但未来clock反例阻断接入。候选5按意图与实际开始分离修订，尚未组合验收；证据与范围见docs05§52。
+- [ ] [M5治理前置：公司经理任免](2026-11-13-manager-governance-core.md)：候选2修复真实JSON往返缺陷后经独审接主树，五席/回避/请求绑定/真实旧档门禁通过；待组合正式验收。多公司董事会、真实任职生效和工程经营桥另验，不能把纯授权当治理闭环。
+- [ ] [工程资本与分红报表前置](2026-11-13-engineering-capital-context.md)：只读上下文已独审接主树，作者25旧+10新增、独立65不同检查/188执行与五种公式变异通过，待组合正式验收。银行参考v5已独审，配置激活与命令身份缺口修订中，未启用Java银行；工程schema18治理/客户/预算合同收口中。
 - [ ] 媒体/传播、多公司银行、图表/历史与长跑验收继续，不以局部纯核冒称总体基线完成。真实供应商0新增，原51token唯一连通证据保持。
 
 信念纯核代码e6a81adfaf3b24c86e507cf32e9c54aac0ed6be1已发布草稿[PR35](https://github.com/Liyaqing-lyq/stock-trading-simulation/pull/35)，base codex/world-cognition-runtime；实际[CI42327343664](https://github.com/Liyaqing-lyq/stock-trading-simulation/actions/runs/42327343664) completed/success。1156标准、98纯核独审+24配置独审及Root实际退避中断通过，工程阶段验收完成，仍待人工review、不自动合并。
+
+## 2026-11-13 23:08增量
+
+M4j.2 schema17私聊后端6/Web3及经理纯核、工程ReportContext已组合验收1557项，证据docs05§53。只完成一对一消息，不含群组/平台。董事异步参与纯核已独审（反向顺序假设更正后54项通过），留待18接入。schema18真实WorldRuntime基础正在隔离实施；银行v8参考已接受，Java纯核开始隔离移植，托管/世界桥/完整到期与处置仍待实施。PR/CI/Web与人工review分别记录。

@@ -634,6 +634,38 @@ public final class EngineeringModel {
                          BigDecimal equity, BigDecimal worldCash, boolean balanced) {
     }
 
+    /**
+     * 外部资本与分红的只读调整上下文。
+     *
+     * <p>本类型不持久、不建立第二事实表、不重设开局权益；未来桥必须从真实
+     * {@code CAPITAL_FLOW_V1} 与分红事件逐帧重算后传入，纯核不据此授予划款权。</p>
+     *
+     * @param netExternalCapital 净外部资本（净注资为正、净退还为负）
+     * @param declaredDividends  累计已宣告分红，非负
+     * @param unpaidDividends    未付分红，非负且不超过已宣告
+     */
+    public record ReportContext(BigDecimal netExternalCapital, BigDecimal declaredDividends,
+                                BigDecimal unpaidDividends) {
+
+        /** 校验金额符号、精度与未付不超过宣告。 */
+        public ReportContext {
+            netExternalCapital = CashLedger.money(netExternalCapital);
+            declaredDividends = CashLedger.money(declaredDividends);
+            unpaidDividends = CashLedger.money(unpaidDividends);
+            if (declaredDividends.signum() < 0 || unpaidDividends.signum() < 0) {
+                throw new IllegalArgumentException("宣告分红与未付分红不能为负");
+            }
+            if (unpaidDividends.compareTo(declaredDividends) > 0) {
+                throw new IllegalArgumentException("未付分红不得超过已宣告分红");
+            }
+        }
+
+        /** @return 无外部资本、无分红的零上下文 */
+        public static ReportContext none() {
+            return new ReportContext(ZERO, ZERO, ZERO);
+        }
+    }
+
     // ------------------------------------------------------------------ 纯核动作
 
     /**
@@ -1559,14 +1591,35 @@ public final class EngineeringModel {
     // ------------------------------------------------------------------ 报表与校验
 
     /**
-     * 派生报表，不修改状态。
+     * 派生报表（零外部资本、零分红），不修改状态。
      *
      * @param state    状态
      * @param accounts 账户表
      * @return 报表
      */
     public static Report report(State state, Map<String, CashAccount> accounts) {
+        return report(state, accounts, ReportContext.none());
+    }
+
+    /**
+     * 带只读外部资本/分红上下文的派生报表，不修改状态。
+     *
+     * <p>权益 = 初始权益 + 经营利润 + 净外部资本 − 累计宣告分红；
+     * 负债 = 供应商应付 + 合同负债 + 未付分红；现金仍取唯一账户表。
+     * 宣告与付款不进入经营利润，负权益如实返回。</p>
+     *
+     * @param state    状态
+     * @param accounts 账户表
+     * @param context  外部资本/分红只读上下文；null 拒绝
+     * @return 报表
+     * @throws IllegalArgumentException 账户结构或上下文不合法
+     */
+    public static Report report(State state, Map<String, CashAccount> accounts,
+                                ReportContext context) {
         Objects.requireNonNull(state, "状态");
+        if (context == null) {
+            throw new IllegalArgumentException("外部资本上下文不能为空");
+        }
         requireAccounts(state.config(), accounts);
         BigDecimal arCurrent = ZERO;
         BigDecimal arRetention = ZERO;
@@ -1602,10 +1655,12 @@ public final class EngineeringModel {
         BigDecimal obligation = CashLedger.money(gross.add(asset).add(memo));
         BigDecimal assets = CashLedger.money(cash.add(gross).subtract(allowance)
                 .add(asset).add(cost));
-        BigDecimal liabilities = CashLedger.money(state.payable().add(liability));
+        BigDecimal liabilities = CashLedger.money(state.payable().add(liability)
+                .add(context.unpaidDividends()));
         BigDecimal profit = CashLedger.money(revenue.subtract(cogs).subtract(impairment)
                 .add(recovery).subtract(termination).subtract(waiver));
-        BigDecimal equity = CashLedger.money(state.initialEquity().add(profit));
+        BigDecimal equity = CashLedger.money(state.initialEquity().add(profit)
+                .add(context.netExternalCapital()).subtract(context.declaredDividends()));
         BigDecimal world = worldCash(accounts);
         boolean balanced = assets.compareTo(liabilities.add(equity)) == 0
                 && world.compareTo(state.initialWorldCash()) == 0;
@@ -1620,7 +1675,7 @@ public final class EngineeringModel {
     }
 
     /**
-     * 校验并返回报表；不平衡时抛异常而不是返回可疑报表。
+     * 校验并返回报表（零外部资本、零分红）；不平衡时抛异常。
      *
      * @param state    状态
      * @param accounts 账户表
@@ -1629,7 +1684,22 @@ public final class EngineeringModel {
      * @throws IllegalArgumentException 账户结构不合法
      */
     public static Report validate(State state, Map<String, CashAccount> accounts) {
-        Report report = report(state, accounts);
+        return validate(state, accounts, ReportContext.none());
+    }
+
+    /**
+     * 带只读外部资本/分红上下文校验并返回报表；不平衡时抛异常。
+     *
+     * @param state    状态
+     * @param accounts 账户表
+     * @param context  外部资本/分红只读上下文；null 拒绝
+     * @return 已通过校验的报表
+     * @throws IllegalStateException    资产、负债、权益或世界现金不守恒
+     * @throws IllegalArgumentException 账户结构或上下文不合法
+     */
+    public static Report validate(State state, Map<String, CashAccount> accounts,
+                                  ReportContext context) {
+        Report report = report(state, accounts, context);
         if (!report.balanced()) {
             throw new IllegalStateException("工程账不平衡：资产=" + report.companyCash()
                     + "，负债=" + report.payable()

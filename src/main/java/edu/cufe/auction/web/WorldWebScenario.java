@@ -20,6 +20,7 @@ import edu.cufe.auction.world.RoleAccess;
 import edu.cufe.auction.world.RoleRun;
 import edu.cufe.auction.world.RoleTradingView;
 import edu.cufe.auction.world.RunManifest;
+import edu.cufe.auction.world.SocialMessageModel;
 import edu.cufe.auction.world.WorldRuntime;
 
 import java.math.BigDecimal;
@@ -535,6 +536,123 @@ public final class WorldWebScenario {
                 new RoleRun.Config(roles().mandates(), appointments), info,
                 evidenceDecisionConfig(), null, mediaConfig(), interviewConfig(),
                 dialogueConfig(), evidenceConfig());
+        runtime.schedulePublishDocument("evidence-private-publish", "evidence-private-task",
+                1_000L, EVIDENCE_PRIVATE_DOC, INVESTOR,
+                InformationModel.Audience.direct("rita"),
+                "模拟投资者手记（仅记者可见）",
+                "模拟定向材料：本次采访前的私人说明，未对外发表。",
+                "实验模拟，不是现实人物或真实信息", 5_000L, List.of());
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
+    /** schema17 社交档的运行标识（独立日志，不迁移旧档）。 */
+    public static final String SOCIAL_RUN_ID = "web-social";
+    /** 社交档唯一的公开联系入口：两个普通人物都必须真实读完才可互发。 */
+    public static final String SOCIAL_CONTACT_DOC = "social:contact-intro";
+    /** 社交档两个普通非媒体人物。 */
+    public static final List<String> SOCIAL_PERSONS = List.of("nina", "omar");
+    /** 社交冻结工时（实验参数，未按现实校准）。 */
+    public static final long SOCIAL_SEND_MILLIS = 1_000L;
+    public static final long SOCIAL_DELIVERY_MILLIS = 2_000L;
+    public static final long SOCIAL_READ_MILLIS = 500L;
+    public static final long SOCIAL_BLOCK_MILLIS = 250L;
+
+    /** @return schema17 一对一消息档案；与 13–16 并存，不隐式迁移 */
+    public static RunManifest socialManifest() {
+        Map<String, Integer> modules = new TreeMap<>(evidenceManifest().moduleVersions());
+        modules.put("social", 1);
+        return new RunManifest(SOCIAL_RUN_ID, 11L, RunManifest.RULES_SOCIAL_EXPERIMENT_V1,
+                modules, Map.of("profile", "web-social-messaging-v1"),
+                RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    /** @return 社交档冻结配置：写信/投递等待/阅读三类正工时 */
+    public static SocialMessageModel.Config socialConfig() {
+        return new SocialMessageModel.Config(SOCIAL_SEND_MILLIS, SOCIAL_DELIVERY_MILLIS,
+                SOCIAL_READ_MILLIS);
+    }
+
+    /** @return 社交档决定配置：在证据工具之上补三个社交动作时长 */
+    public static DecisionModel.Config socialDecisionConfig() {
+        DecisionModel.Config base = evidenceDecisionConfig();
+        Map<String, Long> actions = new TreeMap<>(base.actionMillisByTool());
+        actions.put(RoleTradingView.TOOL_SOCIAL_SEND, SOCIAL_SEND_MILLIS);
+        actions.put(RoleTradingView.TOOL_SOCIAL_BLOCK, SOCIAL_BLOCK_MILLIS);
+        actions.put(RoleTradingView.TOOL_SOCIAL_UNBLOCK, SOCIAL_BLOCK_MILLIS);
+        Map<String, DecisionModel.Usage> caps = new TreeMap<>(base.budget().personCap());
+        for (String person : SOCIAL_PERSONS) {
+            caps.put(person, DecisionModel.Usage.unknownCost(25, 250_000, 50_000));
+        }
+        return new DecisionModel.Config(base.providerKind(), base.providerId(),
+                base.pricingVersion(), base.thinkMillisByWake(), actions, base.limits(),
+                new DecisionModel.Budget(base.budget().runCap(), caps), base.profile());
+    }
+
+    /**
+     * 打开 schema17 一对一消息档：继承已启用的媒体/采访/私证能力与真实联系入口，
+     * 只额外加两名普通非媒体人物与一份公开联系说明；开局不代读、不发消息。
+     *
+     * @param journal 独立日志文件
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldWebHost.Opened openSocial(Path journal) throws Exception {
+        OpeningRegistry base = registry();
+        List<OpeningRegistry.Party> parties = new ArrayList<>(base.parties());
+        List<OpeningRegistry.PropertyOwner> owners = new ArrayList<>(base.owners());
+        for (String organization : List.of("wire", "investigative")) {
+            parties.add(new OpeningRegistry.Party(organization,
+                    OpeningRegistry.PartyKind.ORGANIZATION,
+                    organization.equals("wire") ? "快讯社（实验）" : "调查社（实验）"));
+            owners.add(new OpeningRegistry.PropertyOwner(organization,
+                    OpeningRegistry.OwnerKind.ORGANIZATION, organization));
+        }
+        Map<String, String> names = new TreeMap<>(Map.of("rita", "快讯记者", "ed", "快讯编辑",
+                "sam", "调查记者", "bea", "调查编辑"));
+        for (String person : MEDIA_PERSONS) {
+            parties.add(new OpeningRegistry.Party(person, OpeningRegistry.PartyKind.PERSON,
+                    names.get(person)));
+            owners.add(new OpeningRegistry.PropertyOwner(person,
+                    OpeningRegistry.OwnerKind.PERSON, person));
+        }
+        names.putAll(Map.of("nina", "普通职员甲", "omar", "普通职员乙"));
+        for (String person : SOCIAL_PERSONS) {
+            parties.add(new OpeningRegistry.Party(person, OpeningRegistry.PartyKind.PERSON,
+                    names.get(person)));
+            owners.add(new OpeningRegistry.PropertyOwner(person,
+                    OpeningRegistry.OwnerKind.PERSON, person));
+        }
+        OpeningRegistry registry = new OpeningRegistry(parties, owners, base.securities(),
+                base.allocations());
+        List<RoleAccess.Appointment> appointments = new ArrayList<>(roles().appointments());
+        long end = 30L * 86_400_000L;
+        for (int i = 0; i < MEDIA_PERSONS.size(); i++) {
+            appointments.add(new RoleAccess.Appointment("MEDIA-" + i, MEDIA_PERSONS.get(i),
+                    i < 2 ? "wire" : "investigative",
+                    i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
+                    0L, end, null));
+        }
+        List<String> readers = new ArrayList<>(information().readers());
+        readers.addAll(MEDIA_PERSONS);
+        readers.addAll(SOCIAL_PERSONS);
+        InformationRun.Config info = new InformationRun.Config(readers, COGNITION_POLICY,
+                new BeliefModel.Policy(200, 8, end, 20, 200, 3, end));
+        List<InterviewRun.ContactEntry> contacts = new ArrayList<>(interviewConfig().contacts());
+        for (String person : SOCIAL_PERSONS) {
+            contacts.add(new InterviewRun.ContactEntry("私信", person,
+                    "公开联系说明：可一对一私人消息", SOCIAL_CONTACT_DOC, 1L));
+        }
+        RunManifest manifest = socialManifest();
+        WorldRuntime runtime = new WorldRuntime(journal, manifest, openings(), registry,
+                new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
+                        "SUP", "CUS", "OPS"), SYMBOL), charter(),
+                new RoleRun.Config(roles().mandates(), appointments), info,
+                socialDecisionConfig(), null, mediaConfig(), interviewConfig(), dialogueConfig(),
+                evidenceConfig(), socialConfig(), SOCIAL_BLOCK_MILLIS, contacts);
+        runtime.schedulePublishDocument("social-contact-publish", "social-contact-task", 1_000L,
+                SOCIAL_CONTACT_DOC, INVESTOR, InformationModel.Audience.publicAudience(),
+                "公开联系说明（实验）", "公开模拟联系说明：工作时段可一对一私人消息。",
+                "实验模拟，不是现实联系方式", SOCIAL_READ_MILLIS, List.of());
         runtime.schedulePublishDocument("evidence-private-publish", "evidence-private-task",
                 1_000L, EVIDENCE_PRIVATE_DOC, INVESTOR,
                 InformationModel.Audience.direct("rita"),
