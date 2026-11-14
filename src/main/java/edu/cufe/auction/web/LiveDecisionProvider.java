@@ -24,7 +24,7 @@ import java.util.function.Function;
  * {@code PROVIDER_<Outcome>}；本地意外异常 → {@code LOCAL_PROVIDER_ERROR}。技术失败正文为空，
  * 不伪造观望回执；异常自由文本不外传。来源固定 {@value #USAGE_SOURCE}，不记录 requestId/model。</p>
  */
-public final class LiveDecisionProvider {
+public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider {
 
     /** 用量来源固定标识；不写提供方请求标识或回报模型名。 */
     public static final String USAGE_SOURCE = "DEEPSEEK_HTTP";

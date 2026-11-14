@@ -84,6 +84,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1 =
             "interview-coordination-experiment-v1";
 
+    /** schema15：在采访预约之上启用逐轮访谈与真实阅读。 */
+    public static final String RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1 =
+            "interview-dialogue-experiment-v1";
+
     /** live 决定档案唯一允许的模型配置版本；与真实 HTTP 提供方严格成对。 */
     public static final String LIVE_DECISIONS_V1 = "live-decisions-v1";
 
@@ -231,6 +235,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("interview");
     }
 
+    /** @return 是否启用 schema15 逐轮访谈 */
+    public boolean hasDialogue() {
+        return moduleVersions.containsKey("dialogue");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -250,7 +259,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_COGNITION_RECALL_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_COGNITION_BELIEF_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -274,7 +284,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         expected.put("cash", 1);
         expected.put("scheduler", 1);
         boolean withMedia = RULES_MEDIA_EDITORIAL_EXPERIMENT_V1.equals(rulesVersion)
-                || RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion);
+                || RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion)
+                || RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion);
         boolean withBelief = withMedia || RULES_COGNITION_BELIEF_EXPERIMENT_V1.equals(rulesVersion);
         boolean withCognition = withBelief
                 || RULES_COGNITION_RECALL_EXPERIMENT_V1.equals(rulesVersion);
@@ -346,6 +357,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         }
         if (RULES_INTERVIEW_COORDINATION_EXPERIMENT_V1.equals(rulesVersion)) {
             expected.put("interview", 1);
+        }
+        if (RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1.equals(rulesVersion)) {
+            expected.put("interview", 1);
+            expected.put("dialogue", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "

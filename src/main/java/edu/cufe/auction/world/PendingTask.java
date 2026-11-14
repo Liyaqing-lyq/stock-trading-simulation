@@ -249,6 +249,12 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 采访：系统门任务，邀请到期转 EXPIRED（RULES，schema14）。 */
     public static final String INTERVIEW_TTL_GATE_V1 = "INTERVIEW_TTL_GATE_V1";
 
+    /** 逐轮访谈：双方各发一轮（COMPLETION，schema15）。 */
+    public static final String INTERVIEW_SPEAK_V1 = "INTERVIEW_SPEAK_V1";
+
+    /** 逐轮访谈：回复期限门，到期结束真实会话（RULES，schema15）。 */
+    public static final String INTERVIEW_DIALOGUE_DEADLINE_V1 = "INTERVIEW_DIALOGUE_DEADLINE_V1";
+
     /** 校验必需字段与 kind/phase 对应关系。 */
     public PendingTask {
         if (taskId == null || taskId.isBlank()) {
@@ -291,7 +297,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  ROLE_TRADING_SWEEP_V1, ROLE_TRADING_EXPIRE_V1,
                  ROLE_TRADING_APPOINTMENT_END_V1, ROLE_TRADING_HALT_RELEASE_V1,
                  INTERVIEW_START_GATE_V1, INTERVIEW_MISS_GATE_V1,
-                 INTERVIEW_END_GATE_V1, INTERVIEW_TTL_GATE_V1 -> {
+                 INTERVIEW_END_GATE_V1, INTERVIEW_TTL_GATE_V1,
+                 INTERVIEW_DIALOGUE_DEADLINE_V1 -> {
                 if (phase != WorldScheduler.Phase.RULES) {
                     throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
                 }
@@ -315,7 +322,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
             case MEDIA_STORY_PROPOSE_V1, MEDIA_STORY_SUBMIT_V1, MEDIA_STORY_REVIEW_V1,
                  MEDIA_STORY_PUBLISH_V1, MEDIA_STORY_CORRECTION_V1, MEDIA_WORK_CANCEL_V1,
                  INTERVIEW_INVITE_V1, INTERVIEW_RESPOND_V1,
-                 INTERVIEW_CANCEL_V1, INTERVIEW_END_V1 -> {
+                 INTERVIEW_CANCEL_V1, INTERVIEW_END_V1, INTERVIEW_SPEAK_V1 -> {
                 if (phase != WorldScheduler.Phase.COMPLETION) {
                     throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 " + phase);
                 }

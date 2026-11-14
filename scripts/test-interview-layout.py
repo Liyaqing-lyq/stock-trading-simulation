@@ -57,4 +57,18 @@ for table_id, columns in {"interview-invites": 9, "interview-sessions": 5,
     assert sum(node[0] == "tbody" for node in descendants) == 1, table_id
 for table_id in ("person-interview-invites", "person-interview-contacts"):
     assert inside(layout.unique("id", table_id), "id", "person-interview"), table_id
+
+# 逐轮访谈：管理员四张表必须在 admin 的采访面板内；个人两张表必须在 person-interview 内
+for table_id, columns in {"dialogue-sessions": 6, "dialogue-turns": 12,
+                          "dialogue-closes": 2, "dialogue-reports": 7}.items():
+    table = layout.unique("id", table_id)
+    assert table[0] == "table" and inside(table, "data-panel", "interview"), table_id
+    descendants = [node for node in layout.nodes if inside(node, "id", table_id)]
+    assert sum(node[0] == "th" for node in descendants) == columns, table_id
+    assert sum(node[0] == "tbody" for node in descendants) == 1, table_id
+for table_id, columns in {"person-dialogue-sessions": 6, "person-dialogue-turns": 9}.items():
+    table = layout.unique("id", table_id)
+    assert table[0] == "table" and inside(table, "id", "person-interview"), table_id
+    descendants = [node for node in layout.nodes if inside(node, "id", table_id)]
+    assert sum(node[0] == "th" for node in descendants) == columns, table_id
 print("INTERVIEW_LAYOUT=PASS")

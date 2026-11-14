@@ -701,6 +701,28 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
     }
 
     /**
+     * 发送一轮访谈正文；轮次标识与开始时刻由运行桥派生，模型不能提供。
+     *
+     * @param requestId          目标会话的完整请求标识
+     * @param title              本轮标题
+     * @param body               本轮正文
+     * @param readDurationMillis 本轮固定阅读耗时
+     */
+    public record DialogueSpeakDraft(String requestId, String title, String body,
+                                     long readDurationMillis) {
+
+        /** 校验字段。 */
+        public DialogueSpeakDraft {
+            requireText(requestId, "请求标识");
+            requireText(title, "轮次标题");
+            requireText(body, "轮次正文");
+            if (readDurationMillis < 1) {
+                throw new IllegalArgumentException("阅读耗时必须为正：" + readDurationMillis);
+            }
+        }
+    }
+
+    /**
      * 记者发起采访邀请。
      *
      * @param clientCommandId 本人命令标识
@@ -761,6 +783,22 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
     public String endInterview(String clientCommandId, String clientTaskId, long dueMillis,
                                InterviewRequestDraft draft) throws IOException {
         return runtime.scheduleInterview(this, PendingTask.INTERVIEW_END_V1, clientCommandId,
+                clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 发送一轮访谈正文；仅 schema15 且本人在 ACTIVE 会话中可用。
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       到期模拟毫秒
+     * @param draft           轮次业务内容
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String speakInterview(String clientCommandId, String clientTaskId, long dueMillis,
+                                 DialogueSpeakDraft draft) throws IOException {
+        return runtime.scheduleInterview(this, PendingTask.INTERVIEW_SPEAK_V1, clientCommandId,
                 clientTaskId, dueMillis, draft);
     }
 

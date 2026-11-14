@@ -1,5 +1,7 @@
 # 股票世界持续实施 Plan
 
+当前进度优先读[实施看板](../../CURRENT_IMPLEMENTATION.md)。以下含历史记录，不据旧时间段覆盖最新验收与未完成项。
+
 > **For agentic workers:** 按 `superpowers:executing-plans` 逐任务执行；Codex 管理计划、接口和最终验收，真实 Hermes 按明确文件范围承担实现或独立审计。每个任务先阅读本 Plan 与总体设计基线，使用复选框跟踪。
 
 **Goal:** 在保留课程系统的前提下，按总体设计基线逐步实现可审计、可恢复的多公司、多岗位股票世界。
