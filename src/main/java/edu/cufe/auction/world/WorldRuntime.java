@@ -13,6 +13,7 @@ import edu.cufe.auction.world.WorldExchange.OrderReport;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -50,6 +51,10 @@ import java.util.TreeSet;
 public final class WorldRuntime implements AutoCloseable {
 
     private static final String OPEN_COMMAND = "__open__";
+    /** 分支子档首帧命令标识；普通旧档永远不会出现，因此旧档兼容不受影响。 */
+    private static final String BRANCH_COMMAND = "__branch__";
+    /** 分支来源事件类型：只允许出现在子档首帧。 */
+    private static final String BRANCH_EVENT = "BRANCH_OPEN_V1";
     private static final String SNAPSHOT_TYPE = "STATE_SNAPSHOT_V1";
     /** 检查点信封格式版本；与运行状态 schema 无关，不参与模块推断。 */
     public static final String CHECKPOINT_VERSION = "world-checkpoint-v1";
@@ -120,6 +125,60 @@ public final class WorldRuntime implements AutoCloseable {
     public static final String REASON_BUDGET_PERIOD_CLOSED = "BUDGET_PERIOD_CLOSED";
     /** 显式座位不是该会议到会且未回避的成员。 */
     public static final String REASON_NOT_ELIGIBLE_SEAT = "NOT_ELIGIBLE_SEAT";
+
+    // ------------------------------------------------------------------
+    // 独立分支拒绝码（B1）：稳定契约，调用方按码处理，不解析自由文本
+    // ------------------------------------------------------------------
+
+    /** 切点不在已确认范围内。 */
+    public static final String BRANCH_POSITION_UNCONFIRMED = "BRANCH_POSITION_UNCONFIRMED";
+    /** 切点仍有未解决的 OPEN 决定。 */
+    public static final String BRANCH_BARRIER_PENDING = "BRANCH_BARRIER_PENDING";
+    /** 切点仍有未结算尝试。 */
+    public static final String BRANCH_ATTEMPT_IN_FLIGHT = "BRANCH_ATTEMPT_IN_FLIGHT";
+    /** 切点仍处于开放决定会话。 */
+    public static final String BRANCH_SESSION_OPEN = "BRANCH_SESSION_OPEN";
+    /** 子运行标识形状非法。 */
+    public static final String BRANCH_IDENTITY_INVALID = "BRANCH_IDENTITY_INVALID";
+    /** 子运行标识是宿主机保留名。 */
+    public static final String BRANCH_IDENTITY_RESERVED = "BRANCH_IDENTITY_RESERVED";
+    /** 运行目录已有大小写不同的同名文件。 */
+    public static final String BRANCH_IDENTITY_COLLISION = "BRANCH_IDENTITY_COLLISION";
+    /** 目标文件已存在。 */
+    public static final String BRANCH_EXISTS = "BRANCH_EXISTS";
+    /** 子清单与父实验条件不一致。 */
+    public static final String BRANCH_RULES_MISMATCH = "BRANCH_RULES_MISMATCH";
+    /** 父档无法解析或不存在。 */
+    public static final String BRANCH_PARENT_UNAVAILABLE = "BRANCH_PARENT_UNAVAILABLE";
+    /** 父运行本身是分支：分支深度固定为 1。 */
+    public static final String BRANCH_PARENT_IS_BRANCH = "BRANCH_PARENT_IS_BRANCH";
+    /** 父前缀字节摘要、位置或语义与来源记录不符。 */
+    public static final String BRANCH_PARENT_PREFIX_MISMATCH = "BRANCH_PARENT_PREFIX_MISMATCH";
+    /** 父档在切点之前/之中损坏，无法只读扫描。 */
+    public static final String BRANCH_PARENT_SCAN_UNREADABLE = "BRANCH_PARENT_SCAN_UNREADABLE";
+    /** 父档在切点之前出现不完整尾帧。 */
+    public static final String BRANCH_PARENT_TAIL_BEFORE_BOUND = "BRANCH_PARENT_TAIL_BEFORE_BOUND";
+    /** 封存父前缀缺失或未登记。 */
+    public static final String BRANCH_SEAL_MISSING = "BRANCH_SEAL_MISSING";
+    /** 封存父前缀长度、末位、运行标识或字节摘要不符。 */
+    public static final String BRANCH_SEAL_MISMATCH = "BRANCH_SEAL_MISMATCH";
+    /** 可信画像摘要与分支元数据或运行索引不符。 */
+    public static final String BRANCH_PROFILE_MISMATCH = "BRANCH_PROFILE_MISMATCH";
+    /** 子档首帧不等于父边界状态的确定性派生。 */
+    public static final String BRANCH_DERIVATION_MISMATCH = "BRANCH_DERIVATION_MISMATCH";
+    /** 继承态里存在晚于切点的位置引用。 */
+    public static final String BRANCH_FUTURE_REFERENCE = "BRANCH_FUTURE_REFERENCE";
+    /** 分支首帧缺少来源或摘要字段。 */
+    public static final String BRANCH_ORIGIN_INCOMPLETE = "BRANCH_ORIGIN_INCOMPLETE";
+    /** 子档首帧不是分支首帧。 */
+    public static final String BRANCH_CHILD_NOT_BRANCH = "BRANCH_CHILD_NOT_BRANCH";
+    /** 子档为空或首帧不可解析。 */
+    public static final String BRANCH_CHILD_INVALID = "BRANCH_CHILD_INVALID";
+    /** 原子发布失败（含索引写入失败后的回滚）。 */
+    public static final String BRANCH_PUBLISH_FAILED = "BRANCH_PUBLISH_FAILED";
+    /** 父前缀位置不能作为本运行自查点导出。 */
+    public static final String BRANCH_INHERITED_POSITION_NOT_EXPORTABLE =
+            "BRANCH_INHERITED_POSITION_NOT_EXPORTABLE";
 
     /** 公司经营账户不能通过普通转账绕过经营分录。 */
     public static final String REASON_COMPANY_LEDGER_FORBIDDEN = "COMPANY_LEDGER_FORBIDDEN";
@@ -209,8 +268,19 @@ public final class WorldRuntime implements AutoCloseable {
     private final List<OpeningAccount> orderedOpenings;
     private final long seed;
     private final WorldJournal journal;
+    /**
+     * 运行可读的已确认提交事实源：普通运行就是自有日志，分支子档是"父前缀 + 自有帧"。
+     *
+     * <p>财务链、命令去重、审计与观察帧统一读这一处；{@code restore()} 的逐帧校验仍然只读
+     * 自有日志，父前缀由 {@link #verifyPrefix} 用同一校验链单独核对。</p>
+     */
+    private final CommitSource commitSource;
+    /** 分支来源；普通运行为 null。 */
+    private final BranchOrigin branchOrigin;
     private final Thread writerThread = Thread.currentThread();
     private WorldState state;
+    /** 父前缀校验上下文里由 {@code verifyCommits} 得到的父边界终态；普通运行与子运行不使用。 */
+    private WorldState verifiedPrefixState;
     private volatile boolean paused;
     private boolean closed;
 
@@ -979,6 +1049,30 @@ public final class WorldRuntime implements AutoCloseable {
                  EngineeringRun.Config engineering, GroupModel.Config groups,
                  PlatformPostModel.Config platform, int feedLimit, long readMillis)
             throws IOException {
+        this(null, file, manifest, openings, registry, manufacturing, charter, roles, information,
+                decisions, injectedInbox, media, interview, dialogue, evidence, social,
+                socialBlockMillis, contacts, engineering, groups, platform, feedLimit, readMillis);
+    }
+
+    /**
+     * 统一实现：{@code mode} 为空表示普通运行（取得写入者）；非空时表示只做父前缀校验，
+     * 或按分支来源派生并校验子档。
+     *
+     * <p>三种入口共用同一段清单/模块/开局校验，不为分支复制第二份校验链：模式只影响
+     * "是否打开日志、首帧写什么、逐帧校验从哪里开始"。</p>
+     */
+    private WorldRuntime(OpenMode mode, Path file, RunManifest manifest,
+                 List<OpeningAccount> openings,
+                 OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                 BoardModel.Charter charter, RoleRun.Config roles,
+                 InformationRun.Config information, DecisionModel.Config decisions,
+                 LiveCompletionInbox injectedInbox, MediaRun.Config media,
+                 InterviewRun.Config interview, InterviewDialogue.Config dialogue,
+                 EvidenceRun.Config evidence, SocialMessageModel.Config social,
+                 long socialBlockMillis, List<InterviewRun.ContactEntry> contacts,
+                 EngineeringRun.Config engineering, GroupModel.Config groups,
+                 PlatformPostModel.Config platform, int feedLimit, long readMillis)
+            throws IOException {
         this.evidenceConfig = evidence;
         this.socialConfig = social;
         this.socialBlockMillis = socialBlockMillis;
@@ -1313,24 +1407,725 @@ public final class WorldRuntime implements AutoCloseable {
             validateTradingOpening();
         }
         WorldState initial = initialState(accounts);
-        this.journal = new WorldJournal(file, manifest.runId());
+        if (mode != null && mode.scannedPrefix() != null) {
+            // 父前缀校验上下文：不打开 journal、不取写锁、不建文件、不截尾，只跑同一校验链
+            this.journal = null;
+            this.branchOrigin = null;
+            this.commitSource = new ListCommitSource(mode.scannedPrefix());
+            this.state = null;
+            this.verifiedPrefixState = verifyCommits(mode.scannedPrefix(), initial);
+            return;
+        }
+        long base = mode == null ? 0L : mode.origin().parentPosition();
+        if (mode == null && file != null) {
+            requireNotBranchFile(file);
+        }
+        WorldJournal opened = new WorldJournal(file, manifest.runId(), base);
+        this.journal = opened;
+        this.branchOrigin = mode == null ? null : mode.origin();
+        this.commitSource = base == 0L ? new JournalCommitSource(opened)
+                : new BranchCommitSource(mode.prefixCommits(), opened);
         try {
-            if (journal.commits().isEmpty()) {
-                String content = openingContent(ordered);
-                List<WorldEvent> events = new ArrayList<>();
-                events.add(new WorldEvent(OPEN_COMMAND + ":manifest", "RUN_MANIFEST_V1", content));
-                if (registry != null) {
-                    events.add(new WorldEvent(OPEN_COMMAND + ":registry", "OPENING_REGISTRY_V1",
-                            mapper.writeValueAsString(registry)));
+            if (opened.commits().isEmpty()) {
+                if (mode == null) {
+                    writeOpening(ordered, initial);
+                } else {
+                    writeBranchOpen(mode);
                 }
-                events.add(snapshotEvent(initial));
-                journal.commit(OPEN_COMMAND, content, "OPENED", events);
             }
-            this.state = restore(ordered, initial);
+            this.state = restore(ordered, initial, mode);
         } catch (IOException | RuntimeException failure) {
-            journal.close();
+            opened.close();
             throw failure;
         }
+    }
+
+    /**
+     * 构造模式：普通运行、父前缀校验、分支子档三种入口共用同一段清单与开局校验。
+     *
+     * @param scannedPrefix 只用于父前缀校验；非空表示"不要打开日志"
+     * @param origin        分支来源；非空表示分支子档
+     * @param parentState   已逐帧验证的父边界状态；分支子档派生基准
+     * @param prefixCommits 已逐帧验证的父前缀批次；分支子档的只读事实源
+     */
+    private record OpenMode(List<WorldCommit> scannedPrefix, BranchOrigin origin,
+                            WorldState parentState, List<WorldCommit> prefixCommits) {
+
+        /** 父前缀校验模式。 */
+        static OpenMode verification(List<WorldCommit> scanned) {
+            return new OpenMode(List.copyOf(scanned), null, null, null);
+        }
+
+        /** 分支子档模式。 */
+        static OpenMode branch(BranchOrigin origin, WorldState parentState,
+                               List<WorldCommit> prefixCommits) {
+            return new OpenMode(null, origin, parentState, List.copyOf(prefixCommits));
+        }
+    }
+
+    /**
+     * 普通运行入口的显式格式门：分支子档首帧是 {@code __branch__}，必须经 {@link #openBranch} 打开。
+     *
+     * <p>这条检查在取得写锁之前执行，因此对普通旧档只多读一次首帧；损坏文件不在这里判死刑，
+     * 交给后续既有路径报错。</p>
+     *
+     * @param file 目标日志
+     * @throws IOException 目标是分支格式
+     */
+    private static void requireNotBranchFile(Path file) throws IOException {
+        if (!Files.exists(file)
+                || !Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                || Files.size(file) == 0L) {
+            return;
+        }
+        try {
+            WorldJournalScanner.Scan first = WorldJournalScanner.scanTo(file, 1L);
+            if (!first.isEmpty() && BRANCH_COMMAND.equals(first.commits().get(0).commandId())) {
+                throw new BranchRejectedException(BRANCH_CHILD_NOT_BRANCH,
+                        "分支子档必须经 openBranch（带封存父前缀验证）打开；首帧 "
+                                + BRANCH_COMMAND + " 属于分支格式");
+            }
+        } catch (WorldJournalScanner.CorruptFrameException unreadable) {
+            // 损坏不由格式门判定
+        }
+    }
+
+    /**
+     * 写入普通开局首帧（原构造逻辑原样搬出，行为不变）。
+     *
+     * @param ordered 规范化开局现金
+     * @param initial 开局状态
+     * @throws IOException 持久提交失败
+     */
+    private void writeOpening(List<OpeningAccount> ordered, WorldState initial) throws IOException {
+        String content = openingContent(ordered);
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent(OPEN_COMMAND + ":manifest", "RUN_MANIFEST_V1", content));
+        if (registry != null) {
+            events.add(new WorldEvent(OPEN_COMMAND + ":registry", "OPENING_REGISTRY_V1",
+                    mapper.writeValueAsString(registry)));
+        }
+        events.add(snapshotEvent(initial));
+        journal.commit(OPEN_COMMAND, content, "OPENED", events);
+    }
+
+    /**
+     * 写入分支子档首帧：来源、子清单、父开局副本（仅供人读）与派生状态快照。
+     *
+     * <p>事件白名单只有 {@link #BRANCH_EVENT} 与状态快照两条：分支开局不带任何经济、决定或
+     * 审计事件，因此父前缀里的每一笔现金、分红与成本都只在自己的位置出现一次。</p>
+     *
+     * @param mode 分支模式
+     * @throws IOException 持久提交失败
+     */
+    private void writeBranchOpen(OpenMode mode) throws IOException {
+        BranchBatch batch = branchBatch(mapper, manifest, mode.origin(),
+                openingContentMap(orderedOpenings), derive(mode.parentState(), manifest, mode.origin()));
+        journal.commit(BRANCH_COMMAND, batch.content(), "BRANCHED", batch.events());
+    }
+
+    /**
+     * 分支首帧的规范化内容与事件；创建与构造期写入共用这一处，避免两份首帧形状。
+     *
+     * @param jsonMapper 序列化器
+     * @param childManifest 子清单
+     * @param origin     分支来源
+     * @param opening    父开局副本（仅供人读与交叉核对，不参与期望值计算）
+     * @param derived    派生状态
+     * @return 首帧命令内容与有序事件
+     * @throws IOException 序列化失败
+     */
+    private static BranchBatch branchBatch(ObjectMapper jsonMapper, RunManifest childManifest,
+                                           BranchOrigin origin, Map<String, Object> opening,
+                                           WorldState derived) throws IOException {
+        if (derived.position() != origin.parentPosition() + 1L) {
+            throw new IOException("派生状态位置必须等于父位置加一：" + derived.position());
+        }
+        if (!derived.runId().equals(childManifest.runId())) {
+            throw new IOException("派生状态运行标识与子清单不一致");
+        }
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("manifest", childManifest);
+        content.put("branch", origin);
+        content.put("opening", opening);
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent(BRANCH_EVENT + ":" + childManifest.runId(), BRANCH_EVENT,
+                jsonMapper.writeValueAsString(origin)));
+        events.add(new WorldEvent("state:" + derived.position(), SNAPSHOT_TYPE,
+                jsonMapper.writeValueAsString(derived)));
+        return new BranchBatch(jsonMapper.writeValueAsString(content), List.copyOf(events));
+    }
+
+    /** 分支首帧的命令内容与事件。 */
+    private record BranchBatch(String content, List<WorldEvent> events) {
+    }
+
+    /**
+     * 分支创建回执：只描述"创建成功"，明确不等于"子运行已启动"。
+     *
+     * @param childRunId          子运行标识
+     * @param parentRunId         父运行标识
+     * @param parentPosition      切点位置 p
+     * @param childFile           已发布的子档绝对路径
+     * @param firstPosition       子首帧位置 p+1
+     * @param parentPrefixSha256  父档前 p 帧原始字节的 SHA-256
+     * @param derivedStateDigest  派生状态规范化 JSON 的 SHA-256（非磁盘帧摘要）
+     * @param sealedPrefix        已发布的封存父前缀路径；子档重开只读它，不再打开活跃父档
+     * @param profileDigest       创建时可信画像的摘要；子档打开时用宿主画像重算比对
+     */
+    public record BranchReceipt(String childRunId, String parentRunId, long parentPosition,
+                                Path childFile, long firstPosition, String parentPrefixSha256,
+                                String derivedStateDigest, Path sealedPrefix,
+                                String profileDigest) {
+    }
+
+    /**
+     * 本运行的可信画像：父运行当初用于开局的那一套清单、开局现金、登记与冻结配置。
+     *
+     * <p>供创建分支时把同一份事实交给子档使用；不含 live 完成槽（每个运行各自新建）。</p>
+     *
+     * @return 运行画像
+     */
+    public BranchProfile profile() {
+        return new BranchProfile(manifest, orderedOpenings, registry, manufacturingConfig, charter,
+                roleConfig, informationConfig, decisionConfig, mediaConfig, interviewConfig,
+                dialogueConfig, evidenceConfig, socialConfig, socialBlockMillis, socialContacts,
+                engineeringConfig, groupConfig, platformConfig, groupFeedLimit, groupReadMillis);
+    }
+
+    /**
+     * 在本运行的一个已确认边界上创建独立分支子档（B1：只落子档与运行索引，不启动进程）。
+     *
+     * <p>切点谓词（全部满足才允许）：位置在已确认范围内、不存在 {@code Status.OPEN} 决定、
+     * 不存在未结算尝试、无晚于切点的决定/派发引用。<b>不要求父会话关闭</b>：父可以继续工作，
+     * 子档 {@code sessionOpen=false} 且不自动开闸。普通业务待办、已投递回报、去重索引与
+     * 已结算决定一律继承，不重问、不重派、不自动 {@code beginSession}。</p>
+     *
+     * <p>写盘顺序：临时文件写入 → 用重开路径 {@link #openBranch} 完整验证一次 →
+     * 原子发布到 {@code runs/<childRunId>.journal}（不覆盖任何已有文件）→ 追加运行索引。
+     * 任一步失败只删本次新建的临时文件或刚发布的子档，绝不改动父档与其他运行。</p>
+     *
+     * @param childRunId 子运行标识；必须匹配 {@link BranchIdentity} 白名单
+     * @param position   切点位置 p
+     * @param kind       分支种类
+     * @param note       人类可读注记；只进元数据
+     * @return 创建回执
+     * @throws IOException 持久失败
+     * @throws BranchRejectedException 谓词、身份、父档或派生校验不通过
+     */
+    public synchronized BranchReceipt createBranch(String childRunId, long position,
+                                                   BranchOrigin.Kind kind, String note)
+            throws IOException {
+        requireOpen();
+        requireWriter();
+        if (position < 1 || position > state.position()) {
+            throw new BranchRejectedException(BRANCH_POSITION_UNCONFIRMED,
+                    "切点未确认：" + position + "（当前确认到 " + state.position() + "）");
+        }
+        WorldCommit commit = journal.commitAt(position).orElseThrow(
+                () -> new BranchRejectedException(BRANCH_POSITION_UNCONFIRMED,
+                        "确认历史缺少位置 " + position));
+        WorldState parentState;
+        try {
+            parentState = decodeSnapshot(commit);
+        } catch (IOException invalid) {
+            throw new BranchRejectedException(BRANCH_PARENT_SCAN_UNREADABLE,
+                    "切点状态无法解码：" + position, invalid);
+        }
+        requireSameConfirmedFrame(parentState, position);
+        List<WorldCommit> own = journal.commits();
+        if (!own.isEmpty() && BRANCH_COMMAND.equals(own.get(0).commandId())) {
+            throw new BranchRejectedException(BRANCH_PARENT_IS_BRANCH,
+                    "父运行本身是分支，分支深度固定为 1：" + manifest.runId());
+        }
+        requireSplittable(parentState);
+        BranchIdentity.requireValidId(childRunId);
+        if (childRunId.equals(manifest.runId())) {
+            throw new BranchRejectedException(BRANCH_IDENTITY_INVALID,
+                    "子运行标识不能等于父运行标识：" + childRunId);
+        }
+        Path parentFile = journal.file();
+        Path runsDir = parentFile.getParent().resolve("runs");
+        Path target = BranchIdentity.requirePublishTarget(runsDir, childRunId);
+
+        // 父前缀原始字节摘要：只经由本实例自己的通道读取。
+        // 本实例对整个父档持有排他锁，Windows 上第二个句柄/其它进程的读取会被拒绝，
+        // 因此"父档前缀摘要"只能由正在写的这一方给出；子进程重开时再与磁盘字节比对。
+        long endOffset = journal.endOffsetOf(position);
+        if (endOffset < 0) {
+            throw new BranchRejectedException(BRANCH_PARENT_PREFIX_MISMATCH,
+                    "父档缺少切点的字节范围：" + position);
+        }
+        String prefixSha = journal.sha256Prefix(endOffset);
+
+        RunManifest childManifest = new RunManifest(childRunId, manifest.seed(),
+                manifest.rulesVersion(), manifest.moduleVersions(), manifest.dataVersions(),
+                manifest.modelConfigVersion());
+        requireSameExperiment(manifest, childManifest);
+        BranchProfile trustedProfile = profile();
+        String profileDigest = trustedProfile.digest();
+        BranchOrigin origin = new BranchOrigin(manifest.runId(), position, prefixSha,
+                manifestDigest(manifest), childRunId, kind, note, System.currentTimeMillis(),
+                BranchOrigin.Policy.inherited(manifest.seed()), endOffset,
+                BranchProfile.VERSION, profileDigest);
+        WorldState derived = derive(parentState, childManifest, origin);
+
+        Path sealTemp = runsDir.resolve(".tmp-" + childRunId + "-" + System.nanoTime()
+                + ".prefix.journal");
+        Path sealTarget = runsDir.resolve(childRunId + ".prefix.journal");
+        Path temp = runsDir.resolve(".tmp-" + childRunId + "-" + System.nanoTime() + ".journal");
+        boolean sealPublished = false;
+        boolean childPublished = false;
+        try {
+            // 1) 由父运行自己的通道把 [0, end_p] 已确认字节导出为封存件（不带半尾、不复制 writer）
+            journal.exportPrefix(sealTemp, endOffset);
+            WorldJournalScanner.Scan seal = scanSeal(sealTemp, manifest.runId(), position,
+                    endOffset, prefixSha);
+            // 2) 临时子档
+            BranchBatch batch = branchBatch(mapper, childManifest, origin,
+                    openingContentMap(orderedOpenings), derived);
+            try (WorldJournal staging = new WorldJournal(temp, childRunId, position)) {
+                staging.commit(BRANCH_COMMAND, batch.content(), "BRANCHED", batch.events());
+            }
+            // 3) 用封存件本身做一次完整重开验证（语义重放 + 派生比较）
+            verifyStagedBranch(temp, childManifest, origin, trustedProfile, seal.commits());
+            // 4) 原子发布：先封存件、再子档；任一失败只回滚本次新建路径
+            publish(sealTemp, sealTarget, "封存父前缀");
+            sealPublished = true;
+            publish(temp, target, "子档");
+            childPublished = true;
+            try {
+                BranchRunIndex.append(runsDir, BranchRunIndex.Entry.of(origin, target, sealTarget));
+            } catch (IOException indexFailure) {
+                throw new BranchRejectedException(BRANCH_PUBLISH_FAILED,
+                        "运行索引写入失败，已回滚本次子档与封存件：" + childRunId, indexFailure);
+            }
+            return new BranchReceipt(childRunId, manifest.runId(), position, target,
+                    position + 1L, prefixSha,
+                    sha256Hex(canonicalMapper.writeValueAsString(derived)), sealTarget,
+                    profileDigest);
+        } catch (IOException | RuntimeException failure) {
+            if (childPublished && BranchIdentity.isInside(runsDir, target)) {
+                Files.deleteIfExists(target);
+            }
+            if (sealPublished && BranchIdentity.isInside(runsDir, sealTarget)) {
+                Files.deleteIfExists(sealTarget);
+            }
+            if (BranchIdentity.isInside(runsDir, temp)) {
+                Files.deleteIfExists(temp);
+            }
+            if (BranchIdentity.isInside(runsDir, sealTemp)) {
+                Files.deleteIfExists(sealTemp);
+            }
+            throw failure;
+        }
+    }
+
+    /** 发布一个本次新建的文件：不带 REPLACE_EXISTING，已存在即拒。 */
+    private static void publish(Path from, Path to, String what) throws IOException {
+        try {
+            Files.move(from, to);
+        } catch (java.nio.file.FileAlreadyExistsException exists) {
+            throw new BranchRejectedException(BRANCH_EXISTS, what + "已存在：" + to, exists);
+        } catch (IOException failure) {
+            throw new BranchRejectedException(BRANCH_PUBLISH_FAILED,
+                    what + "发布失败：" + to, failure);
+        }
+    }
+
+    /**
+     * 只读核验封存父前缀：长度、运行标识、末位位置与原始字节摘要必须同时对上。
+     *
+     * @param seal        封存件路径
+     * @param parentRunId 期望父运行
+     * @param position    期望末位位置 p
+     * @param bytes       期望字节数
+     * @param sha         期望字节摘要
+     * @return 扫描结果（含可重放的批次）
+     * @throws IOException 缺失、损坏或任何一项不符
+     */
+    private static WorldJournalScanner.Scan scanSeal(Path seal, String parentRunId, long position,
+                                                     long bytes, String sha) throws IOException {
+        WorldJournalScanner.Scan scan;
+        try {
+            scan = WorldJournalScanner.scan(seal);
+        } catch (IOException unreadable) {
+            throw new BranchRejectedException(BRANCH_SEAL_MISMATCH,
+                    "封存父前缀无法只读扫描：" + seal, unreadable);
+        }
+        if (scan.isEmpty() || !parentRunId.equals(scan.runId())) {
+            throw new BranchRejectedException(BRANCH_SEAL_MISMATCH,
+                    "封存父前缀运行标识不符：" + scan.runId());
+        }
+        if (scan.base() != 0L || scan.lastPosition() != position || scan.tailIncomplete()) {
+            throw new BranchRejectedException(BRANCH_SEAL_MISMATCH,
+                    "封存父前缀末位或尾部不符：last=" + scan.lastPosition()
+                            + " 期望=" + position + " tailIncomplete=" + scan.tailIncomplete());
+        }
+        if (scan.confirmedBytes() != bytes || scan.fileBytes() != bytes) {
+            throw new BranchRejectedException(BRANCH_SEAL_MISMATCH,
+                    "封存父前缀字节数不符：" + scan.fileBytes() + " 期望=" + bytes);
+        }
+        String actual = WorldJournalScanner.sha256Prefix(seal, bytes);
+        if (!actual.equals(sha)) {
+            throw new BranchRejectedException(BRANCH_SEAL_MISMATCH,
+                    "封存父前缀字节摘要不符");
+        }
+        return scan;
+    }
+
+    /**
+     * 一条切点的可派生性视图（只读，不写文件）：供 God 面板说明“为什么能切/为什么不能切”。
+     *
+     * @param position    查询的位置
+     * @param cutPosition 本运行当前确认截止位置
+     * @param supported   是否允许在该位置派生
+     * @param reasons     拒绝码列表；允许时为空
+     */
+    public record BranchSupport(long position, long cutPosition, boolean supported,
+                                List<String> reasons) {
+
+        /** 冻结原因列表。 */
+        public BranchSupport {
+            reasons = List.copyOf(reasons);
+        }
+    }
+
+    /**
+     * 只读判定某个确认位置能否派生分支，返回稳定原因码而不是抛异常。
+     *
+     * <p>判定与 {@link #createBranch} 是同一组谓词：位置已确认、快照可解码、父不是分支、
+     * 没有未解决决定屏障/未结算尝试/未来位置引用。这里<b>不</b>创建任何文件，也不校验子运行
+     * 标识（那是调用方输入的形状问题，不是切点问题）。</p>
+     *
+     * @param position 切点位置
+     * @return 判定结果
+     */
+    public synchronized BranchSupport branchSupport(long position) {
+        requireOpen();
+        long cut = state.position();
+        List<String> reasons = new ArrayList<>();
+        if (position < 1 || position > cut) {
+            reasons.add(BRANCH_POSITION_UNCONFIRMED);
+            return new BranchSupport(position, cut, false, reasons);
+        }
+        WorldCommit commit = journal.commitAt(position).orElse(null);
+        if (commit == null) {
+            reasons.add(BRANCH_POSITION_UNCONFIRMED);
+            return new BranchSupport(position, cut, false, reasons);
+        }
+        WorldState candidate;
+        try {
+            candidate = decodeSnapshot(commit);
+        } catch (IOException invalid) {
+            reasons.add(BRANCH_PARENT_SCAN_UNREADABLE);
+            return new BranchSupport(position, cut, false, reasons);
+        }
+        List<WorldCommit> own = journal.commits();
+        if (!own.isEmpty() && BRANCH_COMMAND.equals(own.get(0).commandId())) {
+            reasons.add(BRANCH_PARENT_IS_BRANCH);
+            return new BranchSupport(position, cut, false, reasons);
+        }
+        try {
+            requireSplittable(candidate);
+        } catch (BranchRejectedException rejected) {
+            reasons.add(rejected.code());
+        }
+        return new BranchSupport(position, cut, reasons.isEmpty(), reasons);
+    }
+
+    /**
+     * 切点是否允许派生：没有未解决决定屏障、尝试均已结算、没有未来位置引用。
+     *
+     * @param candidate 切点状态
+     * @throws BranchRejectedException 任一条件不满足
+     */
+    private void requireSplittable(WorldState candidate) throws BranchRejectedException {
+        if (candidate.decisions() == null) {
+            return;
+        }
+        long cut = candidate.position();
+        // 与 requireSplittableDecisions 共用同一份决定子集判定，不重复实现
+        requireSplittableDecisions(candidate.decisions().state(), cut);
+        for (DecisionModel.Decision decision : candidate.decisions().state().decisions()) {
+            if (decision.cutoffPosition() > cut) {
+                throw new BranchRejectedException(BRANCH_FUTURE_REFERENCE,
+                        "决定切点位置晚于分支切点：" + decision.actionId());
+            }
+        }
+        if (candidate.decisions() != null && candidate.decisions().dispatches() != null) {
+            for (DecisionRun.Dispatch dispatch : candidate.decisions().dispatches().values()) {
+                if (dispatch.dispatchPosition() > cut) {
+                    throw new BranchRejectedException(BRANCH_FUTURE_REFERENCE,
+                            "派发位置晚于分支切点：" + dispatch.attemptId());
+                }
+            }
+        }
+    }
+
+    /**
+     * 决定子集的可切分性（与 {@code WorldState} 无关，便于直接用真实模型状态核对）。
+     *
+     * <p>Root 口径（候选 3）：<b>不再要求父会话关闭</b>。只要求切点没有任何未解决决定/屏障，
+     * 且每条尝试都已 {@code settledDone()}。{@code sessionOpen} 只是会话态，父可以继续工作；
+     * 子档由 {@code derive} 置 {@code sessionOpen=false} 且不自动开闸。</p>
+     *
+     * <p>注意：这里不做任何 {@code DecisionModel.recover} 之类的"先抹掉未决事实"的转换——
+     * 判定直接作用于真实父状态。未结算尝试在会话开或关时都拒绝。</p>
+     *
+     * @param state 决定状态
+     * @param cut   切点位置
+     * @throws BranchRejectedException 存在 OPEN 决定/屏障或未结算尝试
+     */
+    static void requireSplittableDecisions(DecisionModel.State state, long cut)
+            throws BranchRejectedException {
+        if (state == null) {
+            return;
+        }
+        if (DecisionModel.earliestBarrier(state).isPresent()) {
+            throw new BranchRejectedException(BRANCH_BARRIER_PENDING,
+                    "切点仍有未解决决定：" + DecisionModel.earliestBarrier(state)
+                            .map(DecisionModel.Decision::actionId).orElse(""));
+        }
+        for (DecisionModel.Decision decision : state.decisions()) {
+            for (DecisionModel.Attempt attempt : decision.attempts()) {
+                if (!attempt.settledDone()) {
+                    throw new BranchRejectedException(BRANCH_ATTEMPT_IN_FLIGHT,
+                            "切点仍有未结算尝试：" + attempt.attemptId());
+                }
+            }
+        }
+    }
+
+    /**
+     * 用重开路径验证刚写入的临时子档：重放父前缀 + 派生比较，一次不少。
+     *
+     * <p>父前缀取自本实例的内存批次（已逐帧验证过），并再次用同一校验链重放；
+     * 这里<b>不能</b>去磁盘重扫父档：本实例已对它持有排他锁，Windows 会拒绝第二个句柄读取。</p>
+     *
+     * @param temp          临时子档
+     * @param childManifest 子清单
+     * @param origin        分支来源
+     * @param position      切点
+     * @throws IOException 验证失败
+     */
+    private void verifyStagedBranch(Path temp, RunManifest childManifest, BranchOrigin origin,
+                                    BranchProfile profile, List<WorldCommit> prefix)
+            throws IOException {
+        try (WorldRuntime probe = finishBranchOpen(temp, profile, origin, childManifest,
+                prefix, null)) {
+            if (probe.state == null || probe.state.position() != origin.parentPosition() + 1L) {
+                throw new BranchRejectedException(BRANCH_DERIVATION_MISMATCH,
+                        "子档首帧位置不是父位置加一");
+            }
+            if (!probe.state.runId().equals(childManifest.runId())) {
+                throw new BranchRejectedException(BRANCH_DERIVATION_MISMATCH,
+                        "子档首帧运行标识不一致：" + probe.state.runId());
+            }
+        }
+    }
+
+    /**
+     * 打开一条已发布的分支子档：只读扫描子档取来源，再只读核验<b>封存父前缀</b>，最后派生比较。
+     *
+     * <p>封存件是创建时由父运行自己的通道导出的已确认字节（{@code [0, 第 p 帧末]}），因此：
+     * 子进程<b>不再打开活跃父档</b>（Windows 上父写入者持排他锁，本来也读不到）；
+     * 父档之后继续跑、停机或尾部变化都不影响分支；封存件缺失、长度/末位/摘要不符都明确拒绝。
+     * 摘要只用于"读到的就是这一段"，有效性仍来自同一校验链重放 + 派生逐字段比较。</p>
+     *
+     * @param childFile 子档路径
+     * @param resolver  父运行标识 → 封存父前缀路径（只接受可信运行目录内的已登记条目）
+     * @param profile   父运行可信画像（清单、开局、登记与全部冻结配置）
+     * @return 已恢复的子运行
+     * @throws IOException 封存件缺失/不符、前缀语义不符、派生不等或子档损坏
+     */
+    public static WorldRuntime openBranch(Path childFile, ParentRunResolver resolver,
+                                          BranchProfile profile) throws IOException {
+        return openBranch(childFile, resolver, profile, null);
+    }
+
+    /**
+     * 打开分支子档，并额外与运行索引里的画像摘要交叉核对。
+     *
+     * @param childFile             子档路径
+     * @param resolver              封存父前缀解析
+     * @param profile               可信画像
+     * @param expectedProfileDigest 索引登记的画像摘要；null 表示不做索引交叉核对
+     * @return 已恢复的子运行
+     * @throws IOException 任一环节不符
+     */
+    public static WorldRuntime openBranch(Path childFile, ParentRunResolver resolver,
+                                          BranchProfile profile, String expectedProfileDigest)
+            throws IOException {
+        Objects.requireNonNull(childFile, "childFile");
+        Objects.requireNonNull(resolver, "resolver");
+        Objects.requireNonNull(profile, "profile");
+        WorldJournalScanner.Scan child;
+        try {
+            child = WorldJournalScanner.scan(childFile);
+        } catch (IOException unreadable) {
+            throw new BranchRejectedException(BRANCH_CHILD_INVALID,
+                    "子档无法只读扫描：" + childFile, unreadable);
+        }
+        if (child.isEmpty()) {
+            throw new BranchRejectedException(BRANCH_CHILD_INVALID, "子档没有任何完整帧：" + childFile);
+        }
+        WorldCommit first = child.commits().get(0);
+        if (!BRANCH_COMMAND.equals(first.commandId())) {
+            throw new BranchRejectedException(BRANCH_CHILD_NOT_BRANCH,
+                    "子档首帧不是分支首帧：" + first.commandId());
+        }
+        ObjectMapper json = new ObjectMapper();
+        BranchOrigin origin;
+        RunManifest childManifest;
+        try {
+            JsonNode content = json.readTree(first.commandContent());
+            origin = json.convertValue(content.get("branch"), BranchOrigin.class);
+            childManifest = json.convertValue(content.get("manifest"), RunManifest.class);
+        } catch (IOException | RuntimeException invalid) {
+            throw new BranchRejectedException(BRANCH_CHILD_INVALID,
+                    "子档首帧缺少可解析的来源或清单", invalid);
+        }
+        if (origin == null || childManifest == null) {
+            throw new BranchRejectedException(BRANCH_ORIGIN_INCOMPLETE, "子档首帧缺少来源或清单");
+        }
+        if (!origin.childRunId().equals(child.runId())
+                || !origin.childRunId().equals(childManifest.runId())) {
+            throw new BranchRejectedException(BRANCH_CHILD_INVALID,
+                    "子档首帧来源、清单与文件运行标识不一致");
+        }
+        requireSameExperiment(profile.manifest(), childManifest);
+        if (!manifestDigest(profile.manifest()).equals(origin.parentManifestDigest())) {
+            throw new BranchRejectedException(BRANCH_RULES_MISMATCH,
+                    "父亲清单摘要与来源记录不一致");
+        }
+        Path seal = resolver.resolve(origin.parentRunId());
+        if (seal == null) {
+            throw new BranchRejectedException(BRANCH_SEAL_MISSING,
+                    "没有登记封存父前缀：" + origin.parentRunId());
+        }
+        if (!Files.isRegularFile(seal, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new BranchRejectedException(BRANCH_SEAL_MISSING,
+                    "封存父前缀不存在或不是普通文件：" + seal);
+        }
+        WorldJournalScanner.Scan scanned = scanSeal(seal, origin.parentRunId(),
+                origin.parentPosition(), origin.parentPrefixBytes(), origin.parentPrefixSha256());
+        if (!OPEN_COMMAND.equals(scanned.commits().get(0).commandId())) {
+            throw new BranchRejectedException(BRANCH_PARENT_IS_BRANCH,
+                    "封存父前缀首帧不是普通开局，分支深度固定为 1");
+        }
+        return finishBranchOpen(childFile, profile, origin, childManifest, scanned.commits(),
+                expectedProfileDigest);
+    }
+
+    /**
+     * 分支打开的收尾：重放父前缀 → 派生比较 → 以分支模式构造子运行。
+     *
+     * <p>{@link #openBranch}（磁盘前缀）与 {@link #createBranch}（内存前缀，用于刚写入的临时子档）
+     * 共用这一段，保证"创建即验证"与"重开验证"不是两套逻辑。</p>
+     *
+     * @param childFile     子档路径
+     * @param profile       父运行可信画像
+     * @param origin        分支来源（来自子档首帧，已与打开参数核对）
+     * @param childManifest 子清单
+     * @param prefix        已确认父前缀批次（来自封存件或创建期内存）
+     * @param expectedProfileDigest 运行索引登记的画像摘要；null 表示不核对
+     * @return 已恢复的子运行
+     * @throws IOException 画像不符、父前缀语义不合法或子档派生不等
+     */
+    private static WorldRuntime finishBranchOpen(Path childFile, BranchProfile profile,
+                                                 BranchOrigin origin, RunManifest childManifest,
+                                                 List<WorldCommit> prefix,
+                                                 String expectedProfileDigest) throws IOException {
+        String actualProfile = profile.digest();
+        if (!actualProfile.equals(origin.profileDigest())) {
+            throw new BranchRejectedException(BRANCH_PROFILE_MISMATCH,
+                    "宿主画像摘要与分支元数据不一致（媒体/群组等未入首帧的配置只能由可信画像保证）");
+        }
+        if (expectedProfileDigest != null && !expectedProfileDigest.equals(actualProfile)) {
+            throw new BranchRejectedException(BRANCH_PROFILE_MISMATCH,
+                    "宿主画像摘要与运行索引登记不一致");
+        }
+        WorldState parentState;
+        try {
+            parentState = verifyPrefix(profile, prefix);
+        } catch (IOException invalid) {
+            // 摘要对上也不代表语义合法：父前缀必须用同一校验链重放通过
+            throw new BranchRejectedException(BRANCH_PARENT_PREFIX_MISMATCH,
+                    "父前缀语义校验失败：" + invalid.getMessage(), invalid);
+        }
+        if (parentState.position() != origin.parentPosition()) {
+            throw new BranchRejectedException(BRANCH_PARENT_PREFIX_MISMATCH,
+                    "父前缀末位与切点不一致：" + parentState.position() + "/"
+                            + origin.parentPosition());
+        }
+        return new WorldRuntime(OpenMode.branch(origin, parentState, prefix), childFile,
+                childManifest, profile.openings(), profile.registry(), profile.manufacturing(),
+                profile.charter(), profile.roles(), profile.information(), profile.decisions(),
+                null, profile.media(), profile.interview(), profile.dialogue(),
+                profile.evidence(), profile.social(), profile.socialBlockMillis(),
+                profile.contacts(), profile.engineering(), profile.groups(),
+                profile.platform(), profile.feedLimit(), profile.readMillis());
+    }
+
+    /**
+     * 用恢复期同一校验链只读重放父前缀，返回父边界状态。
+     *
+     * <p>不构造 {@link WorldJournal}、不取得父档写入者、不截尾；校验上下文只有清单、开局、
+     * 登记与冻结配置，没有当前状态。</p>
+     *
+     * @param profile 可信画像
+     * @param scanned 已只读扫描到的父前缀批次
+     * @return 父边界终态
+     * @throws IOException 前缀任何一帧或开局绑定不合法
+     */
+    static WorldState verifyPrefix(BranchProfile profile, List<WorldCommit> scanned)
+            throws IOException {
+        WorldRuntime verifier = new WorldRuntime(OpenMode.verification(scanned), null,
+                profile.manifest(), profile.openings(), profile.registry(),
+                profile.manufacturing(), profile.charter(), profile.roles(),
+                profile.information(), profile.decisions(), null, profile.media(),
+                profile.interview(), profile.dialogue(), profile.evidence(), profile.social(),
+                profile.socialBlockMillis(), profile.contacts(), profile.engineering(),
+                profile.groups(), profile.platform(), profile.feedLimit(), profile.readMillis());
+        if (verifier.verifiedPrefixState == null) {
+            throw new IOException("父前缀校验没有产生终态");
+        }
+        return verifier.verifiedPrefixState;
+    }
+
+    /**
+     * 子清单只允许换运行标识：规则、模块、资料版本、模型配置与种子必须与父完全一致。
+     *
+     * @param parent 父清单
+     * @param child  子清单
+     * @throws BranchRejectedException 实验条件不一致
+     */
+    static void requireSameExperiment(RunManifest parent, RunManifest child)
+            throws BranchRejectedException {
+        if (!parent.rulesVersion().equals(child.rulesVersion())
+                || !parent.moduleVersions().equals(child.moduleVersions())
+                || !parent.dataVersions().equals(child.dataVersions())
+                || !parent.modelConfigVersion().equals(child.modelConfigVersion())
+                || parent.seed() != child.seed()) {
+            throw new BranchRejectedException(BRANCH_RULES_MISMATCH,
+                    "子清单与父实验条件不一致：规则/模块/资料/模型配置或种子不同");
+        }
+        if (parent.runId().equals(child.runId())) {
+            throw new BranchRejectedException(BRANCH_IDENTITY_INVALID,
+                    "子清单不能复用父运行标识");
+        }
+    }
+
+    /**
+     * 运行清单规范化 JSON 的 SHA-256。
+     *
+     * @param manifest 清单
+     * @return 小写十六进制摘要
+     * @throws IOException 序列化失败
+     */
+    static String manifestDigest(RunManifest manifest) throws IOException {
+        return sha256Hex(canonicalMapper.writeValueAsString(manifest));
     }
 
     /**
@@ -3755,6 +4550,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public synchronized HistoryFrame historyFrame(long position) {
         requireOpen();
+        requireOwnPosition(position, "historyFrame");
         long cut = state.position();
         if (position < 1 || position > cut) {
             throw new IllegalArgumentException("位置未确认：" + position + "（当前确认到 " + cut + "）");
@@ -3769,6 +4565,130 @@ public final class WorldRuntime implements AutoCloseable {
         }
         requireSameConfirmedFrame(decoded, position);
         return new HistoryFrame(snapshotOf(decoded), Optional.ofNullable(decoded.groups()));
+    }
+
+    /** 历史帧的事实来源：父运行前缀（只读继承）还是本运行自有帧。 */
+    public enum HistorySource {
+        /** 父运行 {@code 1..p}：已逐帧验证的只读继承事实，不属于本运行产生。 */
+        PARENT_PREFIX,
+        /** 本运行自有确认帧（普通运行从 1 开始，分支子档从 p+1 开始）。 */
+        CHILD
+    }
+
+    /**
+     * 带来源标注的历史索引项。
+     *
+     * @param position    确认位置
+     * @param source      事实来源
+     * @param sourceRunId 产生该帧的运行标识（父前缀为父运行，自有帧为本运行）
+     * @param commandId   当时的命令标识
+     * @param result      当时的回报原文
+     * @param eventCount  该批次事件条数
+     */
+    public record BranchHistoryEntry(long position, HistorySource source, String sourceRunId,
+                                     String commandId, String result, int eventCount) {
+    }
+
+    /**
+     * 带来源标注的历史帧；继承帧的 {@code sourceRunId} 是父运行，明确不被伪装成本运行原帧。
+     *
+     * @param frame       该位置的只读帧（与实时视图同一投影口径）
+     * @param source      事实来源
+     * @param sourceRunId 产生该帧的运行标识
+     */
+    public record BranchHistoryFrame(HistoryFrame frame, HistorySource source,
+                                     String sourceRunId) {
+    }
+
+    /**
+     * 本运行的分支来源；普通运行返回空。
+     *
+     * @return 分支来源
+     */
+    public synchronized Optional<BranchOrigin> branchOrigin() {
+        return Optional.ofNullable(branchOrigin);
+    }
+
+    /**
+     * 按位置升序返回带来源标注的历史索引（只读，不推进世界、不写日志、不调用模型）。
+     *
+     * <p>普通运行与 {@link #historyIndex} 等价（全部标 {@code CHILD}）；分支子档额外包含
+     * 父前缀 {@code 1..p}，标 {@code PARENT_PREFIX} 并给出父运行标识。这样面板可以按来源
+     * 分列，不需要也不允许把父帧说成本运行帧。</p>
+     *
+     * @param afterPosition 只返回位置严格大于此值的批次；0 表示从头开始
+     * @param limit         本次最多返回条数，1..{@link #MAX_HISTORY_PAGE}
+     * @return 不可变索引列表
+     */
+    public synchronized List<BranchHistoryEntry> branchHistoryIndex(long afterPosition, int limit) {
+        requireOpen();
+        if (afterPosition < 0) {
+            throw new IllegalArgumentException("历史起始位置不能为负：" + afterPosition);
+        }
+        if (limit <= 0 || limit > MAX_HISTORY_PAGE) {
+            throw new IllegalArgumentException("历史分页条数必须在 1 到 " + MAX_HISTORY_PAGE
+                    + " 之间，收到 " + limit);
+        }
+        List<BranchHistoryEntry> entries = new ArrayList<>();
+        for (WorldCommit commit : commitSource.commitsAfter(afterPosition, limit)) {
+            boolean inherited = branchOrigin != null
+                    && commit.position() <= branchOrigin.parentPosition();
+            entries.add(new BranchHistoryEntry(commit.position(),
+                    inherited ? HistorySource.PARENT_PREFIX : HistorySource.CHILD,
+                    inherited ? branchOrigin.parentRunId() : manifest.runId(),
+                    commit.commandId(), commit.result(), commit.events().size()));
+        }
+        return List.copyOf(entries);
+    }
+
+    /**
+     * 按位置取带来源标注的历史帧；父前缀位置同样可读，但来源明确标成父运行。
+     *
+     * @param position 确认位置（1..当前确认位置）
+     * @return 该位置的只读帧与来源
+     * @throws IllegalArgumentException 位置未确认
+     */
+    public synchronized BranchHistoryFrame branchHistoryFrame(long position) {
+        requireOpen();
+        long cut = state.position();
+        if (position < 1 || position > cut) {
+            throw new IllegalArgumentException("位置未确认：" + position + "（当前确认到 " + cut + "）");
+        }
+        WorldCommit commit = commitSource.commitAt(position).orElseThrow(
+                () -> new IllegalStateException("确认历史缺少位置 " + position));
+        WorldState decoded;
+        try {
+            decoded = decodeSnapshot(commit);
+        } catch (IOException invalid) {
+            throw new IllegalStateException("确认历史快照无法解码：" + position, invalid);
+        }
+        if (decoded.position() != position || decoded.schemaVersion() != expectedSchema()) {
+            throw new IllegalStateException("确认历史快照位置或版本不一致：" + position);
+        }
+        boolean inherited = branchOrigin != null && position <= branchOrigin.parentPosition();
+        if (!inherited) {
+            requireSameConfirmedFrame(decoded, position);
+        }
+        return new BranchHistoryFrame(
+                new HistoryFrame(snapshotOf(decoded), Optional.ofNullable(decoded.groups())),
+                inherited ? HistorySource.PARENT_PREFIX : HistorySource.CHILD,
+                inherited ? branchOrigin.parentRunId() : manifest.runId());
+    }
+
+    /**
+     * 分支子档的父前缀位置不能经"本运行"入口读取或导出，否则会把父帧伪装成本运行原帧。
+     *
+     * @param position 位置
+     * @param api      调用入口名，只用于说明
+     * @throws IllegalArgumentException 位置属于父前缀
+     */
+    private void requireOwnPosition(long position, String api) {
+        if (branchOrigin != null && position >= 1 && position <= branchOrigin.parentPosition()) {
+            throw new IllegalArgumentException(BRANCH_INHERITED_POSITION_NOT_EXPORTABLE
+                    + "：" + api + " 不接受父前缀位置 " + position
+                    + "（父前缀 1.." + branchOrigin.parentPosition()
+                    + "；请用 branchHistoryFrame 读取并标注来源）");
+        }
     }
 
     /**
@@ -3846,6 +4766,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public synchronized Checkpoint checkpoint(long position) throws IOException {
         requireOpen();
+        requireOwnPosition(position, "checkpoint");
         long cut = state.position();
         if (position < 1 || position > cut) {
             throw new IllegalArgumentException("位置未确认：" + position + "（当前确认到 " + cut + "）");
@@ -3963,6 +4884,11 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (position < 1 || position > cut) {
             return new CheckpointVerdict(false, "CHECKPOINT_POSITION_UNCONFIRMED", run, position, cut);
+        }
+        if (branchOrigin != null && position <= branchOrigin.parentPosition()) {
+            // 父前缀位置不是本运行原帧：不导出、也不把父快照说成本运行的检查点
+            return new CheckpointVerdict(false, BRANCH_INHERITED_POSITION_NOT_EXPORTABLE, run,
+                    position, cut);
         }
         var fieldNames = root.fieldNames();
         while (fieldNames.hasNext()) {
@@ -4485,7 +5411,7 @@ public final class WorldRuntime implements AutoCloseable {
         BigDecimal declared = BigDecimal.ZERO.setScale(2);
         BigDecimal unpaid = BigDecimal.ZERO.setScale(2);
         try {
-            for (WorldCommit commit : journal.commits()) {
+            for (WorldCommit commit : commitSource.commits()) {
                 for (WorldEvent event : commit.events()) {
                     if (!"CAPITAL_FLOW_V1".equals(event.type())) {
                         continue;
@@ -5525,7 +6451,7 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 摘要只用于去重与关联，不能替代语义校验。 */
-    private static String sha256Hex(String text) {
+    static String sha256Hex(String text) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
@@ -5545,7 +6471,7 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized List<DecisionAudit> decisionAudits() {
         requireOpen();
         List<DecisionAudit> audits = new ArrayList<>();
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : commitSource.commits()) {
             for (WorldEvent event : commit.events()) {
                 if (DECISION_AUDIT_V1.equals(event.type())) {
                     audits.add(readAudit(event.payload()));
@@ -8835,7 +9761,9 @@ public final class WorldRuntime implements AutoCloseable {
             liveInbox.close();
         }
         try {
-            journal.close();
+            if (journal != null) {
+                journal.close();
+            }
         } catch (IOException ignored) {
             // 关闭失败不影响已发布快照；日志锁由进程退出回收
         }
@@ -10108,7 +11036,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (position <= 0) {
             throw new IllegalArgumentException("观察位置不存在：" + position);
         }
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : commitSource.commits()) {
             if (commit.position() == position) {
                 return decodeSnapshot(commit);
             }
@@ -11907,7 +12835,20 @@ public final class WorldRuntime implements AutoCloseable {
         return best;
     }
 
-    private void validate(WorldState candidate, WorldCommit commit, WorldState previous)
+    /**
+     * 与上一帧无关的状态不变量：版本、运行身份、位置连续、阶段名合法、余额非负、待办唯一且已登记。
+     *
+     * <p>从 {@link #validate} 原样抽出，普通逐帧校验与分支首帧共用同一份实现，不复制第二份
+     * 校验链。分支首帧是<b>派生</b>状态而不是真实开局，因此它只跑这一段，再叠加
+     * "必须等于父边界状态的确定性派生"这一更强的逐字段比较；各模块的 {@code previous == null}
+     * 开局断言不适用于派生状态。</p>
+     *
+     * @param candidate 候选状态
+     * @param commit    该状态所属批次
+     * @return 解析后的阶段，供调用方做同刻阶段倒退判断
+     * @throws IOException 任一不变量不成立
+     */
+    private WorldScheduler.Phase validateCommon(WorldState candidate, WorldCommit commit)
             throws IOException {
         long expectedPosition = commit.position();
         if (candidate.schemaVersion() != expectedSchema()) {
@@ -11920,6 +12861,39 @@ public final class WorldRuntime implements AutoCloseable {
         if (candidate.position() != expectedPosition) {
             throw new IOException("状态位置不连续：" + candidate.position());
         }
+        WorldScheduler.Phase phase;
+        try {
+            phase = WorldScheduler.Phase.valueOf(candidate.lastPhase());
+        } catch (RuntimeException invalid) {
+            throw new IOException("状态阶段名非法：" + candidate.lastPhase(), invalid);
+        }
+        Set<String> ids = new LinkedHashSet<>();
+        for (CashLedger.CashAccount account : candidate.accounts().values()) {
+            if (account.cash().signum() < 0) {
+                throw new IOException("状态出现负余额：" + account.ownerId());
+            }
+        }
+        for (PendingTask task : candidate.pending()) {
+            if (!ids.add(task.taskId())) {
+                throw new IOException("状态待办重复：" + task.taskId());
+            }
+            if (!candidate.usedTaskIds().contains(task.taskId())) {
+                throw new IOException("状态待办未登记到已用任务：" + task.taskId());
+            }
+            if (task.dueTimeMillis() < candidate.timeMillis()) {
+                throw new IOException("状态待办到期早于快照时点：" + task.taskId());
+            }
+            if (task.dueTimeMillis() == candidate.timeMillis()
+                    && task.phase().ordinal() < phase.ordinal()) {
+                throw new IOException("状态待办落在同一时点已结束的阶段：" + task.taskId());
+            }
+        }
+        return phase;
+    }
+
+    private void validate(WorldState candidate, WorldCommit commit, WorldState previous)
+            throws IOException {
+        WorldScheduler.Phase phase = validateCommon(candidate, commit);
         if (previous != null) {
             if (candidate.timeMillis() < previous.timeMillis()) {
                 throw new IOException("状态时间倒退");
@@ -11968,35 +12942,9 @@ public final class WorldRuntime implements AutoCloseable {
                 }
             }
         }
-        WorldScheduler.Phase phase;
-        try {
-            phase = WorldScheduler.Phase.valueOf(candidate.lastPhase());
-        } catch (RuntimeException invalid) {
-            throw new IOException("状态阶段名非法：" + candidate.lastPhase(), invalid);
-        }
         if (previous != null && candidate.timeMillis() == previous.timeMillis()
                 && phase.ordinal() < WorldScheduler.Phase.valueOf(previous.lastPhase()).ordinal()) {
             throw new IOException("同一模拟时点的状态阶段倒退");
-        }
-        Set<String> ids = new LinkedHashSet<>();
-        for (CashLedger.CashAccount account : candidate.accounts().values()) {
-            if (account.cash().signum() < 0) {
-                throw new IOException("状态出现负余额：" + account.ownerId());
-            }
-        }
-        for (PendingTask task : candidate.pending()) {
-            if (!ids.add(task.taskId())) {
-                throw new IOException("状态待办重复：" + task.taskId());
-            }
-            if (!candidate.usedTaskIds().contains(task.taskId())) {
-                throw new IOException("状态待办未登记到已用任务：" + task.taskId());
-            }
-            if (task.dueTimeMillis() < candidate.timeMillis()) {
-                throw new IOException("状态待办到期早于快照时点：" + task.taskId());
-            }
-            if (task.dueTimeMillis() == candidate.timeMillis() && task.phase().ordinal() < phase.ordinal()) {
-                throw new IOException("状态待办落在同一时点已结束的阶段：" + task.taskId());
-            }
         }
         validateSecurities(candidate, previous);
         validateExchange(candidate, previous);
@@ -12011,6 +12959,34 @@ public final class WorldRuntime implements AutoCloseable {
         validateEngineering(candidate, previous, commit);
         validateGroups(candidate, previous, commit);
         validateInterviews(candidate, previous, commit);
+        validateClockFrame(candidate, commit, previous);
+    }
+
+    /** 纯时间推进只能改变位置、时间和阶段，不能夹带业务或待办变化。 */
+    private void validateClockFrame(WorldState candidate, WorldCommit commit, WorldState previous)
+            throws IOException {
+        boolean clock = commit.commandId().startsWith("clock:") || commit.events().stream()
+                .anyMatch(event -> "CLOCK_ADVANCED_V1".equals(event.type()));
+        if (!clock) {
+            return;
+        }
+        long target = candidate.timeMillis();
+        if (previous == null || target <= previous.timeMillis()
+                || previous.pending().stream().anyMatch(task -> task.dueTimeMillis() <= target)) {
+            throw new IOException("时钟帧不能倒退、重复或跳过到期任务");
+        }
+        if (previous.decisions() != null && DecisionModel.earliestBarrier(previous.decisions().state())
+                .filter(decision -> decision.barrierAtMillis() <= target).isPresent()) {
+            throw new IOException("时钟帧不能跳过未决决定屏障");
+        }
+        String command = "clock:" + target;
+        String content = "{\"timeMillis\":" + target + "}";
+        WorldState expected = cashState(previous, commit.position(), target,
+                WorldScheduler.Phase.OBSERVATION.name(), previous.accounts(), previous.pending(),
+                previous.delivered(), previous.usedTaskIds(), previous.commandContents(),
+                previous.commandOutcomes());
+        requireCashBatch(commit, candidate, expected, command, content, "ADVANCED",
+                List.of(new WorldEvent(command, "CLOCK_ADVANCED_V1", content)));
     }
 
     /**
@@ -12682,7 +13658,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (position <= 0) {
             return null;
         }
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : commitSource.commits()) {
             if (commit.position() != position) {
                 continue;
             }
@@ -14663,7 +15639,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (position <= 0 || position > maxPosition) {
             return null;
         }
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : commitSource.commits()) {
             if (commit.position() == position) {
                 return decodeSnapshot(commit);
             }
@@ -16456,10 +17432,38 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
-    private WorldState restore(List<OpeningAccount> ordered, WorldState expectedInitial)
-            throws IOException {
+    private WorldState restore(List<OpeningAccount> ordered, WorldState expectedInitial,
+                               OpenMode mode) throws IOException {
         List<WorldCommit> commits = journal.commits();
-        String expected = openingContent(ordered);
+        if (!commits.isEmpty() && BRANCH_COMMAND.equals(commits.get(0).commandId())) {
+            if (mode == null || mode.origin() == null) {
+                // 分支子档必须由 openBranch 打开：没有父前缀验证就无法证明派生来源
+                throw new IOException("分支子档必须经 openBranch（带父前缀验证）打开，"
+                        + "不能用普通运行入口");
+            }
+            return restoreBranch(commits, mode);
+        }
+        return verifyCommits(commits, expectedInitial);
+    }
+
+    /**
+     * 用恢复期同一校验链核对一段已确认批次，返回终态。
+     *
+     * <p>{@code restore()} 与父前缀验证共用这一份实现：逐帧 {@code decodeSnapshot}、
+     * {@code validate}、{@code validateAudits}，首帧还必须等于清单绑定的初始资产。
+     * 父前缀用同一方法而不是"新写一个只读校验"，因此不存在"父档校验比恢复更松"的缺口。</p>
+     *
+     * @param commits         按位置升序的完整帧
+     * @param expectedInitial 清单绑定的开局状态
+     * @return 最后一批的状态
+     * @throws IOException 任一帧或开局绑定不一致
+     */
+    private WorldState verifyCommits(List<WorldCommit> commits, WorldState expectedInitial)
+            throws IOException {
+        if (commits.isEmpty()) {
+            throw new IOException("确认历史为空，无法校验");
+        }
+        String expected = openingContent(orderedOpenings);
         WorldCommit first = commits.get(0);
         if (!OPEN_COMMAND.equals(first.commandId()) || !expected.equals(first.commandContent())
                 || !"OPENED".equals(first.result())) {
@@ -16477,6 +17481,165 @@ public final class WorldRuntime implements AutoCloseable {
             previous = snapshot;
         }
         return previous;
+    }
+
+    /**
+     * 分支子档逐帧恢复：首帧走"派生等价"路径，其余帧走未修改的 {@code validate} 与
+     * {@code validateAudits}。
+     *
+     * <p>为什么首帧不调用各模块的 {@code previous == null} 开局断言：这些断言描述的是
+     * "真实开局"（例如决定子集必须等于 {@code DecisionRun.opening}），而分支首帧是派生状态，
+     * 继承了大量已发生的事实，本来就<b>不应</b>等于开局。取而代之的是更强的检查：
+     * 期望值由<b>已逐帧验证的父边界状态</b>经确定性 {@code derive} 得到，子档必须逐字段相等；
+     * 派生只改身份字段，其余资产、义务、报告、去重与待办必须原样保留。</p>
+     */
+    private WorldState restoreBranch(List<WorldCommit> commits, OpenMode mode) throws IOException {
+        BranchOrigin origin = mode.origin();
+        WorldState parentState = mode.parentState();
+        WorldCommit first = commits.get(0);
+        if (!"BRANCHED".equals(first.result())) {
+            throw new IOException("分支首帧回报必须是 BRANCHED：" + first.result());
+        }
+        JsonNode content;
+        try {
+            content = mapper.readTree(first.commandContent());
+        } catch (IOException invalid) {
+            throw new IOException("分支首帧内容不是合法 JSON", invalid);
+        }
+        RunManifest recordedManifest;
+        BranchOrigin recordedOrigin;
+        try {
+            recordedManifest = mapper.convertValue(content.get("manifest"), RunManifest.class);
+            recordedOrigin = mapper.convertValue(content.get("branch"), BranchOrigin.class);
+        } catch (RuntimeException invalid) {
+            throw new IOException("分支首帧缺少可解析的清单或来源", invalid);
+        }
+        if (!manifest.equals(recordedManifest) || !origin.equals(recordedOrigin)) {
+            throw new IOException("分支首帧清单或来源与打开参数不一致");
+        }
+        if (!origin.childRunId().equals(manifest.runId())) {
+            throw new IOException("分支来源子标识与清单运行标识不一致");
+        }
+        if (parentState.position() != origin.parentPosition()) {
+            throw new IOException("父边界状态位置与分支切点不一致：" + parentState.position()
+                    + "/" + origin.parentPosition());
+        }
+        WorldState expected = derive(parentState, manifest, origin);
+        WorldState actual = decodeSnapshot(first);
+        if (!expected.equals(actual)) {
+            throw new BranchRejectedException(BRANCH_DERIVATION_MISMATCH,
+                    "分支首帧不等于父边界状态的确定性派生，差异子集 "
+                            + initialDifference(expected, actual));
+        }
+        requireBranchFirstEvents(first);
+        validateCommon(actual, first);
+        WorldState previous = actual;
+        for (int index = 1; index < commits.size(); index++) {
+            WorldCommit commit = commits.get(index);
+            WorldState snapshot = decodeSnapshot(commit);
+            validate(snapshot, commit, previous);
+            validateAudits(commit, snapshot, previous);
+            previous = snapshot;
+        }
+        return previous;
+    }
+
+    /**
+     * 分支首帧事件白名单：只允许来源事件与状态快照。
+     *
+     * @param first 分支首帧批次
+     * @throws IOException 出现任何经济、决定、审计或其他事件
+     */
+    private void requireBranchFirstEvents(WorldCommit first) throws IOException {
+        int snapshot = 0;
+        int branch = 0;
+        for (WorldEvent event : first.events()) {
+            if (SNAPSHOT_TYPE.equals(event.type())) {
+                snapshot++;
+            } else if (BRANCH_EVENT.equals(event.type())) {
+                branch++;
+            } else {
+                throw new IOException("分支首帧出现非白名单事件：" + event.type());
+            }
+        }
+        if (snapshot != 1 || branch != 1) {
+            throw new IOException("分支首帧必须恰好包含一条来源事件与一条状态快照：快照 "
+                    + snapshot + "，来源 " + branch);
+        }
+    }
+
+    /**
+     * 分支派生：从<b>已逐帧验证</b>的父边界状态确定性地得到子初始状态。
+     *
+     * <p>只改运行身份字段：{@code WorldState.runId}、位置（父位置加一）、
+     * {@code DecisionModel.State.runId} 与每条 {@code Decision.runId}。
+     * 现金、持仓、订单、成本、报告、义务、去重索引、待办、尝试（含已结算回执与用量）、
+     * 归档、派发事实与全部 position 引用原样保留；{@code sessionOpen} 一律为 false，
+     * 创建分支不自动开启会话。</p>
+     *
+     * <p>纯函数：同一父状态、同一子清单、同一策略两次调用逐字节相同。首帧整体还会因
+     * {@code createdAtEpochMillis} 与 {@code note} 不同，所以"两次创建首帧完全相同"不成立、
+     * 也不应作为断言。</p>
+     *
+     * @param parent        父边界状态（已逐帧验证）
+     * @param childManifest 子运行清单；除 runId 外必须与父实验条件一致
+     * @param origin        分支来源
+     * @return 派生状态
+     * @throws IllegalArgumentException 位置、标识或种子不一致
+     */
+    private static WorldState derive(WorldState parent, RunManifest childManifest,
+                                     BranchOrigin origin) {
+        if (parent.position() != origin.parentPosition()) {
+            throw new IllegalArgumentException("派生基准位置必须是分支切点："
+                    + parent.position() + "/" + origin.parentPosition());
+        }
+        if (!childManifest.runId().equals(origin.childRunId())) {
+            throw new IllegalArgumentException("子清单运行标识与分支来源不一致");
+        }
+        if (childManifest.seed() != origin.policy().seed()) {
+            throw new IllegalArgumentException("子清单种子必须等于分支策略种子");
+        }
+        DecisionRun decisions = null;
+        if (parent.decisions() != null) {
+            DecisionModel.State state = parent.decisions().state();
+            List<DecisionModel.Decision> rewritten = new ArrayList<>(state.decisions().size());
+            for (DecisionModel.Decision decision : state.decisions()) {
+                // 只换运行身份；已结算决定的动作、输入原文与摘要、尝试、归档、计划一律不动
+                rewritten.add(new DecisionModel.Decision(childManifest.runId(),
+                        decision.actionId(), decision.personPartyId(), decision.wakeReason(),
+                        decision.decisionAtMillis(), decision.barrierAtMillis(),
+                        decision.cutoffPosition(), decision.cutoffTimeMillis(),
+                        decision.toolContractVersion(), decision.allowedTools(),
+                        decision.inputText(), decision.inputDigest(), decision.status(),
+                        decision.outcome(), decision.recordedTool(), decision.attempts(),
+                        decision.plan()));
+            }
+            DecisionModel.State next = new DecisionModel.State(childManifest.runId(),
+                    state.seed(), state.config(), state.recoveryGeneration(), false, rewritten,
+                    state.runUsage(), state.personUsage(), state.nextAttemptSequence());
+            decisions = parent.decisions().withState(next);
+        }
+        return withIdentity(parent, childManifest.runId(), parent.position() + 1L, decisions);
+    }
+
+    /**
+     * 只替换身份字段，其余子集按引用原样带入。
+     *
+     * @param base      原状态
+     * @param runId     子运行标识
+     * @param position  子首帧位置
+     * @param decisions 已重写身份的决定子集；不需要时与 {@code base.decisions()} 相同
+     * @return 新状态
+     */
+    private static WorldState withIdentity(WorldState base, String runId, long position,
+                                           DecisionRun decisions) {
+        return new WorldState(base.schemaVersion(), runId, position, base.timeMillis(),
+                base.lastPhase(), base.accounts(), base.pending(), base.delivered(),
+                base.usedTaskIds(), base.commandContents(), base.commandOutcomes(),
+                base.securities(), base.exchange(), base.manufacturing(), base.governance(),
+                base.roles(), base.information(), base.trading(), decisions, base.dividends(),
+                base.beliefs(), base.media(), base.interviews(), base.evidence(), base.social(),
+                base.engineering(), base.groups());
     }
 
     /** 开局不一致时列出不同的子集名，便于定位且不泄露角色数据。 */
@@ -18041,7 +19204,7 @@ public final class WorldRuntime implements AutoCloseable {
     /** 从已确认历史里取某命令首次排程的完整待办；没有对应提交返回 null。 */
     private PendingTask originalSchedule(String commandId) throws IOException {
         String target = "cmd:" + commandId;
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : commitSource.commits()) {
             if (!target.equals(commit.commandId())) {
                 continue;
             }
@@ -18237,7 +19400,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (position <= 0 || position > state.position()) {
             throw new IllegalArgumentException("观察位置不存在或尚未确认：" + position);
         }
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : commitSource.commits()) {
             if (commit.position() != position) {
                 continue;
             }
@@ -18716,7 +19879,7 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未知财产主体：" + ownerId);
         }
         List<CapitalFlowReport> flows = new ArrayList<>();
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : commitSource.commits()) {
             for (WorldEvent event : commit.events()) {
                 if (!"CAPITAL_FLOW_V1".equals(event.type())) {
                     continue;
@@ -18800,7 +19963,7 @@ public final class WorldRuntime implements AutoCloseable {
                     + startPosition + "-" + endPosition);
         }
         List<CapitalFrame> frames = new ArrayList<>();
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : commitSource.commits()) {
             if (commit.position() < startPosition || commit.position() > endPosition) {
                 continue;
             }
@@ -19438,7 +20601,7 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized List<DividendReport> dividendReports() {
         requireDividend();
         List<DividendReport> reports = new ArrayList<>();
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : commitSource.commits()) {
             for (WorldEvent event : commit.events()) {
                 if ("DIVIDEND_REPORT_V1".equals(event.type())) {
                     reports.add(readDividendReport(event.payload()));
@@ -22278,7 +23441,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (!wrapper.hasObservedPosition()) {
             return null;
         }
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : commitSource.commits()) {
             if (commit.position() != wrapper.observedPosition()) {
                 continue;
             }

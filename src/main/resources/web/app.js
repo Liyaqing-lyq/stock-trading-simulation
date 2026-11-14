@@ -39,6 +39,7 @@ const state = {
   engineeringCompany: "",
   engineeringRequest: 0,
   history: null,
+  branch: null,
   personEngineering: null
 };
 
@@ -294,6 +295,7 @@ async function refreshAdmin() {
   }
   if (state.page === "history" && current()) {
     await loadHistoryIndex();
+    await loadBranchRuns();
   }
 }
 
@@ -1108,6 +1110,7 @@ function clearHistoryDom() {
   fillTable("history-information", [], () => undefined);
   fillTable("history-engineering", [], () => undefined);
   fillTable("history-groups", [], () => undefined);
+  clearBranchDom();
 }
 
 /** 读取一个严格非负整数字段；非法时给出可见提示并返回 null。 */
@@ -1395,6 +1398,305 @@ async function verifyHistoryCheckpointText(text) {
     : "核验未通过：" + verdict.reason + "（位置 " + verdict.position + "）。";
 }
 
+/** 分支运行的稳定原因码 → 人话；未知码原样显示，不猜。 */
+const BRANCH_REASONS = {
+  BRANCH_POSITION_UNCONFIRMED: "该位置还没有确认",
+  BRANCH_BARRIER_PENDING: "该位置仍有未解决的决定",
+  BRANCH_ATTEMPT_IN_FLIGHT: "该位置仍有未结算的尝试",
+  BRANCH_FUTURE_REFERENCE: "存在晚于切点的决定或派发引用",
+  BRANCH_PARENT_IS_BRANCH: "父运行本身是分支（只允许一层）",
+  BRANCH_PARENT_SCAN_UNREADABLE: "该位置的父档记录无法读取"
+};
+
+/** 分支运行页的本地状态；离页或切身份时整体清空。 */
+function branchState() {
+  if (!state.branch) {
+    state.branch = { support: null, runs: [], current: null, launcher: false, active: 0, max: 0,
+      request: 0, supportRequest: 0, actionRequest: 0 };
+  }
+  return state.branch;
+}
+
+/** 清空分支运行页 DOM 与本地状态（切页、切身份、退出时调用）。 */
+function clearBranchDom() {
+  state.branch = null;
+  ["branch-run", "branch-parent", "branch-parent-position", "branch-position", "branch-active"]
+    .forEach(id => { $(id).textContent = "—"; });
+  ["branch-support", "branch-status"].forEach(id => { $(id).textContent = ""; });
+  $("branch-note").hidden = true;
+  $("branch-note").textContent = "";
+  setMessage("branch-error", "");
+  $("branch-create").disabled = true;
+  fillTable("branch-runs", [], () => undefined);
+  show("branch-runs-empty", false);
+}
+
+/** 读取当前运行来源与本进程管理的子运行真实状态。 */
+async function loadBranchRuns() {
+  const generation = state.generation;
+  const pageVersion = state.pageVersion;
+  const branch = branchState();
+  const requestId = ++branch.request;
+  const current = () => isCurrent(generation) && state.mode === "admin"
+    && state.page === "history" && pageVersion === state.pageVersion
+    && requestId === branch.request;
+  let result;
+  try {
+    result = await request("GET", "/api/admin/runs");
+  } catch (failure) {
+    if (current()) setMessage("branch-error", failure.message);
+    return;
+  }
+  if (!current()) return;
+  if (result.status === 401 || result.status === 403) {
+    sessionLost();
+    return;
+  }
+  if (result.status !== 200 || !result.payload) {
+    setMessage("branch-error", "读取运行清单失败（" + result.status + "）。");
+    return;
+  }
+  setMessage("branch-error", "");
+  renderBranchRuns(result.payload);
+}
+
+/** 渲染运行清单；每个按钮的可用性都来自服务端状态，不做本地乐观判断。 */
+function renderBranchRuns(view) {
+  const branch = branchState();
+  branch.current = view.current || null;
+  branch.runs = view.runs || [];
+  branch.launcher = !!view.launcher;
+  branch.active = Number(view.active || 0);
+  branch.max = Number(view.maxRuns || 0);
+  const run = branch.current || {};
+  $("branch-run").textContent = run.runId || "—";
+  $("branch-parent").textContent = run.parentRunId ? run.parentRunId : "本运行是父运行";
+  $("branch-parent-position").textContent = run.parentRunId ? String(run.parentPosition) : "—";
+  $("branch-position").textContent = run.position || "—";
+  $("branch-active").textContent = branch.launcher
+    ? branch.active + " / " + branch.max + " 个运行中"
+    : "本进程没有启动器（不能启动/进入）";
+  if (run.parentRunId) {
+    $("branch-note").hidden = false;
+    $("branch-note").textContent = "本运行由 " + run.parentRunId + " 在位置 " + run.parentPosition
+      + " 派生；位置 1 到 " + run.parentPosition + " 是父运行原帧，不是本运行的检查点。";
+  } else {
+    $("branch-note").hidden = true;
+    $("branch-note").textContent = "";
+  }
+  fillTable("branch-runs", branch.runs, (tr, row) => {
+    cell(tr, row.runId);
+    cell(tr, row.parentRunId || "—");
+    cell(tr, row.parentPosition);
+    cell(tr, row.firstPosition);
+    cell(tr, row.status);
+    cell(tr, row.port > 0 ? row.port : "—");
+    cell(tr, row.reason || "");
+    const td = document.createElement("td");
+    const running = row.status === "RUNNING" || row.status === "STARTING";
+    const start = document.createElement("button");
+    start.type = "button";
+    start.textContent = "启动";
+    start.disabled = running || !branch.launcher || branch.active >= branch.max;
+    start.title = branch.launcher ? "" : "本进程没有启动器";
+    start.addEventListener("click", () => guard(runBranchAction(row.runId, "start")));
+    td.appendChild(start);
+    const enter = document.createElement("button");
+    enter.type = "button";
+    enter.textContent = "进入";
+    enter.disabled = row.status !== "RUNNING";
+    enter.title = row.status === "RUNNING" ? "" : "该运行没有成功启动，不能进入";
+    enter.addEventListener("click", () => guard(runBranchAction(row.runId, "enter")));
+    td.appendChild(enter);
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.textContent = "停止";
+    stop.disabled = !running || !row.managed;
+    stop.title = row.managed ? "" : "该运行不是本进程启动的，不按端口终止陌生进程";
+    stop.addEventListener("click", () => guard(runBranchAction(row.runId, "stop")));
+    td.appendChild(stop);
+    tr.appendChild(td);
+  });
+  show("branch-runs-empty", branch.runs.length === 0);
+}
+
+/** 只读检查某个确认位置能否派生；结论来自后端同一谓词。 */
+async function checkBranchSupport() {
+  const raw = String($("branch-cut").value || "").trim();
+  if (!/^[0-9]{1,18}$/.test(raw) || Number(raw) < 1) {
+    setMessage("branch-error", "切点位置必须是大于 0 的整数。");
+    $("branch-create").disabled = true;
+    $("branch-support").textContent = "";
+    return;
+  }
+  const generation = state.generation;
+  const pageVersion = state.pageVersion;
+  const branch = branchState();
+  const requestId = ++branch.supportRequest;
+  // 每一次检查都只认"这一次请求 + 这一个选中位置"：旧位置的慢回包不得覆盖新位置的结果。
+  const current = () => isCurrent(generation) && state.mode === "admin"
+    && state.page === "history" && pageVersion === state.pageVersion
+    && state.branch === branch && requestId === branch.supportRequest
+    && String($("branch-cut").value || "").trim() === raw;
+  setMessage("branch-error", "");
+  let result;
+  try {
+    result = await request("GET", "/api/admin/branches?position=" + raw);
+  } catch (failure) {
+    if (current()) setMessage("branch-error", failure.message);
+    return;
+  }
+  if (!current()) return;
+  if (result.status === 401 || result.status === 403) {
+    sessionLost();
+    return;
+  }
+  if (result.status !== 200 || !result.payload) {
+    branch.support = null;
+    $("branch-create").disabled = true;
+    $("branch-support").textContent = "";
+    setMessage("branch-error", "检查切点失败（" + result.status + "）。");
+    return;
+  }
+  const view = result.payload;
+  // 回包自带的位置必须就是这次要查的位置；串包一律丢弃，不写按钮状态。
+  if (String(view.position) !== raw) return;
+  branch.support = view;
+  if (view.supported) {
+    $("branch-support").textContent = "位置 " + view.position + " 可以切（当前确认到 "
+      + view.cutPosition + "）。";
+  } else {
+    const reasons = (view.reasons || []).map(code => BRANCH_REASONS[code] || code);
+    $("branch-support").textContent = "位置 " + view.position + " 不能切："
+      + (reasons.length ? reasons.join("；") : "未给出原因码");
+  }
+  $("branch-create").disabled = !view.supported;
+}
+
+/** 创建子档：只落子档与索引，不启动进程。 */
+async function createBranchRun() {
+  const position = String($("branch-cut").value || "").trim();
+  const childRunId = String($("branch-child-id").value || "").trim();
+  const kind = $("branch-kind").value;
+  const note = String($("branch-note-input").value || "").trim();
+  if (!/^[0-9]{1,18}$/.test(position) || Number(position) < 1) {
+    setMessage("branch-error", "请先填写有效切点位置。");
+    return;
+  }
+  if (!/^[a-z][a-z0-9-]{2,31}$/.test(childRunId)) {
+    setMessage("branch-error", "运行标识必须全小写：字母开头，只含小写字母、数字与连字符，3 到 32 位。");
+    return;
+  }
+  const generation = state.generation;
+  const pageVersion = state.pageVersion;
+  const branch = branchState();
+  // 创建只能绑定"当前选中位置 + 该位置刚刚核过的支持结果"，不允许拿旧结论去创另一个位置。
+  const checked = branch.support;
+  if (!checked || String(checked.position) !== position || !checked.supported) {
+    setMessage("branch-error", "请先对位置 " + position + " 检查一次切分可行性"
+      + "（当前已核位置：" + (checked && checked.position ? checked.position : "无") + "）。");
+    return;
+  }
+  const requestId = ++branch.actionRequest;
+  const current = () => isCurrent(generation) && state.mode === "admin"
+    && state.page === "history" && pageVersion === state.pageVersion
+    && state.branch === branch && requestId === branch.actionRequest;
+  $("branch-status").textContent = "正在创建 " + childRunId + "…";
+  setMessage("branch-error", "");
+  let result;
+  try {
+    result = await request("POST", "/api/admin/branches",
+      { position, childRunId, kind, note });
+  } catch (failure) {
+    if (current()) {
+      $("branch-status").textContent = "";
+      setMessage("branch-error", failure.message);
+    }
+    return;
+  }
+  if (!current()) return;
+  if (result.status === 401 || result.status === 403) {
+    sessionLost();
+    return;
+  }
+  if (result.status !== 200 || !result.payload) {
+    $("branch-status").textContent = "";
+    const payload = result.payload || {};
+    setMessage("branch-error", (payload.code ? payload.code + "：" : "")
+      + (payload.message || "创建失败（" + result.status + "）"));
+    await loadBranchRuns();
+    return;
+  }
+  $("branch-child-id").value = "";
+  $("branch-status").textContent = "已创建 " + result.payload.runId + "（首帧位置 "
+    + result.payload.firstPosition + "），尚未启动。";
+  await loadBranchRuns();
+}
+
+/** 撤掉某个已过期动作留下的"正在…"提示；若已被更新的动作替换则不动。 */
+function clearStaleProgress(pendingText, branch, requestId) {
+  if (state.branch === branch && branch.actionRequest === requestId
+      && pendingText && $("branch-status").textContent === pendingText) {
+    $("branch-status").textContent = "";
+  }
+}
+
+/** 启动 / 停止 / 进入：结果只认服务端返回，失败给真实原因。 */
+async function runBranchAction(runId, action) {
+  const labels = { start: "启动", stop: "停止", enter: "进入" };
+  const generation = state.generation;
+  const pageVersion = state.pageVersion;
+  const branch = branchState();
+  const requestId = ++branch.actionRequest;
+  // 动作回包只在"同一身份、同一页、同一份分支状态、且我是最后一个动作"时才算数：
+  // 旧代次的 start/enter 回包既不能写状态，也不能把浏览器跳去旧子进程。
+  const current = () => isCurrent(generation) && state.mode === "admin"
+    && state.page === "history" && pageVersion === state.pageVersion
+    && state.branch === branch && requestId === branch.actionRequest;
+  setMessage("branch-error", "");
+  const pendingText = "正在" + labels[action] + " " + runId + "…";
+  $("branch-status").textContent = pendingText;
+  let result;
+  try {
+    result = await request("POST",
+      "/api/admin/runs/" + encodeURIComponent(runId) + "/" + action, {});
+  } catch (failure) {
+    if (current()) {
+      $("branch-status").textContent = "";
+      setMessage("branch-error", failure.message);
+    } else {
+      clearStaleProgress(pendingText, branch, requestId);
+    }
+    return;
+  }
+  if (!current()) {
+    // 过期：不写结果、不导航；只撤掉自己留下的"正在…"（若已被新动作替换则不动）。
+    clearStaleProgress(pendingText, branch, requestId);
+    return;
+  }
+  if (result.status === 401 || result.status === 403) {
+    sessionLost();
+    return;
+  }
+  if (action === "enter" && result.status === 200 && result.payload
+      && result.payload.location) {
+    $("branch-status").textContent = "正在切换到 " + runId + "…";
+    window.location.assign(result.payload.location);
+    return;
+  }
+  if (result.status !== 200) {
+    $("branch-status").textContent = "";
+    const payload = result.payload || {};
+    setMessage("branch-error", (payload.code ? payload.code + "：" : "")
+      + (payload.message || labels[action] + "失败（" + result.status + "）"));
+    await loadBranchRuns();
+    return;
+  }
+  $("branch-status").textContent = labels[action] + "完成：" + runId + "（"
+    + (result.payload && result.payload.status ? result.payload.status : "已更新") + "）";
+  await loadBranchRuns();
+}
+
 $("login-form").addEventListener("submit", (event) => guard(login(event)));
 $("advance-form").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1422,6 +1724,8 @@ $("history-live").addEventListener("click", () => selectPage("overview"));
 $("history-checkpoint").addEventListener("click", () => guard(downloadHistoryCheckpoint()));
 $("history-verify").addEventListener("click",
   () => guard(verifyHistoryCheckpointText($("history-checkpoint-text").value)));
+$("branch-check").addEventListener("click", () => guard(checkBranchSupport()));
+$("branch-create").addEventListener("click", () => guard(createBranchRun()));
 $("refresh").addEventListener("click", () => guard(state.mode === "admin" ? refreshAdmin() : refreshPerson()));
 $("market-symbol").addEventListener("change", () => guard(loadMarketHistory()));
 $("market-period").addEventListener("change", () => guard(loadMarketHistory()));

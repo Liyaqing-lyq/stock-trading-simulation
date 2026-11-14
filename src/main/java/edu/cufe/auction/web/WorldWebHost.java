@@ -3,6 +3,8 @@ package edu.cufe.auction.web;
 import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.BeliefModel;
 import edu.cufe.auction.world.BoardRun;
+import edu.cufe.auction.world.BranchOrigin;
+import edu.cufe.auction.world.BranchProfile;
 import edu.cufe.auction.world.CashLedger;
 import edu.cufe.auction.world.SecuritiesLedger;
 import edu.cufe.auction.world.DecisionModel;
@@ -335,6 +337,80 @@ public final class WorldWebHost implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
         }
+    }
+
+    /**
+     * 本运行的身份与来源：God 面板显示“当前运行 / 父来源 / 切点”，启动器健康核验也用同一份事实。
+     *
+     * @param runId         本运行标识
+     * @param parentRunId   父运行标识；普通运行为空串
+     * @param parentPosition 父切点位置；普通运行为 0
+     * @param position      当前确认位置
+     * @param firstPosition 本运行自有首帧位置（普通运行为 1，分支子档为父位置 + 1）
+     */
+    public record RunIdentity(String runId, String parentRunId, long parentPosition, long position,
+                              long firstPosition) {
+    }
+
+    /**
+     * 读取本运行身份（只读，不推进世界）。
+     *
+     * @return 身份与来源
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public RunIdentity runIdentity() throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            long position = current.snapshot().position();
+            BranchOrigin origin = current.branchOrigin().orElse(null);
+            return new RunIdentity(runId, origin == null ? "" : origin.parentRunId(),
+                    origin == null ? 0L : origin.parentPosition(), position,
+                    origin == null ? 1L : origin.parentPosition() + 1L);
+        });
+    }
+
+    /**
+     * 父运行的可信画像：创建分支后作为子进程的可信配置来源，保证子档打开时摘要与索引一致。
+     *
+     * @return 运行画像
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public BranchProfile branchProfile() throws BusyException, Exception {
+        return call(() -> readyNow().profile());
+    }
+
+    /**
+     * 在父运行已确认边界创建一条独立分支子档（与其它 writer 任务串行，共用引擎同一把锁）。
+     *
+     * <p>这里只落子档与运行索引，不启动进程；失败抛出带稳定原因码的
+     * {@link edu.cufe.auction.world.BranchRejectedException}，父档与其它运行不受影响。</p>
+     *
+     * @param childRunId 子运行标识
+     * @param position   切点位置
+     * @param kind       分支种类
+     * @param note       人类可读注记
+     * @return 创建回执
+     * @throws BusyException 队列满
+     * @throws Exception     谓词拒绝或持久失败
+     */
+    public WorldRuntime.BranchReceipt createBranch(String childRunId, long position,
+                                                   BranchOrigin.Kind kind, String note)
+            throws BusyException, Exception {
+        return call(() -> readyNow().createBranch(childRunId, position, kind, note));
+    }
+
+    /**
+     * 只读判定某个确认位置能否派生（与创建共用同一组谓词）。
+     *
+     * @param position 位置
+     * @return 判定结果
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败
+     */
+    public WorldRuntime.BranchSupport branchSupport(long position) throws BusyException, Exception {
+        return call(() -> readyNow().branchSupport(position));
     }
 
     /**
