@@ -40,7 +40,7 @@ const context = { state, console, BigInt, Number, String, Date, $: node,
   }
 };
 for(const name of ["clearAdminDom","clearPersonDom","clearPersonalMedia","clearPersonalInterview",
- "renderPersonalMedia","renderPersonalInterview","renderPersonalDialogue","renderPersonalEvidence",
+ "clearHistoryDom","renderPersonalMedia","renderPersonalInterview","renderPersonalDialogue","renderPersonalEvidence",
  "renderPersonalSocial","renderPersonalEngineering"]) context[name]=()=>{};
 vm.createContext(context);
 for(const name of ["showMode","enterPerson","refreshPerson"]) vm.runInContext(sourceFunction(name),context);

@@ -51,6 +51,24 @@ public final class WorldRuntime implements AutoCloseable {
 
     private static final String OPEN_COMMAND = "__open__";
     private static final String SNAPSHOT_TYPE = "STATE_SNAPSHOT_V1";
+    /** 检查点信封格式版本；与运行状态 schema 无关，不参与模块推断。 */
+    public static final String CHECKPOINT_VERSION = "world-checkpoint-v1";
+    /** 状态摘要口径：规范化重序列化，明确不是磁盘帧 SHA。 */
+    public static final String STATE_DIGEST_KIND = "canonical-state-json-v1（非磁盘帧 SHA）";
+    /** 整批摘要口径：规范化重序列化，明确不是磁盘帧 SHA。 */
+    public static final String COMMIT_DIGEST_KIND = "canonical-commit-json-v1（非磁盘帧 SHA）";
+    /** 检查点声明正文；核验时按值比对，不允许改写成更强的声明。 */
+    public static final String CHECKPOINT_CLAIMS_NOTE =
+            "stateDigest/commitDigest 是规范化重序列化摘要，不是磁盘帧 SHA；"
+                    + "核验以对照活跃运行同一确认批次为准。";
+    /** 信封允许出现的全部顶层字段；多一个即拒绝，避免夹带未绑定内容。 */
+    private static final Set<String> CHECKPOINT_FIELDS = Set.of(
+            "checkpointVersion", "runId", "position", "cutPosition", "timeMillis", "lastPhase",
+            "manifest", "opening", "stateJson", "stateDigest", "stateDigestKind",
+            "commitCommandId", "commitResult", "commitEventCount", "commitDigest",
+            "commitDigestKind", "generatedAtEpochMillis", "claims");
+    /** 历史索引单页上限：避免一次请求把整段历史拉进响应/浏览器。 */
+    public static final int MAX_HISTORY_PAGE = 200;
     /** 纯现金/登记档案的世界状态版本（保持原样）。 */
     private static final int STATE_SCHEMA = 1;
     /** 含完整证券子集状态的世界状态版本（M2.3）。 */
@@ -126,6 +144,15 @@ public final class WorldRuntime implements AutoCloseable {
     private final ObjectMapper mapper = new ObjectMapper();
     /** 逐帧完整性比较专用：map 键排序的确定性 JSON；不用于持久格式。 */
     private static final ObjectMapper canonicalMapper = new ObjectMapper()
+            .enable(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+    /**
+     * 信封逐字段比较专用：读取时保留 JSON 里的小数位（BigDecimal），写出时键排序。
+     *
+     * <p>只用于比较，不用于持久格式；默认 mapper 会把小数读成 Double 而丢掉 scale，
+     * 那样「1000.00」与「1000.0」会被误判为不同或相同。</p>
+     */
+    private static final ObjectMapper envelopeMapper = new ObjectMapper()
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
             .enable(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
     private final RunManifest manifest;
     private final OpeningRegistry registry;
@@ -3626,16 +3653,445 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前管理端快照（只读、同一提交位置） */
     public synchronized Snapshot snapshot() {
-        return new Snapshot(state.position(), state.timeMillis(), state.lastPhase(),
-                state.accounts(), Optional.ofNullable(state.securities()),
-                Optional.ofNullable(state.exchange()), Optional.ofNullable(state.manufacturing()),
-                Optional.ofNullable(state.governance()), Optional.ofNullable(state.roles()),
-                Optional.ofNullable(state.information()), Optional.ofNullable(state.trading()),
-                Optional.ofNullable(state.decisions()),
-                state.pending(), state.delivered(), state.usedTaskIds(),
-                Optional.ofNullable(state.dividends()), Optional.ofNullable(state.media()),
-                Optional.ofNullable(state.evidence()), Optional.ofNullable(state.social()),
-                Optional.ofNullable(state.engineering()));
+        return snapshotOf(state);
+    }
+
+    /**
+     * 把一个已解码状态投影为对外只读快照。
+     *
+     * <p>实时视图与历史视图共用这一处投影，避免两套口径：同一 position 的历史投影必然等于
+     * 当时实时投影。</p>
+     *
+     * @param source 已解码状态
+     * @return 只读快照
+     */
+    private static Snapshot snapshotOf(WorldState source) {
+        return new Snapshot(source.position(), source.timeMillis(), source.lastPhase(),
+                source.accounts(), Optional.ofNullable(source.securities()),
+                Optional.ofNullable(source.exchange()), Optional.ofNullable(source.manufacturing()),
+                Optional.ofNullable(source.governance()), Optional.ofNullable(source.roles()),
+                Optional.ofNullable(source.information()), Optional.ofNullable(source.trading()),
+                Optional.ofNullable(source.decisions()),
+                source.pending(), source.delivered(), source.usedTaskIds(),
+                Optional.ofNullable(source.dividends()), Optional.ofNullable(source.media()),
+                Optional.ofNullable(source.evidence()), Optional.ofNullable(source.social()),
+                Optional.ofNullable(source.engineering()));
+    }
+
+    /**
+     * 一条已确认历史索引项：只描述记录本身，不含角色私源与正文。
+     *
+     * @param position   确认位置（从 1 开始）
+     * @param commandId  当时的命令标识
+     * @param result     当时的回报原文
+     * @param eventCount 该批次的事件条数
+     */
+    public record HistoryEntry(long position, String commandId, String result, int eventCount) {
+
+        /** 校验位置、标识与条数。 */
+        public HistoryEntry {
+            if (position < 1) {
+                throw new IllegalArgumentException("历史位置必须从 1 开始：" + position);
+            }
+            if (commandId == null || commandId.isBlank() || result == null) {
+                throw new IllegalArgumentException("历史命令与回报不能为空");
+            }
+            if (eventCount < 0) {
+                throw new IllegalArgumentException("历史事件条数不能为负");
+            }
+        }
+    }
+
+    /**
+     * 固定位置的历史帧：同一份解码结果同时给快照与群组子集，不让面板各自取数。
+     *
+     * @param snapshot 该位置的只读快照（与实时视图同一投影口径）
+     * @param groups   该位置的群组/平台子集；未启用时为空
+     */
+    public record HistoryFrame(Snapshot snapshot, Optional<GroupsRun> groups) {
+
+        /** 校验非空。 */
+        public HistoryFrame {
+            Objects.requireNonNull(snapshot, "snapshot");
+            groups = Objects.requireNonNull(groups, "groups");
+        }
+    }
+
+    /**
+     * 已确认历史索引：按位置升序分页，只读，不推进世界、不写日志、不调用模型。
+     *
+     * <p>用位置而非时间截断：同一模拟毫秒可以有多个确认批次，后一笔不会泄入前一笔。</p>
+     *
+     * @param afterPosition 只返回位置严格大于此值的批次；0 表示从头开始
+     * @param limit         本次最多返回条数，1..{@link #MAX_HISTORY_PAGE}
+     * @return 不可变索引列表，按位置升序
+     */
+    public synchronized List<HistoryEntry> historyIndex(long afterPosition, int limit) {
+        requireOpen();
+        if (afterPosition < 0) {
+            throw new IllegalArgumentException("历史起始位置不能为负：" + afterPosition);
+        }
+        if (limit <= 0 || limit > MAX_HISTORY_PAGE) {
+            throw new IllegalArgumentException("历史分页条数必须在 1 到 " + MAX_HISTORY_PAGE
+                    + " 之间，收到 " + limit);
+        }
+        List<HistoryEntry> entries = new ArrayList<>();
+        for (WorldCommit commit : journal.commitsAfter(afterPosition, limit)) {
+            entries.add(new HistoryEntry(commit.position(), commit.commandId(), commit.result(),
+                    commit.events().size()));
+        }
+        return List.copyOf(entries);
+    }
+
+    /**
+     * 固定确认位置的历史帧：解码该批次自带的 STATE_SNAPSHOT_V1。
+     *
+     * <p>只读：不改当前状态、不推进时钟、不追加日志、不写审计、不产生阅读/回忆/预算消耗。
+     * 未确认位置明确拒绝，不夹取到最近位置。</p>
+     *
+     * @param position 确认位置（1..当前确认位置）
+     * @return 该位置的只读帧
+     * @throws IllegalArgumentException 位置未确认
+     */
+    public synchronized HistoryFrame historyFrame(long position) {
+        requireOpen();
+        long cut = state.position();
+        if (position < 1 || position > cut) {
+            throw new IllegalArgumentException("位置未确认：" + position + "（当前确认到 " + cut + "）");
+        }
+        WorldCommit commit = journal.commitAt(position).orElseThrow(
+                () -> new IllegalStateException("确认历史缺少位置 " + position));
+        WorldState decoded;
+        try {
+            decoded = decodeSnapshot(commit);
+        } catch (IOException invalid) {
+            throw new IllegalStateException("确认历史快照无法解码：" + position, invalid);
+        }
+        requireSameConfirmedFrame(decoded, position);
+        return new HistoryFrame(snapshotOf(decoded), Optional.ofNullable(decoded.groups()));
+    }
+
+    /**
+     * 确认历史帧与位置/运行/版本一致；恢复期已逐批校验，这里防的是错位取帧。
+     *
+     * @param decoded  解码状态
+     * @param position 期望位置
+     */
+    private void requireSameConfirmedFrame(WorldState decoded, long position) {
+        if (decoded.position() != position) {
+            throw new IllegalStateException("确认历史快照位置不一致：期望 " + position
+                    + "，实际 " + decoded.position());
+        }
+        if (!manifest.runId().equals(decoded.runId())) {
+            throw new IllegalStateException("确认历史快照运行标识不一致：" + decoded.runId());
+        }
+        if (decoded.schemaVersion() != expectedSchema()) {
+            throw new IllegalStateException("确认历史快照版本不支持：" + decoded.schemaVersion()
+                    + "（本次运行需要 " + expectedSchema() + "）");
+        }
+    }
+
+    /**
+     * 确认边界检查点信封：导出与核验材料，不是可独立续跑的运行状态。
+     *
+     * @param checkpointVersion 外层格式版本
+     * @param runId             运行标识
+     * @param position          所选确认位置
+     * @param cutPosition       导出时的确认截止位置；核验要求 position <= cutPosition <= 当时截止
+     * @param timeMillis        该位置的模拟时点
+     * @param lastPhase         该位置最后完成的阶段
+     * @param manifest          运行清单
+     * @param opening           开局提交内容（清单、开局现金、登记与各模块配置）
+     * @param stateJson         该位置状态快照的规范化 JSON
+     * @param stateDigest       上述内容的 SHA-256（规范化重序列化，非磁盘帧摘要）
+     * @param stateDigestKind   摘要口径说明
+     * @param commitCommandId   该位置批次的命令标识
+     * @param commitResult      该位置批次的回报原文
+     * @param commitEventCount  该位置批次的事件条数
+     * @param commitDigest      整批规范化 JSON 的 SHA-256（同上，非磁盘帧摘要）
+     * @param commitDigestKind  摘要口径说明
+     * @param generatedAtEpochMillis 导出墙钟时刻
+     * @param claims            本信封明确不主张的能力
+     */
+    public record Checkpoint(String checkpointVersion, String runId, long position, long cutPosition,
+                             long timeMillis, String lastPhase, RunManifest manifest,
+                             Map<String, Object> opening, String stateJson, String stateDigest,
+                             String stateDigestKind, String commitCommandId, String commitResult,
+                             int commitEventCount, String commitDigest, String commitDigestKind,
+                             long generatedAtEpochMillis, Map<String, Object> claims) {
+    }
+
+    /**
+     * 检查点核验结论。
+     *
+     * @param ok         是否通过
+     * @param reason     通过为 OK，否则为原因码
+     * @param runId      运行标识
+     * @param position   被核验的位置
+     * @param cutPosition 核验时的确认截止位置
+     */
+    public record CheckpointVerdict(boolean ok, String reason, String runId, long position,
+                                    long cutPosition) {
+    }
+
+    /**
+     * 导出所选确认位置的检查点信封（只读）。
+     *
+     * <p>摘要只对本进程重新序列化的内容计算，明确标注不是磁盘帧 SHA；也不能当作"完整日志证明"。</p>
+     *
+     * @param position 确认位置
+     * @return 信封
+     * @throws IOException 状态无法序列化
+     * @throws IllegalArgumentException 位置未确认
+     */
+    public synchronized Checkpoint checkpoint(long position) throws IOException {
+        requireOpen();
+        long cut = state.position();
+        if (position < 1 || position > cut) {
+            throw new IllegalArgumentException("位置未确认：" + position + "（当前确认到 " + cut + "）");
+        }
+        WorldCommit commit = journal.commitAt(position).orElseThrow(
+                () -> new IllegalStateException("确认历史缺少位置 " + position));
+        WorldState decoded = decodeSnapshot(commit);
+        requireSameConfirmedFrame(decoded, position);
+        String stateJson = canonicalMapper.writeValueAsString(decoded);
+        String commitJson = canonicalMapper.writeValueAsString(commit);
+        Map<String, Object> claims = new LinkedHashMap<>();
+        claims.put("independentResume", Boolean.FALSE);
+        claims.put("branchSource", Boolean.FALSE);
+        claims.put("journalPrefixSha256", Boolean.FALSE);
+        claims.put("digestIsFileFrameSha256", Boolean.FALSE);
+        claims.put("note", CHECKPOINT_CLAIMS_NOTE);
+        return new Checkpoint(CHECKPOINT_VERSION, manifest.runId(), position, cut,
+                decoded.timeMillis(), decoded.lastPhase(), manifest,
+                openingContentMap(orderedOpenings), stateJson, sha256Hex(stateJson),
+                STATE_DIGEST_KIND, commit.commandId(), commit.result(),
+                commit.events().size(), sha256Hex(commitJson),
+                COMMIT_DIGEST_KIND, System.currentTimeMillis(), claims);
+    }
+
+    /**
+     * 结构化 JSON 值比较：对象键序无关，数组按序，数值按十进制值比较。
+     *
+     * <p>用于核对信封里的开局内容：既要忽略序列化键序，又不能让 1000.00 与 1000.0 误判为不同，
+     * 同时任何真实数值改动都必须被判为不同。</p>
+     *
+     * @param left  期望值
+     * @param right 提交值
+     * @return 结构与数值都相同返回 true
+     */
+    private static boolean sameJson(JsonNode left, JsonNode right) {
+        if (left == null || right == null) {
+            return left == right;
+        }
+        if (left.isNumber() && right.isNumber()) {
+            try {
+                return left.decimalValue().compareTo(right.decimalValue()) == 0;
+            } catch (NumberFormatException | ArithmeticException invalid) {
+                return false;
+            }
+        }
+        if (left.isObject() && right.isObject()) {
+            if (left.size() != right.size()) {
+                return false;
+            }
+            var names = left.fieldNames();
+            while (names.hasNext()) {
+                String name = names.next();
+                if (!right.has(name) || !sameJson(left.get(name), right.get(name))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (left.isArray() && right.isArray()) {
+            if (left.size() != right.size()) {
+                return false;
+            }
+            for (int index = 0; index < left.size(); index++) {
+                if (!sameJson(left.get(index), right.get(index))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return left.equals(right);
+    }
+
+    /**
+     * 核验检查点信封：只对照本运行同一确认位置的原始批次。
+     *
+     * <p>逐项绑定：版本、运行、位置（1..截止）、cutPosition（position..当前截止）、清单、
+     * 开局内容、时点、阶段、状态、命令标识与回报、事件条数、整批摘要、两个摘要口径、
+     * 四项能力声明与声明正文。顶层出现未约定字段即拒绝。
+     * {@code generatedAtEpochMillis} 是导出墙钟，无法从帧重建，明确只做格式检查、不参与核验。</p>
+     *
+     * <p>摘要相等不算通过：即使篡改状态后重算了 SHA，也会在领域比较处失败。</p>
+     *
+     * @param envelopeJson 信封 JSON 原文
+     * @return 核验结论
+     */
+    public synchronized CheckpointVerdict verifyCheckpoint(String envelopeJson) {
+        requireOpen();
+        long cut = state.position();
+        String run = manifest.runId();
+        if (envelopeJson == null || envelopeJson.isBlank()) {
+            return new CheckpointVerdict(false, "CHECKPOINT_EMPTY", run, 0L, cut);
+        }
+        JsonNode root;
+        try {
+            // 用保留小数位的 mapper 解析：逐字段比较时不能把 1000.00 读成 Double。
+            root = envelopeMapper.readTree(envelopeJson);
+        } catch (IOException invalid) {
+            return new CheckpointVerdict(false, "CHECKPOINT_NOT_JSON", run, 0L, cut);
+        }
+        if (root == null || !root.isObject()) {
+            return new CheckpointVerdict(false, "CHECKPOINT_NOT_OBJECT", run, 0L, cut);
+        }
+        if (!CHECKPOINT_VERSION.equals(root.path("checkpointVersion").asText(""))) {
+            return new CheckpointVerdict(false, "CHECKPOINT_VERSION_UNSUPPORTED", run, 0L, cut);
+        }
+        String envelopeRun = root.path("runId").asText("");
+        if (!run.equals(envelopeRun)) {
+            return new CheckpointVerdict(false, "CHECKPOINT_RUN_MISMATCH", run, 0L, cut);
+        }
+        long position;
+        try {
+            position = Long.parseLong(root.path("position").asText(""));
+        } catch (NumberFormatException invalid) {
+            return new CheckpointVerdict(false, "CHECKPOINT_POSITION_INVALID", run, 0L, cut);
+        }
+        if (position < 1 || position > cut) {
+            return new CheckpointVerdict(false, "CHECKPOINT_POSITION_UNCONFIRMED", run, position, cut);
+        }
+        var fieldNames = root.fieldNames();
+        while (fieldNames.hasNext()) {
+            String field = fieldNames.next();
+            if (!CHECKPOINT_FIELDS.contains(field)) {
+                return new CheckpointVerdict(false, "CHECKPOINT_UNKNOWN_FIELD", run, position, cut);
+            }
+        }
+        long cutPosition;
+        try {
+            cutPosition = Long.parseLong(root.path("cutPosition").asText(""));
+        } catch (NumberFormatException invalid) {
+            return new CheckpointVerdict(false, "CHECKPOINT_CUT_INVALID", run, position, cut);
+        }
+        if (cutPosition < position || cutPosition > cut) {
+            return new CheckpointVerdict(false, "CHECKPOINT_CUT_INVALID", run, position, cut);
+        }
+        JsonNode generatedAt = root.get("generatedAtEpochMillis");
+        if (generatedAt == null || !generatedAt.canConvertToLong() || generatedAt.asLong() < 0L) {
+            return new CheckpointVerdict(false, "CHECKPOINT_GENERATED_AT_INVALID", run,
+                    position, cut);
+        }
+        JsonNode manifestNode = root.get("manifest");
+        RunManifest submittedManifest = null;
+        if (manifestNode != null && manifestNode.isObject()) {
+            try {
+                submittedManifest = mapper.convertValue(manifestNode, RunManifest.class);
+            } catch (IllegalArgumentException invalid) {
+                submittedManifest = null;
+            }
+        }
+        if (submittedManifest == null || !manifest.equals(submittedManifest)) {
+            return new CheckpointVerdict(false, "CHECKPOINT_MANIFEST_MISMATCH", run, position, cut);
+        }
+        JsonNode openingNode = root.get("opening");
+        if (openingNode == null || !openingNode.isObject()) {
+            return new CheckpointVerdict(false, "CHECKPOINT_OPENING_MISMATCH", run, position, cut);
+        }
+        JsonNode expectedOpening;
+        try {
+            // 逐字段对照本运行开局提交内容；键序无关，数值按十进制值比较。
+            expectedOpening = envelopeMapper.valueToTree(openingContentMap(orderedOpenings));
+        } catch (IllegalArgumentException invalid) {
+            return new CheckpointVerdict(false, "CHECKPOINT_OPENING_MISMATCH", run, position, cut);
+        }
+        if (!sameJson(expectedOpening, openingNode)) {
+            return new CheckpointVerdict(false, "CHECKPOINT_OPENING_MISMATCH", run, position, cut);
+        }
+        JsonNode stateNode = root.get("stateJson");
+        if (stateNode == null || !stateNode.isTextual()) {
+            return new CheckpointVerdict(false, "CHECKPOINT_STATE_MISSING", run, position, cut);
+        }
+        WorldCommit commit = journal.commitAt(position).orElse(null);
+        if (commit == null) {
+            return new CheckpointVerdict(false, "CHECKPOINT_COMMIT_MISSING", run, position, cut);
+        }
+        WorldState reference;
+        try {
+            reference = decodeSnapshot(commit);
+            requireSameConfirmedFrame(reference, position);
+        } catch (IOException | RuntimeException invalid) {
+            return new CheckpointVerdict(false, "CHECKPOINT_REFERENCE_UNREADABLE", run, position, cut);
+        }
+        long envelopeTime;
+        try {
+            envelopeTime = Long.parseLong(root.path("timeMillis").asText(""));
+        } catch (NumberFormatException invalid) {
+            return new CheckpointVerdict(false, "CHECKPOINT_TIME_MISMATCH", run, position, cut);
+        }
+        if (envelopeTime != reference.timeMillis()) {
+            return new CheckpointVerdict(false, "CHECKPOINT_TIME_MISMATCH", run, position, cut);
+        }
+        if (!reference.lastPhase().equals(root.path("lastPhase").asText(""))) {
+            return new CheckpointVerdict(false, "CHECKPOINT_PHASE_MISMATCH", run, position, cut);
+        }
+        WorldState submitted;
+        try {
+            submitted = (manifest.hasDecisions() ? decisionMapper : mapper)
+                    .readValue(stateNode.asText(), WorldState.class);
+        } catch (IOException | RuntimeException invalid) {
+            return new CheckpointVerdict(false, "CHECKPOINT_STATE_UNREADABLE", run, position, cut);
+        }
+        if (!reference.equals(submitted)) {
+            return new CheckpointVerdict(false, "CHECKPOINT_STATE_MISMATCH", run, position, cut);
+        }
+        if (!commit.commandId().equals(root.path("commitCommandId").asText(""))
+                || !commit.result().equals(root.path("commitResult").asText(""))) {
+            return new CheckpointVerdict(false, "CHECKPOINT_COMMIT_MISMATCH", run, position, cut);
+        }
+        if (commit.events().size() != root.path("commitEventCount").asInt(-1)) {
+            return new CheckpointVerdict(false, "CHECKPOINT_COMMIT_EVENT_MISMATCH", run, position, cut);
+        }
+        String expectedCommitDigest;
+        try {
+            expectedCommitDigest = sha256Hex(canonicalMapper.writeValueAsString(commit));
+        } catch (IOException invalid) {
+            return new CheckpointVerdict(false, "CHECKPOINT_REFERENCE_UNREADABLE", run, position, cut);
+        }
+        if (!expectedCommitDigest.equals(root.path("commitDigest").asText(""))) {
+            return new CheckpointVerdict(false, "CHECKPOINT_COMMIT_DIGEST_MISMATCH", run, position, cut);
+        }
+        if (!STATE_DIGEST_KIND.equals(root.path("stateDigestKind").asText(""))
+                || !COMMIT_DIGEST_KIND.equals(root.path("commitDigestKind").asText(""))) {
+            return new CheckpointVerdict(false, "CHECKPOINT_DIGEST_KIND_UNSUPPORTED", run, position, cut);
+        }
+        JsonNode claims = root.get("claims");
+        if (claims == null || !claims.isObject() || claims.size() != 5) {
+            return new CheckpointVerdict(false, "CHECKPOINT_CLAIM_MISMATCH", run, position, cut);
+        }
+        for (String claim : List.of("independentResume", "branchSource", "journalPrefixSha256",
+                "digestIsFileFrameSha256")) {
+            JsonNode value = claims.get(claim);
+            if (value == null || !value.isBoolean() || value.booleanValue()) {
+                return new CheckpointVerdict(false, "CHECKPOINT_CLAIM_MISMATCH", run, position, cut);
+            }
+        }
+        if (!CHECKPOINT_CLAIMS_NOTE.equals(claims.path("note").asText(""))) {
+            return new CheckpointVerdict(false, "CHECKPOINT_CLAIM_MISMATCH", run, position, cut);
+        }
+        String expectedDigest;
+        try {
+            expectedDigest = sha256Hex(canonicalMapper.writeValueAsString(reference));
+        } catch (IOException invalid) {
+            return new CheckpointVerdict(false, "CHECKPOINT_REFERENCE_UNREADABLE", run, position, cut);
+        }
+        if (!expectedDigest.equals(root.path("stateDigest").asText(""))) {
+            return new CheckpointVerdict(false, "CHECKPOINT_DIGEST_MISMATCH", run, position, cut);
+        }
+        return new CheckpointVerdict(true, "OK", run, position, cut);
     }
 
     /**
@@ -4146,6 +4602,41 @@ public final class WorldRuntime implements AutoCloseable {
                                   List<String> tools, BigDecimal companyCash,
                                   BigDecimal arCurrent, BigDecimal payable,
                                   List<String> contractIds) {
+    }
+
+    /**
+     * 本人此刻真正可发起治理动作的公司：该公司存在真实董事会或工程经营子集，且本人在该公司
+     * 有当前有效的章程董事席位或以当前有效 {@code COMPANY_MANAGER} 任职。
+     *
+     * <p>这是“本轮场景”资格的唯一事实源：Web 能力视图、开始校验与派发前复核都只调用本方法，
+     * 不另写一套判定。它只引用同一份已确认快照的席位/任职，不因界面选择而改变，也不授予任何身份。</p>
+     *
+     * @param personPartyId 人物
+     * @return 公司标识（自然序，可能为空）
+     */
+    public synchronized List<String> governanceCompanies(String personPartyId) {
+        requireText(personPartyId, "人物");
+        WorldState snap = state;
+        long now = snap.timeMillis();
+        java.util.TreeSet<String> companies = new java.util.TreeSet<>();
+        if (snap.governance() != null) {
+            BoardModel.Charter charterOfCompany = snap.governance().board().charter();
+            String company = charterOfCompany.companyPartyId();
+            if (charterOfCompany.seatOf(personPartyId) != null
+                    || activeManager(snap.roles(), personPartyId, company, now)) {
+                companies.add(company);
+            }
+        }
+        if (manifest.hasEngineering() && snap.engineering() != null && engineeringConfig != null) {
+            for (String company : snap.engineering().companyIds()) {
+                EngineeringRun.CompanySpec spec = engineeringConfig.specOf(company);
+                boolean seated = spec != null && spec.charter().seatOf(personPartyId) != null;
+                if (seated || activeManager(snap.roles(), personPartyId, company, now)) {
+                    companies.add(company);
+                }
+            }
+        }
+        return List.copyOf(companies);
     }
 
     /**
@@ -10807,15 +11298,24 @@ public final class WorldRuntime implements AutoCloseable {
      * 报告记为 {@code accepted=false}。所有成功与失败都与报告同批提交。</p>
      */
     private void completeRole(PendingTask task) throws IOException {
+        RoleTransition transition = deriveRoleTask(state, task);
+        commitAndApply("task:" + task.taskId(), task.payload(), transition.result(),
+                transition.events(), transition.state());
+    }
+
+    /** 同一纯派生同时用于执行与恢复；不切换运行中的状态指针。 */
+    private record RoleTransition(WorldState state, String result, List<WorldEvent> events) { }
+
+    private RoleTransition deriveRoleTask(WorldState before, PendingTask task) throws IOException {
         AppointmentPayload payload = mapper.readValue(task.payload(), AppointmentPayload.class);
         long now = task.dueTimeMillis();
-        RoleRun run = requireRoleRun();
+        RoleRun run = before.roles();
         RoleAccess.State access = run.access();
         boolean accepted;
         String reason;
-        Map<String, CashLedger.CashAccount> accounts = state.accounts();
-        SecuritiesLedger.State securities = state.securities();
-        WorldExchange.State exchange = state.exchange();
+        Map<String, CashLedger.CashAccount> accounts = before.accounts();
+        SecuritiesLedger.State securities = before.securities();
+        WorldExchange.State exchange = before.exchange();
         List<WorldEvent> events = new ArrayList<>();
         try {
             if (PendingTask.ROLE_APPOINT_V1.equals(task.kind())) {
@@ -10831,9 +11331,9 @@ public final class WorldRuntime implements AutoCloseable {
             } else {
                 access = RoleAccess.revoke(access, payload.appointmentId(), now);
                 // 提前撤任：当批撤销该任职发出的活动子单，保留已成交
-                if (state.trading() != null) {
-                    CanceledOrders canceled = cancelByAppointment(state.trading().trading(),
-                            payload.appointmentId(), now, task.taskId(), task.kind());
+                if (before.trading() != null) {
+                    CanceledOrders canceled = cancelByAppointment(before.trading().trading(),
+                            payload.appointmentId(), now, task.taskId(), task.kind(), before);
                     accounts = canceled.accounts();
                     securities = canceled.securities();
                     exchange = canceled.exchange();
@@ -10846,25 +11346,39 @@ public final class WorldRuntime implements AutoCloseable {
             accepted = false;
             reason = "REJECTED";
             access = run.access();
-            accounts = state.accounts();
-            securities = state.securities();
-            exchange = state.exchange();
+            accounts = before.accounts();
+            securities = before.securities();
+            exchange = before.exchange();
             events = new ArrayList<>();
         }
         RoleRun.Report entry = new RoleRun.Report(task.taskId(), payload.commandId(),
                 task.kind(), accepted, reason, payload.appointmentId(), now,
-                state.position() + 1);
-        finishRoleTask(task, run.withAccess(access).withReport(entry), entry, accounts, securities,
-                exchange, events);
+                before.position() + 1);
+        List<PendingTask> pending = new ArrayList<>(before.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(before.usedTaskIds());
+        used.add(task.taskId());
+        events.add(0, new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        events.add(new WorldEvent("role-report:" + task.taskId(), "ROLE_REPORT_V1",
+                mapper.writeValueAsString(entry)));
+        WorldState after = new WorldState(before.schemaVersion(), before.runId(), before.position() + 1,
+                now, task.phase().name(), accounts, pending, before.delivered(), used,
+                before.commandContents(), before.commandOutcomes(), securities, exchange,
+                before.manufacturing(), before.governance(), run.withAccess(access).withReport(entry),
+                before.information(), before.trading(), before.decisions(), before.dividends(),
+                before.beliefs(), before.media(), before.interviews(), before.evidence(),
+                before.social(), before.engineering(), before.groups());
+        return new RoleTransition(after, entry.reason(), List.copyOf(events));
     }
 
     /** 撤销某任职发出的全部活动子单；不动工作流、链接与其它任职的订单。 */
     private CanceledOrders cancelByAppointment(RoleTradingModel.State trading, String appointmentId,
-                                               long now, String taskId, String kind)
+                                               long now, String taskId, String kind, WorldState before)
             throws IOException {
-        Map<String, CashLedger.CashAccount> accounts = state.accounts();
-        SecuritiesLedger.State securities = state.securities();
-        WorldExchange.State exchange = state.exchange();
+        Map<String, CashLedger.CashAccount> accounts = before.accounts();
+        SecuritiesLedger.State securities = before.securities();
+        WorldExchange.State exchange = before.exchange();
         List<Long> cancelled = new ArrayList<>();
         for (RoleTradingModel.ChildLink link : trading.children()) {
             if (!link.appointmentId().equals(appointmentId)) {
@@ -10888,40 +11402,12 @@ public final class WorldRuntime implements AutoCloseable {
         if (!cancelled.isEmpty()) {
             WorldExchange.OrderReport report = new WorldExchange.OrderReport(taskId,
                     "system:appointment-end", kind, true, WorldExchange.REASON_CANCELLED, null,
-                    List.of(), cancelled, now, state.position() + 1);
+                    List.of(), cancelled, now, before.position() + 1);
             exchange = exchange.withReport(report);
             events.add(new WorldEvent("exchange-report:" + taskId + ":" + appointmentId,
                     "EXCHANGE_ORDER_REPORT_V1", mapper.writeValueAsString(report)));
         }
         return new CanceledOrders(accounts, securities, exchange, events);
-    }
-
-    /** 任职任务统一收尾：完成待办、写报告事件、保存全量状态后持久确认再发布。 */
-    private void finishRoleTask(PendingTask task, RoleRun roles, RoleRun.Report entry)
-            throws IOException {
-        finishRoleTask(task, roles, entry, state.accounts(), state.securities(), state.exchange(),
-                List.of());
-    }
-
-    private void finishRoleTask(PendingTask task, RoleRun roles, RoleRun.Report entry,
-                                Map<String, CashLedger.CashAccount> accounts,
-                                SecuritiesLedger.State securities, WorldExchange.State exchange,
-                                List<WorldEvent> effects) throws IOException {
-        List<PendingTask> pending = new ArrayList<>(state.pending());
-        pending.remove(task);
-        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
-        used.add(task.taskId());
-        List<WorldEvent> events = new ArrayList<>();
-        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
-                task.payload()));
-        events.addAll(effects);
-        events.add(new WorldEvent("role-report:" + task.taskId(), "ROLE_REPORT_V1",
-                mapper.writeValueAsString(entry)));
-        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts,
-                pending, state.delivered(), used, state.commandContents(), state.commandOutcomes(),
-                securities, exchange, state.manufacturing(), state.governance(),
-                roles, state.information());
-        commitAndApply("task:" + task.taskId(), task.payload(), entry.reason(), events, candidate);
     }
 
     /**
@@ -11516,7 +12002,7 @@ public final class WorldRuntime implements AutoCloseable {
         validateExchange(candidate, previous);
         validateManufacturing(candidate, previous);
         validateGovernance(candidate, previous, commit);
-        validateRoleReading(candidate, previous);
+        validateRoleReading(candidate, previous, commit);
         validateTrading(candidate, previous);
         validateDecisions(candidate, previous);
         validateBeliefs(candidate, previous, commit);
@@ -14192,7 +14678,8 @@ public final class WorldRuntime implements AutoCloseable {
      * 真实开局。这里每批都重新对照冻结登记与冻结配置，并调用
      * {@link RoleAccess#validateAgainst} 复核账户/个人绑定/mandates/任职身份。</p>
      */
-    private void validateRoleReading(WorldState candidate, WorldState previous) throws IOException {
+    private void validateRoleReading(WorldState candidate, WorldState previous, WorldCommit commit)
+            throws IOException {
         if (expectedSchema() < STATE_SCHEMA_ROLE_READING) {
             if (candidate.roles() != null || candidate.information() != null) {
                 throw new IOException("旧档案不得包含任职或阅读子集状态");
@@ -14203,7 +14690,47 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("任职与阅读档案缺少子集状态");
         }
         validateRole(candidate, previous);
+        validateRoleTransition(candidate, previous, commit);
         validateInformation(candidate, previous);
+    }
+
+    /** 任职变化必须来自真实原任务；工程董事任免另由工程逐帧重演证明。 */
+    private void validateRoleTransition(WorldState candidate, WorldState previous, WorldCommit commit)
+            throws IOException {
+        if (previous == null) return; // 首帧已有完整冻结开局比较。
+        List<PendingTask> removed = previous.pending().stream()
+                .filter(task -> isAppointmentTask(task.kind()))
+                .filter(task -> pendingOf(candidate, task.taskId()) == null).toList();
+        PendingTask named = commit.commandId().startsWith("task:")
+                ? pendingOf(previous, commit.commandId().substring(5)) : null;
+        boolean roleFrame = !removed.isEmpty()
+                || named != null && isAppointmentTask(named.kind())
+                || commit.events().stream().anyMatch(event -> "ROLE_REPORT_V1".equals(event.type()));
+        if (!roleFrame) {
+            if (!(manifest.hasEngineering() && engineeringTouched(commit))
+                    && !Objects.equals(previous.roles(), candidate.roles())) {
+                throw new IOException("没有真实任职任务的批次改变了任职子集");
+            }
+            return;
+        }
+        PendingTask task = completedTask(previous, candidate, commit);
+        if (task == null || !isAppointmentTask(task.kind())
+                || removed.size() != 1 || !removed.get(0).equals(task)) {
+            throw new IOException("任职完成帧未对应唯一真实待办");
+        }
+        RoleTransition expected = deriveRoleTask(previous, task);
+        // 规范 JSON 比较包含数组的经营子集，避免 Java 数组引用相等造成旧档误拒。
+        if (!mapper.readTree(mapper.writeValueAsString(expected.state()))
+                .equals(mapper.readTree(mapper.writeValueAsString(candidate)))
+                || !expected.result().equals(commit.result())
+                || !expected.events().equals(commit.events().stream()
+                        .filter(event -> !SNAPSHOT_TYPE.equals(event.type())).toList())) {
+            throw new IOException("任职完成帧与原任务派生的完整状态或事件不一致");
+        }
+    }
+
+    private static boolean isAppointmentTask(String kind) {
+        return PendingTask.ROLE_APPOINT_V1.equals(kind) || PendingTask.ROLE_REVOKE_V1.equals(kind);
     }
 
     /** 任职子集：来源校验 + 固定配置不漂移 + 旧任职只允许补一次撤销。 */
@@ -17093,6 +17620,18 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private String openingContent(List<OpeningAccount> ordered) throws IOException {
+        return mapper.writeValueAsString(openingContentMap(ordered));
+    }
+
+    /**
+     * 开局提交内容：清单、开局现金、登记与各模块配置。
+     *
+     * <p>开局写入与检查点导出共用这一处，避免两份开局事实漂移。</p>
+     *
+     * @param ordered 规范化开局现金清单
+     * @return 有序键内容图
+     */
+    private Map<String, Object> openingContentMap(List<OpeningAccount> ordered) {
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("manifest", manifest);
         content.put("openings", ordered);
@@ -17119,7 +17658,7 @@ public final class WorldRuntime implements AutoCloseable {
             // 只有 schema18 工程档案才加这个键：旧档开局内容保持逐字节不变
             content.put("engineering", engineeringConfig);
         }
-        return mapper.writeValueAsString(content);
+        return content;
     }
 
     private static BigDecimal total(WorldState state) {
