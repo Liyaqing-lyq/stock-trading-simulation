@@ -166,6 +166,8 @@ public final class RunLauncher implements AutoCloseable {
         OutputStream stdin;
         /** 是否是本启动器主动关闭（stop/close/启动失败）；主动关闭的退出不算异常 EXITED。 */
         boolean closing;
+        /** 用户已登记停止意图：清理完成前仍占并发额度，但不再接受 start 提交或失败改写。 */
+        boolean cancelled;
 
         Managed(BranchRunIndex.Entry entry) {
             this.runId = entry.runId();
@@ -194,6 +196,20 @@ public final class RunLauncher implements AutoCloseable {
 
     private final Config config;
     private final ProfileSource profileSource;
+    /**
+     * 测试接缝：{@link #start(String)} 在锁外做健康核验之前调用一次，默认 {@code null}（生产不设）。
+     *
+     * <p>只用于确定性回归：把 start 停在"子进程已起、尚未提交 RUNNING"的窗口里，让测试在窗口内
+     * 调 stop 或外部结束，而不是靠轮询/sleep 撞概率。不参与任何生产判断。</p>
+     */
+    Runnable beforeHealthCheck;
+    /**
+     * 测试接缝：{@link #stop(String)} 在自有进程清理完、写最终状态之前调用一次，默认 {@code null}。
+     *
+     * <p>只用于确定性回归：把 stop 停在"进程已清理、状态尚未提交"的窗口里，让并发的 start 失败收尾
+     * 正好落在这个窗口内。生产不设。</p>
+     */
+    Runnable afterStopCleanup;
     private final Object lock = new Object();
     private final Map<String, Managed> managed = new LinkedHashMap<>();
     private final SecureRandom random = new SecureRandom();
@@ -347,6 +363,11 @@ public final class RunLauncher implements AutoCloseable {
         }
 
         // 健康核验在锁外进行：期间状态查询仍可读到 STARTING 的真实状态。
+        Runnable gate = beforeHealthCheck;
+        if (gate != null) {
+            // 测试接缝：生产恒为 null，只在确定性回归里把 start 停在"进程已起、尚未提交"的窗口。
+            gate.run();
+        }
         try {
             verifyHealthy(own);
             synchronized (lock) {
@@ -361,7 +382,7 @@ public final class RunLauncher implements AutoCloseable {
                     throw new Rejected("CHILD_EXITED", "子进程在健康核验后已退出");
                 }
                 if ("STOPPED".equals(own.status) || "EXITED".equals(own.status)
-                        || "FAILED".equals(own.status)) {
+                        || "FAILED".equals(own.status) || own.cancelled) {
                     throw new Rejected("START_CANCELLED",
                             "启动过程中该运行已被停止，不回写 RUNNING");
                 }
@@ -371,7 +392,10 @@ public final class RunLauncher implements AutoCloseable {
         } catch (Rejected failure) {
             destroy(own);
             synchronized (lock) {
-                if ("STARTING".equals(own.status)) {
+                // 只有"还是这一代 + 仍是 STARTING + 用户没登记停止"才写 FAILED；
+                // 否则会覆盖 stop 的 STOPPED、或改掉新一代条目。
+                if (managed.get(runId) == own && "STARTING".equals(own.status)
+                        && !own.cancelled) {
                     own.status = "FAILED";
                     own.reason = failure.getMessage();
                 }
@@ -399,18 +423,28 @@ public final class RunLauncher implements AutoCloseable {
             throw new Rejected("NOT_OWNED", "该运行不是本进程启动的；不会按端口终止陌生进程");
         }
         // 先按真实存活定一次：如果是外部结束的，要保持 EXITED，不能因为用户点了"停止"变成 STOPPED。
+        // 同时**在锁内登记停止意图**：清理完成前状态仍是 STARTING/RUNNING（继续占并发额度），
+        // 但并发的 start 既不能再提交 RUNNING，也不能把自己的失败改写成 FAILED。
         synchronized (lock) {
             refresh(own);
+            if (own.active() && !"EXITED".equals(own.status) && !"FAILED".equals(own.status)) {
+                own.cancelled = true;
+            }
         }
         // 等待放在锁外：先关 stdin 让子进程自己收尾，期间其它查询仍可读真实状态。
         if (own.process != null) {
             destroy(own);
         }
+        Runnable gate = afterStopCleanup;
+        if (gate != null) {
+            // 测试接缝：生产恒为 null；确定性回归用它在"清理完、未提交"的窗口里触发并发行为。
+            gate.run();
+        }
         synchronized (lock) {
             refresh(own);
-            // 异常退出就是 EXITED，不因为用户点了"停止"就改写成 STOPPED；
+            // 用户已登记的停止优先：异常退出保持 EXITED，用户停止保持 STOPPED，
             // 只有原本还在跑（或启动中）的条目变成 STOPPED。
-            if (!"FAILED".equals(own.status) && !"EXITED".equals(own.status)) {
+            if (own.cancelled || (!"FAILED".equals(own.status) && !"EXITED".equals(own.status))) {
                 own.status = "STOPPED";
                 own.reason = "";
             }
@@ -435,7 +469,7 @@ public final class RunLauncher implements AutoCloseable {
             if (own != null) {
                 refresh(own);
             }
-            if (own == null || !own.active()) {
+            if (own == null || !own.active() || own.cancelled) {
                 throw new Rejected("RUN_NOT_RUNNING", "该运行没有在运行中");
             }
         }

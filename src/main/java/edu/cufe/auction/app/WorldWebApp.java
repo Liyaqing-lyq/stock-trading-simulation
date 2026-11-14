@@ -53,7 +53,7 @@ public final class WorldWebApp {
     /**
      * 启动并阻塞，直至进程结束或启动失败。
      *
-     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social或engineering，均可省略
+     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups或intent，均可省略
      * @throws Exception 启动失败（凭据、目录、端口、世界）
      */
     public static void main(String[] args) throws Exception {
@@ -69,12 +69,13 @@ public final class WorldWebApp {
                 && !mode.equals("belief") && !mode.equals("media") && !mode.equals("interview")
                 && !mode.equals("dialogue") && !mode.equals("evidence")
                 && !mode.equals("social") && !mode.equals("engineering")
-                && !mode.equals("groups")) {
+                && !mode.equals("groups") && !mode.equals("intent")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering或groups");
+                            + "evidence、social、engineering、groups或intent");
         }
         boolean groups = mode.equals("groups");
+        boolean intent = mode.equals("intent");
         boolean live = mode.equals("live");
         boolean cognition = mode.equals("cognition");
         boolean belief = mode.equals("belief");
@@ -97,7 +98,11 @@ public final class WorldWebApp {
         }
 
         SceneRoutes routes = SceneRoutes.open(workDir);
-        WorldWebHost host = groups
+        WorldWebHost host = intent
+                ? new WorldWebHost(() -> WorldWebScenario.openCommandIntent(
+                        workDir.resolve("world-intent.journal")),
+                        routes, new LiveDecisionProvider(keys))
+                : groups
                 ? new WorldWebHost(() -> WorldWebScenario.openGroups(
                         workDir.resolve("world-groups.journal")),
                         routes, new LiveDecisionProvider(keys))
@@ -175,7 +180,10 @@ public final class WorldWebApp {
         System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
         System.out.println("分支运行管理：本机端口 " + BRANCH_PORT_FROM + "-" + BRANCH_PORT_TO
                 + "，最多 " + MAX_BRANCH_RUNS + " 个；创建不等于启动，页面按真实状态显示。");
-        System.out.println(groups
+        System.out.println(intent
+                ? "模式：完整指令原意实验（独立 world-intent.journal）；未自动调用模型。"
+                        + "全部场景默认关闭，请在页面核对场景配置并明确开始一轮。"
+                : groups
                 ? "模式：群组与平台实验（schema20，独立 world-groups.journal）；未自动调用模型。"
                         + "全部场景默认关闭，请在页面核对场景配置并明确开始一轮。"
                 : engineering

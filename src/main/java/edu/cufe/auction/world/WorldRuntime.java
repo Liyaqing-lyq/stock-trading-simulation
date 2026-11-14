@@ -283,6 +283,15 @@ public final class WorldRuntime implements AutoCloseable {
     private WorldState verifiedPrefixState;
     private volatile boolean paused;
     private boolean closed;
+    /** 受控重演标志：为 true 时 {@link #commitAndApply} 只捕获候选，不校验也不写日志。 */
+    private boolean capturing;
+    /** 重演捕获到的完整批次：候选状态、命令标识、命令原文、回报与领域事件。 */
+    private WorldState capturedState;
+    private String capturedCommandId;
+    private String capturedContent;
+    private String capturedResult;
+    private List<WorldEvent> capturedEvents;
+    private int capturedCount;
 
     /**
      * 已投递的业务回报（只读管理视图）。
@@ -533,11 +542,18 @@ public final class WorldRuntime implements AutoCloseable {
     private record CloseMarketPayload(String commandId) {
     }
 
-    /** 外部制造命令的规范化内容（幂等比对用）；六类命令共用一种形状。 */
+    /**
+     * 制造排程命令（写入命令正文）。
+     *
+     * @param kind 制造动作种类；只有 {@code manufacturing-intent} 新规则档写入，
+     *             旧档为 null 且 JSON 省略该字段，旧命令原文逐字不变
+     */
     private record ManufacturingCommand(String commandId, String taskId, long dueTimeMillis,
                                         String actorOwnerId, String businessId, String resultId,
                                         long quantity, BigDecimal unitPrice,
-                                        long promisedDeliveryAt, long period) {
+                                        long promisedDeliveryAt, long period,
+                                        @JsonInclude(JsonInclude.Include.NON_NULL)
+                                        String kind) {
     }
 
     /** 制造任务参数；到期只按已确认内容执行，不再向调用方取值。 */
@@ -2819,7 +2835,7 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         String content = mapper.writeValueAsString(payload);
         if (state.commandContents().containsKey(commandId)) {
-            if (!content.equals(state.commandContents().get(commandId))) {
+            if (!content.equals(recordedBody(commandId))) {
                 throw new IllegalArgumentException("同一命令标识不能对应不同内容");
             }
             requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
@@ -2829,7 +2845,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireSchedulable(dueTimeMillis, taskId);
         PendingTask task = new PendingTask(taskId, dueTimeMillis,
                 WorldScheduler.Phase.COMPLETION, kind, content);
-        return scheduleCompletionTask(task, commandId, content);
+        return scheduleExternalTask(task, commandId, content);
     }
 
     /** 声明席位必须是章程成员；到会/回避在到期时按会议复核。 */
@@ -3051,7 +3067,8 @@ public final class WorldRuntime implements AutoCloseable {
                 businessId, resultId, quantity, unitPrice, promisedDeliveryAt, period);
         String payloadJson = mapper.writeValueAsString(payload);
         ManufacturingCommand command = new ManufacturingCommand(commandId, taskId, dueTimeMillis,
-                actorOwnerId, businessId, resultId, quantity, unitPrice, promisedDeliveryAt, period);
+                actorOwnerId, businessId, resultId, quantity, unitPrice, promisedDeliveryAt, period,
+                manifest.hasCommandIntent() ? kind : null);
         String content = mapper.writeValueAsString(command);
         if (state.commandContents().containsKey(commandId)) {
             if (!content.equals(state.commandContents().get(commandId))) {
@@ -3117,7 +3134,7 @@ public final class WorldRuntime implements AutoCloseable {
                 personPartyId, organizationPartyId, role.name(), startsAt, endsAt);
         String content = mapper.writeValueAsString(payload);
         if (state.commandContents().containsKey(commandId)) {
-            if (!content.equals(state.commandContents().get(commandId))) {
+            if (!content.equals(recordedBody(commandId))) {
                 throw new IllegalArgumentException("同一命令标识不能对应不同内容");
             }
             requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.RULES,
@@ -3136,7 +3153,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireParty(organizationPartyId, OpeningRegistry.PartyKind.ORGANIZATION, "任职组织");
         PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.RULES,
                 PendingTask.ROLE_APPOINT_V1, content);
-        return scheduleCompletionTask(task, commandId, content);
+        return scheduleExternalTask(task, commandId, content);
     }
 
     /**
@@ -3164,7 +3181,7 @@ public final class WorldRuntime implements AutoCloseable {
                 "", "", "", 0L, 0L);
         String content = mapper.writeValueAsString(payload);
         if (state.commandContents().containsKey(commandId)) {
-            if (!content.equals(state.commandContents().get(commandId))) {
+            if (!content.equals(recordedBody(commandId))) {
                 throw new IllegalArgumentException("同一命令标识不能对应不同内容");
             }
             requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.RULES,
@@ -3174,7 +3191,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireSchedulable(dueTimeMillis, taskId);
         PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.RULES,
                 PendingTask.ROLE_REVOKE_V1, content);
-        return scheduleCompletionTask(task, commandId, content);
+        return scheduleExternalTask(task, commandId, content);
     }
 
     /**
@@ -3519,7 +3536,7 @@ public final class WorldRuntime implements AutoCloseable {
         String content = mapper.writeValueAsString(action);
         PendingTask planned = engineeringPlannedTask(taskId, dueTimeMillis, durationMillis,
                 PendingTask.ENGINEERING_PERIODIC_V1, content);
-        String stored = state.commandContents().get(commandId);
+        String stored = recordedBody(commandId);
         if (stored != null) {
             PeriodicActionPayload recorded = mapper.readValue(stored,
                     PeriodicActionPayload.class);
@@ -3539,7 +3556,9 @@ public final class WorldRuntime implements AutoCloseable {
         }
         requireEngineeringFocusWindow(action.personPartyId(), now, dueTimeMillis, durationMillis,
                 action.action());
-        return scheduleCompletionTask(planned, commandId, content);
+        return scheduleExternalTask(planned, commandId, content,
+                PendingTask.ENGINEERING_PERIODIC_V1, WorldScheduler.Phase.RULES, dueTimeMillis,
+                durationMillis);
     }
 
     /**
@@ -3570,6 +3589,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(authorizationRef, "豁免授权引用");
         requireText(contractId, "豁免合同");
         requireText(purpose, "豁免用途");
+        requirePositiveEngineeringDuration(durationMillis, "WAIVE");
         if (amount == null || amount.signum() <= 0) {
             throw new IllegalArgumentException("豁免金额必须为正");
         }
@@ -3659,7 +3679,7 @@ public final class WorldRuntime implements AutoCloseable {
         // 零工时只留给运行层内部系统日程（自动开/关会等），仍是单帧。
         PendingTask planned = engineeringPlannedTask(taskId, dueTimeMillis, durationMillis,
                 PendingTask.ENGINEERING_BOARD_V1, content);
-        String stored = state.commandContents().get(commandId);
+        String stored = recordedBody(commandId);
         if (stored != null) {
             EngineeringBoardPayload recorded = mapper.readValue(stored,
                     EngineeringBoardPayload.class);
@@ -3680,7 +3700,9 @@ public final class WorldRuntime implements AutoCloseable {
                 payload.seatId(), payload.action(), now);
         requireEngineeringFocusWindow(payload.personPartyId(), now, dueTimeMillis, durationMillis,
                 payload.action());
-        return scheduleCompletionTask(planned, commandId, content);
+        return scheduleExternalTask(planned, commandId, content,
+                PendingTask.ENGINEERING_BOARD_V1, WorldScheduler.Phase.RULES, dueTimeMillis,
+                durationMillis);
     }
 
     private String scheduleEngineeringTask(String commandId, String taskId, long dueTimeMillis,
@@ -3697,7 +3719,7 @@ public final class WorldRuntime implements AutoCloseable {
         // 正工时经理动作同样先落 BEGIN 屏障：屏障复核当前岗位/对象/焦点，到期才真正执行。
         PendingTask planned = engineeringPlannedTask(taskId, dueTimeMillis, durationMillis, kind,
                 content);
-        String stored = state.commandContents().get(commandId);
+        String stored = recordedBody(commandId);
         if (stored != null) {
             EngineeringActionPayload recorded = mapper.readValue(stored,
                     EngineeringActionPayload.class);
@@ -3715,7 +3737,8 @@ public final class WorldRuntime implements AutoCloseable {
                 action.action(), now);
         requireEngineeringFocusWindow(action.personPartyId(), now, dueTimeMillis, durationMillis,
                 action.action());
-        return scheduleCompletionTask(planned, commandId, content);
+        return scheduleExternalTask(planned, commandId, content, kind,
+                WorldScheduler.Phase.RULES, dueTimeMillis, durationMillis);
     }
 
     /**
@@ -4061,7 +4084,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         String content = mapper.writeValueAsString(payload);
         if (state.commandContents().containsKey(commandId)) {
-            if (!content.equals(state.commandContents().get(commandId))) {
+            if (!content.equals(recordedBody(commandId))) {
                 throw new IllegalArgumentException("同一命令标识不能对应不同内容");
             }
             requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
@@ -4091,7 +4114,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
                 kind, content);
-        return scheduleCompletionTask(task, commandId, content);
+        return scheduleExternalTask(task, commandId, content);
     }
 
     /**
@@ -4129,7 +4152,7 @@ public final class WorldRuntime implements AutoCloseable {
         ReadingPayload payload = new ReadingPayload(commandId, personPartyId, docId, version, "", 0L);
         String content = mapper.writeValueAsString(payload);
         if (state.commandContents().containsKey(commandId)) {
-            if (!content.equals(state.commandContents().get(commandId))) {
+            if (!content.equals(recordedBody(commandId))) {
                 throw new IllegalArgumentException("同一命令标识不能对应不同内容");
             }
             requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
@@ -4151,7 +4174,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
                 PendingTask.INFORMATION_START_READ_V1, content);
-        return scheduleCompletionTask(task, commandId, content);
+        return scheduleExternalTask(task, commandId, content);
     }
 
     /**
@@ -4188,7 +4211,7 @@ public final class WorldRuntime implements AutoCloseable {
                 ref.version(), "", ref.index());
         String content = mapper.writeValueAsString(payload);
         if (state.commandContents().containsKey(commandId)) {
-            if (!content.equals(state.commandContents().get(commandId))) {
+            if (!content.equals(recordedBody(commandId))) {
                 throw new IllegalArgumentException("同一命令标识不能对应不同内容");
             }
             requireSameSchedule(commandId, taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
@@ -4198,7 +4221,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireSchedulable(dueTimeMillis, taskId);
         PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
                 PendingTask.INFORMATION_CANCEL_READ_V1, content);
-        return scheduleCompletionTask(task, commandId, content);
+        return scheduleExternalTask(task, commandId, content);
     }
 
     /** 登记人物/组织种类：只读取固定开局登记，不信任调用方声明。 */
@@ -4245,105 +4268,7 @@ public final class WorldRuntime implements AutoCloseable {
                 if (next == null) {
                     break;
                 }
-                switch (next.kind()) {
-                    case PendingTask.CASH_TRANSFER_V1 -> completeTransfer(next);
-                    case PendingTask.TRANSFER_NOTICE_V1 -> deliverNotice(next);
-                    case PendingTask.SELL_RESERVE_V1 -> completeReserve(next);
-                    case PendingTask.SELL_CANCEL_V1 -> completeCancel(next);
-                    case PendingTask.FILL_SETTLE_V1 -> completeFill(next);
-                    case PendingTask.EXCHANGE_ORDER_V1 -> completeOrder(next);
-                    case PendingTask.EXCHANGE_CANCEL_V1 -> completeCancelOrder(next);
-                    case PendingTask.EXCHANGE_CLOSE_V1 -> completeCloseMarket(next);
-                    case PendingTask.MANUFACTURING_PURCHASE_ORDER_V1,
-                         PendingTask.MANUFACTURING_PRODUCTION_V1,
-                         PendingTask.MANUFACTURING_SALES_CONTRACT_V1,
-                         PendingTask.MANUFACTURING_DELIVERY_V1,
-                         PendingTask.MANUFACTURING_COLLECT_RECEIVABLE_V1,
-                         PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1 -> completeManufacturing(next);
-                    case PendingTask.MANUFACTURING_GOODS_RECEIPT_V1,
-                         PendingTask.MANUFACTURING_BATCH_COMPLETION_V1,
-                         PendingTask.MANUFACTURING_AUTO_COLLECTION_V1 -> completeManufacturingChild(next);
-                    case PendingTask.MANUFACTURING_PERIOD_CLOSE_V1 -> completePeriodClose(next);
-                    case PendingTask.GOVERNANCE_MEETING_V1,
-                         PendingTask.GOVERNANCE_MATERIAL_V1,
-                         PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1,
-                         PendingTask.GOVERNANCE_VOTE_V1,
-                         PendingTask.GOVERNANCE_IMPLEMENT_V1 -> completeGovernance(next);
-                    case PendingTask.BOARD_OPEN_V1 -> completeBoardOpen(next);
-                    case PendingTask.BOARD_CLOSE_V1 -> completeBoardClose(next);
-                    case PendingTask.BOARD_REVIEW_V1 -> completeBoardReview(next);
-                    case PendingTask.ENGINEERING_BEGIN_V1 -> completeEngineeringBegin(next);
-                    case PendingTask.ENGINEERING_BOARD_V1,
-                         PendingTask.BOARD_ATTEND_V1 -> completeEngineeringBoard(next);
-                    case PendingTask.ENGINEERING_ACTION_V1 -> completeEngineeringAction(next);
-                    case PendingTask.ENGINEERING_PERIODIC_V1 -> completeEngineeringPeriodic(next);
-                    case PendingTask.PERIOD_CAPTURE_V1 -> completePeriodCapture(next);
-                    case PendingTask.PERIOD_CLOSE_V1 -> completePeriodCloseTask(next);
-                    case PendingTask.PERIOD_DISCLOSURE_DEADLINE_V1 ->
-                            completePeriodDeadline(next);
-                    case PendingTask.CUSTOMER_EVENT_V1 -> completeCustomerEvent(next);
-                    case PendingTask.ROLE_APPOINT_V1,
-                         PendingTask.ROLE_REVOKE_V1 -> completeRole(next);
-                    case PendingTask.INFORMATION_PUBLISH_V1,
-                         PendingTask.INFORMATION_PUBLISH_VERSION_V1,
-                         PendingTask.INFORMATION_START_READ_V1,
-                         PendingTask.INFORMATION_CANCEL_READ_V1,
-                         PendingTask.INFORMATION_COMPLETE_READ_V1 -> completeInformation(next);
-                    case PendingTask.ROLE_TRADING_READ_V1,
-                         PendingTask.ROLE_TRADING_UNREAD_V1 -> completeRoleReading(next);
-                    case PendingTask.ROLE_TRADING_RESEARCH_V1,
-                         PendingTask.ROLE_TRADING_TARGET_V1,
-                         PendingTask.ROLE_TRADING_REVIEW_V1,
-                         PendingTask.ROLE_TRADING_CONFIRM_V1,
-                         PendingTask.ROLE_TRADING_HALT_V1,
-                         PendingTask.ROLE_TRADING_CANCEL_V1,
-                         PendingTask.ROLE_TRADING_CHILD_V1,
-                         PendingTask.ROLE_TRADING_CHILD_CANCEL_V1,
-                         PendingTask.ROLE_TRADING_BELIEF_V1,
-                         PendingTask.ROLE_TRADING_FORECAST_V1,
-                         PendingTask.ROLE_TRADING_COMPANY_REPORT_V1 -> completeRoleAction(next);
-                    case PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 ->
-                            completeBeliefCapture(next);
-                    case PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1 ->
-                            completeBeliefPublish(next);
-                    case PendingTask.MEDIA_STORY_PROPOSE_V1,
-                         PendingTask.MEDIA_STORY_SUBMIT_V1,
-                         PendingTask.MEDIA_STORY_REVIEW_V1,
-                         PendingTask.MEDIA_STORY_PUBLISH_V1,
-                         PendingTask.MEDIA_STORY_CORRECTION_V1,
-                         PendingTask.MEDIA_WORK_CANCEL_V1,
-                         PendingTask.MEDIA_EVIDENCE_SHARE_V1 -> completeMediaTask(next);
-                    case PendingTask.SOCIAL_BEGIN_V1,
-                         PendingTask.SOCIAL_FINISH_V1,
-                         PendingTask.SOCIAL_DELIVER_V1,
-                         PendingTask.SOCIAL_BLOCK_V1,
-                         PendingTask.SOCIAL_UNBLOCK_V1 -> completeSocialTask(next);
-                    case PendingTask.GROUP_BEGIN_V1,
-                         PendingTask.GROUP_FINISH_V1,
-                         PendingTask.GROUP_PUBLISH_V1 -> completeGroupTask(next);
-                    case PendingTask.INTERVIEW_INVITE_V1,
-                         PendingTask.INTERVIEW_RESPOND_V1,
-                         PendingTask.INTERVIEW_CANCEL_V1,
-                         PendingTask.INTERVIEW_END_V1,
-                         PendingTask.INTERVIEW_START_GATE_V1,
-                         PendingTask.INTERVIEW_MISS_GATE_V1,
-                         PendingTask.INTERVIEW_END_GATE_V1,
-                         PendingTask.INTERVIEW_TTL_GATE_V1,
-                         PendingTask.INTERVIEW_SPEAK_V1,
-                         PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1 -> completeInterviewTask(next);
-                    case PendingTask.ROLE_TRADING_SWEEP_V1 -> completeRoleSweep(next);
-                    case PendingTask.ROLE_TRADING_EXPIRE_V1 -> completeRoleExpire(next);
-                    case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> completeAppointmentEnd(next);
-                    case PendingTask.ROLE_TRADING_HALT_RELEASE_V1 -> completeHaltRelease(next);
-                    case PendingTask.DIVIDEND_MEETING_V1,
-                         PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1,
-                         PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1,
-                         PendingTask.DIVIDEND_REGISTER_V1,
-                         PendingTask.DIVIDEND_BOOK_EX_V1,
-                         PendingTask.DIVIDEND_SETTLE_V1,
-                         PendingTask.DIVIDEND_IMPAIR_V1 -> completeDividend(next);
-                    default -> throw new IllegalStateException("未启用的任务种类：" + next.kind());
-                }
+                executeTask(next);
             }
             if (stopsAtBarrier) {
                 // 停在最早未决屏障之前：只把时钟推到屏障，不落观察批次；已在屏障时不加空批。
@@ -4374,6 +4299,114 @@ public final class WorldRuntime implements AutoCloseable {
             // 内部执行期（含 ID 冲突、序列化、溢出）失败同样进入暂停，保留旧快照
             paused = true;
             throw failure;
+        }
+    }
+
+    /**
+     * 执行一个到期任务：真实推进、恢复期逐帧重演与受控重演共用这一份按 kind 派发。
+     *
+     * <p>只负责把任务交给对应完成器；完成器自身在 {@link #commitAndApply} 落到唯一批次。
+     * 不在这里写日志、发事件或改时钟，避免出现第二套会漂移的分支。</p>
+     *
+     * @param task 本批要处理的任务
+     * @throws IOException 持久提交失败
+     */
+    private void executeTask(PendingTask task) throws IOException {
+        switch (task.kind()) {
+            case PendingTask.CASH_TRANSFER_V1 -> completeTransfer(task);
+            case PendingTask.TRANSFER_NOTICE_V1 -> deliverNotice(task);
+            case PendingTask.SELL_RESERVE_V1 -> completeReserve(task);
+            case PendingTask.SELL_CANCEL_V1 -> completeCancel(task);
+            case PendingTask.FILL_SETTLE_V1 -> completeFill(task);
+            case PendingTask.EXCHANGE_ORDER_V1 -> completeOrder(task);
+            case PendingTask.EXCHANGE_CANCEL_V1 -> completeCancelOrder(task);
+            case PendingTask.EXCHANGE_CLOSE_V1 -> completeCloseMarket(task);
+            case PendingTask.MANUFACTURING_PURCHASE_ORDER_V1,
+                 PendingTask.MANUFACTURING_PRODUCTION_V1,
+                 PendingTask.MANUFACTURING_SALES_CONTRACT_V1,
+                 PendingTask.MANUFACTURING_DELIVERY_V1,
+                 PendingTask.MANUFACTURING_COLLECT_RECEIVABLE_V1,
+                 PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1 -> completeManufacturing(task);
+            case PendingTask.MANUFACTURING_GOODS_RECEIPT_V1,
+                 PendingTask.MANUFACTURING_BATCH_COMPLETION_V1,
+                 PendingTask.MANUFACTURING_AUTO_COLLECTION_V1 -> completeManufacturingChild(task);
+            case PendingTask.MANUFACTURING_PERIOD_CLOSE_V1 -> completePeriodClose(task);
+            case PendingTask.GOVERNANCE_MEETING_V1,
+                 PendingTask.GOVERNANCE_MATERIAL_V1,
+                 PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1,
+                 PendingTask.GOVERNANCE_VOTE_V1,
+                 PendingTask.GOVERNANCE_IMPLEMENT_V1 -> completeGovernance(task);
+            case PendingTask.BOARD_OPEN_V1 -> completeBoardOpen(task);
+            case PendingTask.BOARD_CLOSE_V1 -> completeBoardClose(task);
+            case PendingTask.BOARD_REVIEW_V1 -> completeBoardReview(task);
+            case PendingTask.ENGINEERING_BEGIN_V1 -> completeEngineeringBegin(task);
+            case PendingTask.ENGINEERING_BOARD_V1,
+                 PendingTask.BOARD_ATTEND_V1 -> completeEngineeringBoard(task);
+            case PendingTask.ENGINEERING_ACTION_V1 -> completeEngineeringAction(task);
+            case PendingTask.ENGINEERING_PERIODIC_V1 -> completeEngineeringPeriodic(task);
+            case PendingTask.PERIOD_CAPTURE_V1 -> completePeriodCapture(task);
+            case PendingTask.PERIOD_CLOSE_V1 -> completePeriodCloseTask(task);
+            case PendingTask.PERIOD_DISCLOSURE_DEADLINE_V1 -> completePeriodDeadline(task);
+            case PendingTask.CUSTOMER_EVENT_V1 -> completeCustomerEvent(task);
+            case PendingTask.ROLE_APPOINT_V1,
+                 PendingTask.ROLE_REVOKE_V1 -> completeRole(task);
+            case PendingTask.INFORMATION_PUBLISH_V1,
+                 PendingTask.INFORMATION_PUBLISH_VERSION_V1,
+                 PendingTask.INFORMATION_START_READ_V1,
+                 PendingTask.INFORMATION_CANCEL_READ_V1,
+                 PendingTask.INFORMATION_COMPLETE_READ_V1 -> completeInformation(task);
+            case PendingTask.ROLE_TRADING_READ_V1,
+                 PendingTask.ROLE_TRADING_UNREAD_V1 -> completeRoleReading(task);
+            case PendingTask.ROLE_TRADING_RESEARCH_V1,
+                 PendingTask.ROLE_TRADING_TARGET_V1,
+                 PendingTask.ROLE_TRADING_REVIEW_V1,
+                 PendingTask.ROLE_TRADING_CONFIRM_V1,
+                 PendingTask.ROLE_TRADING_HALT_V1,
+                 PendingTask.ROLE_TRADING_CANCEL_V1,
+                 PendingTask.ROLE_TRADING_CHILD_V1,
+                 PendingTask.ROLE_TRADING_CHILD_CANCEL_V1,
+                 PendingTask.ROLE_TRADING_BELIEF_V1,
+                 PendingTask.ROLE_TRADING_FORECAST_V1,
+                 PendingTask.ROLE_TRADING_COMPANY_REPORT_V1 -> completeRoleAction(task);
+            case PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 -> completeBeliefCapture(task);
+            case PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1 -> completeBeliefPublish(task);
+            case PendingTask.MEDIA_STORY_PROPOSE_V1,
+                 PendingTask.MEDIA_STORY_SUBMIT_V1,
+                 PendingTask.MEDIA_STORY_REVIEW_V1,
+                 PendingTask.MEDIA_STORY_PUBLISH_V1,
+                 PendingTask.MEDIA_STORY_CORRECTION_V1,
+                 PendingTask.MEDIA_WORK_CANCEL_V1,
+                 PendingTask.MEDIA_EVIDENCE_SHARE_V1 -> completeMediaTask(task);
+            case PendingTask.SOCIAL_BEGIN_V1,
+                 PendingTask.SOCIAL_FINISH_V1,
+                 PendingTask.SOCIAL_DELIVER_V1,
+                 PendingTask.SOCIAL_BLOCK_V1,
+                 PendingTask.SOCIAL_UNBLOCK_V1 -> completeSocialTask(task);
+            case PendingTask.GROUP_BEGIN_V1,
+                 PendingTask.GROUP_FINISH_V1,
+                 PendingTask.GROUP_PUBLISH_V1 -> completeGroupTask(task);
+            case PendingTask.INTERVIEW_INVITE_V1,
+                 PendingTask.INTERVIEW_RESPOND_V1,
+                 PendingTask.INTERVIEW_CANCEL_V1,
+                 PendingTask.INTERVIEW_END_V1,
+                 PendingTask.INTERVIEW_START_GATE_V1,
+                 PendingTask.INTERVIEW_MISS_GATE_V1,
+                 PendingTask.INTERVIEW_END_GATE_V1,
+                 PendingTask.INTERVIEW_TTL_GATE_V1,
+                 PendingTask.INTERVIEW_SPEAK_V1,
+                 PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1 -> completeInterviewTask(task);
+            case PendingTask.ROLE_TRADING_SWEEP_V1 -> completeRoleSweep(task);
+            case PendingTask.ROLE_TRADING_EXPIRE_V1 -> completeRoleExpire(task);
+            case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> completeAppointmentEnd(task);
+            case PendingTask.ROLE_TRADING_HALT_RELEASE_V1 -> completeHaltRelease(task);
+            case PendingTask.DIVIDEND_MEETING_V1,
+                 PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1,
+                 PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1,
+                 PendingTask.DIVIDEND_REGISTER_V1,
+                 PendingTask.DIVIDEND_BOOK_EX_V1,
+                 PendingTask.DIVIDEND_SETTLE_V1,
+                 PendingTask.DIVIDEND_IMPAIR_V1 -> completeDividend(task);
+            default -> throw new IllegalStateException("未启用的任务种类：" + task.kind());
         }
     }
 
@@ -12795,6 +12828,16 @@ public final class WorldRuntime implements AutoCloseable {
     private void commitAndApply(String commandId, String content, String result,
                                 List<WorldEvent> domainEvents, WorldState candidate)
             throws IOException {
+        if (capturing) {
+            // 受控重演：只记录若真实提交会产生的完整批次，不校验、不写日志、不改运行态。
+            capturedState = candidate;
+            capturedCommandId = commandId;
+            capturedContent = content;
+            capturedResult = result;
+            capturedEvents = List.copyOf(domainEvents);
+            capturedCount++;
+            return;
+        }
         try {
             validate(candidate, new WorldCommit(1, candidate.position(), manifest.runId(), commandId,
                     content, result, domainEvents), state);
@@ -12960,17 +13003,1325 @@ public final class WorldRuntime implements AutoCloseable {
         validateGroups(candidate, previous, commit);
         validateInterviews(candidate, previous, commit);
         validateClockFrame(candidate, commit, previous);
+        requireCommandOrigin(candidate, commit, previous);
+    }
+
+    /**
+     * 命令来源白名单：每帧必须能回到既有入口产生的命令标识。
+     *
+     * <p>只按前缀识别会让“未知命令换成某个已知前缀”混进通用校验，因此这里逐类核对动态来源：
+     * {@code task:} 必须对应上一帧真实待办且内容即该待办原文；{@code cmd:} 必须是本批新增的
+     * 命令记录并伴随真实排程事件；{@code roleT:} 必须绑定本批新增的人物命令；分红任务批次必须
+     * 绑定上一帧分红待办；决定批次只接受明确的内建会话命令或上一帧已存在的动作/尝试身份。
+     * 其余一律拒绝。未知命令即使完全不改状态也不能静默持久化。</p>
+     *
+     * <p>本检查证明“帧来自既有入口且来源键真实存在”，各域完整逐帧重演仍由现有校验承担；
+     * 它不构成外部签名，把原命令与全部派生状态整体改写成另一条合法命令不在可鉴别范围内。</p>
+     */
+    private void requireCommandOrigin(WorldState candidate, WorldCommit commit, WorldState previous)
+            throws IOException {
+        String id = commit.commandId();
+        if (previous == null) {
+            if (!OPEN_COMMAND.equals(id)) {
+                throw new IOException("开局批次命令不属于开局入口：" + id);
+            }
+            return;
+        }
+        if (id.startsWith("clock:") || id.startsWith("barrier:")) {
+            // 时钟/屏障由 validateClockFrame 精确重算标识、内容、事件与纯派生状态。
+            return;
+        }
+        if (id.startsWith("task:")) {
+            PendingTask task = pendingOf(previous, id.substring("task:".length()));
+            if (task == null || !task.payload().equals(commit.commandContent())) {
+                throw new IOException("任务批次必须对应上一帧真实待办：" + id);
+            }
+            requireDerivedTaskFrame(candidate, commit, previous, task);
+            return;
+        }
+        if (id.startsWith("cmd:")) {
+            String command = id.substring("cmd:".length());
+            boolean recorded = !command.isEmpty()
+                    && !previous.commandContents().containsKey(command)
+                    && commit.commandContent().equals(candidate.commandContents().get(command))
+                    && commit.result().equals(candidate.commandOutcomes().get(command));
+            boolean scheduled = commit.events().stream()
+                    .anyMatch(event -> "TASK_SCHEDULED_V1".equals(event.type()));
+            if (!recorded || !scheduled) {
+                throw new IOException("命令批次必须绑定本批新增命令与真实排程：" + id);
+            }
+            requireNonExecutionFrame(candidate, commit, previous, "cmd");
+            return;
+        }
+        if (id.startsWith("roleT:")) {
+            requireRoleCommandOrigin(candidate, commit, previous, id);
+            requireNonExecutionFrame(candidate, commit, previous, "roleT");
+            return;
+        }
+        if (id.startsWith("div-batch:")) {
+            PendingTask task = pendingOf(previous, id.substring("div-batch:".length()));
+            if (task == null || !isDividendTaskKind(task.kind())
+                    || !task.payload().equals(commit.commandContent())) {
+                throw new IOException("分红批次必须对应上一帧分红待办：" + id);
+            }
+            requireDerivedTaskBatch(candidate, commit, previous, task);
+            return;
+        }
+        for (PendingTask task : previous.pending()) {
+            if (isDividendTaskKind(task.kind()) && id.equals(commandIdOf(task.payload()))
+                    && task.payload().equals(commit.commandContent())) {
+                requireDerivedTaskBatch(candidate, commit, previous, task);
+                return;
+            }
+        }
+        if (id.startsWith("dec-")) {
+            requireDecisionOrigin(candidate, previous, commit, id);
+            requireNonExecutionFrame(candidate, commit, previous, "dec");
+            return;
+        }
+        throw new IOException("提交命令不属于任何既有入口：" + id);
+    }
+
+    /** roleT 命令批次：必须绑定本批新增的人物命令原文，人物取自命令标识的长度前缀。 */
+    private void requireRoleCommandOrigin(WorldState candidate, WorldCommit commit,
+                                          WorldState previous, String id) throws IOException {
+        String person = roleCommandPerson(id);
+        boolean recorded = person != null
+                && !previous.commandContents().containsKey(id)
+                && commit.commandContent().equals(candidate.commandContents().get(id))
+                && commit.result().equals(candidate.commandOutcomes().get(id));
+        RoleActionPayload payload = null;
+        if (recorded) {
+            try {
+                payload = mapper.readValue(commit.commandContent(), RoleActionPayload.class);
+            } catch (IOException invalid) {
+                payload = null;
+            }
+        }
+        if (payload == null || !id.equals(payload.commandId())
+                || !person.equals(payload.personPartyId())) {
+            throw new IOException("角色命令批次必须绑定本批新增的人物命令：" + id);
+        }
+    }
+
+    /** 决定批次：内建会话/回执命令要求本批新增记录；失败/超时批次只要求上一帧已存在尝试身份。 */
+    private void requireDecisionOrigin(WorldState candidate, WorldState previous, WorldCommit commit,
+                                       String id) throws IOException {
+        // 失败与超时批次沿用既有写法：只追加审计与决定状态，不向命令表补记录。
+        if (id.startsWith("dec-fail:")) {
+            String attemptId = id.substring("dec-fail:".length());
+            if (!hasAttempt(previous, null, attemptId)) {
+                throw new IOException("决定失败批次缺少上一帧尝试身份：" + attemptId);
+            }
+            requireAnyEvent(commit, "DECISION_FAILED_V1");
+            return;
+        }
+        if (id.startsWith("dec-timeout:")) {
+            String rest = id.substring("dec-timeout:".length());
+            int sep = rest.lastIndexOf(':');
+            if (sep <= 0 || !hasAttempt(previous, rest.substring(0, sep),
+                    rest.substring(sep + 1))) {
+                throw new IOException("决定超时批次缺少上一帧动作/尝试身份：" + id);
+            }
+            requireAnyEvent(commit, "DECISION_TIMEOUT_V1");
+            return;
+        }
+        boolean recorded = !previous.commandContents().containsKey(id)
+                && commit.commandContent().equals(candidate.commandContents().get(id))
+                && commit.result().equals(candidate.commandOutcomes().get(id));
+        if (!recorded) {
+            throw new IOException("决定批次必须为本批新增命令记录：" + id);
+        }
+        if (id.startsWith("dec-session:")) {
+            requireAnyEvent(commit, "DECISION_SESSION_OPEN_V1");
+            return;
+        }
+        if (id.startsWith("dec-open:")) {
+            requireAnyEvent(commit, "DECISION_OPENED_V1");
+            return;
+        }
+        if (id.startsWith("dec-reply:")) {
+            requireAnyEvent(commit, "DECISION_REPLIED_V1", "DECISION_STALE_ARCHIVED_V1",
+                    "DECISION_AUDIT_V1");
+            return;
+        }
+        if (id.startsWith("dec-dispatch:")) {
+            requireAnyEvent(commit, "DECISION_DISPATCH_V1");
+            return;
+        }
+        if (id.startsWith("dec-provider-failed:")) {
+            String attemptId = id.substring("dec-provider-failed:".length());
+            if (!hasAttempt(previous, null, attemptId)) {
+                throw new IOException("提供方失败批次缺少上一帧尝试身份：" + attemptId);
+            }
+            requireAnyEvent(commit, "DECISION_PROVIDER_FAILED_V1");
+            return;
+        }
+        throw new IOException("未知决定批次前缀：" + id);
+    }
+
+    /**
+     * 非执行帧（cmd 排程、roleT 人物命令、dec 决定）不得凭空新增或改写消费者报告。
+     *
+     * <p>按实际调用证据：这些入口只追加待办/已用/命令记录；dec 另改决定与群呈现；roleT 的
+     * 社交写信/群组动作另改自己的社交或群子集（各自由 validateSocial/validateGroups 逐帧重演）。
+     * 其余业务子集与时间/阶段/现金/回执必须与上一帧逐字相同。旧报告改写与凭空新增都会在这里被拒，
+     * 不只检查 taskId；同真实来源 ID 改 accepted/reason/subject 同样被拒。</p>
+     *
+     * <p>待办形状：cmd 恰好新增一个排程任务，roleT 新增零或一个；旧待办不得删除或改写，已用标识
+     * 只能等于旧集合并上新任务。dec 的多动作待办由决定动作引用校验负责。</p>
+     */
+    private void requireNonExecutionFrame(WorldState candidate, WorldCommit commit,
+                                          WorldState previous, String family) throws IOException {
+        String id = commit.commandId();
+        if (candidate.timeMillis() != previous.timeMillis()
+                || !candidate.lastPhase().equals(previous.lastPhase())) {
+            throw new IOException("非执行帧不得推进时间或阶段：" + id);
+        }
+        if (!candidate.accounts().equals(previous.accounts())) {
+            throw new IOException("非执行帧不得改动现金账户：" + id);
+        }
+        if (!candidate.delivered().equals(previous.delivered())) {
+            throw new IOException("非执行帧不得追加或改写业务回执：" + id);
+        }
+        requireUnchanged(previous.securities(), candidate.securities(), "证券", id);
+        requireUnchanged(previous.exchange(), candidate.exchange(), "订单/成交", id);
+        requireUnchanged(previous.manufacturing(), candidate.manufacturing(), "制造", id);
+        requireUnchanged(previous.governance(), candidate.governance(), "Board/治理", id);
+        requireUnchanged(previous.roles(), candidate.roles(), "任职", id);
+        requireUnchanged(previous.information(), candidate.information(), "资料", id);
+        requireUnchanged(previous.trading(), candidate.trading(), "交易", id);
+        requireUnchanged(previous.beliefs(), candidate.beliefs(), "信念", id);
+        requireUnchanged(previous.media(), candidate.media(), "媒体", id);
+        requireUnchanged(previous.interviews(), candidate.interviews(), "采访", id);
+        requireUnchanged(previous.evidence(), candidate.evidence(), "证据", id);
+        requireUnchanged(previous.dividends(), candidate.dividends(), "分红", id);
+        boolean decision = "dec".equals(family);
+        boolean social = "roleT".equals(family) && roleKind(commit)
+                .equals(PendingTask.SOCIAL_FINISH_V1);
+        boolean groups = "roleT".equals(family) && roleKind(commit).equals(GroupsRun.KIND_FINISH);
+        if (!social) {
+            requireUnchanged(previous.social(), candidate.social(), "社交", id);
+        }
+        if (!groups && !decision) {
+            requireUnchanged(previous.groups(), candidate.groups(), "群组", id);
+        }
+        if (!decision) {
+            requireUnchanged(previous.decisions(), candidate.decisions(), "决定", id);
+            requireScheduleOnlyPending(previous, candidate, commit, family);
+        }
+    }
+
+    /** 非执行帧的已知子集必须与上一帧逐字相同。 */
+    private static void requireUnchanged(Object before, Object after, String label, String id)
+            throws IOException {
+        if (!java.util.Objects.equals(before, after)) {
+            throw new IOException("非执行帧不得改动" + label + "报告或状态：" + id);
+        }
+    }
+
+    /** role 命令 payload 的种类；无法解析时返回空串（按“不得改动子集”处理）。 */
+    private String roleKind(WorldCommit commit) {
+        try {
+            RoleActionPayload payload = mapper.readValue(commit.commandContent(),
+                    RoleActionPayload.class);
+            return payload.kind() == null ? "" : payload.kind();
+        } catch (IOException | RuntimeException invalid) {
+            return "";
+        }
+    }
+
+    /**
+     * 非执行帧只能追加由本批原命令派生的排程任务：旧待办原样保留，已用标识等于旧集合并新任务。
+     *
+     * <p>数量：cmd 恰好一个，roleT 零或一个（真实业务日志逐帧只出现 0..1，两个同批排程不是任何
+     * 既有入口的形状）。只保证「事件与快照一致」只能证明同步造假——攻击者可以把待办与事件一起
+     * 改成另一组数值而保留原命令正文，因此每个新增待办还必须由
+     * {@link #requireDerivedScheduledTask} 按原命令重演真实排程入口。</p>
+     *
+     * @param family 帧族：{@code cmd} 或 {@code roleT}
+     */
+    private void requireScheduleOnlyPending(WorldState previous, WorldState candidate,
+                                            WorldCommit commit, String family) throws IOException {
+        List<PendingTask> scheduled = new ArrayList<>();
+        for (WorldEvent event : commit.events()) {
+            if ("TASK_SCHEDULED_V1".equals(event.type())) {
+                scheduled.add(mapper.readValue(event.payload(), PendingTask.class));
+            }
+        }
+        int min = "cmd".equals(family) ? 1 : 0;
+        if (scheduled.size() < min || scheduled.size() > 1) {
+            throw new IOException("非执行帧的排程任务数量不合法：" + commit.commandId());
+        }
+        List<PendingTask> expectedPending = new ArrayList<>(previous.pending());
+        expectedPending.addAll(scheduled);
+        if (!candidate.pending().equals(expectedPending)) {
+            throw new IOException("非执行帧必须只追加排程任务，不得删除或改写旧待办："
+                    + commit.commandId());
+        }
+        Set<String> expectedUsed = new LinkedHashSet<>(previous.usedTaskIds());
+        for (PendingTask task : scheduled) {
+            expectedUsed.add(task.taskId());
+        }
+        if (!candidate.usedTaskIds().equals(expectedUsed)) {
+            throw new IOException("非执行帧的已用任务标识与排程不一致：" + commit.commandId());
+        }
+        for (PendingTask task : scheduled) {
+            requireDerivedScheduledTask(commit, candidate, previous, task);
+        }
+    }
+
+    /**
+     * 新增排程待办必须由本批原命令纯派生。
+     *
+     * <p>新规则档（{@code command-intent}）的外部排程命令正文是完整原意信封：先校验信封与原命令
+     * 标识、待办标识/种类/阶段/到期/工时逐项一致，再从信封正文重演真实排程入口并按整帧比较。
+     * 因此「同步改待办与排程事件、保留原命令正文」的自洽篡改无法通过；信封自身被改写成另一条
+     * 合法命令不在可鉴别范围内（见契约 §5）。</p>
+     *
+     * <p>旧规则档继续按任务种类分派到各自的既有领域派生：证券/世界订单回放真实排程入口并逐子集
+     * 比较整帧，角色社交/群组回放同一入口，角色动作类要求待办逐字等于命令正文；现金转账沿用
+     * {@code validateCashSchedule} 的整批重建。制造、治理、分红等以命令记录排程的入口继续保持
+     * 原有域校验，不在此处另立第二套字段表。</p>
+     */
+    private void requireDerivedScheduledTask(WorldCommit commit, WorldState candidate,
+                                             WorldState previous, PendingTask task)
+            throws IOException {
+        if (EXTERNAL_INTENT_KINDS.contains(task.kind())) {
+            CommandIntent intent = CommandIntent.decode(mapper, commit.commandContent());
+            if (!manifest.hasCommandIntent()) {
+                if (intent != null) {
+                    throw new IOException("旧规则排程命令不得携带意图信封：" + commit.commandId());
+                }
+            } else if (intent == null) {
+                throw new IOException("新规则外部排程命令缺少意图信封：" + commit.commandId());
+            } else {
+                requireIntentIdentity(commit, previous, task, intent);
+                if (PendingTask.ENGINEERING_BEGIN_V1.equals(task.kind())) {
+                    requireIntentEngineering(commit, task, intent);
+                } else {
+                    requireReplayedIntent(commit, candidate, previous, task, intent);
+                }
+                return;
+            }
+        }
+        switch (task.kind()) {
+            case PendingTask.EXCHANGE_ORDER_V1, PendingTask.EXCHANGE_CANCEL_V1,
+                 PendingTask.EXCHANGE_CLOSE_V1, PendingTask.SELL_RESERVE_V1,
+                 PendingTask.SELL_CANCEL_V1, PendingTask.FILL_SETTLE_V1,
+                 PendingTask.MANUFACTURING_PURCHASE_ORDER_V1,
+                 PendingTask.MANUFACTURING_PRODUCTION_V1,
+                 PendingTask.MANUFACTURING_SALES_CONTRACT_V1,
+                 PendingTask.MANUFACTURING_DELIVERY_V1,
+                 PendingTask.MANUFACTURING_COLLECT_RECEIVABLE_V1,
+                 PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1,
+                 PendingTask.SOCIAL_BLOCK_V1, PendingTask.SOCIAL_UNBLOCK_V1,
+                 PendingTask.SOCIAL_FINISH_V1 -> requireReplayedSchedule(commit, candidate,
+                    previous, task);
+            case PendingTask.CASH_TRANSFER_V1 -> {
+                // 现金排程已由 validateCashSchedule 按原 ScheduleCommand 整批重建（含通知到期）
+            }
+            case PendingTask.ENGINEERING_BEGIN_V1 -> requireEngineeringBeginBinding(commit,
+                    previous, task);
+            default -> {
+                if (GroupsRun.KIND_FINISH.equals(task.kind())) {
+                    requireDerivedGroupSchedule(commit, previous, task);
+                } else {
+                    requirePinnedRoleSchedule(commit, previous, task);
+                }
+            }
+        }
+    }
+
+    /**
+     * 信封身份校验：命令标识、待办标识、阶段与到期必须与原始排程意图一致。
+     *
+     * <p>到期不早于当前时点仍按「晚于上一帧」的既有口径核验；信封只冻结绝对时点，不替代推进规则。</p>
+     */
+    private void requireIntentIdentity(WorldCommit commit, WorldState previous, PendingTask task,
+                                       CommandIntent intent) throws IOException {
+        if (!commit.commandId().equals("cmd:" + intent.commandId())) {
+            throw new IOException("排程意图信封的原命令标识与提交不一致：" + task.taskId());
+        }
+        if (!intent.taskId().equals(task.taskId())) {
+            throw new IOException("排程待办标识与原命令意图不一致：" + task.taskId());
+        }
+        WorldScheduler.Phase phase;
+        try {
+            phase = intent.phaseOf();
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("排程意图信封的阶段无法解析：" + task.taskId(), invalid);
+        }
+        if (task.phase() != phase) {
+            throw new IOException("排程待办阶段与原命令意图不一致：" + task.taskId());
+        }
+        if (task.dueTimeMillis() <= previous.timeMillis()) {
+            throw new IOException("排程待办到期必须晚于当前时点：" + task.taskId());
+        }
+    }
+
+    /**
+     * 非工程外部排程：身份与正文必须等于信封，再从正文重演真实入口并比较整帧。
+     *
+     * <p>重演用的是信封里的命令/任务/到期与域正文，不读正在校验的待办，因此伪待办不会因为
+     * 「自己和自己一致」而通过。</p>
+     */
+    private void requireReplayedIntent(WorldCommit commit, WorldState candidate,
+                                       WorldState previous, PendingTask task, CommandIntent intent)
+            throws IOException {
+        if (!intent.kind().equals(task.kind())) {
+            throw new IOException("排程待办种类与原命令意图不一致：" + task.taskId());
+        }
+        if (intent.dueTimeMillis() != task.dueTimeMillis()) {
+            throw new IOException("排程待办到期与原命令意图不一致：" + task.taskId());
+        }
+        if (intent.durationMillis() != 0L) {
+            throw new IOException("非工程排程意图不得声明工时：" + task.taskId());
+        }
+        if (!intent.body().equals(task.payload())) {
+            throw new IOException("排程待办参数与原命令意图不一致：" + task.taskId());
+        }
+        requireReplayedSchedule(commit, candidate, previous, task);
+    }
+
+    /**
+     * 工程外部排程：障碍待办（BEGIN）由「信封完成时点 − 冻结工时」派生，目标种类与正文严格映射。
+     *
+     * <p>工程动作的域请求本身就是冻结正文（董事/经理/周期三种 payload），公开入口再把它拆成
+     * 位置参数；因此这里绑定的是「信封 ↔ BEGIN 包装 ↔ 正文类型/动作 ↔ 工时/提前量」这一整条派生，
+     * 到期时 BEGIN 再用当时事实复核权限并用同一正文排真实完成帧。</p>
+     */
+    private void requireIntentEngineering(WorldCommit commit, PendingTask task,
+                                          CommandIntent intent) throws IOException {
+        if (!ENGINEERING_INTENT_KINDS.contains(intent.kind())) {
+            throw new IOException("工程排程意图的目标种类未知：" + intent.kind());
+        }
+        if (!WorldScheduler.Phase.RULES.equals(intent.phaseOf())) {
+            throw new IOException("工程排程意图必须落在 RULES 阶段：" + task.taskId());
+        }
+        long duration = intent.durationMillis();
+        if (duration <= 0) {
+            throw new IOException("工程外部排程意图必须声明正工时：" + task.taskId());
+        }
+        EngineeringBeginPayload wrapper;
+        try {
+            wrapper = mapper.readValue(task.payload(), EngineeringBeginPayload.class);
+        } catch (IOException | RuntimeException invalid) {
+            throw new IOException("工程 BEGIN 参数无法解析：" + task.taskId(), invalid);
+        }
+        if (!intent.kind().equals(wrapper.targetKind())) {
+            throw new IOException("工程 BEGIN 目标种类与原命令意图不一致：" + task.taskId());
+        }
+        if (intent.dueTimeMillis() != wrapper.dueMillis()) {
+            throw new IOException("工程 BEGIN 完成时点与原命令意图不一致：" + task.taskId());
+        }
+        if (!intent.body().equals(wrapper.payload())) {
+            throw new IOException("工程 BEGIN 动作正文与原命令意图不一致：" + task.taskId());
+        }
+        requireEngineeringTargetKind(wrapper.targetKind(), intent.body());
+        Long focus = focusMillisOf(intent.body());
+        if (focus != null && focus.longValue() != duration) {
+            throw new IOException("工程 BEGIN 工时与原命令意图不一致：" + task.taskId());
+        }
+        long expected;
+        try {
+            expected = Math.subtractExact(intent.dueTimeMillis(), duration);
+        } catch (ArithmeticException overflow) {
+            throw new IOException("工程 BEGIN 提前量与工时相减溢出：" + task.taskId(), overflow);
+        }
+        if (task.dueTimeMillis() != expected) {
+            throw new IOException("工程 BEGIN 提前量与原命令工时不一致：" + task.taskId());
+        }
+    }
+
+    /** 正文是否带有显式工时（周期动作正文不含该字段，以信封工时为准）。 */
+    private Long focusMillisOf(String body) throws IOException {
+        JsonNode node;
+        try {
+            node = mapper.readTree(body);
+        } catch (IOException invalid) {
+            throw new IOException("工程动作正文无法解析", invalid);
+        }
+        JsonNode focus = node == null ? null : node.get("focusMillis");
+        return focus != null && focus.isNumber() ? focus.asLong() : null;
+    }
+
+    /**
+     * 工程 BEGIN 屏障任务：待办参数是 {@link EngineeringBeginPayload}，其中 {@code payload} 必须是
+     * 本批原命令正文，且 BEGIN 的提前量必须等于原命令记录的工时。
+     *
+     * <p>正工时入口在命令正文里冻结了 {@code focusMillis}（{@code withFocus(durationMillis)}），
+     * 而 {@code engineeringPlannedTask} 把待办到期提前同样长的时间；因此
+     * {@code wrap.dueMillis() == task.dueTimeMillis() + focusMillis} 是原派生，改早或改晚都拒绝。
+     * 周期动作正文不含工时，提前量未断言（见覆盖表残余）。</p>
+     */
+    private void requireEngineeringBeginBinding(WorldCommit commit, WorldState previous,
+                                                PendingTask task) throws IOException {
+        if (task.phase() != WorldScheduler.Phase.RULES) {
+            throw new IOException("工程 BEGIN 待办必须落在 RULES 阶段：" + task.taskId());
+        }
+        EngineeringBeginPayload wrapper;
+        try {
+            wrapper = mapper.readValue(task.payload(), EngineeringBeginPayload.class);
+        } catch (IOException | RuntimeException invalid) {
+            throw new IOException("工程 BEGIN 参数无法解析：" + task.taskId(), invalid);
+        }
+        if (!commit.commandContent().equals(wrapper.payload())) {
+            throw new IOException("排程待办参数与原命令不一致：" + task.taskId());
+        }
+        if (task.dueTimeMillis() <= previous.timeMillis()) {
+            throw new IOException("排程待办到期必须晚于当前时点：" + task.taskId());
+        }
+        JsonNode content;
+        try {
+            content = mapper.readTree(commit.commandContent());
+        } catch (IOException invalid) {
+            throw new IOException("工程排程命令正文无法解析：" + commit.commandId(), invalid);
+        }
+        requireEngineeringTargetKind(wrapper.targetKind(), commit.commandContent());
+        JsonNode focus = content.get("focusMillis");
+        if (focus == null || !focus.isNumber()) {
+            return;
+        }
+        if (focus.asLong() < 1) {
+            throw new IOException("工程 BEGIN 屏障必须有正工时：" + task.taskId());
+        }
+        long expected;
+        try {
+            expected = Math.addExact(task.dueTimeMillis(), focus.asLong());
+        } catch (ArithmeticException overflow) {
+            throw new IOException("工程 BEGIN 提前量与工时相加溢出：" + task.taskId(), overflow);
+        }
+        if (wrapper.dueMillis() != expected) {
+            throw new IOException("工程 BEGIN 提前量与原命令工时不一致：" + task.taskId());
+        }
+    }
+
+    /**
+     * 董事/到会动作：召集/材料/预算/任免提案/表决/实施/豁免，以及本人到会。
+     *
+     * <p>公开的本人到会入口 {@code scheduleEngineeringAttend} 与其他董事动作共用
+     * {@link PendingTask#ENGINEERING_BOARD_V1} 作为完成帧种类（真实动作由正文的 {@code action}
+     * 区分），因此该种类必须接受到会动作；{@link PendingTask#BOARD_ATTEND_V1} 只用于决定派生的
+     * 到会计划，集合也仍然是到会两种。</p>
+     */
+    private static final Set<String> ENGINEERING_BOARD_ACTIONS = Set.of(
+            "CONVENE", "CONVENE_APPOINTMENT", "CONVENE_WAIVER", "MATERIAL",
+            "PROPOSE_APPOINTMENT", "PROPOSE_BUDGET", "PROPOSE_WAIVER", "VOTE", "IMPLEMENT",
+            "ATTEND", "ATTEND_RECUSED");
+
+    /** 本人到会动作：到会与回避到会。 */
+    private static final Set<String> ENGINEERING_ATTEND_ACTIONS = Set.of("ATTEND", "ATTEND_RECUSED");
+
+    /** 经营动作（契约/工作/付款/减值/核销/回收/验收/请款/质保金/豁免）。 */
+    private static final Set<String> ENGINEERING_ACTION_ACTIONS = Set.of(
+            "SIGN", "START_WORK", "INVOICE", "TERMINATE", "PAY_SUPPLIER", "IMPAIR",
+            "WRITE_OFF", "REQUEST_RECOVERY", "REQUEST_ACCEPTANCE", "REQUEST_PAYMENT",
+            "REQUEST_RETENTION", "WAIVE");
+
+    /** 周期动作（出席/准备/评分/审批/授权/发布）。 */
+    private static final Set<String> ENGINEERING_PERIODIC_ACTIONS = Set.of(
+            "ATTEND", "PREPARE", "SCORE", "APPROVE", "AUTHORIZE", "PUBLISH");
+
+    /**
+     * BEGIN 的目标种类必须与正文类型和动作严格对应。
+     *
+     * <p>四种目标种类各有唯一正文类型与动作集合：董事动作 ↔ {@link EngineeringBoardPayload}
+     * 且动作在董事集合；本人到会 ↔ 同一类型但动作只允许到会；经营 ↔ {@link EngineeringActionPayload}；
+     * 周期 ↔ {@link PeriodicActionPayload}。类型不符、动作越界或解析失败一律拒绝，
+     * 不再让任意已知任务种类穿过 BEGIN（旧实现会在执行期崩溃或写出错型报告）。</p>
+     */
+    private void requireEngineeringTargetKind(String targetKind, String body) throws IOException {
+        switch (targetKind) {
+            case PendingTask.ENGINEERING_BOARD_V1 -> {
+                EngineeringBoardPayload payload = readEngineeringBody(body,
+                        EngineeringBoardPayload.class, "董事");
+                if (!ENGINEERING_BOARD_ACTIONS.contains(payload.action())) {
+                    throw new IOException("工程 BEGIN 目标种类与董事动作不一致：" + payload.action());
+                }
+            }
+            case PendingTask.BOARD_ATTEND_V1 -> {
+                EngineeringBoardPayload payload = readEngineeringBody(body,
+                        EngineeringBoardPayload.class, "到会");
+                if (!ENGINEERING_ATTEND_ACTIONS.contains(payload.action())) {
+                    throw new IOException("工程 BEGIN 目标种类与到会动作不一致：" + payload.action());
+                }
+            }
+            case PendingTask.ENGINEERING_ACTION_V1 -> {
+                EngineeringActionPayload payload = readEngineeringBody(body,
+                        EngineeringActionPayload.class, "经营");
+                if (!ENGINEERING_ACTION_ACTIONS.contains(payload.action())) {
+                    throw new IOException("工程 BEGIN 目标种类与经营动作不一致：" + payload.action());
+                }
+            }
+            case PendingTask.ENGINEERING_PERIODIC_V1 -> {
+                PeriodicActionPayload payload = readEngineeringBody(body,
+                        PeriodicActionPayload.class, "周期");
+                if (!ENGINEERING_PERIODIC_ACTIONS.contains(payload.action())) {
+                    throw new IOException("工程 BEGIN 目标种类与周期动作不一致：" + payload.action());
+                }
+            }
+            default -> throw new IOException("工程 BEGIN 目标种类未知：" + targetKind);
+        }
+    }
+
+    /** 按目标种类严格解析正文；类型不符统一转成拒绝，不在推进时抛 Jackson 异常。 */
+    private <T> T readEngineeringBody(String body, Class<T> type, String label)
+            throws IOException {
+        try {
+            return mapper.readValue(body, type);
+        } catch (IOException | RuntimeException invalid) {
+            throw new IOException("工程 BEGIN 目标种类与" + label + "正文类型不一致", invalid);
+        }
+    }
+
+    /** 排程帧必须等于按原命令重演同一排程入口得到的完整批次。 */
+    private void requireReplayedSchedule(WorldCommit commit, WorldState candidate,
+                                         WorldState previous, PendingTask task)
+            throws IOException {
+        ReplayedFrame replayed;
+        try {
+            replayed = replayScheduleEntry(previous, commit, task);
+        } catch (IOException | RuntimeException failure) {
+            throw new IOException("排程帧无法由上一帧状态和原命令重算：" + task.taskId(), failure);
+        }
+        String difference = frameDifference(replayed.state(), candidate);
+        if (!difference.isEmpty()) {
+            throw new IOException("排程帧与按原命令重演的状态不一致：" + task.taskId()
+                    + " [" + difference + "]");
+        }
+        if (!replayed.commandId().equals(commit.commandId())
+                || !replayed.content().equals(commit.commandContent())
+                || !replayed.result().equals(commit.result())) {
+            throw new IOException("排程帧的命令或回报与原命令不一致：" + task.taskId());
+        }
+        if (!replayed.events().equals(frameDomainEvents(commit))) {
+            throw new IOException("排程帧的领域事件与原命令不一致：" + task.taskId());
+        }
+    }
+
+    /**
+     * 以基准状态为上下文重演一条排程帧：只捕获候选批次，不校验、不写日志、不改运行态。
+     *
+     * <p>重演调用的是真实排程入口本身（不是另抄一份字段映射），因此数量、账户、方向、价格、
+     * 到期、任务标识、阶段与事件都由原命令重新算出；任何一处与原帧不同都会被整帧比较发现。</p>
+     */
+    private ReplayedFrame replayScheduleEntry(WorldState previous, WorldCommit commit,
+                                              PendingTask task) throws IOException {
+        WorldState savedState = state;
+        boolean savedPaused = paused;
+        boolean savedCapturing = capturing;
+        clearCapture();
+        WorldState captured;
+        String commandId;
+        String content;
+        String result;
+        List<WorldEvent> events;
+        int count;
+        try {
+            state = previous;
+            capturing = true;
+            dispatchScheduleReplay(commit, task);
+            captured = capturedState;
+            commandId = capturedCommandId;
+            content = capturedContent;
+            result = capturedResult;
+            events = capturedEvents;
+            count = capturedCount;
+        } finally {
+            state = savedState;
+            paused = savedPaused;
+            capturing = savedCapturing;
+            clearCapture();
+        }
+        if (count != 1 || captured == null || commandId == null || content == null || result == null) {
+            throw new IOException("排程重演必须恰好产生一个排程批次，实际 " + count + " 次："
+                    + task.taskId());
+        }
+        return new ReplayedFrame(captured, commandId, content, result,
+                events == null ? List.of() : List.copyOf(events), count);
+    }
+
+    /** 按任务种类把原命令正文还原成参数，调用真实排程入口。 */
+    private void dispatchScheduleReplay(WorldCommit commit, PendingTask task) throws IOException {
+        switch (task.kind()) {
+            case PendingTask.EXCHANGE_ORDER_V1 -> {
+                OrderCommand command = readScheduleContent(commit, OrderCommand.class, "订单");
+                scheduleOrder(command.commandId(), command.taskId(), command.dueTimeMillis(),
+                        command.actorOwnerId(), command.accountId(), command.symbol(),
+                        command.side(), command.type(), command.price(), command.quantity());
+            }
+            case PendingTask.EXCHANGE_CANCEL_V1 -> {
+                CancelOrderCommand command = readScheduleContent(commit, CancelOrderCommand.class,
+                        "撤单");
+                scheduleCancelOrder(command.commandId(), command.taskId(),
+                        command.dueTimeMillis(), command.actorOwnerId(), command.orderId());
+            }
+            case PendingTask.EXCHANGE_CLOSE_V1 -> {
+                CloseMarketCommand command = readScheduleContent(commit, CloseMarketCommand.class,
+                        "收盘");
+                scheduleCloseMarket(command.commandId(), command.taskId(),
+                        command.dueTimeMillis());
+            }
+            case PendingTask.SELL_RESERVE_V1 -> {
+                ReserveCommand command = readScheduleContent(commit, ReserveCommand.class,
+                        "预留卖出");
+                scheduleReserveSell(command.commandId(), command.taskId(),
+                        command.dueTimeMillis(), command.actorOwnerId(), command.accountId(),
+                        command.symbol(), command.reservationId(), command.quantity());
+            }
+            case PendingTask.SELL_CANCEL_V1 -> {
+                CancelCommand command = readScheduleContent(commit, CancelCommand.class, "撤销预留");
+                scheduleCancelSell(command.commandId(), command.taskId(),
+                        command.dueTimeMillis(), command.actorOwnerId(),
+                        command.reservationId());
+            }
+            case PendingTask.FILL_SETTLE_V1 -> {
+                FillCommand command = readScheduleContent(commit, FillCommand.class, "清算成交");
+                scheduleFixtureFill(command.commandId(), command.taskId(),
+                        command.dueTimeMillis(), command.reservationId(),
+                        command.buyerAccountId(), command.price(), command.quantity());
+            }
+            case PendingTask.SOCIAL_BLOCK_V1, PendingTask.SOCIAL_UNBLOCK_V1 -> {
+                RoleActionPayload role = roleSchedulePayload(commit);
+                SocialTargetDraft target = readRoleBody(role, SocialTargetDraft.class, "屏蔽");
+                requireRoleScheduleIdentity(commit, task, role);
+                scheduleSocialBlock(replaySession(role), role.clientCommandId(),
+                        role.clientTaskId(), role.dueMillis(), target.targetPartyId(),
+                        PendingTask.SOCIAL_UNBLOCK_V1.equals(role.kind()));
+            }
+            case PendingTask.SOCIAL_FINISH_V1 -> {
+                RoleActionPayload role = roleSchedulePayload(commit);
+                WorldRoleSession.SocialSendDraft draft = readRoleBody(role,
+                        WorldRoleSession.SocialSendDraft.class, "写信");
+                requireRoleScheduleIdentity(commit, task, role);
+                scheduleSocialSend(replaySession(role), role.clientCommandId(),
+                        role.clientTaskId(), role.dueMillis(), draft);
+            }
+            case PendingTask.MANUFACTURING_PURCHASE_ORDER_V1,
+                 PendingTask.MANUFACTURING_PRODUCTION_V1,
+                 PendingTask.MANUFACTURING_SALES_CONTRACT_V1,
+                 PendingTask.MANUFACTURING_DELIVERY_V1,
+                 PendingTask.MANUFACTURING_COLLECT_RECEIVABLE_V1,
+                 PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1 ->
+                    replayManufacturingEntry(commit, task);
+            case PendingTask.GOVERNANCE_MEETING_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                GovernancePayload body = readIntentBody(commit, intent,
+                        GovernancePayload.class, "治理召集");
+                scheduleBoardMeeting(intent.commandId(), intent.taskId(),
+                        intent.dueTimeMillis(), body.seatId(), body.meetingId(),
+                        body.materialDeadline(), body.opensAt(), body.closesAt(),
+                        body.attendeeSeatIds(), body.recusedSeatIds());
+            }
+            case PendingTask.GOVERNANCE_MATERIAL_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                GovernancePayload body = readIntentBody(commit, intent,
+                        GovernancePayload.class, "治理材料");
+                scheduleBoardMaterial(intent.commandId(), intent.taskId(),
+                        intent.dueTimeMillis(), body.seatId(), body.meetingId(),
+                        body.materialId(), body.sourceRef(), body.version());
+            }
+            case PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                GovernancePayload body = readIntentBody(commit, intent,
+                        GovernancePayload.class, "治理预算提案");
+                scheduleBudgetProposal(intent.commandId(), intent.taskId(),
+                        intent.dueTimeMillis(), body.seatId(), body.meetingId(), body.lines());
+            }
+            case PendingTask.GOVERNANCE_VOTE_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                GovernancePayload body = readIntentBody(commit, intent,
+                        GovernancePayload.class, "治理表决");
+                scheduleBoardVote(intent.commandId(), intent.taskId(), intent.dueTimeMillis(),
+                        body.seatId(), body.meetingId(), BoardModel.Vote.valueOf(body.vote()));
+            }
+            case PendingTask.GOVERNANCE_IMPLEMENT_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                GovernancePayload body = readIntentBody(commit, intent,
+                        GovernancePayload.class, "治理实施");
+                scheduleBudgetImplementation(intent.commandId(), intent.taskId(),
+                        intent.dueTimeMillis(), body.seatId(), body.meetingId());
+            }
+            case PendingTask.ROLE_APPOINT_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                AppointmentPayload body = readIntentBody(commit, intent,
+                        AppointmentPayload.class, "任职");
+                scheduleAppointment(intent.commandId(), intent.taskId(), intent.dueTimeMillis(),
+                        body.appointmentId(), body.personPartyId(), body.organizationPartyId(),
+                        RoleAccess.Role.valueOf(body.role()), body.startsAt(), body.endsAt());
+            }
+            case PendingTask.ROLE_REVOKE_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                AppointmentPayload body = readIntentBody(commit, intent,
+                        AppointmentPayload.class, "撤销任职");
+                scheduleRevokeAppointment(intent.commandId(), intent.taskId(),
+                        intent.dueTimeMillis(), body.appointmentId());
+            }
+            case PendingTask.INFORMATION_PUBLISH_V1, PendingTask.INFORMATION_PUBLISH_VERSION_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                PublishPayload body = readIntentBody(commit, intent, PublishPayload.class,
+                        "资料发表");
+                if (PendingTask.INFORMATION_PUBLISH_V1.equals(task.kind())) {
+                    schedulePublishDocument(intent.commandId(), intent.taskId(),
+                            intent.dueTimeMillis(), body.docId(), body.publisherPartyId(),
+                            new InformationModel.Audience(
+                                    InformationModel.AudienceKind.valueOf(body.audienceKind()),
+                                    body.audiencePartyId() == null || body.audiencePartyId().isEmpty()
+                                            ? null : body.audiencePartyId()),
+                            body.title(), body.body(), body.publicSourceDescription(),
+                            body.readDurationMillis(), body.internalSourceIds());
+                } else {
+                    schedulePublishDocumentVersion(intent.commandId(), intent.taskId(),
+                            intent.dueTimeMillis(), body.docId(), body.title(), body.body(),
+                            body.publicSourceDescription(), body.readDurationMillis(),
+                            body.internalSourceIds());
+                }
+            }
+            case PendingTask.INFORMATION_START_READ_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                ReadingPayload body = readIntentBody(commit, intent, ReadingPayload.class, "开始阅读");
+                scheduleStartReading(intent.commandId(), intent.taskId(), intent.dueTimeMillis(),
+                        body.personPartyId(), body.docId(), body.version());
+            }
+            case PendingTask.INFORMATION_CANCEL_READ_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                ReadingPayload body = readIntentBody(commit, intent, ReadingPayload.class, "取消阅读");
+                scheduleCancelReading(intent.commandId(), intent.taskId(), intent.dueTimeMillis(),
+                        body.personPartyId(), new RoleView.ReadingRef(body.personPartyId(),
+                                body.docId(), body.version(), body.refIndex()));
+            }
+            case PendingTask.DIVIDEND_MEETING_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                DividendMeetingPayload body = readIntentBody(commit, intent,
+                        DividendMeetingPayload.class, "分红会议");
+                scheduleBoardMeeting(intent.commandId(), intent.taskId(), intent.dueTimeMillis(),
+                        body.chairSeatId(), body.meetingId(), body.materialDeadline(),
+                        body.opensAt(), body.closesAt(), body.attendeeSeatIds(),
+                        body.recusedSeatIds(), BoardModel.Topic.DIVIDEND_AUTHORIZATION);
+            }
+            case PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                DividendActionPayload body = readIntentBody(commit, intent,
+                        DividendActionPayload.class, "分红提案");
+                scheduleDividendProposal(intent.commandId(), intent.taskId(),
+                        intent.dueTimeMillis(), body.seatId(), body.meetingId(),
+                        body.relatedSeatIds(), body.request());
+            }
+            case PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                DividendActionPayload body = readIntentBody(commit, intent,
+                        DividendActionPayload.class, "分红授权");
+                scheduleDividendAuthorization(intent.commandId(), intent.taskId(),
+                        intent.dueTimeMillis(), body.seatId(), body.meetingId());
+            }
+            case PendingTask.DIVIDEND_SETTLE_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                DividendActionPayload body = readIntentBody(commit, intent,
+                        DividendActionPayload.class, "分红付款");
+                scheduleDividendSettlement(intent.commandId(), intent.taskId(),
+                        intent.dueTimeMillis(), body.seatId(), body.schemeId());
+            }
+            case PendingTask.DIVIDEND_IMPAIR_V1 -> {
+                CommandIntent intent = requireReplayIntent(commit);
+                DividendActionPayload body = readIntentBody(commit, intent,
+                        DividendActionPayload.class, "分红减值");
+                scheduleDividendImpairment(intent.commandId(), intent.taskId(),
+                        intent.dueTimeMillis(), body.seatId(), body.claimId(), body.amount(),
+                        body.evidenceRef());
+            }
+            default -> throw new IOException("排程重演未登记的任务种类：" + task.kind());
+        }
+    }
+
+    /** 重演只接受原意信封：身份与正文都来自原命令，不读正在校验的待办。 */
+    private CommandIntent requireReplayIntent(WorldCommit commit) throws IOException {
+        CommandIntent intent = CommandIntent.decode(mapper, commit.commandContent());
+        if (intent == null) {
+            throw new IOException("排程重演缺少意图信封：" + commit.commandId());
+        }
+        return intent;
+    }
+
+    /** 从信封正文解析域请求；解析失败一律拒绝，不在推进期抛未处理异常。 */
+    private <T> T readIntentBody(WorldCommit commit, CommandIntent intent, Class<T> type,
+                                 String label) throws IOException {
+        try {
+            return mapper.readValue(intent.body(), type);
+        } catch (IOException | RuntimeException invalid) {
+            throw new IOException(label + "意图正文无法解析：" + commit.commandId(), invalid);
+        }
+    }
+
+    /**
+     * 制造六入口重演：命令正文是 {@link ManufacturingCommand}（含 taskId/到期），待办参数是
+     * {@link ManufacturingPayload}（去掉 taskId/到期）。按命令记录的意图回到对应公开入口，
+     * 由入口自己的数量/单价/交付/期间校验与固定 kind 重新派生，不另抄字段映射。
+     *
+     * <p>新规则档（{@code manufacturing-intent}）命令正文必带种类，且必须等于待办种类；
+     * 旧规则档命令正文不含种类，只能按待办种类分派，PURCHASE↔PRODUCTION 这类同形互换
+     * 无法从原命令鉴别，属已知旧契约限制。</p>
+     */
+    private void replayManufacturingEntry(WorldCommit commit, PendingTask task)
+            throws IOException {
+        ManufacturingCommand command = readScheduleContent(commit, ManufacturingCommand.class,
+                "制造");
+        boolean intent = manifest.hasCommandIntent();
+        if (intent) {
+            if (command.kind() == null) {
+                throw new IOException("新规则制造命令缺少意图种类：" + commit.commandId());
+            }
+            if (!command.kind().equals(task.kind())) {
+                throw new IOException("制造排程意图与待办种类不一致：" + task.taskId());
+            }
+        } else if (command.kind() != null) {
+            throw new IOException("旧规则制造命令不得携带意图种类：" + commit.commandId());
+        }
+        String kind = intent ? command.kind() : task.kind();
+        switch (kind) {
+            case PendingTask.MANUFACTURING_PURCHASE_ORDER_V1 -> schedulePurchaseOrder(
+                    command.commandId(), command.taskId(), command.dueTimeMillis(),
+                    command.actorOwnerId(), command.businessId(), command.quantity());
+            case PendingTask.MANUFACTURING_PRODUCTION_V1 -> scheduleProduction(
+                    command.commandId(), command.taskId(), command.dueTimeMillis(),
+                    command.actorOwnerId(), command.businessId(), command.quantity());
+            case PendingTask.MANUFACTURING_SALES_CONTRACT_V1 -> scheduleSalesContract(
+                    command.commandId(), command.taskId(), command.dueTimeMillis(),
+                    command.actorOwnerId(), command.businessId(), command.quantity(),
+                    command.unitPrice(), command.promisedDeliveryAt());
+            case PendingTask.MANUFACTURING_DELIVERY_V1 -> scheduleDelivery(
+                    command.commandId(), command.taskId(), command.dueTimeMillis(),
+                    command.actorOwnerId(), command.businessId(), command.quantity(),
+                    command.resultId());
+            case PendingTask.MANUFACTURING_COLLECT_RECEIVABLE_V1 -> scheduleCollectReceivable(
+                    command.commandId(), command.taskId(), command.dueTimeMillis(),
+                    command.actorOwnerId(), command.businessId());
+            case PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1 -> schedulePayExpenseBill(
+                    command.commandId(), command.taskId(), command.dueTimeMillis(),
+                    command.actorOwnerId(), command.period());
+            default -> throw new IOException("制造重演未登记的任务种类：" + task.kind());
+        }
+    }
+
+    /** 从命令正文读取排程命令；无法解析即拒绝。 */
+    private <T> T readScheduleContent(WorldCommit commit, Class<T> type, String label)
+            throws IOException {
+        try {
+            return mapper.readValue(commit.commandContent(), type);
+        } catch (IOException | RuntimeException invalid) {
+            throw new IOException(label + "排程命令正文无法解析：" + commit.commandId(), invalid);
+        }
+    }
+
+    /** 群组排程：待办参数必须等于 groupBegin 与原命令业务参数派生出的负载。 */
+    private void requireDerivedGroupSchedule(WorldCommit commit, WorldState previous,
+                                             PendingTask task) throws IOException {
+        RoleActionPayload role = roleSchedulePayload(commit);
+        requireRoleScheduleIdentity(commit, task, role);
+        GroupTaskPayload body = readRoleBody(role, GroupTaskPayload.class, "群组");
+        GroupsRun run = previous.groups();
+        if (run == null) {
+            throw new IOException("群组档案缺少群组子集状态：" + task.taskId());
+        }
+        long now = previous.timeMillis();
+        if (role.dueMillis() != now + body.durationOf(run)) {
+            throw new IOException("群组排程到期与原命令冻结工时不一致：" + task.taskId());
+        }
+        GroupBegun begun = groupBegin(body.action(), run,
+                previous.information() == null ? null : previous.information().information(),
+                role.personPartyId(), role.commandId(), body, now);
+        if (!begun.accepted()) {
+            throw new IOException("群组排程原命令在开始时点不可执行：" + task.taskId());
+        }
+        String expected = mapper.writeValueAsString(withDerived(body, begun));
+        if (!expected.equals(task.payload())) {
+            throw new IOException("排程待办参数与原命令不一致：" + task.taskId());
+        }
+    }
+
+    /**
+     * 其余排程入口（治理五类、分红、任职、发布、资料、媒体、采访等）把命令正文本身写进待办：
+     * 待办参数必须逐字等于本批原命令正文；角色动作类另校验命名空间标识/到期/阶段与观察位置。
+     *
+     * <p>这些入口在 {@code scheduleGovernanceTask}/{@code scheduleCompletionTask}/
+     * {@code scheduleRoleAction} 里都是 {@code new PendingTask(..., content)}，因此「待办等于正文」
+     * 就是它们的原派生；命令记录型入口（现金、制造、工程 BEGIN）已在上面的分支单独重演。</p>
+     */
+    private void requirePinnedRoleSchedule(WorldCommit commit, WorldState previous,
+                                           PendingTask task) throws IOException {
+        if (!task.payload().equals(commit.commandContent())) {
+            throw new IOException("排程待办参数与原命令不一致：" + task.taskId());
+        }
+        RoleActionPayload role = tryRolePayload(commit.commandContent());
+        if (role == null) {
+            return;
+        }
+        requireRoleScheduleIdentity(commit, task, role);
+        if (task.dueTimeMillis() <= previous.timeMillis()) {
+            throw new IOException("排程待办到期必须晚于当前时点：" + task.taskId());
+        }
+        if (role.observedPosition() != null && role.observedPosition() > previous.position()) {
+            throw new IOException("角色命令不得观察未来的提交位置：" + task.taskId());
+        }
+    }
+
+    /** 角色命令正文必须存在且可解析。 */
+    private RoleActionPayload roleSchedulePayload(WorldCommit commit) throws IOException {
+        RoleActionPayload role = tryRolePayload(commit.commandContent());
+        if (role == null) {
+            throw new IOException("排程命令正文不是角色动作参数：" + commit.commandId());
+        }
+        return role;
+    }
+
+    /** 命令正文里的标识/任务/到期/阶段/种类必须与新增待办一致。 */
+    private static void requireRoleScheduleIdentity(WorldCommit commit, PendingTask task,
+                                                    RoleActionPayload role) throws IOException {
+        String expectedCommand = roleCommandId(role.personPartyId(), role.clientCommandId());
+        String expectedTask = roleTaskId(role.personPartyId(), role.clientTaskId());
+        if (!expectedCommand.equals(role.commandId())
+                || !(commit.commandId().equals(role.commandId())
+                        || commit.commandId().equals("cmd:" + role.commandId()))
+                || !expectedTask.equals(task.taskId())
+                || task.dueTimeMillis() != role.dueMillis()
+                || task.phase() != WorldScheduler.Phase.COMPLETION
+                || !role.kind().equals(task.kind())) {
+            throw new IOException("排程待办与原命令的标识/任务/到期/阶段不一致：" + task.taskId());
+        }
+    }
+
+    /** 从命令正文重建角色会话（人物、任职映射与观察位置都来自原命令）。 */
+    private WorldRoleSession replaySession(RoleActionPayload role) {
+        return new WorldRoleSession(this, role.personPartyId(), 0L, role.appointments(),
+                role.observedPosition());
+    }
+
+    /** 读取角色命令里的业务参数。 */
+    private <T> T readRoleBody(RoleActionPayload role, Class<T> type, String label)
+            throws IOException {
+        try {
+            return mapper.readValue(role.body(), type);
+        } catch (IOException | RuntimeException invalid) {
+            throw new IOException(label + "排程参数无法解析：" + role.commandId(), invalid);
+        }
+    }
+
+    /** 命令正文是否角色动作参数；缺关键字段时返回 null，避免误把其它命令当角色命令。 */
+    private RoleActionPayload tryRolePayload(String content) {
+        try {
+            RoleActionPayload payload = mapper.readValue(content, RoleActionPayload.class);
+            if (payload.commandId() == null || payload.personPartyId() == null
+                    || payload.clientCommandId() == null || payload.clientTaskId() == null
+                    || payload.kind() == null) {
+                return null;
+            }
+            return payload;
+        } catch (IOException | RuntimeException invalid) {
+            return null;
+        }
+    }
+
+    /** 从 roleT 标识解出人物；长度前缀不合法返回 null。 */
+    private static String roleCommandPerson(String id) {
+        String rest = id.substring("roleT:".length());
+        int sep = rest.indexOf(':');
+        if (sep <= 0) {
+            return null;
+        }
+        int length;
+        try {
+            length = Integer.parseInt(rest.substring(0, sep));
+        } catch (NumberFormatException invalid) {
+            return null;
+        }
+        int start = sep + 1;
+        if (length <= 0 || start + length >= rest.length() || rest.charAt(start + length) != ':') {
+            return null;
+        }
+        return rest.substring(start, start + length);
+    }
+
+    /** 上一帧决定里是否存在指定尝试；actionId 为空时不限动作。 */
+    private static boolean hasAttempt(WorldState previous, String actionId, String attemptId) {
+        if (previous.decisions() == null || attemptId == null || attemptId.isEmpty()) {
+            return false;
+        }
+        for (DecisionModel.Decision decision : previous.decisions().state().decisions()) {
+            if (actionId != null && !actionId.equals(decision.actionId())) {
+                continue;
+            }
+            for (DecisionModel.Attempt attempt : decision.attempts()) {
+                if (attemptId.equals(attempt.attemptId())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 本批必须出现指定类型之一的事件。 */
+    private static void requireAnyEvent(WorldCommit commit, String... types) throws IOException {
+        for (WorldEvent event : commit.events()) {
+            for (String type : types) {
+                if (type.equals(event.type())) {
+                    return;
+                }
+            }
+        }
+        throw new IOException("批次缺少与命令一致的事件");
+    }
+
+    /** 分红任务种类：完成帧与付款批次都以这些待办为来源。 */
+    private static boolean isDividendTaskKind(String kind) {
+        return PendingTask.DIVIDEND_MEETING_V1.equals(kind)
+                || PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1.equals(kind)
+                || PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(kind)
+                || PendingTask.DIVIDEND_REGISTER_V1.equals(kind)
+                || PendingTask.DIVIDEND_BOOK_EX_V1.equals(kind)
+                || PendingTask.DIVIDEND_SETTLE_V1.equals(kind)
+                || PendingTask.DIVIDEND_IMPAIR_V1.equals(kind);
+    }
+
+    /**
+     * 任务完成帧必须等于「上一帧 + 该真实待办」的受控重演结果。
+     *
+     * <p>只绑定 taskId、命令原文或“事件与快照一致”都只能证明同步造假：真实源任务存在时，
+     * 仍可夹带另一任务的伪报告。这里把上一帧临时作为执行上下文，用同一份
+     * {@link #executeTask} 派发算出完整批次（候选整帧状态、命令标识/原文、回报、领域事件），
+     * 逐项比较；任何报告集合、订单/成交引用、成功原因或主体不同即拒绝。</p>
+     *
+     * <p>重演只捕获不写日志、不发事件、不调提供方，退出时 finally 还原并清空上下文；异常不会
+     * 污染下一帧或运行态。</p>
+     */
+    private void requireDerivedTaskFrame(WorldState candidate, WorldCommit commit,
+                                         WorldState previous, PendingTask task)
+            throws IOException {
+        if (!commit.commandId().equals("task:" + task.taskId())) {
+            throw new IOException("任务帧的命令标识与原任务不一致：" + task.taskId());
+        }
+        if (!commit.commandContent().equals(task.payload())) {
+            throw new IOException("任务帧的命令原文与原任务不一致：" + task.taskId());
+        }
+        requireDerivedTaskBatch(candidate, commit, previous, task);
+    }
+
+    /**
+     * 任务派生批次（task: 完成帧与分红完成帧共用）：整帧必须等于受控重演结果。
+     *
+     * <p>不假定命令标识前缀，只比较重演实际产生的命令标识/原文/回报、领域事件与整份候选状态；
+     * 因此分红完成帧（{@code div-batch:} 或任务正文 commandId）也走同一份派生，不会出现第二套
+     * 报告规则。</p>
+     */
+    private void requireDerivedTaskBatch(WorldState candidate, WorldCommit commit,
+                                         WorldState previous, PendingTask task)
+            throws IOException {
+        ReplayedFrame replayed;
+        try {
+            replayed = replayTaskFrame(previous, task);
+        } catch (IOException | RuntimeException failure) {
+            throw new IOException("任务帧无法由上一帧状态和原任务重算：" + task.taskId(), failure);
+        }
+        String difference = frameDifference(replayed.state(), candidate);
+        if (!difference.isEmpty()) {
+            throw new IOException("任务帧与按原任务重演的状态不一致：" + task.taskId()
+                    + " [" + difference + "]");
+        }
+        if (!replayed.commandId().equals(commit.commandId())
+                || !replayed.content().equals(commit.commandContent())
+                || !replayed.result().equals(commit.result())) {
+            throw new IOException("任务帧的命令或回报与原任务执行不一致：" + task.taskId());
+        }
+        if (!replayed.events().equals(frameDomainEvents(commit))) {
+            throw new IOException("任务帧的领域事件与原任务执行不一致：" + task.taskId());
+        }
+    }
+
+    /**
+     * 受控重演一条任务帧：临时以基准状态为执行上下文，复用同一执行器算出完整批次。
+     *
+     * <p>捕获必须恰好一次；无论成功或异常都在 finally 还原状态、暂停位与捕获标志并清空捕获槽，
+     * 因此不会写文件、调用提供方、发布事件或把异常带入下一帧。</p>
+     */
+    private ReplayedFrame replayTaskFrame(WorldState previous, PendingTask task)
+            throws IOException {
+        WorldState savedState = state;
+        boolean savedPaused = paused;
+        boolean savedCapturing = capturing;
+        clearCapture();
+        WorldState captured;
+        String commandId;
+        String content;
+        String result;
+        List<WorldEvent> events;
+        int count;
+        try {
+            state = previous;
+            capturing = true;
+            executeTask(task);
+            captured = capturedState;
+            commandId = capturedCommandId;
+            content = capturedContent;
+            result = capturedResult;
+            events = capturedEvents;
+            count = capturedCount;
+        } finally {
+            state = savedState;
+            paused = savedPaused;
+            capturing = savedCapturing;
+            clearCapture();
+        }
+        if (count != 1 || captured == null || commandId == null
+                || content == null || result == null) {
+            throw new IOException("任务帧重演必须恰好产生一个完整批次，实际 " + count + " 次："
+                    + task.taskId());
+        }
+        return new ReplayedFrame(captured, commandId, content, result,
+                events == null ? List.of() : List.copyOf(events), count);
+    }
+
+    /** 清空捕获槽：重演入口、出口与异常路径都必须回到“未捕获”状态。 */
+    private void clearCapture() {
+        capturedState = null;
+        capturedCommandId = null;
+        capturedContent = null;
+        capturedResult = null;
+        capturedEvents = null;
+        capturedCount = 0;
+    }
+
+    /** 一帧去掉状态快照后的领域事件（调用方负责只用于本批比较）。 */
+    private static List<WorldEvent> frameDomainEvents(WorldCommit commit) {
+        List<WorldEvent> events = new ArrayList<>();
+        for (WorldEvent event : commit.events()) {
+            if (!SNAPSHOT_TYPE.equals(event.type())) {
+                events.add(event);
+            }
+        }
+        return events;
+    }
+
+    /** 重演捕获到的完整批次。 */
+    private record ReplayedFrame(WorldState state, String commandId, String content,
+                                 String result, List<WorldEvent> events, int captures) {
+    }
+
+    /** 列出两份完整状态真正不同的子集名；不遗漏任何持久字段。 */
+    private static String frameDifference(WorldState expected, WorldState actual) {
+        List<String> diff = new ArrayList<>();
+        if (expected.schemaVersion() != actual.schemaVersion()) {
+            diff.add("schemaVersion");
+        }
+        if (!expected.runId().equals(actual.runId())) {
+            diff.add("runId");
+        }
+        if (expected.position() != actual.position()) {
+            diff.add("position");
+        }
+        if (expected.timeMillis() != actual.timeMillis()) {
+            diff.add("timeMillis");
+        }
+        if (!expected.lastPhase().equals(actual.lastPhase())) {
+            diff.add("lastPhase");
+        }
+        if (!expected.accounts().equals(actual.accounts())) {
+            diff.add("accounts");
+        }
+        if (!expected.pending().equals(actual.pending())) {
+            diff.add("pending");
+        }
+        if (!expected.delivered().equals(actual.delivered())) {
+            diff.add("delivered");
+        }
+        if (!expected.usedTaskIds().equals(actual.usedTaskIds())) {
+            diff.add("usedTaskIds");
+        }
+        if (!expected.commandContents().equals(actual.commandContents())) {
+            diff.add("commandContents");
+        }
+        if (!expected.commandOutcomes().equals(actual.commandOutcomes())) {
+            diff.add("commandOutcomes");
+        }
+        if (!java.util.Objects.equals(expected.securities(), actual.securities())) {
+            diff.add("securities");
+        }
+        if (!java.util.Objects.equals(expected.exchange(), actual.exchange())) {
+            diff.add("exchange");
+        }
+        if (!java.util.Objects.equals(expected.manufacturing(), actual.manufacturing())) {
+            diff.add("manufacturing");
+        }
+        if (!java.util.Objects.equals(expected.governance(), actual.governance())) {
+            diff.add("governance");
+        }
+        if (!java.util.Objects.equals(expected.roles(), actual.roles())) {
+            diff.add("roles");
+        }
+        if (!java.util.Objects.equals(expected.information(), actual.information())) {
+            diff.add("information");
+        }
+        if (!java.util.Objects.equals(expected.trading(), actual.trading())) {
+            diff.add("trading");
+        }
+        if (!java.util.Objects.equals(expected.decisions(), actual.decisions())) {
+            diff.add("decisions");
+        }
+        if (!java.util.Objects.equals(expected.dividends(), actual.dividends())) {
+            diff.add("dividends");
+        }
+        if (!java.util.Objects.equals(expected.beliefs(), actual.beliefs())) {
+            diff.add("beliefs");
+        }
+        if (!java.util.Objects.equals(expected.media(), actual.media())) {
+            diff.add("media");
+        }
+        if (!java.util.Objects.equals(expected.interviews(), actual.interviews())) {
+            diff.add("interviews");
+        }
+        if (!java.util.Objects.equals(expected.evidence(), actual.evidence())) {
+            diff.add("evidence");
+        }
+        if (!java.util.Objects.equals(expected.social(), actual.social())) {
+            diff.add("social");
+        }
+        if (!java.util.Objects.equals(expected.engineering(), actual.engineering())) {
+            diff.add("engineering");
+        }
+        if (!java.util.Objects.equals(expected.groups(), actual.groups())) {
+            diff.add("groups");
+        }
+        return String.join(",", diff);
     }
 
     /** 纯时间推进只能改变位置、时间和阶段，不能夹带业务或待办变化。 */
     private void validateClockFrame(WorldState candidate, WorldCommit commit, WorldState previous)
             throws IOException {
+        boolean barrier = commit.commandId().startsWith("barrier:");
         boolean clock = commit.commandId().startsWith("clock:") || commit.events().stream()
                 .anyMatch(event -> "CLOCK_ADVANCED_V1".equals(event.type()));
-        if (!clock) {
+        if (!clock && !barrier) {
             return;
         }
         long target = candidate.timeMillis();
+        if (barrier) {
+            if (previous == null || target <= previous.timeMillis()
+                    || !WorldScheduler.Phase.COMPLETION.name().equals(candidate.lastPhase())
+                    || previous.pending().stream().anyMatch(task -> task.dueTimeMillis() <= target)
+                    || previous.decisions() == null
+                    || DecisionModel.earliestBarrier(previous.decisions().state())
+                    .filter(decision -> decision.barrierAtMillis() == target).isEmpty()) {
+                throw new IOException("屏障帧必须停在上一帧真实最早未决屏障且只推进时间："
+                        + commit.commandId());
+            }
+            String command = "barrier:" + target;
+            String content = "{\"timeMillis\":" + target + "}";
+            WorldState expected = cashState(previous, commit.position(), target,
+                    WorldScheduler.Phase.COMPLETION.name(), previous.accounts(),
+                    previous.pending(), previous.delivered(), previous.usedTaskIds(),
+                    previous.commandContents(), previous.commandOutcomes());
+            requireCashBatch(commit, candidate, expected, command, content, "BARRIER_REACHED",
+                    List.of(new WorldEvent(command, "DECISION_BARRIER_V1", content)));
+            return;
+        }
         if (previous == null || target <= previous.timeMillis()
                 || previous.pending().stream().anyMatch(task -> task.dueTimeMillis() <= target)) {
             throw new IOException("时钟帧不能倒退、重复或跳过到期任务");
@@ -16494,10 +17845,12 @@ public final class WorldRuntime implements AutoCloseable {
             original = wrap.payload();
         }
         String actionCommandId = commandIdOf(original);
-        boolean direct = original.equals(commit.commandContent())
+        // 新规则档的命令记录是原意信封：绑定比较必须用解包后的域正文，提交原文仍保留在记录里
+        String recordedBody = decodeRecordedBody(commit.commandContent());
+        boolean direct = original.equals(recordedBody)
                 && commit.commandId().equals("cmd:" + actionCommandId);
         String stored = actionCommandId.isBlank() ? null
-                : candidate.commandContents().get(actionCommandId);
+                : decodeRecordedBody(candidate.commandContents().get(actionCommandId));
         // 决定派生：动作命令原文可能就是这条排程本身（BEGIN 包装），也可能是其内部动作原文
         boolean derived = stored != null
                 && (stored.equals(task.payload()) || stored.equals(original));
@@ -18360,8 +19713,9 @@ public final class WorldRuntime implements AutoCloseable {
         pending.add(added);
         Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
         used.add(added.taskId());
+        String content = externalScheduleContent(commandId, added, added.payload());
         Map<String, String> contents = new TreeMap<>(previous.commandContents());
-        contents.put(commandId, added.payload());
+        contents.put(commandId, content);
         Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
         String result = "SCHEDULED:" + added.taskId();
         outcomes.put(commandId, result);
@@ -18377,7 +19731,7 @@ public final class WorldRuntime implements AutoCloseable {
         List<WorldEvent> actual = commit.events().stream()
                 .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
         if (!expected.equals(candidate) || !events.equals(actual) || !commit.commandId().equals("cmd:" + commandId)
-                || !commit.commandContent().equals(added.payload()) || !commit.result().equals(result)) {
+                || !commit.commandContent().equals(content) || !commit.result().equals(result)) {
             throw new IOException("分红外部排程与原任务、命令和快照不一致：" + added.taskId());
         }
     }
@@ -19144,6 +20498,126 @@ public final class WorldRuntime implements AutoCloseable {
                         + allocation.accountId() + " 持有 " + allocation.symbol());
             }
         }
+    }
+
+    /**
+     * 需要通用原意信封的外部排程种类（{@code command-intent} 新规则档）。
+     *
+     * <p>这些入口的旧命令正文只有业务参数，没有 {@code taskId}/绝对到期/工时：治理五类、任职与
+     * 撤销、发布两版、开始/取消阅读、分红五类，以及工程 BEGIN 屏障（真实完成种类记在信封
+     * {@code kind}）。订单/撤单/收盘/预留/清算/现金/制造/角色动作/决定的原命令自身已完整，
+     * 继续保留原结构而不是再包一层。</p>
+     */
+    private static final Set<String> EXTERNAL_INTENT_KINDS = Set.of(
+            PendingTask.GOVERNANCE_MEETING_V1, PendingTask.GOVERNANCE_MATERIAL_V1,
+            PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1, PendingTask.GOVERNANCE_VOTE_V1,
+            PendingTask.GOVERNANCE_IMPLEMENT_V1,
+            PendingTask.ROLE_APPOINT_V1, PendingTask.ROLE_REVOKE_V1,
+            PendingTask.INFORMATION_PUBLISH_V1, PendingTask.INFORMATION_PUBLISH_VERSION_V1,
+            PendingTask.INFORMATION_START_READ_V1, PendingTask.INFORMATION_CANCEL_READ_V1,
+            PendingTask.DIVIDEND_MEETING_V1, PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1,
+            PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1, PendingTask.DIVIDEND_SETTLE_V1,
+            PendingTask.DIVIDEND_IMPAIR_V1,
+            PendingTask.ENGINEERING_BEGIN_V1);
+
+    /** 工程 BEGIN 信封可指向的真实完成种类：与正文类型/动作严格映射。 */
+    private static final Set<String> ENGINEERING_INTENT_KINDS = Set.of(
+            PendingTask.ENGINEERING_BOARD_V1, PendingTask.BOARD_ATTEND_V1,
+            PendingTask.ENGINEERING_ACTION_V1, PendingTask.ENGINEERING_PERIODIC_V1);
+
+    /**
+     * 外部排程落盘：新规则档把完整原意信封写进命令记录，旧档保留域正文字节。
+     *
+     * <p>信封只由本次入口已算出的参数构造，不从待办或世界状态回读，因此不会出现「用正在校验的
+     * 待办反推自己」的循环证明。</p>
+     *
+     * @param planned  真实待办（身份与到期已由入口算好）
+     * @param commandId 外部命令标识
+     * @param body     原始域请求正文
+     * @return 规范化回报
+     * @throws IOException 持久提交失败
+     */
+    private String scheduleExternalTask(PendingTask planned, String commandId, String body)
+            throws IOException {
+        return scheduleExternalTask(planned, commandId, body, planned.kind(), planned.phase(),
+                planned.dueTimeMillis(), 0L);
+    }
+
+    /**
+     * 外部排程落盘（显式意图）：工程 BEGIN 的待办身份是屏障，信封身份是真实完成时点/种类/工时。
+     *
+     * @param planned        实际排入的待办（可能是 BEGIN 屏障）
+     * @param commandId      外部命令标识
+     * @param body           原始域请求正文
+     * @param intentKind     真实完成帧种类
+     * @param intentPhase    真实完成帧阶段
+     * @param intentDueMillis 真实完成时点
+     * @param durationMillis 冻结工时
+     * @return 规范化回报
+     * @throws IOException 持久提交失败
+     */
+    private String scheduleExternalTask(PendingTask planned, String commandId, String body,
+                                        String intentKind, WorldScheduler.Phase intentPhase,
+                                        long intentDueMillis, long durationMillis)
+            throws IOException {
+        String content = body;
+        if (manifest.hasCommandIntent()) {
+            CommandIntent intent = CommandIntent.of(commandId, planned.taskId(), intentKind,
+                    intentPhase, intentDueMillis, durationMillis, body);
+            content = mapper.writeValueAsString(intent);
+        }
+        return scheduleCompletionTask(planned, commandId, content);
+    }
+
+    /**
+     * 外部排程记录正文：新规则档的外部种类写完整原意信封，其余保留域正文。
+     *
+     * <p>恢复期重建「本批应当提交什么」的校验（例如分红排程帧）必须用同一处编码，
+     * 否则会把信封误当成与被改写过的待办参数不一致。</p>
+     *
+     * @param commandId 外部命令标识
+     * @param task      本次新增待办
+     * @param body      原始域请求正文
+     * @return 应写入命令记录的正文
+     * @throws IOException 序列化失败
+     */
+    private String externalScheduleContent(String commandId, PendingTask task, String body)
+            throws IOException {
+        if (!manifest.hasCommandIntent() || !EXTERNAL_INTENT_KINDS.contains(task.kind())) {
+            return body;
+        }
+        return mapper.writeValueAsString(CommandIntent.of(commandId, task.taskId(), task.kind(),
+                task.phase(), task.dueTimeMillis(), 0L, body));
+    }
+
+    /**
+     * 已记录命令的域正文：新规则档先按版本解包原意信封，旧档与完整命令返回原文。
+     *
+     * <p>命令幂等比较与业务解码必须统一读域正文；{@code rawSource}（提交原文）仍用于
+     * canonical 与原意比较。</p>
+     *
+     * @param commandId 外部命令标识
+     * @return 域正文；未记录返回 null
+     * @throws IOException 信封损坏
+     */
+    private String recordedBody(String commandId) throws IOException {
+        String content = state.commandContents().get(commandId);
+        return decodeRecordedBody(content);
+    }
+
+    /**
+     * 解包已记录正文：新规则档的信封取 {@code body}，其余原样返回。
+     *
+     * @param content 已记录正文
+     * @return 域正文
+     * @throws IOException 信封损坏
+     */
+    private String decodeRecordedBody(String content) throws IOException {
+        if (content == null || !manifest.hasCommandIntent()) {
+            return content;
+        }
+        CommandIntent intent = CommandIntent.decode(mapper, content);
+        return intent == null ? content : intent.body();
     }
 
     /** 排程一个到期任务：待办、已用标识、命令内容与回报同一批持久提交。 */
@@ -20487,7 +21961,7 @@ public final class WorldRuntime implements AutoCloseable {
                 chairSeatId, materialDeadline, opensAt, closesAt, attendees, recused);
         String content = mapper.writeValueAsString(payload);
         if (state.commandContents().containsKey(commandId)) {
-            if (!content.equals(state.commandContents().get(commandId))) {
+            if (!content.equals(recordedBody(commandId))) {
                 throw new IllegalArgumentException("同一命令标识不能对应不同内容");
             }
             requireSameSchedule(commandId, taskId, dueTimeMillis,
@@ -20497,7 +21971,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireSchedulable(dueTimeMillis, taskId);
         PendingTask task = new PendingTask(taskId, dueTimeMillis, WorldScheduler.Phase.COMPLETION,
                 PendingTask.DIVIDEND_MEETING_V1, content);
-        return scheduleCompletionTask(task, commandId, content);
+        return scheduleExternalTask(task, commandId, content);
     }
 
     /**
@@ -20654,7 +22128,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(taskId, "任务标识");
         String content = mapper.writeValueAsString(payload);
         if (state.commandContents().containsKey(commandId)) {
-            if (!content.equals(state.commandContents().get(commandId))) {
+            if (!content.equals(recordedBody(commandId))) {
                 throw new IllegalArgumentException("同一命令标识不能对应不同内容");
             }
             requireSameSchedule(commandId, taskId, dueTimeMillis, phase, kind, content);
@@ -20665,7 +22139,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (phase != WorldScheduler.Phase.COMPLETION) {
             throw new IllegalArgumentException("分红外部入口只排完成阶段任务：" + phase);
         }
-        return scheduleCompletionTask(task, commandId, content);
+        return scheduleExternalTask(task, commandId, content);
     }
 
     /** 主席席位绑定的人物（公告发布者）。 */
