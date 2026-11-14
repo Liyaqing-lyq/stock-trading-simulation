@@ -1,6 +1,7 @@
 package edu.cufe.auction.world;
 
 import edu.cufe.auction.world.CashLedger.CashAccount;
+import edu.cufe.auction.world.bank.FundState;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -165,6 +166,29 @@ public final class ManufacturingModel {
     public static final String REASON_PERIOD_NOT_CONTINUOUS = "PERIOD_NOT_CONTINUOUS";
     /** 尚未到该期间期末。 */
     public static final String REASON_PERIOD_NOT_ENDED = "PERIOD_NOT_ENDED";
+
+    /** 资金腿出款主体与业务认定的付款方不一致（真实的钱不在这个主体名下）。 */
+    public static final String REASON_FUND_OWNER_MISMATCH = "FUND_OWNER_MISMATCH";
+
+    /** 资金腿收款主体与业务认定的收款方不一致（真实的钱进不了这个主体名下）。 */
+    public static final String REASON_PAYEE_MISMATCH = "PAYEE_MISMATCH";
+
+    /** 资金层已有该业务事实的付款记录，而业务状态仍待办：受控拒绝，不把零移动当新付款。 */
+    public static final String REASON_FUND_ID_ALREADY_RECORDED = "FUND_ID_ALREADY_RECORDED";
+
+    /** 业务已结算而资金层没有对应成功记录：明示分叉，不当成功重放。 */
+    public static final String REASON_FUND_RECORD_DIVERGED = "FUND_RECORD_DIVERGED";
+
+    /** 制造资金腿标识前缀：由业务事实确定性派生，同一事实不可能付第二次。 */
+    private static final String LEG_RECEIVE = "mfg-receive:";
+
+    private static final String LEG_LABOR = "mfg-labor:";
+
+    private static final String LEG_COLLECT = "mfg-collect:";
+
+    private static final String LEG_EXPENSE = "mfg-expense:";
+
+    private static final String LEG_BILL = "mfg-bill:";
 
     private static final BigDecimal ZERO = new BigDecimal("0.00");
 
@@ -529,6 +553,8 @@ public final class ManufacturingModel {
             contracts = Map.copyOf(contracts);
             receivables = Map.copyOf(receivables);
             expenseBills = Map.copyOf(expenseBills);
+            // 旧规则契约：保持原来的集合表示（含 JVM 相关的迭代序），不做全局排序；
+            // 需要规范序的只有新组合规则（由运行层按显式规则写快照，不改本记录）。
             usedIds = Set.copyOf(usedIds);
 
             Set<String> ids = new LinkedHashSet<>();
@@ -627,6 +653,27 @@ public final class ManufacturingModel {
             Objects.requireNonNull(reason, "结果代码");
             Objects.requireNonNull(state, "候选状态");
             accounts = Map.copyOf(accounts);
+        }
+    }
+
+    /**
+     * 带资金腿的纯候选结果。
+     *
+     * <p>业务状态与资金三态来自同一次候选：拒绝时资金三态经济字段与入参相同（资金层只可能多
+     * 一条拒绝回执），调用方不得只提交其中一部分。本类不持有账簿，也不把存款复制成现金。</p>
+     *
+     * @param accepted 业务是否成功
+     * @param reason   结果代码
+     * @param state    候选制造状态
+     * @param funds    候选资金三态（现金 + 银行 + 托管明细）
+     */
+    public record FundOutcome(boolean accepted, String reason, State state, FundState funds) {
+
+        /** 校验结果码与两者非空。 */
+        public FundOutcome {
+            requireText(reason, "结果代码");
+            Objects.requireNonNull(state, "候选状态");
+            Objects.requireNonNull(funds, "候选资金三态");
         }
     }
 
@@ -786,42 +833,81 @@ public final class ManufacturingModel {
     public static Outcome receivePurchaseOrder(State state, long now, String actorOwnerId,
                                                String purchaseOrderId, BigDecimal availableCash,
                                                Map<String, CashAccount> accounts) {
+        return receive(state, now, actorOwnerId, purchaseOrderId, availableCash,
+                Funding.cash(accounts)).outcome();
+    }
+
+    /**
+     * 收货付款（显式资金腿）：到期货款从公司真实资金桶付给供应商真实资金桶，同批原料入库。
+     *
+     * <p>与现金版 {@link #receivePurchaseOrder(State, long, String, String, BigDecimal, Map)}
+     * 的差别只有两处：钱从哪个桶出，以及“够不够钱”改用当前三态减受信冻结派生（不再由调用方
+     * 自报）。到货时点、容量、货款金额、失败关单（{@code FAILED_NO_CASH}，不增原料、不记应付）
+     * 与入库资本化全部按原规则。资金腿标识由采购单标识确定性派生，同一采购单不可能付两次。</p>
+     *
+     * @param state          当前状态
+     * @param now            当前模拟毫秒
+     * @param actorOwnerId   动作发起人，必须是公司所有者
+     * @param purchaseOrderId 采购单标识
+     * @param funds          当前资金三态（显式传入，不得复用旧结果）
+     * @param payer          资金腿（只含路由与档案，不含账簿）
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome receivePurchaseOrder(State state, long now, String actorOwnerId,
+                                                  String purchaseOrderId, FundState funds,
+                                                  FundPayer payer) {
+        return receive(state, now, actorOwnerId, purchaseOrderId, null,
+                Funding.explicit(funds, payer)).funded();
+    }
+
+    private static Settlement receive(State state, long now, String actorOwnerId,
+                                      String purchaseOrderId, BigDecimal availableCash,
+                                      Funding funding) {
         requireState(state);
         requireTime(now);
-        requireAccounts(state.opening(), accounts);
+        requireAccounts(state.opening(), funding.accounts());
         if (!state.opening().companyOwnerId().equals(actorOwnerId)) {
-            return rejected(state, accounts, REASON_NOT_AUTHORIZED);
+            return funding.at(state, false, REASON_NOT_AUTHORIZED);
         }
-        BigDecimal available = requireAvailable(accounts, state.opening().companyAccountId(),
+        BigDecimal available = funding.available(state.opening().companyAccountId(),
                 availableCash);
         PurchaseOrder order = state.purchaseOrders().get(purchaseOrderId);
         if (order == null) {
-            return rejected(state, accounts, REASON_UNKNOWN_PURCHASE_ORDER);
+            return funding.at(state, false, REASON_UNKNOWN_PURCHASE_ORDER);
         }
+        String legId = LEG_RECEIVE + purchaseOrderId;
         if (order.status() != PurchaseOrderStatus.ORDERED) {
-            return rejected(state, accounts, REASON_PURCHASE_ORDER_STATE_INVALID);
+            return funding.settled(state, legId, order.status() == PurchaseOrderStatus.RECEIVED,
+                    REASON_PURCHASE_ORDER_STATE_INVALID);
         }
         if (now < order.arrivalAt()) {
-            return rejected(state, accounts, REASON_PURCHASE_ORDER_NOT_DUE);
+            return funding.at(state, false, REASON_PURCHASE_ORDER_NOT_DUE);
         }
         BigDecimal amount = CashLedger.money(
                 order.unitPrice().multiply(BigDecimal.valueOf(order.quantity())));
         if (available.compareTo(amount) < 0) {
             Draft failed = new Draft(state);
             failed.purchaseOrders.put(purchaseOrderId, copy(order, PurchaseOrderStatus.FAILED_NO_CASH));
-            return new Outcome(false, REASON_INSUFFICIENT_CASH, failed.build(), accounts);
+            return new Settlement(false, REASON_INSUFFICIENT_CASH, failed.build(),
+                    funding.accounts(), funding.funds());
         }
-        CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
-                state.opening().companyOwnerId(), state.opening().companyAccountId(),
-                state.opening().supplierAccountId(), amount);
-        if (!transfer.accepted()) {
-            return rejected(state, accounts, transfer.reason());
+        Settlement recorded = funding.guard(state, legId);
+        if (recorded != null) {
+            return recorded;
+        }
+        Leg leg = funding.pay(legId, amount, state.opening().companyOwnerId(),
+                state.opening().companyAccountId(),
+                funding.accounts().get(state.opening().supplierAccountId()).ownerId(),
+                state.opening().supplierAccountId());
+        if (!leg.accepted()) {
+            return new Settlement(false, leg.reason(), state, funding.accounts(), funding.funds());
         }
         Draft draft = new Draft(state);
         draft.purchaseOrders.put(purchaseOrderId, copy(order, PurchaseOrderStatus.RECEIVED));
         draft.rawMaterials = new Inventory(Math.addExact(draft.rawMaterials.quantity(), order.quantity()),
                 draft.rawMaterials.amount().add(amount));
-        return new Outcome(true, REASON_GOODS_RECEIVED, draft.build(), transfer.accounts());
+        return new Settlement(true, REASON_GOODS_RECEIVED, draft.build(), leg.accounts(),
+                leg.funds());
     }
 
     /**
@@ -839,37 +925,76 @@ public final class ManufacturingModel {
     public static Outcome startProduction(State state, long now, String actorOwnerId,
                                           String batchId, long quantity, BigDecimal availableCash,
                                           Map<String, CashAccount> accounts) {
+        return start(state, now, actorOwnerId, batchId, quantity, availableCash,
+                Funding.cash(accounts)).outcome();
+    }
+
+    /**
+     * 投产（显式资金腿）：人工从公司真实资金桶付给人力账户，原料按账面金额转在制。
+     *
+     * <p>与现金版 {@link #startProduction(State, long, String, String, long, BigDecimal, Map)}
+     * 的差别只有付款桶与可用额来源：批量与在制上限、原料足够性、人工金额、出库成本分配与
+     * 在制资本化全部按原规则；人工付现仍是投产的一部分（不是无资金动作）。资金腿标识由批次
+     * 标识确定性派生。</p>
+     *
+     * @param state   当前状态
+     * @param now     当前模拟毫秒
+     * @param actorOwnerId 动作发起人，必须是公司所有者
+     * @param batchId 批次标识
+     * @param quantity 批量，必须是 10 的倍数且不超过 20
+     * @param funds   当前资金三态（显式传入，不得复用旧结果）
+     * @param payer   资金腿（只含路由与档案，不含账簿）
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome startProduction(State state, long now, String actorOwnerId,
+                                              String batchId, long quantity, FundState funds,
+                                              FundPayer payer) {
+        return start(state, now, actorOwnerId, batchId, quantity, null,
+                Funding.explicit(funds, payer)).funded();
+    }
+
+    private static Settlement start(State state, long now, String actorOwnerId,
+                                    String batchId, long quantity, BigDecimal availableCash,
+                                    Funding funding) {
         requireState(state);
         requireTime(now);
-        requireAccounts(state.opening(), accounts);
+        requireAccounts(state.opening(), funding.accounts());
         if (!state.opening().companyOwnerId().equals(actorOwnerId)) {
-            return rejected(state, accounts, REASON_NOT_AUTHORIZED);
+            return funding.at(state, false, REASON_NOT_AUTHORIZED);
         }
         requireText(batchId, "生产批次标识");
+        String legId = LEG_LABOR + batchId;
         if (state.usedIds().contains(batchId)) {
-            return rejected(state, accounts, REASON_ID_REUSED);
+            return funding.settled(state, legId,
+                    state.productionBatches().containsKey(batchId),
+                    REASON_ID_REUSED);
         }
         if (quantity <= 0 || quantity % 10 != 0 || quantity > 20) {
-            return rejected(state, accounts, REASON_INVALID_BATCH_SIZE);
+            return funding.at(state, false, REASON_INVALID_BATCH_SIZE);
         }
         if (state.workInProgress().quantity() > 0) {
-            return rejected(state, accounts, REASON_BATCH_IN_PROGRESS);
+            return funding.at(state, false, REASON_BATCH_IN_PROGRESS);
         }
         if (state.rawMaterials().quantity() < quantity) {
-            return rejected(state, accounts, REASON_INSUFFICIENT_MATERIAL);
+            return funding.at(state, false, REASON_INSUFFICIENT_MATERIAL);
         }
-        BigDecimal available = requireAvailable(accounts, state.opening().companyAccountId(),
+        BigDecimal available = funding.available(state.opening().companyAccountId(),
                 availableCash);
         BigDecimal labor = CashLedger.money(LABOR_UNIT_PRICE.multiply(BigDecimal.valueOf(quantity)));
         if (available.compareTo(labor) < 0) {
-            return rejected(state, accounts, REASON_INSUFFICIENT_CASH);
+            return funding.at(state, false, REASON_INSUFFICIENT_CASH);
         }
         BigDecimal material = allocate(state.rawMaterials(), quantity);
-        CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
-                state.opening().companyOwnerId(), state.opening().companyAccountId(),
-                state.opening().opsAccountId(), labor);
-        if (!transfer.accepted()) {
-            return rejected(state, accounts, transfer.reason());
+        Settlement recorded = funding.guard(state, legId);
+        if (recorded != null) {
+            return recorded;
+        }
+        Leg leg = funding.pay(legId, labor, state.opening().companyOwnerId(),
+                state.opening().companyAccountId(),
+                funding.accounts().get(state.opening().opsAccountId()).ownerId(),
+                state.opening().opsAccountId());
+        if (!leg.accepted()) {
+            return new Settlement(false, leg.reason(), state, funding.accounts(), funding.funds());
         }
         Draft draft = new Draft(state);
         draft.rawMaterials = new Inventory(state.rawMaterials().quantity() - quantity,
@@ -877,7 +1002,8 @@ public final class ManufacturingModel {
         draft.productionBatches.put(batchId, new ProductionBatch(batchId, quantity, now,
                 Math.addExact(now, DAY_MILLIS), material, labor, ProductionStatus.IN_PROGRESS));
         draft.usedIds.add(batchId);
-        return new Outcome(true, REASON_PRODUCTION_STARTED, draft.build(), transfer.accounts());
+        return new Settlement(true, REASON_PRODUCTION_STARTED, draft.build(), leg.accounts(),
+                leg.funds());
     }
 
     /**
@@ -1063,23 +1189,53 @@ public final class ManufacturingModel {
     public static Outcome collectReceivable(State state, long now, String actorOwnerId,
                                             String receivableId, BigDecimal availableCash,
                                             Map<String, CashAccount> accounts) {
+        return collectFrom(state, now, actorOwnerId, receivableId, availableCash,
+                Funding.cash(accounts)).outcome();
+    }
+
+    /**
+     * 应收回款（显式资金腿）：客户从真实资金桶付进公司真实资金桶。
+     *
+     * <p>与现金版 {@link #collectReceivable(State, long, String, String, BigDecimal, Map)}
+     * 的差别只有付款桶与可用额来源：到期判断、逾期标记（客户可用额不足即标 {@code OVERDUE}）、
+     * 已收清不可再收、只减应收不重记收入全部按原规则。资金腿标识由应收标识确定性派生。</p>
+     *
+     * @param state        当前状态
+     * @param now          当前模拟毫秒
+     * @param actorOwnerId 动作发起人，必须是公司所有者
+     * @param receivableId 应收标识
+     * @param funds        当前资金三态（显式传入，不得复用旧结果）
+     * @param payer        资金腿：源是客户桶、目标是公司桶
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome collectReceivable(State state, long now, String actorOwnerId,
+                                               String receivableId, FundState funds,
+                                               FundPayer payer) {
+        return collectFrom(state, now, actorOwnerId, receivableId, null,
+                Funding.explicit(funds, payer)).funded();
+    }
+
+    private static Settlement collectFrom(State state, long now, String actorOwnerId,
+                                          String receivableId, BigDecimal availableCash,
+                                          Funding funding) {
         requireState(state);
         requireTime(now);
-        requireAccounts(state.opening(), accounts);
+        requireAccounts(state.opening(), funding.accounts());
         if (!state.opening().companyOwnerId().equals(actorOwnerId)) {
-            return rejected(state, accounts, REASON_NOT_AUTHORIZED);
+            return funding.at(state, false, REASON_NOT_AUTHORIZED);
         }
         Receivable receivable = state.receivables().get(receivableId);
         if (receivable == null) {
-            return rejected(state, accounts, REASON_UNKNOWN_RECEIVABLE);
+            return funding.at(state, false, REASON_UNKNOWN_RECEIVABLE);
         }
+        String legId = LEG_COLLECT + receivableId;
         if (receivable.status() == ReceivableStatus.COLLECTED) {
-            return rejected(state, accounts, REASON_RECEIVABLE_ALREADY_COLLECTED);
+            return funding.settled(state, legId, true, REASON_RECEIVABLE_ALREADY_COLLECTED);
         }
         if (now < receivable.dueAt()) {
-            return rejected(state, accounts, REASON_RECEIVABLE_NOT_DUE);
+            return funding.at(state, false, REASON_RECEIVABLE_NOT_DUE);
         }
-        BigDecimal available = requireAvailable(accounts, state.opening().customerAccountId(),
+        BigDecimal available = funding.available(state.opening().customerAccountId(),
                 availableCash);
         if (available.compareTo(receivable.outstanding()) < 0) {
             Draft overdue = new Draft(state);
@@ -1087,21 +1243,27 @@ public final class ManufacturingModel {
                     receivable.contractId(), receivable.quantity(), receivable.amount(),
                     receivable.cost(), receivable.recognizedAt(), receivable.dueAt(),
                     receivable.period(), receivable.outstanding(), ReceivableStatus.OVERDUE));
-            return new Outcome(false, REASON_OVERDUE, overdue.build(), accounts);
+            return new Settlement(false, REASON_OVERDUE, overdue.build(), funding.accounts(),
+                    funding.funds());
         }
-        CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
-                accounts.get(state.opening().customerAccountId()).ownerId(),
-                state.opening().customerAccountId(), state.opening().companyAccountId(),
-                receivable.outstanding());
-        if (!transfer.accepted()) {
-            return rejected(state, accounts, transfer.reason());
+        Settlement recorded = funding.guard(state, legId);
+        if (recorded != null) {
+            return recorded;
+        }
+        Leg leg = funding.pay(legId, receivable.outstanding(),
+                funding.accounts().get(state.opening().customerAccountId()).ownerId(),
+                state.opening().customerAccountId(), state.opening().companyOwnerId(),
+                state.opening().companyAccountId());
+        if (!leg.accepted()) {
+            return new Settlement(false, leg.reason(), state, funding.accounts(), funding.funds());
         }
         Draft draft = new Draft(state);
         draft.receivables.put(receivableId, new Receivable(receivable.receivableId(),
                 receivable.contractId(), receivable.quantity(), receivable.amount(),
                 receivable.cost(), receivable.recognizedAt(), receivable.dueAt(),
                 receivable.period(), ZERO, ReceivableStatus.COLLECTED));
-        return new Outcome(true, REASON_PAYMENT_RECEIVED, draft.build(), transfer.accounts());
+        return new Settlement(true, REASON_PAYMENT_RECEIVED, draft.build(), leg.accounts(),
+                leg.funds());
     }
 
     /**
@@ -1119,41 +1281,80 @@ public final class ManufacturingModel {
     public static Outcome closePeriod(State state, long now, String actorOwnerId, long period,
                                       String billId, BigDecimal availableCash,
                                       Map<String, CashAccount> accounts) {
+        return close(state, now, actorOwnerId, period, billId, availableCash,
+                Funding.cash(accounts)).outcome();
+    }
+
+    /**
+     * 期末关账（显式资金腿）：固定费用按真实可用额当期货款，不足部分仍形成应付。
+     *
+     * <p>与现金版 {@link #closePeriod(State, long, String, long, String, BigDecimal, Map)}
+     * 的差别只有两处：钱从哪个桶付给人力账户，以及“可用额”由当前三态减受信冻结派生。
+     * 期间连续性、期末到达、账单标识不复用、折旧计提、`paid = min(可用, 250)` 与未付成
+     * {@code ExpenseBill} 应付全部按原规则。资金腿标识由账单标识确定性派生；可用额为零时
+     * 不动任何桶（全额转应付）。</p>
+     *
+     * @param state    当前状态
+     * @param now      当前模拟毫秒
+     * @param actorOwnerId 动作发起人，必须是公司所有者
+     * @param period   期间序号，必须等于已连续关账数
+     * @param billId   费用账单标识，运行内不复用
+     * @param funds    当前资金三态（显式传入，不得复用旧结果）
+     * @param payer    资金腿：源是公司桶、目标是人力桶
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome closePeriod(State state, long now, String actorOwnerId, long period,
+                                          String billId, FundState funds, FundPayer payer) {
+        return close(state, now, actorOwnerId, period, billId, null,
+                Funding.explicit(funds, payer)).funded();
+    }
+
+    private static Settlement close(State state, long now, String actorOwnerId, long period,
+                                    String billId, BigDecimal availableCash, Funding funding) {
         requireState(state);
         requireTime(now);
-        requireAccounts(state.opening(), accounts);
+        requireAccounts(state.opening(), funding.accounts());
         if (!state.opening().companyOwnerId().equals(actorOwnerId)) {
-            return rejected(state, accounts, REASON_NOT_AUTHORIZED);
+            return funding.at(state, false, REASON_NOT_AUTHORIZED);
         }
         if (period < 0) {
             throw new IllegalArgumentException("期间不能为负");
         }
         long next = state.closedPeriods();
         if (period < next) {
-            return rejected(state, accounts, REASON_PERIOD_ALREADY_CLOSED);
+            return funding.at(state, false, REASON_PERIOD_ALREADY_CLOSED);
         }
         if (period > next) {
-            return rejected(state, accounts, REASON_PERIOD_NOT_CONTINUOUS);
+            return funding.at(state, false, REASON_PERIOD_NOT_CONTINUOUS);
         }
         if (now < periodEnd(period)) {
-            return rejected(state, accounts, REASON_PERIOD_NOT_ENDED);
+            return funding.at(state, false, REASON_PERIOD_NOT_ENDED);
         }
         requireText(billId, "费用账单标识");
+        String legId = LEG_EXPENSE + billId;
         if (state.usedIds().contains(billId)) {
-            return rejected(state, accounts, REASON_ID_REUSED);
+            return funding.settled(state, legId, state.expenseBills().containsKey(billId),
+                    REASON_ID_REUSED);
         }
-        BigDecimal available = requireAvailable(accounts, state.opening().companyAccountId(),
+        BigDecimal available = funding.available(state.opening().companyAccountId(),
                 availableCash);
         BigDecimal paid = available.min(PERIOD_EXPENSE);
-        Map<String, CashAccount> nextAccounts = accounts;
+        Leg leg;
         if (paid.signum() > 0) {
-            CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
-                    state.opening().companyOwnerId(), state.opening().companyAccountId(),
-                    state.opening().opsAccountId(), paid);
-            if (!transfer.accepted()) {
-                return rejected(state, accounts, transfer.reason());
+            Settlement recorded = funding.guard(state, legId);
+            if (recorded != null) {
+                return recorded;
             }
-            nextAccounts = transfer.accounts();
+            leg = funding.pay(legId, paid, state.opening().companyOwnerId(),
+                    state.opening().companyAccountId(),
+                    funding.accounts().get(state.opening().opsAccountId()).ownerId(),
+                    state.opening().opsAccountId());
+            if (!leg.accepted()) {
+                return new Settlement(false, leg.reason(), state, funding.accounts(),
+                        funding.funds());
+            }
+        } else {
+            leg = funding.untouched();
         }
         BigDecimal depreciation = PERIOD_DEPRECIATION.min(state.equipment().net());
         Draft draft = new Draft(state);
@@ -1161,7 +1362,8 @@ public final class ManufacturingModel {
                 state.equipment().accumulatedDepreciation().add(depreciation));
         draft.expenseBills.put(billId, new ExpenseBill(billId, period, PERIOD_EXPENSE, paid, now));
         draft.usedIds.add(billId);
-        return new Outcome(true, REASON_PERIOD_CLOSED, draft.build(), nextAccounts);
+        return new Settlement(true, REASON_PERIOD_CLOSED, draft.build(), leg.accounts(),
+                leg.funds());
     }
 
     /**
@@ -1178,11 +1380,39 @@ public final class ManufacturingModel {
     public static Outcome payExpenseBill(State state, long now, String actorOwnerId, long period,
                                          BigDecimal availableCash,
                                          Map<String, CashAccount> accounts) {
+        return payBill(state, now, actorOwnerId, period, availableCash,
+                Funding.cash(accounts)).outcome();
+    }
+
+    /**
+     * 支付费用账单（显式资金腿）：只结清已确认未付金额，付款不再记费用。
+     *
+     * <p>与现金版 {@link #payExpenseBill(State, long, String, long, BigDecimal, Map)}
+     * 的差别只有付款桶与可用额来源：期间账单必须存在、未付必须为正、可用额必须足够全部未付
+     * （不足整笔拒绝，不部分支付），付清后不再重复计费。资金腿标识由账单标识确定性派生，
+     * 与关账时的当期付款前缀不同，因此两个动作各自独立幂等。</p>
+     *
+     * @param state    当前状态
+     * @param now      当前模拟毫秒
+     * @param actorOwnerId 动作发起人，必须是公司所有者
+     * @param period   费用账单所属期间
+     * @param funds    当前资金三态（显式传入，不得复用旧结果）
+     * @param payer    资金腿：源是公司桶、目标是人力桶
+     * @return 候选结果（业务状态 + 资金三态）
+     */
+    public static FundOutcome payExpenseBill(State state, long now, String actorOwnerId,
+                                             long period, FundState funds, FundPayer payer) {
+        return payBill(state, now, actorOwnerId, period, null,
+                Funding.explicit(funds, payer)).funded();
+    }
+
+    private static Settlement payBill(State state, long now, String actorOwnerId, long period,
+                                      BigDecimal availableCash, Funding funding) {
         requireState(state);
         requireTime(now);
-        requireAccounts(state.opening(), accounts);
+        requireAccounts(state.opening(), funding.accounts());
         if (!state.opening().companyOwnerId().equals(actorOwnerId)) {
-            return rejected(state, accounts, REASON_NOT_AUTHORIZED);
+            return funding.at(state, false, REASON_NOT_AUTHORIZED);
         }
         ExpenseBill bill = null;
         for (ExpenseBill candidate : state.expenseBills().values()) {
@@ -1192,27 +1422,34 @@ public final class ManufacturingModel {
             }
         }
         if (bill == null) {
-            return rejected(state, accounts, REASON_UNKNOWN_EXPENSE_BILL);
+            return funding.at(state, false, REASON_UNKNOWN_EXPENSE_BILL);
         }
+        String legId = LEG_BILL + bill.billId();
         BigDecimal outstanding = bill.outstanding();
         if (outstanding.signum() == 0) {
-            return rejected(state, accounts, REASON_EXPENSE_BILL_ALREADY_PAID);
+            return funding.settled(state, legId, true, REASON_EXPENSE_BILL_ALREADY_PAID);
         }
-        BigDecimal available = requireAvailable(accounts, state.opening().companyAccountId(),
+        BigDecimal available = funding.available(state.opening().companyAccountId(),
                 availableCash);
         if (available.compareTo(outstanding) < 0) {
-            return rejected(state, accounts, REASON_INSUFFICIENT_CASH);
+            return funding.at(state, false, REASON_INSUFFICIENT_CASH);
         }
-        CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
-                state.opening().companyOwnerId(), state.opening().companyAccountId(),
-                state.opening().opsAccountId(), outstanding);
-        if (!transfer.accepted()) {
-            return rejected(state, accounts, transfer.reason());
+        Settlement recorded = funding.guard(state, legId);
+        if (recorded != null) {
+            return recorded;
+        }
+        Leg leg = funding.pay(legId, outstanding, state.opening().companyOwnerId(),
+                state.opening().companyAccountId(),
+                funding.accounts().get(state.opening().opsAccountId()).ownerId(),
+                state.opening().opsAccountId());
+        if (!leg.accepted()) {
+            return new Settlement(false, leg.reason(), state, funding.accounts(), funding.funds());
         }
         Draft draft = new Draft(state);
         draft.expenseBills.put(bill.billId(), new ExpenseBill(bill.billId(), bill.period(),
                 bill.amount(), bill.amount(), bill.closedAt()));
-        return new Outcome(true, REASON_EXPENSE_BILL_PAID, draft.build(), transfer.accounts());
+        return new Settlement(true, REASON_EXPENSE_BILL_PAID, draft.build(), leg.accounts(),
+                leg.funds());
     }
 
     /**
@@ -1241,10 +1478,35 @@ public final class ManufacturingModel {
      */
     public static Report report(State state, Map<String, CashAccount> accounts,
                                 DividendPosition dividends) {
+        return report(state, accounts, dividends, ZERO, ZERO, ZERO);
+    }
+
+    /**
+     * 带组合派生财务头寸的经营报表：资产、负债、权益三侧分别并入真实派生项。
+     *
+     * <p>制造子账本只记本业现金与经营资产负债。组合世界里同一笔财富可以以银行存款、应收存款
+     * 利息或证券持仓存在，也可以形成真实借款义务；因此平衡式必须三侧同时并入派生项，
+     * 而不是把一个“净差额”塞进资产侧。旧档调用三参版本，三侧均传 0，口径逐字不变。</p>
+     *
+     * @param state                   制造状态
+     * @param accounts                当前账户表
+     * @param dividends               公司分红义务
+     * @param externalAssets          组合派生资产（存款 + 应收利息 + 证券成本）
+     * @param externalLiabilities     组合派生负债（借款本金 + 应计未付利息）
+     * @param externalEquity          组合派生权益（已实现投资损益 + 利息净额 + 开局证券成本）
+     * @return 经营报表
+     */
+    public static Report report(State state, Map<String, CashAccount> accounts,
+                                DividendPosition dividends, BigDecimal externalAssets,
+                                BigDecimal externalLiabilities, BigDecimal externalEquity) {
         requireState(state);
         if (dividends == null) {
             throw new IllegalArgumentException("分红位置不能为空");
         }
+        BigDecimal externalA = CashLedger.money(externalAssets == null ? ZERO : externalAssets);
+        BigDecimal externalL = CashLedger.money(
+                externalLiabilities == null ? ZERO : externalLiabilities);
+        BigDecimal externalE = CashLedger.money(externalEquity == null ? ZERO : externalEquity);
         Opening opening = state.opening();
         requireAccounts(opening, accounts);
         BigDecimal companyCash = accounts.get(opening.companyAccountId()).cash();
@@ -1272,10 +1534,12 @@ public final class ManufacturingModel {
                 .add(wip.amount())
                 .add(state.finishedGoods().amount())
                 .add(receivables)
-                .add(state.equipment().net()));
-        BigDecimal liabilities = CashLedger.money(payables.add(dividends.unpaidFace()));
+                .add(state.equipment().net())
+                .add(externalA));
+        BigDecimal liabilities = CashLedger.money(payables.add(dividends.unpaidFace())
+                .add(externalL));
         BigDecimal equity = CashLedger.money(state.initialEquity().add(profit)
-                .subtract(dividends.declaredFace()));
+                .subtract(dividends.declaredFace()).add(externalE));
         BigDecimal world = worldCash(accounts);
         boolean balanced = assets.compareTo(liabilities.add(equity)) == 0
                 && world.compareTo(state.initialWorldCash()) == 0;
@@ -1316,7 +1580,27 @@ public final class ManufacturingModel {
      */
     public static Report validate(State state, Map<String, CashAccount> accounts,
                                   DividendPosition dividends) {
-        Report report = report(state, accounts, dividends);
+        return validate(state, accounts, dividends, ZERO, ZERO, ZERO);
+    }
+
+    /**
+     * 带组合派生财务头寸的校验：不平衡或世界现金不守恒时抛出异常。
+     *
+     * @param state               制造状态
+     * @param accounts            当前账户表
+     * @param dividends           公司分红义务
+     * @param externalAssets      组合派生资产；旧档传 0
+     * @param externalLiabilities 组合派生负债；旧档传 0
+     * @param externalEquity      组合派生权益；旧档传 0
+     * @return 已通过校验的经营报表
+     * @throws IllegalStateException    资产、负债、权益或世界现金不守恒
+     * @throws IllegalArgumentException 账户结构、分红位置或金额不合法
+     */
+    public static Report validate(State state, Map<String, CashAccount> accounts,
+                                  DividendPosition dividends, BigDecimal externalAssets,
+                                  BigDecimal externalLiabilities, BigDecimal externalEquity) {
+        Report report = report(state, accounts, dividends, externalAssets, externalLiabilities,
+                externalEquity);
         if (!report.balanced()) {
             throw new IllegalStateException("制造账不平衡：资产=" + report.totalAssets()
                     + "，负债=" + report.totalLiabilities()
@@ -1414,6 +1698,169 @@ public final class ManufacturingModel {
     private static PurchaseOrder copy(PurchaseOrder order, PurchaseOrderStatus status) {
         return new PurchaseOrder(order.purchaseOrderId(), order.quantity(), order.unitPrice(),
                 order.orderedAt(), order.arrivalAt(), status);
+    }
+
+    /**
+     * 一次制造候选的资金上下文：旧现金路径只带账户表；显式路径带当前三态与资金腿。
+     *
+     * <p>两条路径共用同一份经营规则（顺序、容量、供需、应收/账单状态推进），差别只在钱怎么走：
+     * 旧路径仍走 {@link CashLedger#computeTransfer}，显式路径走 {@link FundPayer#pay}，
+     * 可用额也由同一个冻结快照派生。</p>
+     *
+     * @param accounts 当前现金账户表
+     * @param funds    当前资金三态；旧现金路径为 null
+     * @param payer    资金腿；旧现金路径为 null
+     */
+    private record Funding(Map<String, CashAccount> accounts, FundState funds, FundPayer payer) {
+
+        static Funding cash(Map<String, CashAccount> accounts) {
+            Objects.requireNonNull(accounts, "账户表");
+            return new Funding(accounts, null, null);
+        }
+
+        static Funding explicit(FundState funds, FundPayer payer) {
+            Objects.requireNonNull(funds, "资金三态");
+            Objects.requireNonNull(payer, "资金腿");
+            return new Funding(funds.accounts(), funds, payer);
+        }
+
+        /** @return 是否显式资金腿路径 */
+        boolean explicit() {
+            return funds != null;
+        }
+
+        /**
+         * 不移动任何钱时的候选：显式路径保持入参三态，旧路径保持入参账户表。
+         *
+         * @param state    业务状态
+         * @param accepted 是否成功
+         * @param reason   结果码
+         * @return 候选
+         */
+        Settlement at(State state, boolean accepted, String reason) {
+            return new Settlement(accepted, reason, state, accounts, funds);
+        }
+
+        /** @return 业务成功但本次不需要动钱（金额为零）的腿结果 */
+        Leg untouched() {
+            return new Leg(true, null, accounts, funds);
+        }
+
+        /**
+         * 资金层已有该业务事实的记录，而业务状态仍待办：受控拒绝，不把零移动当新付款。
+         *
+         * @param state  当前业务状态
+         * @param legId  由业务事实派生的资金腿标识
+         * @return 需要原样返回的候选；null 表示可以继续
+         */
+        Settlement guard(State state, String legId) {
+            if (explicit() && payer.hasRecord(legId, funds)) {
+                return at(state, false, REASON_FUND_ID_ALREADY_RECORDED);
+            }
+            return null;
+        }
+
+        /**
+         * 业务事实已结算时的候选。
+         *
+         * <p>显式路径若发现业务已经收货/收款/付清，而资金层没有对应成功记录，就明示分叉
+         * （{@link #REASON_FUND_RECORD_DIVERGED}），不把这种状态当正常的“已完成重放”。</p>
+         *
+         * @param state          当前业务状态
+         * @param legId          由业务事实派生的资金腿标识
+         * @param businessDone   业务是否真的已经结算（而不是失败关单）
+         * @param businessReason 业务层原本要返回的拒绝码
+         * @return 候选
+         */
+        Settlement settled(State state, String legId, boolean businessDone, String businessReason) {
+            if (businessDone && explicit() && !payer.hasAcceptedRecord(legId, funds)) {
+                return at(state, false, REASON_FUND_RECORD_DIVERGED);
+            }
+            return at(state, false, businessReason);
+        }
+
+        /**
+         * 出款可用额。
+         *
+         * <p>旧路径沿用调用方声明并经 `0..账面余额` 校验；显式路径由当前三态与 payer 绑定的
+         * 受信冻结快照派生（余额减该桶冻结），因此业务判断与资金层用同一个数。</p>
+         *
+         * @param accountId 旧路径出款账户
+         * @param declared  旧路径调用方声明的可用额
+         * @return 可用额
+         */
+        BigDecimal available(String accountId, BigDecimal declared) {
+            if (!explicit()) {
+                return requireAvailable(accounts, accountId, declared);
+            }
+            return payer.available(funds);
+        }
+
+        /**
+         * 执行一条腿。
+         *
+         * @param legId         资金腿标识（由业务事实派生）
+         * @param amount        金额
+         * @param sourceOwner   业务认定的出款主体
+         * @param sourceAccount 旧路径出款账户
+         * @param targetOwner   业务认定的收款主体
+         * @param targetAccount 旧路径收款账户
+         * @return 腿结果；拒绝时经济字段不变
+         */
+        Leg pay(String legId, BigDecimal amount, String sourceOwner, String sourceAccount,
+                String targetOwner, String targetAccount) {
+            if (!explicit()) {
+                CashLedger.TransferOutcome transfer = CashLedger.computeTransfer(accounts,
+                        sourceOwner, sourceAccount, targetAccount, amount);
+                return new Leg(transfer.accepted(),
+                        transfer.accepted() ? null : transfer.reason(), transfer.accounts(), null);
+            }
+            if (!sourceOwner.equals(funds.ownerIdOf(payer.source()))) {
+                return new Leg(false, REASON_FUND_OWNER_MISMATCH, accounts, funds);
+            }
+            if (!targetOwner.equals(funds.ownerIdOf(payer.target()))) {
+                return new Leg(false, REASON_PAYEE_MISMATCH, accounts, funds);
+            }
+            FundPayer.Result result = payer.pay(legId, amount, funds);
+            return new Leg(result.accepted(), result.reason(), result.funds().accounts(),
+                    result.funds());
+        }
+    }
+
+    /**
+     * 一条资金腿的结果。
+     *
+     * @param accepted 是否完成
+     * @param reason   资金腿结果码；旧路径成功时为 null（业务用自己的成功码）
+     * @param accounts 候选现金账户表
+     * @param funds    候选资金三态；旧现金路径为 null
+     */
+    private record Leg(boolean accepted, String reason, Map<String, CashAccount> accounts,
+                       FundState funds) {
+    }
+
+    /**
+     * 内部候选：业务状态 + 资金视图。
+     *
+     * @param accepted 是否成功
+     * @param reason   结果码
+     * @param state    候选业务状态
+     * @param accounts 候选现金账户表
+     * @param funds    候选资金三态；旧现金路径为 null
+     */
+    private record Settlement(boolean accepted, String reason, State state,
+                              Map<String, CashAccount> accounts, FundState funds) {
+
+        /** @return 旧现金接口的结果 */
+        Outcome outcome() {
+            return new Outcome(accepted, reason, state, accounts);
+        }
+
+        /** @return 显式资金腿接口的结果 */
+        FundOutcome funded() {
+            Objects.requireNonNull(funds, "显式路径候选缺少资金三态");
+            return new FundOutcome(accepted, reason, state, funds);
+        }
     }
 
     private static Outcome accepted(State state, Map<String, CashAccount> accounts, String reason) {

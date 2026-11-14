@@ -25,6 +25,7 @@ import edu.cufe.auction.world.RoleTradingView;
 import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.SocialMessageModel;
 import edu.cufe.auction.world.WorldRuntime;
+import edu.cufe.auction.world.composed.ComposedWorldScenario;
 
 import java.math.BigDecimal;
 import java.nio.file.Path;
@@ -1050,6 +1051,22 @@ public final class WorldWebScenario {
             publishOpeningDocuments(runtime);
         }
         return new WorldWebHost.Opened(runtime, groupsManifest().runId());
+    }
+
+    /**
+     * 组合档（schema24，独立 {@code world-composed.journal}）：现有群组/工程/周期/历史世界 +
+     * 一家真实银行（north）+ 托管/资金/公司治理模块。
+     *
+     * <p>只转调已存在的 {@link ComposedWorldScenario#open(Path)}，不复制开局、不改核心模型；
+     * 显式 composed 入口与旧 mode 平行，旧 mode 的世界工厂一行未改。</p>
+     *
+     * @param journal 组合档日志（调用方用 {@code world-composed.journal}，不复用旧档）
+     * @return 打开的运行与运行标识
+     * @throws Exception 开局/恢复失败
+     */
+    public static WorldWebHost.Opened openComposed(Path journal) throws Exception {
+        WorldRuntime runtime = ComposedWorldScenario.open(journal);
+        return new WorldWebHost.Opened(runtime, ComposedWorldScenario.RUN_ID);
     }
 
     public static WorldWebHost.Opened openEngineering(Path journal) throws Exception {

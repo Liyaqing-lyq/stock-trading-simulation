@@ -50,7 +50,8 @@ const DETAIL_PAGES = {
   interview: "/api/admin/interview",
   performance: "/api/admin/performance",
   org: "/api/admin/people",
-  information: "/api/admin/information"
+  information: "/api/admin/information",
+  bank: "/api/admin/bank"
 };
 const DETAIL_TABLES = ["company-report", "company-inventory", "company-orders",
   "company-batches", "company-contracts", "company-receivables", "company-bills",
@@ -66,8 +67,12 @@ const DETAIL_TABLES = ["company-report", "company-inventory", "company-orders",
   "engineering-contracts", "engineering-works", "engineering-budgets",
   "engineering-commitments", "engineering-meetings", "engineering-requests",
   "engineering-responses", "engineering-payments", "engineering-waivers",
-  "engineering-tasks", "engineering-reports"];
-const PERSON_TABLES = ["person-accounts", "person-holdings", "person-market"];
+  "engineering-tasks", "engineering-reports",
+  "bank-summary", "bank-deposits", "bank-loans", "bank-loans-raw", "bank-equity",
+  "bank-glraw", "bank-gates", "bank-metrics", "bank-custody-pools",
+  "bank-custody-beneficial", "bank-actions"];
+const PERSON_TABLES = ["person-accounts", "person-holdings", "person-market",
+  "person-bank-deposits", "person-bank-actions"];
 
 const $ = (id) => document.getElementById(id);
 
@@ -491,6 +496,7 @@ async function enterPerson(personId) {
 async function refreshPerson() {
   clearPersonalMedia();
   clearPersonalInterview();
+  clearPersonalBank();
   const generation = state.generation;
   let result;
   try {
@@ -521,6 +527,8 @@ async function refreshPerson() {
   if (!isCurrent(generation) || state.mode !== "person") return;
   $("context-time").textContent = "人物观察 · " + view.timeMillis + " 毫秒";
   $("person-name").textContent = view.personPartyId;
+  await loadPersonalBank(generation);
+  if (!isCurrent(generation) || state.mode !== "person") return;
 
   const summary = $("person-summary");
   summary.replaceChildren();
@@ -648,6 +656,7 @@ const pages = {
   org: ["人物与任职", "谁能做什么，任职何时生效或结束。"],
   information: ["信息与阅读", "谁发布了什么版本，谁实际读到什么。"],
   engineering: ["公司经营与回款", "制造与两家工程公司各自真实的合同、工单、预算、客户请求与回款。"],
+  bank: ["银行审计", "准备金、存款负债、贷款、利息与权益、门槛缺项与托管，取自同一确认快照。"],
   media: ["媒体采编", "选题、审阅、发布与更正，都有实际工时和原始版本。"],
   people: ["人物视角", "以各自的权限观察世界，保留信息边界。"],
   models: ["模型运行", "让人物依据自己的观察完成一次判断，查看实际输入与回报。"],
@@ -1785,11 +1794,12 @@ function clearDetailDom() {
     "performance-holdings-count", "performance-flows-count", "org-cut",
     "org-reports-count", "information-cut", "information-documents-count",
     "information-active-count", "information-observations-count",
-    "information-reports-count"]) {
+    "information-reports-count", "bank-cut", "bank-digest", "bank-missing",
+    "bank-custody-note", "bank-unavailable", "bank-totals-note"]) {
     if ($(id)) $(id).textContent = "";
   }
   for (const id of ["company-rules", "company-charter", "company-notes", "performance-notes",
-    "org-notes", "information-notes"]) {
+    "org-notes", "information-notes", "bank-archive", "bank-notes", "bank-headline"]) {
     if ($(id)) $(id).replaceChildren();
   }
   for (const id of ["company-report-filter", "performance-filter",
@@ -1835,6 +1845,505 @@ function renderDetail(page, view) {
   else if (page === "performance") renderPerformance(view);
   else if (page === "org") renderPeopleAdmin(view);
   else if (page === "information") renderInformation(view);
+  else if (page === "bank") renderBank(view);
+}
+
+function renderBank(view) {
+  const available = view && view.available === true;
+  $("bank-cut").textContent = view
+    ? "同一确认快照 · 运行 " + text(view.runId) + " · 位置 " + text(view.position)
+      + " · 时点 " + text(view.timeMillis) + " 毫秒 · 阶段 " + text(view.phase)
+    : "";
+  $("bank-digest").textContent = available && view.digest
+    ? "状态摘要（sha256）：" + view.digest + " · 配置指纹：" + text(view.configFingerprint) : "";
+  setMessage("bank-unavailable", available ? "" : "本档未启用银行模块，不显示零余额银行。"
+    + (view && view.reason ? "原因：" + view.reason : ""));
+
+  const archive = (view && view.archive) || {};
+  fillDl("bank-archive", available ? [
+    ["规则档案", archive.archiveId],
+    ["版本", archive.version],
+    ["标签", archive.label],
+    ["覆盖规则", archive.coverageRule],
+    ["声明指标", (archive.required || []).join("、")],
+    ["已实现", (archive.implemented || []).join("、")],
+    ["未覆盖项", (archive.omitted || []).join("、") || "无声明"],
+    ["来源状态", archive.provenanceStatus],
+    ["口径", archive.experimentOnly ? "实验规则（非监管合规，非现实校准）" : "—"],
+    ["配置指纹", view.configFingerprint],
+    ["结算背书（元）", view.backing]
+  ] : []);
+  const notes = $("bank-notes");
+  notes.replaceChildren();
+  for (const note of (view && view.notes) || []) {
+    const li = document.createElement("li");
+    li.textContent = note;
+    notes.appendChild(li);
+  }
+
+  const banks = (view && view.banks) || [];
+  const first = banks[0];
+  const firstTotals = (first && first.totals) || {};
+  fillDl("bank-headline", available && first ? [
+    ["银行", first.bankKey],
+    ["准备金（元）", first.reserve],
+    ["客户存款负债（元）", first.depositsTotal],
+    ["贷款账面值合计（元）", first.loansOnbookTotal],
+    ["资产合计（元）", firstTotals.assets],
+    ["负债合计（元）", firstTotals.liabilities],
+    ["权益合计（元）", firstTotals.equity],
+    ["其中未结转累计损益（元）", firstTotals.pnl],
+    ["A = L + E", firstTotals.balanced ? "平衡" : "不平衡"],
+    ["口径完整性", firstTotals.complete ? "本切片口径内完整" : "不完整（存在未覆盖项或不平衡）"]
+  ] : []);
+  setMessage("bank-totals-note", available && first
+    ? (firstTotals.complete
+      ? "合计口径来自既有权威银行报表（含准备金现金、贷款资产、减值准备与未结转损益）；这只是 EXP 实验账，不是监管报表。"
+      : "合计不完整，不能当作完整资产负债表："
+        + ((firstTotals.unsupported || []).join("；") || "报表不平衡"))
+    : "");
+  show("bank-summary-empty", available && banks.length === 0);
+  fillTable("bank-summary", available ? banks : [], (tr, row) => {
+    const totals = row.totals || {};
+    cell(tr, row.bankKey);
+    cell(tr, row.reserve, "num");
+    cell(tr, row.depositsTotal, "num");
+    cell(tr, totals.assets, "num");
+    cell(tr, totals.liabilities, "num");
+    cell(tr, totals.equity, "num");
+    cell(tr, totals.contra, "num");
+    cell(tr, totals.pnl, "num");
+    cell(tr, totals.balanced ? "平衡" : "不平衡");
+  });
+
+  const deposits = [];
+  const loans = [];
+  const gates = [];
+  const metrics = [];
+  const missing = [];
+  if (available) {
+    for (const bank of banks) {
+      for (const row of bank.customerDeposits || []) {
+        deposits.push({ bankKey: bank.bankKey, ...row });
+      }
+      for (const row of bank.loans || []) {
+        loans.push({ bankKey: bank.bankKey, ...row });
+      }
+      if (bank.gate) {
+        gates.push({ bankKey: bank.bankKey, ...bank.gate });
+        for (const metric of bank.gate.metrics || []) {
+          metrics.push({ bankKey: bank.bankKey, ...metric });
+        }
+        for (const item of bank.gate.missing || []) {
+          missing.push(bank.bankKey + " / " + item);
+        }
+      }
+    }
+  }
+  show("bank-deposits-empty", available && deposits.length === 0);
+  fillTable("bank-deposits", deposits, (tr, row) => {
+    cell(tr, row.bankKey);
+    cell(tr, row.partyKey);
+    cell(tr, row.ownerId);
+    cell(tr, row.depositGl);
+    cell(tr, row.amount, "num");
+    cell(tr, row.nonAccrual ? "是" : "否");
+    cell(tr, row.interestPayable, "num");
+    cell(tr, row.interestPaid, "num");
+  });
+
+  show("bank-loans-empty", available && loans.length === 0);
+  fillTable("bank-loans", loans, (tr, row) => {
+    const terms = row.terms || {};
+    cell(tr, row.borrowerKey);
+    cell(tr, row.statusLabel || row.status);
+    cell(tr, terms.amount, "num");
+    cell(tr, row.onbook, "num");
+    cell(tr, row.rateText || row.terms.rateU);
+    cell(tr, row.tenorText || row.terms.tenorMs);
+  });
+  fillTable("bank-loans-raw", loans, (tr, row) => {
+    const terms = row.terms || {};
+    cell(tr, row.loanId);
+    cell(tr, row.bankKey);
+    cell(tr, row.borrowerKey);
+    cell(tr, row.status);
+    cell(tr, row.trancheId || "—");
+    cell(tr, terms.amount, "num");
+    cell(tr, terms.rateU);
+    cell(tr, terms.tenorMs);
+    cell(tr, terms.purpose);
+    cell(tr, terms.accepted ? "是" : "否");
+    cell(tr, terms.approvedBy || "—");
+    cell(tr, row.writtenOff, "num");
+    cell(tr, row.interestReceivable, "num");
+    cell(tr, row.interestPaid, "num");
+    cell(tr, row.accruedInterest, "num");
+    cell(tr, row.overdue ? "是" : "否");
+  });
+
+  show("bank-equity-empty", available && banks.length === 0);
+  fillTable("bank-equity", available ? banks : [], (tr, row) => {
+    const interest = row.interest || {};
+    const equity = row.equity || {};
+    cell(tr, row.bankKey);
+    cell(tr, interest.interestReceivable, "num");
+    cell(tr, interest.interestPayable, "num");
+    cell(tr, interest.interestIncome, "num");
+    cell(tr, interest.interestExpense, "num");
+    cell(tr, equity.paidIn, "num");
+    cell(tr, equity.retained, "num");
+    cell(tr, equity.nonDistributable, "num");
+    cell(tr, equity.unbookedPnl, "num");
+    cell(tr, equity.bookEquity, "num");
+    cell(tr, equity.totalEquity, "num");
+  });
+  const glRows = [];
+  if (available) {
+    for (const bank of banks) {
+      for (const [account, amount] of Object.entries(bank.glRaw || {})) {
+        glRows.push({ bankKey: bank.bankKey, account, amount });
+      }
+    }
+  }
+  fillTable("bank-glraw", glRows, (tr, row) => {
+    cell(tr, row.bankKey + " / " + row.account);
+    cell(tr, row.amount, "num");
+  });
+
+  show("bank-gates-empty", available && gates.length === 0);
+  fillTable("bank-gates", gates, (tr, row) => {
+    cell(tr, row.bankKey);
+    cell(tr, row.status);
+    cell(tr, (row.actions || []).join("、") || "无触发动作");
+  });
+  fillTable("bank-metrics", metrics, (tr, row) => {
+    cell(tr, row.bankKey);
+    cell(tr, row.name);
+    cell(tr, row.num, "num");
+    cell(tr, row.den, "num");
+    cell(tr, row.value === null || row.value === undefined ? "缺项" : row.value, "num");
+    cell(tr, row.state);
+  });
+  setMessage("bank-missing", missing.length === 0 ? ""
+    : "缺项（不补 0、不默认通过）：" + missing.join("；"));
+
+  const custody = (view && view.custody) || {};
+  setMessage("bank-custody-note", custody.enabled ? (custody.note || "") :
+    (custody.reason || "本档没有托管人。"));
+  const pools = custody.pools || [];
+  const beneficial = custody.beneficial || [];
+  show("bank-custody-pools-empty", !custody.enabled || pools.length === 0);
+  show("bank-custody-beneficial-empty", !custody.enabled || beneficial.length === 0);
+  fillTable("bank-custody-pools", custody.enabled ? pools : [], (tr, row) => {
+    cell(tr, row.custodian);
+    cell(tr, row.poolAsset, "num");
+  });
+  fillTable("bank-custody-beneficial", custody.enabled ? beneficial : [], (tr, row) => {
+    cell(tr, row.custodian);
+    cell(tr, row.ownerKey);
+    cell(tr, row.amount, "num");
+  });
+
+  const actions = (view && view.actions) || [];
+  show("bank-actions-empty", available && actions.length === 0);
+  fillTable("bank-actions", actions, (tr, row) => {
+    cell(tr, row.taskId);
+    cell(tr, row.personPartyId);
+    cell(tr, row.kindLabel || row.kind);
+    cell(tr, row.stageLabel || row.stage);
+    cell(tr, frameResult(row));
+    cell(tr, row.reason);
+    cell(tr, row.stage || "");
+    cell(tr, row.receipt);
+    cell(tr, row.atMillis);
+  });
+}
+
+/** 单帧结果：accepted 只表示该帧成立，STARTED 不等于完成，未映射阶段不推断完成。 */
+function frameResult(row) {
+  if (!row || !row.accepted) {
+    return "不成立";
+  }
+  if (row.stage === "STARTED") {
+    return "已开始（未完成）";
+  }
+  if (row.stage === "UNMAPPED") {
+    return "该帧成立（阶段未映射）";
+  }
+  return "该帧成立";
+}
+
+/** 人物银行卡片：只呈现服务端派生的本人数据，失败时给出可见提示。 */
+async function loadPersonalBank(generation) {
+  let result;
+  try {
+    result = await request("GET", "/api/me/bank");
+  } catch (failure) {
+    if (isCurrent(generation) && state.mode === "person") {
+      setMessage("person-bank-status", "读取本人银行视图失败：" + failure.message);
+    }
+    return;
+  }
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (result.status === 401) {
+    sessionLost();
+    return;
+  }
+  if (result.status !== 200 || !result.payload) {
+    setMessage("person-bank-status", "读取本人银行视图失败（" + result.status + "）。");
+    return;
+  }
+  const view = result.payload;
+  setMessage("person-bank-status", view.available === true
+    ? "本人 · 世界时点 " + text(view.timeMillis) + " 毫秒"
+    : "此档未启用银行模块：" + text(view.reason));
+  const owners = $("person-bank-owners");
+  owners.replaceChildren();
+  for (const row of view.owners || []) {
+    const pairs = [
+      ["财产主体", row.ownerId],
+      ["现金（元）", row.cash],
+      ["银行存款（元）", row.deposits],
+      ["托管受益权（元）", row.beneficial]
+    ];
+    for (const [label, value] of pairs) {
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = text(value);
+      owners.append(dt, dd);
+    }
+  }
+  const deposits = view.deposits || [];
+  show("person-bank-deposits-empty", deposits.length === 0);
+  fillTable("person-bank-deposits", deposits, (tr, row) => {
+    cell(tr, row.bankKey);
+    cell(tr, row.partyKey);
+    cell(tr, row.amount, "num");
+    cell(tr, row.offerId || "—");
+    cell(tr, row.rateText || row.rateU);
+    cell(tr, row.nonAccrual ? "是" : "否");
+  });
+  const actions = view.actions || [];
+  show("person-bank-actions-empty", actions.length === 0);
+  fillTable("person-bank-actions", actions, (tr, row) => {
+    cell(tr, row.taskId);
+    cell(tr, row.kindLabel || row.kind);
+    cell(tr, row.stageLabel || row.stage);
+    cell(tr, frameResult(row));
+    cell(tr, row.reason);
+    cell(tr, row.atMillis);
+  });
+  const tools = (view.tools || []).join("、") || "无";
+  setMessage("person-bank-note", "本人可用工具：" + tools + "。" + text(view.actionsReason));
+  renderPersonalBankOps(view);
+}
+
+/** 本人银行操作面板：只列真实可用动作与本人可见对象。 */
+const BANK_KIND_LABELS = {
+  DEPOSIT: "存入", WITHDRAW: "取出", PAY: "支付",
+  LOAN_REQUEST: "贷款申请", LOAN_ACCEPT: "接受冻结条款", LOAN_APPROVE: "批准本行合同",
+  LOAN_DRAW: "提款放款", LOAN_REPAY: "还本", LOAN_PAY_INTEREST: "付息"
+};
+
+function renderPersonalBankOps(view) {
+  state.personalBank = view;
+  const kinds = (view && view.entitlements) || [];
+  show("person-bank-ops", Boolean(view && view.available) && kinds.length > 0);
+  const kindSel = $("person-bank-kind");
+  const previous = kindSel.value;
+  kindSel.replaceChildren();
+  for (const kind of kinds) {
+    const option = document.createElement("option");
+    option.value = kind;
+    option.textContent = BANK_KIND_LABELS[kind] || kind;
+    kindSel.appendChild(option);
+  }
+  if (previous && kinds.includes(previous)) kindSel.value = previous;
+  const fill = (id, rows) => {
+    const select = $(id);
+    select.replaceChildren();
+    for (const row of rows || []) {
+      const option = document.createElement("option");
+      option.value = row.token;
+      option.textContent = row.label;
+      select.appendChild(option);
+    }
+  };
+  const options = (view && view.options) || {};
+  fill("person-bank-subject", options.subjects || [{ token: "", label: "本人" }]);
+  $("person-bank-subject").value = ((options.subjects || [])[0] || {}).token || "";
+  fill("person-bank-source", (options.cash || []).concat(options.deposits || []));
+  fill("person-bank-payee", options.payees || []);
+  const loanSel = $("person-bank-loan");
+  loanSel.replaceChildren();
+  for (const loan of (view && view.loans) || []) {
+    const option = document.createElement("option");
+    option.value = loan.loanId;
+    option.textContent = loan.loanId + " · " + (loan.statusLabel || loan.status)
+      + " · " + loan.amount + " 元";
+    loanSel.appendChild(option);
+  }
+  show("person-bank-loans-empty", ((view && view.loans) || []).length === 0);
+  fillTable("person-bank-loans", (view && view.loans) || [], (tr, row) => {
+    cell(tr, row.loanId);
+    cell(tr, row.statusLabel || row.status);
+    cell(tr, row.amount, "num");
+    cell(tr, row.rateText);
+    cell(tr, row.tenorText);
+    cell(tr, row.purpose);
+    cell(tr, row.drawn, "num");
+    cell(tr, row.approvedBy || "—");
+  });
+  togglePersonalBankRows();
+}
+
+/** 按动作显示/隐藏字段：资金类要账户，生命周期要合同，申请要条款。 */
+function togglePersonalBankRows() {
+  const kind = $("person-bank-kind").value;
+  const view = state.personalBank || {};
+  const options = view.options || {};
+  const party = $("person-bank-subject").value || view.personPartyId;
+  const sources = kind === "DEPOSIT" ? (options.cash || [])
+    : kind === "WITHDRAW" ? (options.deposits || [])
+    : (options.cash || []).concat(options.deposits || []);
+  const source = $("person-bank-source");
+  const selected = source.value;
+  const allowed = sources.filter(row => !row.partyKey || row.partyKey === party);
+  source.replaceChildren();
+  for (const row of allowed) {
+    const option = document.createElement("option");
+    option.value = row.token;
+    option.textContent = row.label;
+    source.appendChild(option);
+  }
+  source.value = allowed.some(row => row.token === selected) ? selected : (allowed[0] || {}).token || "";
+  const funds = kind === "DEPOSIT" || kind === "WITHDRAW" || kind === "PAY";
+  const lifecycle = kind === "LOAN_ACCEPT" || kind === "LOAN_APPROVE" || kind === "LOAN_DRAW"
+    || kind === "LOAN_REPAY" || kind === "LOAN_PAY_INTEREST";
+  show("person-bank-source-row", funds);
+  show("person-bank-payee-row", kind === "PAY");
+  show("person-bank-amount-row", funds || lifecycle || kind === "LOAN_REQUEST");
+  show("person-bank-loan-row", lifecycle);
+  show("person-bank-terms-row", kind === "LOAN_REQUEST");
+}
+
+/** 利率百分数文本 → 定标 1e6 整数（整数运算，不经浮点）。 */
+function rateUnits(text) {
+  const value = String(text || "").trim();
+  if (!/^\d+(\.\d{1,4})?$/.test(value)) {
+    throw new Error("利率必须是非负百分数，最多四位小数");
+  }
+  const parts = value.split(".");
+  const whole = Number(parts[0]);
+  const frac = ((parts[1] || "") + "0000").slice(0, 4);
+  return whole * 10000 + Number(frac);
+}
+
+/** 期限天数文本 → 毫秒（1–9999 天）。 */
+function tenorMillis(text) {
+  const value = String(text || "").trim();
+  if (!/^\d{1,4}$/.test(value) || Number(value) <= 0) {
+    throw new Error("期限必须是 1 到 9999 天");
+  }
+  return Number(value) * 86400000;
+}
+
+async function submitPersonalBankAction() {
+  const generation = state.generation;
+  setMessage("person-bank-error", "");
+  setMessage("person-bank-result", "");
+  let body;
+  try {
+    const kind = $("person-bank-kind").value;
+    const work = Number($("person-bank-work").value);
+    const commandId = "web-bank-" + state.generation + "-" + Date.now().toString(36);
+    body = { commandId: commandId, taskId: commandId + "-t", kind: kind,
+      workMillis: work, amount: $("person-bank-amount").value.trim() };
+    if ($("person-bank-subject").value) {
+      body.organizationPartyId = $("person-bank-subject").value;
+    }
+    if (kind === "DEPOSIT" || kind === "WITHDRAW" || kind === "PAY") {
+      body.sourceToken = $("person-bank-source").value;
+    }
+    if (kind === "PAY") {
+      body.payeeToken = $("person-bank-payee").value;
+    }
+    if (kind === "LOAN_REQUEST") {
+      body.rateU = rateUnits($("person-bank-rate").value);
+      body.tenorMs = tenorMillis($("person-bank-tenor").value);
+      body.purpose = $("person-bank-purpose").value.trim();
+    }
+    if (kind === "LOAN_ACCEPT" || kind === "LOAN_APPROVE" || kind === "LOAN_DRAW"
+        || kind === "LOAN_REPAY" || kind === "LOAN_PAY_INTEREST") {
+      body.loanId = $("person-bank-loan").value;
+    }
+  } catch (failure) {
+    setMessage("person-bank-error", failure.message);
+    return;
+  }
+  $("person-bank-submit").disabled = true;
+  let result;
+  try {
+    result = await request("POST", "/api/me/bank/action", body);
+  } catch (failure) {
+    $("person-bank-submit").disabled = false;
+    setMessage("person-bank-error",
+      "提交结果未知（未收到响应）：" + failure.message + "。请勿盲目重发；先刷新核对本人动作记录与账目。");
+    return;
+  }
+  $("person-bank-submit").disabled = false;
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (result.status === 401 || result.status === 403) {
+    sessionLost();
+    return;
+  }
+  if (result.status === 200 && result.payload) {
+    setMessage("person-bank-result",
+      "已排程：" + text(result.payload.receipt) + " · 到期世界时点 "
+      + text(result.payload.dueTimeMillis) + " 毫秒。到期前不会瞬时完成，请稍后刷新或推进世界核对。");
+    return;
+  }
+  const message = (result.payload && result.payload.message) ? result.payload.message
+    : ("提交被拒绝（" + result.status + "）");
+  setMessage("person-bank-error", message);
+}
+
+/** 切换身份/离开人物视角时清空本人银行卡片，避免旧身份的存款留在页面上。 */
+function clearPersonalBank() {
+  state.personalBank = null;
+  if (!$("person-bank-owners")) return;
+  $("person-bank-owners").replaceChildren();
+  for (const id of ["person-bank-status", "person-bank-note"]) {
+    if ($(id)) {
+      $(id).textContent = "";
+      $(id).hidden = true;
+    }
+  }
+  for (const id of ["person-bank-deposits", "person-bank-actions", "person-bank-loans"]) {
+    if ($(id)) fillTable(id, [], () => undefined);
+  }
+  for (const id of ["person-bank-deposits-empty", "person-bank-actions-empty",
+    "person-bank-loans-empty"]) {
+    if ($(id)) $(id).hidden = true;
+  }
+  show("person-bank-ops", false);
+  for (const id of ["person-bank-kind", "person-bank-subject", "person-bank-source", "person-bank-payee",
+    "person-bank-loan"]) {
+    if ($(id)) $(id).replaceChildren();
+  }
+  for (const id of ["person-bank-amount", "person-bank-rate", "person-bank-tenor",
+    "person-bank-purpose"]) {
+    if ($(id)) $(id).value = "";
+  }
+  for (const id of ["person-bank-result", "person-bank-error"]) {
+    if ($(id)) {
+      $(id).textContent = "";
+      $(id).hidden = true;
+    }
+  }
+  if ($("person-bank-submit")) $("person-bank-submit").disabled = false;
 }
 
 function fillSection(emptyId, countId, section, note) {
@@ -5811,3 +6320,6 @@ $("eng-tool").addEventListener("change", () => {
 $("engineering-action-form").addEventListener("submit", (event) => {
   guard(submitEngineeringAction(event));
 });
+$("person-bank-kind").addEventListener("change", togglePersonalBankRows);
+$("person-bank-subject").addEventListener("change", togglePersonalBankRows);
+$("person-bank-submit").addEventListener("click", () => guard(submitPersonalBankAction()));

@@ -10,6 +10,15 @@ import edu.cufe.auction.world.ManufacturingRun.ReportEntry;
 import edu.cufe.auction.world.SecuritiesLedger.ActionReport;
 import edu.cufe.auction.world.SecuritiesLedger.SellReservation;
 import edu.cufe.auction.world.WorldExchange.OrderReport;
+import edu.cufe.auction.world.bank.BankActions;
+import edu.cufe.auction.world.bank.BankChart;
+import edu.cufe.auction.world.bank.BankConfig;
+import edu.cufe.auction.world.bank.BankContext;
+import edu.cufe.auction.world.bank.BankOpeningRequest;
+import edu.cufe.auction.world.bank.BankRun;
+import edu.cufe.auction.world.bank.BankState;
+import edu.cufe.auction.world.bank.Money;
+import edu.cufe.auction.world.composed.BankCompanyReport;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -115,8 +124,14 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_SOCIAL = 17;
     /** schema18：在社交全链之上按公司持有工程经营与董事会（同一 journal，不迁移旧档）。 */
     private static final int STATE_SCHEMA_ENGINEERING = 18;
-    /** schema20：在工程全链之上接入群组、平台发布与呈现（银行 schema19 不属于本候选）。 */
+    /** schema20：在工程全链之上接入群组、平台发布与呈现（不迁移旧档）。 */
     private static final int STATE_SCHEMA_GROUPS = 20;
+
+    /** 显式银行/托管模块的档案版本：只在 banking/custody 模块存在时使用，不由 schema 猜。 */
+    private static final int STATE_SCHEMA_BANKING = 19;
+
+    /** composed-v1：群组 20 档全部模块与银行三模块的组合档（schema24）。 */
+    private static final int STATE_SCHEMA_COMPOSED = 24;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -205,6 +220,32 @@ public final class WorldRuntime implements AutoCloseable {
     private static final ObjectMapper canonicalMapper = new ObjectMapper()
             .enable(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
     /**
+     * 新组合规则（composed-v2）专用的规范 writer：map 键排序 + {@link Set} 写成按值排序的数组。
+     *
+     * <p>只用于新规则的快照 payload 与状态摘要；旧规则/旧档案继续用 {@link #canonicalMapper}
+     * 与原持久 writer，序列化契约不变。旧 20 实现的制造集合本来就随 JVM 变序（已实证），
+     * 所以旧规则不承诺字节可复算；确定性只在新规则下声明。</p>
+     */
+    private static final ObjectMapper composedCanonicalMapper = new ObjectMapper()
+            .enable(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+            .registerModule(new com.fasterxml.jackson.databind.module.SimpleModule()
+                    .addSerializer(Set.class, new com.fasterxml.jackson.databind.JsonSerializer<Set>() {
+                        @Override
+                        @SuppressWarnings("unchecked")
+                        public void serialize(Set value,
+                                com.fasterxml.jackson.core.JsonGenerator generator,
+                                com.fasterxml.jackson.databind.SerializerProvider provider)
+                                throws java.io.IOException {
+                            List<Object> sorted = new ArrayList<>(value);
+                            sorted.sort(java.util.Comparator.comparing(String::valueOf));
+                            generator.writeStartArray();
+                            for (Object element : sorted) {
+                                generator.writeObject(element);
+                            }
+                            generator.writeEndArray();
+                        }
+                    }));
+    /**
      * 信封逐字段比较专用：读取时保留 JSON 里的小数位（BigDecimal），写出时键排序。
      *
      * <p>只用于比较，不用于持久格式；默认 mapper 会把小数读成 Double 而丢掉 scale，
@@ -249,6 +290,10 @@ public final class WorldRuntime implements AutoCloseable {
     private final int groupFeedLimit;
     /** schema20 群/平台帖固定阅读耗时；旧档为 0。 */
     private final long groupReadMillis;
+    /** 组合档额外公司章程（目前 north）：只用于建立真实董事会，不含任何业务配置。 */
+    private final Map<String, BoardModel.Charter> companyCharters;
+    /** 银行开局申请（冻结档案 + 历史禀赋 + 托管明细）；旧档为 null。 */
+    private final BankOpeningRequest bankOpening;
     /** live 完成槽：构造时自动建立，scripted 为 null；不公开。 */
     private final LiveCompletionInbox liveInbox;
     /** 有界回调队列：异步线程只 offer，不读写世界状态。 */
@@ -281,8 +326,6 @@ public final class WorldRuntime implements AutoCloseable {
     private WorldState state;
     /** 父前缀校验上下文里由 {@code verifyCommits} 得到的父边界终态；普通运行与子运行不使用。 */
     private WorldState verifiedPrefixState;
-    private volatile boolean paused;
-    private boolean closed;
     /** 受控重演标志：为 true 时 {@link #commitAndApply} 只捕获候选，不校验也不写日志。 */
     private boolean capturing;
     /** 重演捕获到的完整批次：候选状态、命令标识、命令原文、回报与领域事件。 */
@@ -292,6 +335,9 @@ public final class WorldRuntime implements AutoCloseable {
     private String capturedResult;
     private List<WorldEvent> capturedEvents;
     private int capturedCount;
+
+    private volatile boolean paused;
+    private boolean closed;
 
     /**
      * 已投递的业务回报（只读管理视图）。
@@ -516,13 +562,15 @@ public final class WorldRuntime implements AutoCloseable {
     /** 世界订单的规范化命令内容（幂等比对用）。 */
     private record OrderCommand(String commandId, String taskId, long dueTimeMillis,
                                 String actorOwnerId, String accountId, String symbol,
-                                Side side, OrderType type, BigDecimal price, long quantity) {
+                                Side side, OrderType type, BigDecimal price, long quantity,
+                                @JsonInclude(JsonInclude.Include.NON_NULL) String fundingToken) {
     }
 
-    /** 世界订单任务参数。 */
+    /** 世界订单任务参数（{@code fundingToken} 为 null 即旧口径 {@code CASH|<accountId>}）。 */
     private record OrderPayload(String commandId, String actorOwnerId, String accountId,
                                 String symbol, Side side, OrderType type, BigDecimal price,
-                                long quantity) {
+                                long quantity,
+                                @JsonInclude(JsonInclude.Include.NON_NULL) String fundingToken) {
     }
 
     /** 撤单命令内容。 */
@@ -542,12 +590,7 @@ public final class WorldRuntime implements AutoCloseable {
     private record CloseMarketPayload(String commandId) {
     }
 
-    /**
-     * 制造排程命令（写入命令正文）。
-     *
-     * @param kind 制造动作种类；只有 {@code manufacturing-intent} 新规则档写入，
-     *             旧档为 null 且 JSON 省略该字段，旧命令原文逐字不变
-     */
+    /** 外部制造命令的规范化内容（幂等比对用）；六类命令共用一种形状。 */
     private record ManufacturingCommand(String commandId, String taskId, long dueTimeMillis,
                                         String actorOwnerId, String businessId, String resultId,
                                         long quantity, BigDecimal unitPrice,
@@ -673,6 +716,45 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 组合档 v2 显式资金经营动作参数。
+     *
+     * <p>与 {@link EngineeringActionPayload} 并列而不合并：旧记录形状一个字段都不动，
+     * 所以旧 JSON、旧档与旧回放逐字不变；只有新 kind 才带这两个桶 token 与政策标签。
+     * 桶 token 是规范化文本（{@code CASH|账户} / {@code DEPOSIT|银行|持有人}），随待办
+     * 与 FINISH 一起持久化，重放比较的就是同一份完整字段。</p>
+     *
+     * @param commandId     命令标识（同时是资金腿幂等标识）
+     * @param companyPartyId 工程公司
+     * @param personPartyId 发起经理
+     * @param action        ADVANCE / COLLECT_DUE / COLLECT_RETENTION / RECOVER / INVEST_WORK
+     * @param contractId    合同
+     * @param workId        开工任务（仅 INVEST_WORK）
+     * @param trancheIndex  期次（回款类）
+     * @param units         投入单位（仅 INVEST_WORK）
+     * @param amount        金额（预收/回款/追索）
+     * @param fundPolicy    资金来源政策标签；本轮只接受 COMPANY_CHOICE_V1
+     * @param fundSource    出款桶 token
+     * @param fundTarget    收款桶 token
+     * @param observedAt    观察时点（排程帧的真实时刻，用于双资格复核）
+     * @param focusMillis   决策工时
+     */
+    private record FundedEngineeringPayload(String commandId, String companyPartyId,
+                                            String personPartyId, String action,
+                                            String contractId, String workId, int trancheIndex,
+                                            long units, BigDecimal amount, long period,
+                                            String fundPolicy,
+                                            String fundSource, String fundTarget,
+                                            long observedAt, long focusMillis) {
+
+        /** 用真实工时重建同一意图：只在排程帧调用一次。 */
+        FundedEngineeringPayload withFocus(long focus) {
+            return new FundedEngineeringPayload(commandId, companyPartyId, personPartyId, action,
+                    contractId, workId, trancheIndex, units, amount, period, fundPolicy,
+                    fundSource, fundTarget, observedAt, focus);
+        }
+    }
+
+    /**
      * schema18b BEGIN 屏障参数：原样携带已冻结的动作 payload，只在运行层构造。
      *
      * <p>这是兼容包装：真正的经营/董事意图仍是 {@code payload} 里的原记录，
@@ -689,6 +771,7 @@ public final class WorldRuntime implements AutoCloseable {
             if (!PendingTask.ENGINEERING_BOARD_V1.equals(targetKind)
                     && !PendingTask.BOARD_ATTEND_V1.equals(targetKind)
                     && !PendingTask.ENGINEERING_ACTION_V1.equals(targetKind)
+                    && !PendingTask.ENGINEERING_FUND_V1.equals(targetKind)
                     && !PendingTask.ENGINEERING_PERIODIC_V1.equals(targetKind)) {
                 throw new IllegalArgumentException("BEGIN 屏障种类非法：" + targetKind);
             }
@@ -753,6 +836,12 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               EngineeringRun engineering,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
+                              BankRun bank,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              BankActions.Book bankActions,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              CompanyGovernanceRun companyGovernance,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
                               GroupsRun groups) {
 
         WorldState {
@@ -775,7 +864,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings)
             throws IOException {
-        this(file, manifest, openings, null, null);
+        this(file, manifest, openings, (OpeningRegistry) null, (ManufacturingRun.Config) null);
     }
 
     /**
@@ -793,6 +882,52 @@ public final class WorldRuntime implements AutoCloseable {
     public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
                         OpeningRegistry registry) throws IOException {
         this(file, manifest, openings, registry, null, null);
+    }
+
+    /**
+     * 打开或恢复一次显式银行档案（{@code banking-world-experiment-v1}，schema19）。
+     *
+     * <p>银行模块与开局申请必须成对：缺申请、或多带申请都在创建任何文件之前拒绝。开局调用已接受的
+     * {@code BankOpening.openDeclared} 与 {@code CustodyBook} 开局，只使用本运行已登记的组织/账户
+     * 与已有现金账户；准备金不是新钱，存款只是银行负债，托管受益权只是客户明细。第一帧同时冻结
+     * 档案、禀赋、托管明细与来源，恢复时重新执行同一开局再比对。</p>
+     *
+     * @param file        运行日志（本类独占）
+     * @param manifest    运行清单（必须启用 banking 模块）
+     * @param openings    现金开局清单
+     * @param registry    完整开局登记
+     * @param bankOpening 银行开局申请
+     * @throws IOException 日志不可用、清单/开局/登记/银行申请与持久记录不一致
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                        OpeningRegistry registry, BankOpeningRequest bankOpening)
+            throws IOException {
+        this(file, manifest, openings, registry, null, null, null, null, null, null, null, null,
+                null, null, null, 0L, null, null, null, null, 0, 0, Map.of(), bankOpening);
+    }
+
+    /**
+     * 打开或恢复一次银行<b>人物动作</b>档案（{@code banking-roles-experiment-v1}，schema19）。
+     *
+     * <p>在银行三态之上再加真实任职与资料阅读：银行经理只能来自该银行组织当时有效的
+     * {@code COMPANY_MANAGER}，客户只能用自己或本人任职公司的资金。该档案不需要制造配置或
+     * 董事会章程，因此不复用治理档案的开局校验。</p>
+     *
+     * @param file        运行日志（本类独占）
+     * @param manifest    运行清单（必须启用 banking/roles/information 模块）
+     * @param openings    现金开局清单
+     * @param registry    完整开局登记
+     * @param roles       任职开局配置
+     * @param information 资料阅读开局配置（登记读者即会话人物）
+     * @param bankOpening 银行开局申请
+     * @throws IOException 日志不可用、清单/开局/登记/银行申请与持久记录不一致
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                        OpeningRegistry registry, RoleRun.Config roles,
+                        InformationRun.Config information, BankOpeningRequest bankOpening)
+            throws IOException {
+        this(file, manifest, openings, registry, null, null, roles, information, null, null, null,
+                null, null, null, null, 0L, null, null, null, null, 0, 0, Map.of(), bankOpening);
     }
 
     /**
@@ -999,7 +1134,7 @@ public final class WorldRuntime implements AutoCloseable {
      * schema17 完整构造：在证据档之上启用一对一消息。
      *
      * @param social        社交纯核配置；旧档必须为 null
-     * @param blockMillis   屏蔽/解除屏蔽的模拟工时；旧档传 0
+     * @param socialBlockMillis 屏蔽/解除屏蔽的模拟工时；旧档传 0
      * @param contacts      受信联系入口；旧档传空表
      * @throws IOException 打开日志失败
      */
@@ -1018,11 +1153,16 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
-     * schema18 完整构造：在社交全链之上按公司启用工程经营与董事会。
+     * schema18 完整构造：在社交全链之上按公司启用工程经营与董事会（原公开 descriptor
+     * {@code (...EngineeringRun$Config;)V} 保持不变）。
      *
      * <p>工程配置只允许出现在 {@code engineering-world-experiment-v1}；它必须建立在社交档
      * （媒体/采访/对话/证据/社交）之上。所有公司、账户、owner、章程、初始金额与冻结合同在创建任何
      * 日志文件之前校验，失败不会留下半成品档案。</p>
+     *
+     * <p>银行档案不得走本构造（二进制签名与 18 档旧客户端一致，恒不带银行申请），
+     * 必须改用 {@link #WorldRuntime(Path, RunManifest, List, OpeningRegistry,
+     * BankOpeningRequest)}。</p>
      *
      * @param engineering schema18 工程配置；旧档必须为 null
      * @throws IOException 打开日志失败
@@ -1039,15 +1179,15 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         this(file, manifest, openings, registry, manufacturing, charter, roles, information,
                 decisions, injectedInbox, media, interview, dialogue, evidence, social,
-                socialBlockMillis, contacts, engineering, null, null, 0, 0);
+                socialBlockMillis, contacts, engineering, null, null, 0, 0, Map.of(), null);
     }
 
     /**
      * schema20 完整构造：在工程全链之上启用群组、平台发布与呈现。
      *
-     * <p>群组配置只允许出现在 {@code groups-platform-experiment-v1}；它必须建立在工程档之上。
-     * 预置群、群主与初始成员、各动作工时、平台写帖工时与目录上限在创建任何日志文件之前校验，
-     * 失败不会留下半成品档案。银行（schema19）不属于本候选：这里不按版本号假设任何银行模块。</p>
+     * <p>群组配置只允许出现在 {@code groups-platform-experiment-v1} 或组合档；它必须建立在
+     * 工程档之上。预置群、群主与初始成员、各动作工时、平台写帖工时与目录上限在创建任何日志
+     * 文件之前校验，失败不会留下半成品档案。银行开局申请为 null 时不得出现银行模块。</p>
      *
      * @param groups        schema20 群组冻结配置；旧档必须为 null
      * @param platform      schema20 平台写帖冻结配置；旧档必须为 null
@@ -1067,7 +1207,38 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         this(null, file, manifest, openings, registry, manufacturing, charter, roles, information,
                 decisions, injectedInbox, media, interview, dialogue, evidence, social,
-                socialBlockMillis, contacts, engineering, groups, platform, feedLimit, readMillis);
+                socialBlockMillis, contacts, engineering, groups, platform, feedLimit, readMillis,
+                Map.of(), null);
+    }
+
+    /**
+     * 组合档完整构造：群组 20 档全部模块与银行三模块同档（{@code composed-v1}）。
+     *
+     * <p>银行模块与开局申请必须成对：缺申请、或多带申请都在创建任何文件之前拒绝。银行开局
+     * 只使用本运行已登记的组织/账户与已有现金账户；准备金不是新钱，存款只是银行负债。
+     * 额外公司治理章程与该模块同样必须成对。</p>
+     *
+     * @param companyCharters 额外公司治理冻结章程；无该模块时必须为空
+     * @param bankOpening     银行开局申请（冻结档案 + 历史禀赋 + 托管明细）；非组合档为 null
+     * @throws IOException 打开日志失败
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                 OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                 BoardModel.Charter charter, RoleRun.Config roles,
+                 InformationRun.Config information, DecisionModel.Config decisions,
+                 LiveCompletionInbox injectedInbox, MediaRun.Config media,
+                 InterviewRun.Config interview, InterviewDialogue.Config dialogue,
+                 EvidenceRun.Config evidence, SocialMessageModel.Config social,
+                 long socialBlockMillis, List<InterviewRun.ContactEntry> contacts,
+                 EngineeringRun.Config engineering, GroupModel.Config groups,
+                 PlatformPostModel.Config platform, int feedLimit, long readMillis,
+                 Map<String, BoardModel.Charter> companyCharters,
+                 BankOpeningRequest bankOpening)
+            throws IOException {
+        this(null, file, manifest, openings, registry, manufacturing, charter, roles, information,
+                decisions, injectedInbox, media, interview, dialogue, evidence, social,
+                socialBlockMillis, contacts, engineering, groups, platform, feedLimit, readMillis,
+                companyCharters, bankOpening);
     }
 
     /**
@@ -1075,7 +1246,8 @@ public final class WorldRuntime implements AutoCloseable {
      * 或按分支来源派生并校验子档。
      *
      * <p>三种入口共用同一段清单/模块/开局校验，不为分支复制第二份校验链：模式只影响
-     * "是否打开日志、首帧写什么、逐帧校验从哪里开始"。</p>
+     * "是否打开日志、首帧写什么、逐帧校验从哪里开始"。银行与额外公司治理配置随普通/组合
+     * 入口一起冻结；旧档两份都必须为空，不按版本号猜模块。</p>
      */
     private WorldRuntime(OpenMode mode, Path file, RunManifest manifest,
                  List<OpeningAccount> openings,
@@ -1087,8 +1259,21 @@ public final class WorldRuntime implements AutoCloseable {
                  EvidenceRun.Config evidence, SocialMessageModel.Config social,
                  long socialBlockMillis, List<InterviewRun.ContactEntry> contacts,
                  EngineeringRun.Config engineering, GroupModel.Config groups,
-                 PlatformPostModel.Config platform, int feedLimit, long readMillis)
+                 PlatformPostModel.Config platform, int feedLimit, long readMillis,
+                 Map<String, BoardModel.Charter> companyCharters,
+                 BankOpeningRequest bankOpening)
             throws IOException {
+        this.bankOpening = bankOpening;
+        if (manifest.hasBank() != (bankOpening != null)) {
+            throw new IllegalArgumentException("银行模块与开局申请必须成对："
+                    + manifest.rulesVersion());
+        }
+        this.companyCharters = companyCharters == null ? Map.of()
+                : Collections.unmodifiableMap(new TreeMap<>(companyCharters));
+        if (manifest.hasCompanyGovernance() != !this.companyCharters.isEmpty()) {
+            throw new IllegalArgumentException("额外公司治理模块与章程必须成对："
+                    + manifest.rulesVersion());
+        }
         this.evidenceConfig = evidence;
         this.socialConfig = social;
         this.socialBlockMillis = socialBlockMillis;
@@ -1343,7 +1528,8 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未启用决定模块的运行不接受决定配置："
                     + manifest.rulesVersion());
         }
-        if (manifest.hasRoles() && (!manifest.hasGovernance()
+        if (manifest.hasRoles() && !manifest.hasBankRoles() && !manifest.hasFunding()
+                && (!manifest.hasGovernance()
                 || !manifest.hasManufacturing() || !manifest.hasMatching())) {
             throw new IllegalArgumentException("任职与资料阅读档案必须建立在完整公司治理档案之上："
                     + manifest.rulesVersion());
@@ -1606,7 +1792,8 @@ public final class WorldRuntime implements AutoCloseable {
         return new BranchProfile(manifest, orderedOpenings, registry, manufacturingConfig, charter,
                 roleConfig, informationConfig, decisionConfig, mediaConfig, interviewConfig,
                 dialogueConfig, evidenceConfig, socialConfig, socialBlockMillis, socialContacts,
-                engineeringConfig, groupConfig, platformConfig, groupFeedLimit, groupReadMillis);
+                engineeringConfig, groupConfig, platformConfig, groupFeedLimit, groupReadMillis,
+                bankOpening, companyCharters);
     }
 
     /**
@@ -1683,7 +1870,7 @@ public final class WorldRuntime implements AutoCloseable {
         BranchOrigin origin = new BranchOrigin(manifest.runId(), position, prefixSha,
                 manifestDigest(manifest), childRunId, kind, note, System.currentTimeMillis(),
                 BranchOrigin.Policy.inherited(manifest.seed()), endOffset,
-                BranchProfile.VERSION, profileDigest);
+                trustedProfile.version(), profileDigest);
         WorldState derived = derive(parentState, childManifest, origin);
 
         Path sealTemp = runsDir.resolve(".tmp-" + childRunId + "-" + System.nanoTime()
@@ -2053,6 +2240,20 @@ public final class WorldRuntime implements AutoCloseable {
                                                  BranchOrigin origin, RunManifest childManifest,
                                                  List<WorldCommit> prefix,
                                                  String expectedProfileDigest) throws IOException {
+        // 版本与能力必须交叉一致（BranchOrigin 没有清单，只能认版本；这里用清单再验一次）：
+        // 组合档 ⇒ 必须 v3（银行/章程参与了摘要）；旧实验条件 ⇒ 必须 v2（不许用 v3 偷偷夹带）。
+        boolean composed = profile.manifest().hasBank() || profile.manifest().hasCompanyGovernance();
+        String expectedVersion = composed ? BranchProfile.V3_VERSION : BranchProfile.VERSION;
+        if (!expectedVersion.equals(profile.version())) {
+            throw new BranchRejectedException(BRANCH_PROFILE_MISMATCH,
+                    "分支画像口径与清单能力不一致：" + profile.version() + "/"
+                            + profile.manifest().rulesVersion());
+        }
+        if (!profile.version().equals(origin.profileVersion())) {
+            throw new BranchRejectedException(BRANCH_PROFILE_MISMATCH,
+                    "宿主画像口径与分支元数据不一致：" + profile.version() + "/"
+                            + origin.profileVersion());
+        }
         String actualProfile = profile.digest();
         if (!actualProfile.equals(origin.profileDigest())) {
             throw new BranchRejectedException(BRANCH_PROFILE_MISMATCH,
@@ -2075,13 +2276,15 @@ public final class WorldRuntime implements AutoCloseable {
                     "父前缀末位与切点不一致：" + parentState.position() + "/"
                             + origin.parentPosition());
         }
+        // v2 传 null/空表（与原 20 参口径一致）；v3 才带银行申请与额外章程，摘要也已含这两项。
         return new WorldRuntime(OpenMode.branch(origin, parentState, prefix), childFile,
                 childManifest, profile.openings(), profile.registry(), profile.manufacturing(),
                 profile.charter(), profile.roles(), profile.information(), profile.decisions(),
                 null, profile.media(), profile.interview(), profile.dialogue(),
                 profile.evidence(), profile.social(), profile.socialBlockMillis(),
                 profile.contacts(), profile.engineering(), profile.groups(),
-                profile.platform(), profile.feedLimit(), profile.readMillis());
+                profile.platform(), profile.feedLimit(), profile.readMillis(),
+                profile.companyCharters(), profile.bankOpening());
     }
 
     /**
@@ -2103,7 +2306,8 @@ public final class WorldRuntime implements AutoCloseable {
                 profile.information(), profile.decisions(), null, profile.media(),
                 profile.interview(), profile.dialogue(), profile.evidence(), profile.social(),
                 profile.socialBlockMillis(), profile.contacts(), profile.engineering(),
-                profile.groups(), profile.platform(), profile.feedLimit(), profile.readMillis());
+                profile.groups(), profile.platform(), profile.feedLimit(), profile.readMillis(),
+                profile.companyCharters(), profile.bankOpening());
         if (verifier.verifiedPrefixState == null) {
             throw new IOException("父前缀校验没有产生终态");
         }
@@ -2494,6 +2698,38 @@ public final class WorldRuntime implements AutoCloseable {
                                              String symbol, Side side, OrderType type,
                                              BigDecimal price, long quantity)
             throws IOException {
+        return scheduleOrder(commandId, taskId, dueTimeMillis, actorOwnerId, accountId, symbol,
+                side, type, price, quantity, null);
+    }
+
+    /**
+     * 排程一笔世界订单，并把它的资金腿绑定到显式资金桶（B7a）。
+     *
+     * <p>{@code fundingToken} 为空即旧口径 {@code CASH|<accountId>}；非空必须是规范文本
+     * （{@link edu.cufe.auction.world.bank.Fund#parse}）。CASH 腿只能是本账户；DEPOSIT 腿必须
+     * 属于同一真实财产主体，且必须已启用资金桶模块（{@code funding}）。托管桶在订单里直接拒绝：
+     * 客户托管成交属 B7b。</p>
+     *
+     * @param commandId    外部命令标识
+     * @param taskId       任务标识，运行内不复用
+     * @param dueTimeMillis 到期模拟毫秒，必须晚于当前时点
+     * @param actorOwnerId 可信调用方解析的财产主体
+     * @param accountId    下单账户
+     * @param symbol       证券代码
+     * @param side         买卖方向
+     * @param type         限价或市价
+     * @param price        限价；市价必须为空，限价精确到分且为正
+     * @param quantity     数量，必须为正
+     * @param fundingToken 资金桶规范文本；null 表示 {@code CASH|<accountId>}
+     * @return 规范化回报文本 {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 参数、权属、能力或时间非法
+     */
+    public synchronized String scheduleOrder(String commandId, String taskId, long dueTimeMillis,
+                                             String actorOwnerId, String accountId,
+                                             String symbol, Side side, OrderType type,
+                                             BigDecimal price, long quantity, String fundingToken)
+            throws IOException {
         requireMatchingEnabled();
         requireOpen();
         requireWriter();
@@ -2530,7 +2766,7 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("市价单不得携带限价");
         }
         OrderCommand command = new OrderCommand(commandId, taskId, dueTimeMillis, actorOwnerId,
-                accountId, symbol, side, type, normalized, quantity);
+                accountId, symbol, side, type, normalized, quantity, fundingToken);
         String content = mapper.writeValueAsString(command);
         if (state.commandContents().containsKey(commandId)) {
             if (!content.equals(state.commandContents().get(commandId))) {
@@ -2546,8 +2782,9 @@ public final class WorldRuntime implements AutoCloseable {
         if (registry.security(symbol) == null) {
             throw new IllegalArgumentException("未知证券：" + symbol);
         }
+        requireFundingToken(accountId, account.ownerId(), side, fundingToken);
         OrderPayload payload = new OrderPayload(commandId, actorOwnerId, accountId, symbol,
-                side, type, normalized, quantity);
+                side, type, normalized, quantity, fundingToken);
         PendingTask task = new PendingTask(taskId, dueTimeMillis,
                 WorldScheduler.Phase.COMPLETION, PendingTask.EXCHANGE_ORDER_V1,
                 mapper.writeValueAsString(payload));
@@ -3221,8 +3458,9 @@ public final class WorldRuntime implements AutoCloseable {
         }
         return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
                 new EngineeringBoardPayload(commandId, companyPartyId, "CONVENE", personPartyId,
-                        chairSeat(charterOfCompany), meetingId, materialDeadline, opensAt, closesAt,
-                        List.of(), List.of(), "", "", 0L, List.of(), "", null), DEFAULT_FOCUS_MILLIS);
+                        chairSeat(charterOfCompany), meetingId, materialDeadline, opensAt,
+                        closesAt, List.of(), List.of(), "", "", 0L, List.of(), "", null),
+                DEFAULT_FOCUS_MILLIS);
     }
 
     public synchronized String scheduleEngineeringAppointmentConvene(String commandId,
@@ -3288,9 +3526,9 @@ public final class WorldRuntime implements AutoCloseable {
         BoardCompany boardCompany = requireBoardCompany(companyPartyId);
         return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
                 new EngineeringBoardPayload(commandId, companyPartyId, "MATERIAL", personPartyId,
-                        seatInCharter(boardCompany.charter(), personPartyId), meetingId,
-                        0L, 0L, 0L, List.of(),
-                        List.of(), materialId, sourceRef, version, List.of(), "", null), DEFAULT_FOCUS_MILLIS);
+                        seatInCharter(boardCompany.charter(), personPartyId), meetingId, 0L, 0L,
+                        0L, List.of(), List.of(), materialId, sourceRef, version, List.of(), "",
+                        null), DEFAULT_FOCUS_MILLIS);
     }
 
     /**
@@ -3339,9 +3577,8 @@ public final class WorldRuntime implements AutoCloseable {
         return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
                 new EngineeringBoardPayload(commandId, companyPartyId, "PROPOSE_APPOINTMENT",
                         personPartyId, seatInCharter(boardCompany.charter(), personPartyId),
-                        meetingId, 0L, 0L, 0L,
-                        List.of(), List.copyOf(relatedSeats), "", "", 0L, List.of(), "",
-                        request), DEFAULT_FOCUS_MILLIS);
+                        meetingId, 0L, 0L, 0L, List.of(), List.copyOf(relatedSeats), "", "", 0L,
+                        List.of(), "", request), DEFAULT_FOCUS_MILLIS);
     }
 
     /**
@@ -3385,9 +3622,9 @@ public final class WorldRuntime implements AutoCloseable {
         requirePositiveEngineeringDuration(durationMillis, "VOTE");
         return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
                 new EngineeringBoardPayload(commandId, companyPartyId, "VOTE", personPartyId,
-                        seatInCharter(boardCompany.charter(), personPartyId), meetingId,
-                        0L, 0L, 0L, List.of(),
-                        List.of(), "", "", 0L, List.of(), vote.name(), null), durationMillis);
+                        seatInCharter(boardCompany.charter(), personPartyId), meetingId, 0L, 0L,
+                        0L, List.of(), List.of(), "", "", 0L, List.of(), vote.name(), null),
+                durationMillis);
     }
 
     /**
@@ -3408,9 +3645,221 @@ public final class WorldRuntime implements AutoCloseable {
         BoardCompany boardCompany = requireBoardCompany(companyPartyId);
         return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
                 new EngineeringBoardPayload(commandId, companyPartyId, "IMPLEMENT", personPartyId,
-                        seatInCharter(boardCompany.charter(), personPartyId), meetingId,
-                        0L, 0L, 0L, List.of(),
-                        List.of(), "", "", 0L, List.of(), "", null), DEFAULT_FOCUS_MILLIS);
+                        seatInCharter(boardCompany.charter(), personPartyId), meetingId, 0L, 0L,
+                        0L, List.of(), List.of(), "", "", 0L, List.of(), "", null),
+                DEFAULT_FOCUS_MILLIS);
+    }
+
+    // ------------------------------------------------------------------
+    // 组合档额外公司治理（目前 north）：只走同一 BoardModel/BoardRun 会议语义
+    // ------------------------------------------------------------------
+
+    /** @return 当前额外公司治理容器；旧档或未启用时为空 */
+    public synchronized Optional<CompanyGovernanceRun> companyGovernance() {
+        return Optional.ofNullable(state.companyGovernance());
+    }
+
+    /** 额外公司章程：不存在时明确拒绝，不回退到工程/制造章程。 */
+    private BoardModel.Charter requireCompanyCharter(String companyPartyId) {
+        requireText(companyPartyId, "公司");
+        CompanyGovernanceRun extra = state.companyGovernance();
+        BoardRun board = extra == null ? null : extra.boardOf(companyPartyId);
+        if (board != null) {
+            return board.board().charter();
+        }
+        // 章程公司（制造业治理单例）走同一会议语义；其余公司明确拒绝。
+        if (state.governance() != null && companyPartyId.equals(
+                state.governance().board().charter().companyPartyId())) {
+            return state.governance().board().charter();
+        }
+        throw new IllegalArgumentException("该公司不是组合档可治理公司：" + companyPartyId);
+    }
+
+    /** 额外公司真实席位：只认当前章程，不接受调用方自填。 */
+    private String companySeat(String companyPartyId, String personPartyId) {
+        String seat = requireCompanyCharter(companyPartyId).seatOf(personPartyId);
+        if (seat == null) {
+            throw new IllegalArgumentException("人物不在该公司董事席位中：" + personPartyId);
+        }
+        return seat;
+    }
+
+    /**
+     * 排程额外公司董事召集（真实会议，非工程公司）。
+     *
+     * @param commandId        命令标识
+     * @param taskId           任务标识
+     * @param dueTimeMillis    召集到期
+     * @param companyPartyId   额外公司
+     * @param personPartyId    主席人物
+     * @param meetingId        会议标识
+     * @param materialDeadline 材料截止
+     * @param opensAt          开会时刻
+     * @param closesAt         表决截止
+     * @param appointmentTopic 是否任免议题
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public synchronized String scheduleCompanyBoardConvene(String commandId, String taskId,
+            long dueTimeMillis, String companyPartyId, String personPartyId, String meetingId,
+            long materialDeadline, long opensAt, long closesAt, boolean appointmentTopic)
+            throws IOException {
+        BoardModel.Charter charter = requireCompanyCharter(companyPartyId);
+        String seat = companySeat(companyPartyId, personPartyId);
+        if (!seat.equals(charter.chairSeatId())) {
+            throw new IllegalArgumentException("只有章程主席可以召集：" + personPartyId);
+        }
+        return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
+                new EngineeringBoardPayload(commandId, companyPartyId,
+                        appointmentTopic ? "CONVENE_APPOINTMENT" : "CONVENE",
+                        personPartyId, seat, meetingId, materialDeadline, opensAt, closesAt,
+                        List.of(), List.of(), "", "", 0L, List.of(), "", null),
+                DEFAULT_FOCUS_MILLIS);
+    }
+
+    /**
+     * 排程额外公司董事到会。
+     *
+     * @param commandId      命令标识
+     * @param taskId         任务标识
+     * @param dueTimeMillis  到期
+     * @param companyPartyId 额外公司
+     * @param personPartyId  本人董事
+     * @param meetingId      会议
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public synchronized String scheduleCompanyBoardAttend(String commandId, String taskId,
+            long dueTimeMillis, String companyPartyId, String personPartyId, String meetingId)
+            throws IOException {
+        return scheduleCompanyBoardAttend(commandId, taskId, dueTimeMillis, companyPartyId,
+                personPartyId, meetingId, false);
+    }
+
+    /**
+     * 排程额外公司董事到会，可登记自主回避。
+     *
+     * <p>回避是章程内的合法事实（例如被任免人本人是现任董事时必须回避表决），与工程公司
+     * {@code scheduleEngineeringAttend} 完全同一语义；这里只补组合公司缺少的入口，
+     * 不改变纯核 {@link BoardModel#attend} 的席位/时间窗规则。</p>
+     *
+     * @param commandId      命令标识
+     * @param taskId         任务标识
+     * @param dueTimeMillis  到期
+     * @param companyPartyId 额外公司
+     * @param personPartyId  本人董事
+     * @param meetingId      会议
+     * @param selfRecused    是否自主回避
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public synchronized String scheduleCompanyBoardAttend(String commandId, String taskId,
+            long dueTimeMillis, String companyPartyId, String personPartyId, String meetingId,
+            boolean selfRecused) throws IOException {
+        return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
+                new EngineeringBoardPayload(commandId, companyPartyId,
+                        selfRecused ? "ATTEND_RECUSED" : "ATTEND", personPartyId,
+                        companySeat(companyPartyId, personPartyId), meetingId, 0L, 0L, 0L,
+                        List.of(), List.of(), "", "", 0L, List.of(), "", null),
+                DEFAULT_FOCUS_MILLIS);
+    }
+
+    /**
+     * 排程额外公司会议材料（真实 Information 文档与版本）。
+     *
+     * @param commandId      命令标识
+     * @param taskId         任务标识
+     * @param dueTimeMillis  到期
+     * @param companyPartyId 额外公司
+     * @param personPartyId  本人董事
+     * @param meetingId      会议
+     * @param materialId     材料标识
+     * @param sourceRef      Information 文档标识
+     * @param version        文档版本
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public synchronized String scheduleCompanyBoardMaterial(String commandId, String taskId,
+            long dueTimeMillis, String companyPartyId, String personPartyId, String meetingId,
+            String materialId, String sourceRef, long version) throws IOException {
+        return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
+                new EngineeringBoardPayload(commandId, companyPartyId, "MATERIAL", personPartyId,
+                        companySeat(companyPartyId, personPartyId), meetingId, 0L, 0L, 0L,
+                        List.of(), List.of(), materialId, sourceRef, version, List.of(), "", null),
+                DEFAULT_FOCUS_MILLIS);
+    }
+
+    /**
+     * 排程额外公司经理任免提案（完整冻结请求；同条款由纯 BoardModel 校验）。
+     *
+     * @param commandId      命令标识
+     * @param taskId         任务标识
+     * @param dueTimeMillis  到期
+     * @param companyPartyId 额外公司
+     * @param personPartyId  提案董事
+     * @param meetingId      会议
+     * @param request        任免请求
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public synchronized String scheduleCompanyBoardAppointmentProposal(String commandId,
+            String taskId, long dueTimeMillis, String companyPartyId, String personPartyId,
+            String meetingId, BoardModel.AppointmentRequest request) throws IOException {
+        if (request == null || !companyPartyId.equals(request.companyPartyId())) {
+            throw new IllegalArgumentException("任免请求必须指向本公司：" + companyPartyId);
+        }
+        return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
+                new EngineeringBoardPayload(commandId, companyPartyId, "PROPOSE_APPOINTMENT",
+                        personPartyId, companySeat(companyPartyId, personPartyId), meetingId,
+                        0L, 0L, 0L, List.of(), List.of(), "", "", 0L, List.of(), "", request),
+                DEFAULT_FOCUS_MILLIS);
+    }
+
+    /**
+     * 排程额外公司董事表决（必须已真实读完材料并仍能回忆）。
+     *
+     * @param commandId      命令标识
+     * @param taskId         任务标识
+     * @param dueTimeMillis  到期
+     * @param companyPartyId 额外公司
+     * @param personPartyId  本人董事
+     * @param meetingId      会议
+     * @param vote           表决
+     * @param durationMillis 审议工时，必须为正
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public synchronized String scheduleCompanyBoardVote(String commandId, String taskId,
+            long dueTimeMillis, String companyPartyId, String personPartyId, String meetingId,
+            BoardModel.Vote vote, long durationMillis) throws IOException {
+        requirePositiveEngineeringDuration(durationMillis, "VOTE");
+        return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
+                new EngineeringBoardPayload(commandId, companyPartyId, "VOTE", personPartyId,
+                        companySeat(companyPartyId, personPartyId), meetingId, 0L, 0L, 0L,
+                        List.of(), List.of(), "", "", 0L, List.of(), vote.name(), null),
+                durationMillis);
+    }
+
+    /**
+     * 排程额外公司实施已通过决议（任免同批写真实 RoleAccess 任职）。
+     *
+     * @param commandId      命令标识
+     * @param taskId         任务标识
+     * @param dueTimeMillis  到期
+     * @param companyPartyId 额外公司
+     * @param personPartyId  执行董事
+     * @param meetingId      会议
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public synchronized String scheduleCompanyBoardImplement(String commandId, String taskId,
+            long dueTimeMillis, String companyPartyId, String personPartyId, String meetingId)
+            throws IOException {
+        return scheduleEngineeringBoard(commandId, taskId, dueTimeMillis,
+                new EngineeringBoardPayload(commandId, companyPartyId, "IMPLEMENT", personPartyId,
+                        companySeat(companyPartyId, personPartyId), meetingId, 0L, 0L, 0L,
+                        List.of(), List.of(), "", "", 0L, List.of(), "", null),
+                DEFAULT_FOCUS_MILLIS);
     }
 
     /**
@@ -3477,6 +3926,93 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 排程一次**显式资金来源**的工程经营动作（组合档 v2）。
+     *
+     * <p>与 {@link #scheduleEngineeringAction} 并列：旧入口一个字段都不变、永远走现金；
+     * 本入口把两个资金桶 token 与政策标签冻结进待办 payload，随命令、FINISH 与 replay 一起
+     * 持久化。桶在排程时先做一次快速自洽校验，执行帧再用当时的最新三态复核并真正付款。</p>
+     *
+     * @param commandId      命令标识（同时是资金腿幂等标识）
+     * @param taskId         任务标识
+     * @param dueTimeMillis  真实完成时点
+     * @param companyPartyId 工程公司
+     * @param personPartyId  发起经理（必须是当前有效经理）
+     * @param action         ADVANCE / COLLECT_DUE / COLLECT_RETENTION / RECOVER / INVEST_WORK
+     * @param contractId     合同标识
+     * @param workId         开工任务标识（仅 INVEST_WORK）
+     * @param trancheIndex   期次（回款类动作）
+     * @param units          投入单位（仅 INVEST_WORK）
+     * @param amount         金额（预收/回款/追索）
+     * @param fundPolicy     来源政策标签；本轮只接受 {@code COMPANY_CHOICE_V1}
+     * @param fundSource     出款桶 token
+     * @param fundTarget     收款桶 token
+     * @param durationMillis 决策工时，必须为正
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public synchronized String scheduleFundedEngineeringAction(String commandId, String taskId,
+            long dueTimeMillis, String companyPartyId, String personPartyId, String action,
+            String contractId, String workId, int trancheIndex, long units, BigDecimal amount,
+            long period, String fundPolicy, String fundSource, String fundTarget,
+            long durationMillis) throws IOException {
+        requireEngineeringCompany(companyPartyId);
+        if (!manifest.hasComposedBankWorld() || state.bank() == null) {
+            throw new IllegalArgumentException("显式资金经营动作只在组合银行世界启用");
+        }
+        if (!FUNDED_ENGINEERING_ACTIONS.contains(action)) {
+            throw new IllegalArgumentException("未知显式资金工程动作：" + action);
+        }
+        if (!FUND_POLICY_COMPANY_CHOICE.equals(fundPolicy)) {
+            throw new IllegalArgumentException("未知资金来源政策：" + fundPolicy);
+        }
+        requireText(personPartyId, "经理人物");
+        requirePositiveEngineeringDuration(durationMillis, action);
+        FundedEngineeringPayload payload = new FundedEngineeringPayload(commandId,
+                companyPartyId, personPartyId, action, contractId == null ? "" : contractId,
+                workId == null ? "" : workId, trancheIndex, units,
+                amount == null ? ZERO : CashLedger.money(amount), period, fundPolicy,
+                fundSource == null ? "" : fundSource, fundTarget == null ? "" : fundTarget,
+                state.timeMillis(), durationMillis);
+        return scheduleFundedEngineeringTask(commandId, taskId, dueTimeMillis, payload,
+                durationMillis);
+    }
+
+    /**
+     * 显式资金动作的排程体：与旧动作共用 BEGIN 屏障、焦点区间与命令幂等，只换 payload 形状。
+     */
+    private String scheduleFundedEngineeringTask(String commandId, String taskId,
+            long dueTimeMillis, FundedEngineeringPayload payload, long durationMillis)
+            throws IOException {
+        requireEngineeringEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        String content = mapper.writeValueAsString(payload);
+        PendingTask planned = engineeringPlannedTask(taskId, dueTimeMillis, durationMillis,
+                PendingTask.ENGINEERING_FUND_V1, content);
+        String stored = recordedBody(commandId);
+        if (stored != null) {
+            if (!stored.equals(content)) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            requireSameSchedule(commandId, planned.taskId(), planned.dueTimeMillis(),
+                    planned.phase(), planned.kind(), planned.payload());
+            return state.commandOutcomes().get(commandId);
+        }
+        long now = state.timeMillis();
+        requireSchedulable(dueTimeMillis, taskId);
+        requireEngineeringManagerAtBegin(payload.companyPartyId(), payload.personPartyId(),
+                payload.action(), now);
+        requireEngineeringFocusWindow(payload.personPartyId(), now, dueTimeMillis, durationMillis,
+                payload.action());
+        return scheduleExternalTask(planned, commandId, content,
+                PendingTask.ENGINEERING_FUND_V1, WorldScheduler.Phase.RULES, dueTimeMillis,
+                durationMillis);
+    }
+
+    /**
      * 排程一次周期人物动作（准备/评分/批准/授权/发布），并声明正工时。
      *
      * <p>与经理/董事动作同一套 BEGIN→FINISH：屏障到期用当时真实的公司、席位、经理与焦点复核，
@@ -3506,7 +4042,8 @@ public final class WorldRuntime implements AutoCloseable {
             long expiresAt, String authorizationId,
             List<PeriodicActionPayload.PeriodicMetric> metrics, String note,
             long durationMillis) throws IOException {
-        if (!periodicCompany(state.engineering(), state.governance(), companyPartyId)) {
+        if (!periodicCompany(state.engineering(), state.governance(), companyPartyId,
+                state.companyGovernance())) {
             throw new IllegalArgumentException("未知周期公司：" + companyPartyId);
         }
         requireText(personPartyId, "周期动作人物");
@@ -3550,7 +4087,7 @@ public final class WorldRuntime implements AutoCloseable {
         long now = state.timeMillis();
         requireSchedulable(dueTimeMillis, taskId);
         String reject = engineeringPeriodicBeginReject(state.engineering(), state.governance(),
-                state.roles(), action, now);
+                state.roles(), action, now, state.companyGovernance());
         if (reject != null) {
             throw new IllegalArgumentException("周期动作在开始时点无权执行：" + reject);
         }
@@ -3897,25 +4434,7 @@ public final class WorldRuntime implements AutoCloseable {
         return spec;
     }
 
-    /**
-     * 公共董事/经理入口的最小明确正工时。
-     *
-     * <p>外部与模型都不能用 0 工时绕过人物焦点；真正的系统日程（自动开/关会、客户事件、
-     * 物理完工）由运行层直接构造 payload，不经过这些入口。</p>
-     */
-    private static final long DEFAULT_FOCUS_MILLIS = 1L;
-
-    private static String chairSeat(BoardModel.Charter charter) {
-        return charter.chairSeatId();
-    }
-
-    /**
-     * 董事会入口的公司绑定：章程公司用唯一治理董事会，工程公司用其冻结董事会。
-     *
-     * @param charterCompany 是否章程（制造）公司
-     * @param charter        该公司唯一章程
-     * @param board          该公司唯一董事会运行态
-     */
+    /** 董事会入口的公司绑定：同一公司只返回一份权威董事会。 */
     private record BoardCompany(boolean charterCompany, BoardModel.Charter charter,
                                 BoardRun board) {
     }
@@ -3958,6 +4477,28 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
+    /** 人物在指定章程里的席位；不在章程里就拒绝。 */
+    private static String seatInCharter(BoardModel.Charter charter, String personPartyId) {
+        requireText(personPartyId, "董事人物");
+        String seat = charter.seatOf(personPartyId);
+        if (seat == null) {
+            throw new IllegalArgumentException("该人物不在公司章程席位中：" + personPartyId);
+        }
+        return seat;
+    }
+
+    /**
+     * 公共董事/经理入口的最小明确正工时。
+     *
+     * <p>外部与模型都不能用 0 工时绕过人物焦点；真正的系统日程（自动开/关会、客户事件、
+     * 物理完工）由运行层直接构造 payload，不经过这些入口。</p>
+     */
+    private static final long DEFAULT_FOCUS_MILLIS = 1L;
+
+    private static String chairSeat(BoardModel.Charter charter) {
+        return charter.chairSeatId();
+    }
+
     private static String chairPerson(BoardModel.Charter charter) {
         for (BoardModel.Seat seat : charter.seats()) {
             if (seat.seatId().equals(charter.chairSeatId())) {
@@ -3968,12 +4509,8 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private static String seatOfPerson(EngineeringRun.CompanySpec spec, String personPartyId) {
-        return seatInCharter(spec.charter(), personPartyId);
-    }
-
-    private static String seatInCharter(BoardModel.Charter charter, String personPartyId) {
         requireText(personPartyId, "董事人物");
-        String seat = charter.seatOf(personPartyId);
+        String seat = spec.charter().seatOf(personPartyId);
         if (seat == null) {
             throw new IllegalArgumentException("该人物不在公司章程席位中：" + personPartyId);
         }
@@ -4299,114 +4836,6 @@ public final class WorldRuntime implements AutoCloseable {
             // 内部执行期（含 ID 冲突、序列化、溢出）失败同样进入暂停，保留旧快照
             paused = true;
             throw failure;
-        }
-    }
-
-    /**
-     * 执行一个到期任务：真实推进、恢复期逐帧重演与受控重演共用这一份按 kind 派发。
-     *
-     * <p>只负责把任务交给对应完成器；完成器自身在 {@link #commitAndApply} 落到唯一批次。
-     * 不在这里写日志、发事件或改时钟，避免出现第二套会漂移的分支。</p>
-     *
-     * @param task 本批要处理的任务
-     * @throws IOException 持久提交失败
-     */
-    private void executeTask(PendingTask task) throws IOException {
-        switch (task.kind()) {
-            case PendingTask.CASH_TRANSFER_V1 -> completeTransfer(task);
-            case PendingTask.TRANSFER_NOTICE_V1 -> deliverNotice(task);
-            case PendingTask.SELL_RESERVE_V1 -> completeReserve(task);
-            case PendingTask.SELL_CANCEL_V1 -> completeCancel(task);
-            case PendingTask.FILL_SETTLE_V1 -> completeFill(task);
-            case PendingTask.EXCHANGE_ORDER_V1 -> completeOrder(task);
-            case PendingTask.EXCHANGE_CANCEL_V1 -> completeCancelOrder(task);
-            case PendingTask.EXCHANGE_CLOSE_V1 -> completeCloseMarket(task);
-            case PendingTask.MANUFACTURING_PURCHASE_ORDER_V1,
-                 PendingTask.MANUFACTURING_PRODUCTION_V1,
-                 PendingTask.MANUFACTURING_SALES_CONTRACT_V1,
-                 PendingTask.MANUFACTURING_DELIVERY_V1,
-                 PendingTask.MANUFACTURING_COLLECT_RECEIVABLE_V1,
-                 PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1 -> completeManufacturing(task);
-            case PendingTask.MANUFACTURING_GOODS_RECEIPT_V1,
-                 PendingTask.MANUFACTURING_BATCH_COMPLETION_V1,
-                 PendingTask.MANUFACTURING_AUTO_COLLECTION_V1 -> completeManufacturingChild(task);
-            case PendingTask.MANUFACTURING_PERIOD_CLOSE_V1 -> completePeriodClose(task);
-            case PendingTask.GOVERNANCE_MEETING_V1,
-                 PendingTask.GOVERNANCE_MATERIAL_V1,
-                 PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1,
-                 PendingTask.GOVERNANCE_VOTE_V1,
-                 PendingTask.GOVERNANCE_IMPLEMENT_V1 -> completeGovernance(task);
-            case PendingTask.BOARD_OPEN_V1 -> completeBoardOpen(task);
-            case PendingTask.BOARD_CLOSE_V1 -> completeBoardClose(task);
-            case PendingTask.BOARD_REVIEW_V1 -> completeBoardReview(task);
-            case PendingTask.ENGINEERING_BEGIN_V1 -> completeEngineeringBegin(task);
-            case PendingTask.ENGINEERING_BOARD_V1,
-                 PendingTask.BOARD_ATTEND_V1 -> completeEngineeringBoard(task);
-            case PendingTask.ENGINEERING_ACTION_V1 -> completeEngineeringAction(task);
-            case PendingTask.ENGINEERING_PERIODIC_V1 -> completeEngineeringPeriodic(task);
-            case PendingTask.PERIOD_CAPTURE_V1 -> completePeriodCapture(task);
-            case PendingTask.PERIOD_CLOSE_V1 -> completePeriodCloseTask(task);
-            case PendingTask.PERIOD_DISCLOSURE_DEADLINE_V1 -> completePeriodDeadline(task);
-            case PendingTask.CUSTOMER_EVENT_V1 -> completeCustomerEvent(task);
-            case PendingTask.ROLE_APPOINT_V1,
-                 PendingTask.ROLE_REVOKE_V1 -> completeRole(task);
-            case PendingTask.INFORMATION_PUBLISH_V1,
-                 PendingTask.INFORMATION_PUBLISH_VERSION_V1,
-                 PendingTask.INFORMATION_START_READ_V1,
-                 PendingTask.INFORMATION_CANCEL_READ_V1,
-                 PendingTask.INFORMATION_COMPLETE_READ_V1 -> completeInformation(task);
-            case PendingTask.ROLE_TRADING_READ_V1,
-                 PendingTask.ROLE_TRADING_UNREAD_V1 -> completeRoleReading(task);
-            case PendingTask.ROLE_TRADING_RESEARCH_V1,
-                 PendingTask.ROLE_TRADING_TARGET_V1,
-                 PendingTask.ROLE_TRADING_REVIEW_V1,
-                 PendingTask.ROLE_TRADING_CONFIRM_V1,
-                 PendingTask.ROLE_TRADING_HALT_V1,
-                 PendingTask.ROLE_TRADING_CANCEL_V1,
-                 PendingTask.ROLE_TRADING_CHILD_V1,
-                 PendingTask.ROLE_TRADING_CHILD_CANCEL_V1,
-                 PendingTask.ROLE_TRADING_BELIEF_V1,
-                 PendingTask.ROLE_TRADING_FORECAST_V1,
-                 PendingTask.ROLE_TRADING_COMPANY_REPORT_V1 -> completeRoleAction(task);
-            case PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 -> completeBeliefCapture(task);
-            case PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1 -> completeBeliefPublish(task);
-            case PendingTask.MEDIA_STORY_PROPOSE_V1,
-                 PendingTask.MEDIA_STORY_SUBMIT_V1,
-                 PendingTask.MEDIA_STORY_REVIEW_V1,
-                 PendingTask.MEDIA_STORY_PUBLISH_V1,
-                 PendingTask.MEDIA_STORY_CORRECTION_V1,
-                 PendingTask.MEDIA_WORK_CANCEL_V1,
-                 PendingTask.MEDIA_EVIDENCE_SHARE_V1 -> completeMediaTask(task);
-            case PendingTask.SOCIAL_BEGIN_V1,
-                 PendingTask.SOCIAL_FINISH_V1,
-                 PendingTask.SOCIAL_DELIVER_V1,
-                 PendingTask.SOCIAL_BLOCK_V1,
-                 PendingTask.SOCIAL_UNBLOCK_V1 -> completeSocialTask(task);
-            case PendingTask.GROUP_BEGIN_V1,
-                 PendingTask.GROUP_FINISH_V1,
-                 PendingTask.GROUP_PUBLISH_V1 -> completeGroupTask(task);
-            case PendingTask.INTERVIEW_INVITE_V1,
-                 PendingTask.INTERVIEW_RESPOND_V1,
-                 PendingTask.INTERVIEW_CANCEL_V1,
-                 PendingTask.INTERVIEW_END_V1,
-                 PendingTask.INTERVIEW_START_GATE_V1,
-                 PendingTask.INTERVIEW_MISS_GATE_V1,
-                 PendingTask.INTERVIEW_END_GATE_V1,
-                 PendingTask.INTERVIEW_TTL_GATE_V1,
-                 PendingTask.INTERVIEW_SPEAK_V1,
-                 PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1 -> completeInterviewTask(task);
-            case PendingTask.ROLE_TRADING_SWEEP_V1 -> completeRoleSweep(task);
-            case PendingTask.ROLE_TRADING_EXPIRE_V1 -> completeRoleExpire(task);
-            case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> completeAppointmentEnd(task);
-            case PendingTask.ROLE_TRADING_HALT_RELEASE_V1 -> completeHaltRelease(task);
-            case PendingTask.DIVIDEND_MEETING_V1,
-                 PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1,
-                 PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1,
-                 PendingTask.DIVIDEND_REGISTER_V1,
-                 PendingTask.DIVIDEND_BOOK_EX_V1,
-                 PendingTask.DIVIDEND_SETTLE_V1,
-                 PendingTask.DIVIDEND_IMPAIR_V1 -> completeDividend(task);
-            default -> throw new IllegalStateException("未启用的任务种类：" + task.kind());
         }
     }
 
@@ -4808,8 +5237,8 @@ public final class WorldRuntime implements AutoCloseable {
                 () -> new IllegalStateException("确认历史缺少位置 " + position));
         WorldState decoded = decodeSnapshot(commit);
         requireSameConfirmedFrame(decoded, position);
-        String stateJson = canonicalMapper.writeValueAsString(decoded);
-        String commitJson = canonicalMapper.writeValueAsString(commit);
+        String stateJson = stateCanonical().writeValueAsString(decoded);
+        String commitJson = stateCanonical().writeValueAsString(commit);
         Map<String, Object> claims = new LinkedHashMap<>();
         claims.put("independentResume", Boolean.FALSE);
         claims.put("branchSource", Boolean.FALSE);
@@ -5016,7 +5445,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         String expectedCommitDigest;
         try {
-            expectedCommitDigest = sha256Hex(canonicalMapper.writeValueAsString(commit));
+            expectedCommitDigest = sha256Hex(stateCanonical().writeValueAsString(commit));
         } catch (IOException invalid) {
             return new CheckpointVerdict(false, "CHECKPOINT_REFERENCE_UNREADABLE", run, position, cut);
         }
@@ -5043,7 +5472,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         String expectedDigest;
         try {
-            expectedDigest = sha256Hex(canonicalMapper.writeValueAsString(reference));
+            expectedDigest = sha256Hex(stateCanonical().writeValueAsString(reference));
         } catch (IOException invalid) {
             return new CheckpointVerdict(false, "CHECKPOINT_REFERENCE_UNREADABLE", run, position, cut);
         }
@@ -5073,6 +5502,12 @@ public final class WorldRuntime implements AutoCloseable {
                 && companyPartyId.equals(state.governance().board().charter()
                         .companyPartyId())) {
             return Optional.of(state.governance());
+        }
+        if (state.companyGovernance() != null) {
+            BoardRun extra = state.companyGovernance().boardOf(companyPartyId);
+            if (extra != null) {
+                return Optional.of(extra);
+            }
         }
         return Optional.empty();
     }
@@ -5116,6 +5551,19 @@ public final class WorldRuntime implements AutoCloseable {
                         board.board().meetings().values());
                 rows.sort(Comparator.comparing(BoardModel.Meeting::meetingId));
                 meetings.put(company, List.copyOf(rows));
+            }
+        }
+        if (state.companyGovernance() != null) {
+            for (String company : state.companyGovernance().companies()) {
+                BoardRun board = state.companyGovernance().boardOf(company);
+                if (board == null) {
+                    continue;
+                }
+                charters.putIfAbsent(company, board.board().charter());
+                List<BoardModel.Meeting> rows = new ArrayList<>(
+                        board.board().meetings().values());
+                rows.sort(Comparator.comparing(BoardModel.Meeting::meetingId));
+                meetings.putIfAbsent(company, List.copyOf(rows));
             }
         }
         if (state.governance() != null) {
@@ -5162,6 +5610,11 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public synchronized Optional<PeriodicModel.CompanyPeriods> periodicOf(
             String companyPartyId) {
+        CompanyGovernanceRun extra = state.companyGovernance();
+        if (extra != null && extra.has(companyPartyId)) {
+            PeriodicModel.CompanyPeriods periods = extra.periodsOf(companyPartyId);
+            return periods == null ? Optional.empty() : Optional.of(periods);
+        }
         EngineeringRun run = state.engineering();
         return run == null ? Optional.empty() : run.periodicOf(companyPartyId);
     }
@@ -5419,6 +5872,150 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 当前批次的银行三态（只读；未启用银行模块返回空）。
+     *
+     * <p>返回的 {@link BankRun} 是不可变值，只作定位与摘要，不代表可写入口：本阶段不开放任何
+     * 银行资金命令，写路径仍只有开局与既有世界动作。</p>
+     *
+     * @return 银行三态
+     */
+    public synchronized Optional<BankRun> bankOf() {
+        return Optional.ofNullable(state.bank());
+    }
+
+    /**
+     * 本次运行的状态 schema 版本（只读；银行人物动作档案仍是 19）。
+     *
+     * @return schema 版本
+     */
+    public synchronized int stateSchemaVersion() {
+        return state.schemaVersion();
+    }
+
+    /**
+     * 当前贷款台账（只读投影；没有贷款时是空台账，旧档不序列化该字段）。
+     *
+     * <p>台账只存条款与状态元数据，不是第二本资金账：资金仍在现金账户、银行三态与托管明细里。</p>
+     *
+     * @return 贷款台账
+     */
+    public synchronized BankActions.Book bankBook() {
+        return state.bankActions() == null ? BankActions.Book.empty() : state.bankActions();
+    }
+
+    /**
+     * 一次银行动作的只读报告（由唯一日志派生，不另存第二份状态）。
+     *
+     * @param taskId        任务标识
+     * @param commandId     内部命令标识
+     * @param personPartyId 人物
+     * @param kind          动作种类
+     * @param bankKey       银行
+     * @param customerKey   客户/借款人主体
+     * @param accepted      是否成立
+     * @param reason        结果码
+     * @param receipt       纯核回执
+     * @param atMillis      执行时点
+     * @param position      批次位置
+     */
+    public record BankActionAudit(String taskId, String commandId, String personPartyId,
+                                  String kind, String bankKey, String customerKey,
+                                  boolean accepted, String reason, String receipt,
+                                  long atMillis, long position) {
+    }
+
+    /**
+     * 按日志顺序列出全部银行动作报告（含 BEGIN 拒绝与完成帧结果）。
+     *
+     * <p>派生视图：只读已有事件，不缓存、不改写；恢复后可直接对照原任务。</p>
+     *
+     * @return 报告列表
+     * @throws IOException 事件无法解析
+     */
+    public synchronized List<BankActionAudit> bankActionAudits() throws IOException {
+        List<BankActionAudit> audits = new ArrayList<>();
+        for (WorldCommit commit : journal.commits()) {
+            for (WorldEvent event : commit.events()) {
+                if (!"BANK_ACTION_V1".equals(event.type())
+                        && !"BANK_ACTION_BEGIN_V1".equals(event.type())) {
+                    continue;
+                }
+                BankActionReport report = mapper.readValue(event.payload(),
+                        BankActionReport.class);
+                audits.add(new BankActionAudit(report.taskId(), report.commandId(),
+                        report.personPartyId(), report.kind(), report.bankKey(),
+                        report.customerKey(), report.accepted(), report.reason(),
+                        report.receipt(), report.atMillis(), report.position()));
+            }
+        }
+        return audits;
+    }
+
+    /**
+     * God 审计：同一批次快照下的银行/托管全账摘要（准备金、存款、池资产、客户明细）。
+     *
+     * @return 审计视图；未启用银行模块返回空
+     * @throws IOException 银行三态与现金账户不一致（说明档案已不可信）
+     */
+    public synchronized Optional<BankRun.Audit> bankAudit() throws IOException {
+        if (state.bank() == null) {
+            return Optional.empty();
+        }
+        requireBankProfile();
+        try {
+            return Optional.of(state.bank().audit(state.accounts()));
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("银行审计不可信：" + invalid.getMessage(), invalid);
+        }
+    }
+
+    /**
+     * 本人派生资金投影：现金 / 全部银行存款 / 托管受益权，按真实 ownerId 派生一次。
+     *
+     * <p>不是权限入口：调用方必须先由 {@code WorldRoleSession}/任职解析出 ownerId；
+     * 本方法只做同一批次快照上的只读派生，不读内部摘要，也不构成第二本账。</p>
+     *
+     * @param ownerId 真实财产主体
+     * @return 资金投影；未启用银行模块返回空
+     * @throws IOException 银行三态与现金账户不一致
+     */
+    public synchronized Optional<BankRun.Projection> bankProjection(String ownerId)
+            throws IOException {
+        requireText(ownerId, "财产主体");
+        if (state.bank() == null) {
+            return Optional.empty();
+        }
+        requireBankProfile();
+        try {
+            return Optional.of(state.bank().project(state.accounts(), ownerId));
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("银行投影不可信：" + invalid.getMessage(), invalid);
+        }
+    }
+
+    /**
+     * 银行三态的运行标识：<b>银行历史账身份，不是子 World 运行身份</b>。
+     *
+     * <p>普通运行就是本清单标识（强校验不变）。分支子档继承的是父运行的真实银行本体，银行内核
+     * 明确禁止把既有账簿改绑到另一个运行，所以子档仍按分支来源里已核验的父标识核对，而不是拿子
+     * 运行标识去要求改绑——否则带银行的子档任何一帧都无法提交（实测：{@code 银行状态运行标识不匹配}）。
+     * 这里不能改成用 {@code state.bank().runId()} 自证：那是拿被校验对象给自己作证。</p>
+     */
+    private String bankRunId() {
+        return branchOrigin == null ? manifest.runId() : branchOrigin.parentRunId();
+    }
+
+    /** 银行档案的运行内约束：必须已绑定申请，且当前状态确实属于本运行。 */
+    private void requireBankProfile() throws IOException {
+        if (bankOpening == null || !manifest.hasBank()) {
+            throw new IOException("未启用银行档案");
+        }
+        if (!state.bank().runId().equals(bankRunId())) {
+            throw new IOException("银行状态运行标识不匹配");
+        }
+    }
+
+    /**
      * 只读 God 公司审计：报表口径来自真实账户与纯核 ReportContext，不面向角色输入。
      *
      * @param companyPartyId 工程公司
@@ -5440,11 +6037,16 @@ public final class WorldRuntime implements AutoCloseable {
         if (spec == null) {
             return EngineeringModel.ReportContext.none();
         }
+        ComposedFinancialPosition position = composedFinancialPositionOf(base,
+                spec.companyAccountId());
         BigDecimal net = BigDecimal.ZERO.setScale(2);
         BigDecimal declared = BigDecimal.ZERO.setScale(2);
         BigDecimal unpaid = BigDecimal.ZERO.setScale(2);
         try {
             for (WorldCommit commit : commitSource.commits()) {
+                if (commit.position() > base.position()) {
+                    continue; // 历史报表只使用基准帧已经确认的资本事件。
+                }
                 for (WorldEvent event : commit.events()) {
                     if (!"CAPITAL_FLOW_V1".equals(event.type())) {
                         continue;
@@ -5468,12 +6070,112 @@ public final class WorldRuntime implements AutoCloseable {
                     continue;
                 }
                 declared = declared.add(claim.face());
-                unpaid = unpaid.add(claim.face().subtract(claim.paid())
-                        .subtract(claim.impairment()));
+                // 持有人减值只影响估值，不减少发行人的合同债务。
+                unpaid = unpaid.add(DividendModel.faceUnpaid(claim));
             }
         }
         return new EngineeringModel.ReportContext(net, declared,
-                unpaid.max(BigDecimal.ZERO.setScale(2)));
+                unpaid.max(BigDecimal.ZERO.setScale(2)),
+                position.assets(), position.liabilities(), position.equity());
+    }
+
+    /**
+     * 只读命令回执：某外部命令标识在本次运行中的最新结果文本。
+     *
+     * <p>供探针与审计核对“排程成功但到期被拒”的差别，不提供任何写能力。</p>
+     *
+     * @param commandId 外部命令标识
+     * @return 结果文本；未登记返回 null
+     */
+    public synchronized String commandOutcome(String commandId) {
+        return state.commandOutcomes().get(commandId);
+    }
+
+    /**
+     * 只读审计：某内部任务最近一次提交的结果码（用于区分“排程成功但到期被拒”）。
+     *
+     * @param taskId 内部任务标识
+     * @return 结果码；未提交返回 null
+     */
+    public synchronized String taskCommitResult(String taskId) {
+        String key = "task:" + taskId;
+        String found = null;
+        for (WorldCommit commit : journal.commits()) {
+            if (commit.commandId().equals(key)) {
+                found = commit.result();
+            }
+        }
+        return found;
+    }
+
+    /**
+     * 制造子账本的权威经营报表（含组合派生金融资产）。旧档或无制造子集时为空。
+     *
+     * @return 经营报表
+     */
+    public synchronized Optional<ManufacturingModel.Report> manufacturingStatement() {
+        ManufacturingRun run = state.manufacturing();
+        if (run == null) {
+            return Optional.empty();
+        }
+        ComposedFinancialPosition position = composedFinancialPositionOf(state,
+                run.ledger().opening().companyAccountId());
+        return Optional.of(ManufacturingModel.report(run.ledger(), state.accounts(),
+                dividendPositionOf(state.dividends()),
+                position.assets(), position.liabilities(), position.equity()));
+    }
+
+    /**
+     * 工程公司只读资本/分红上下文（净注资、已宣告、未付），供完整报表按真实来源分列。
+     *
+     * @param companyPartyId 工程公司
+     * @return 上下文；未知公司为空
+     */
+    public synchronized Optional<EngineeringModel.ReportContext> engineeringContext(
+            String companyPartyId) {
+        if (engineeringStateOf(companyPartyId).isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(reportContextOf(companyPartyId));
+    }
+
+    /**
+     * 制造公司只读分红事实（已宣告面值、未付面值），供完整报表把分红列在负债与权益两侧。
+     *
+     * @return 分红事实；无制造子集为空
+     */
+    public synchronized Optional<ManufacturingDividendFacts> manufacturingDividendFacts() {
+        ManufacturingRun run = state.manufacturing();
+        if (run == null) {
+            return Optional.empty();
+        }
+        ManufacturingModel.DividendPosition position = dividendPositionOf(state.dividends());
+        return Optional.of(new ManufacturingDividendFacts(position.declaredFace(),
+                position.unpaidFace()));
+    }
+
+    /**
+     * 制造公司分红事实。
+     *
+     * @param declared 累计已宣告面值
+     * @param unpaid   未付面值
+     */
+    public record ManufacturingDividendFacts(BigDecimal declared, BigDecimal unpaid) {
+    }
+
+    /**
+     * 工程公司的权威经营报表（含组合派生金融资产与只读资本/分红上下文）。
+     *
+     * @param companyPartyId 工程公司
+     * @return 经营报表；未知公司为空
+     */
+    public synchronized Optional<EngineeringModel.Report> engineeringStatement(String companyPartyId) {
+        EngineeringModel.State company = engineeringStateOf(companyPartyId).orElse(null);
+        if (company == null) {
+            return Optional.empty();
+        }
+        return Optional.of(EngineeringModel.report(company, state.accounts(),
+                reportContextOf(companyPartyId)));
     }
 
     public synchronized Optional<CompanyAudit> companyAudit(String companyPartyId) {
@@ -7115,7 +7817,8 @@ public final class WorldRuntime implements AutoCloseable {
                 state.exchange(), state.manufacturing(), state.governance(), state.roles(),
                 state.information(), state.trading(), candidate, state.dividends(),
                 state.beliefs(), state.media(), state.interviews(), state.evidence(),
-                state.social(), state.engineering(), groups);
+                state.social(), state.engineering(), state.bank(), state.bankActions(),
+                state.companyGovernance(), groups);
     }
 
     /**
@@ -8476,7 +9179,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         String seat = null;
         if (boardTool) {
-            BoardRun run = boardOf(base.engineering(), base.governance(), company);
+            BoardRun run = charterCompany ? base.governance() : base.engineering().boardOf(company);
             if (run == null) {
                 return EngineeringPlanned.rejected("UNKNOWN_COMPANY");
             }
@@ -8502,10 +9205,6 @@ public final class WorldRuntime implements AutoCloseable {
             switch (tool) {
                 case RoleTradingView.TOOL_BOARD_CONVENE -> {
                     String topic = textArg(args, "topic");
-                    if (charterCompany && "DEBT_WAIVER".equals(topic)) {
-                        // 制造章程公司没有工程合同可豁免。
-                        return EngineeringPlanned.rejected("INVALID_ARGUMENT");
-                    }
                     action = "MANAGER_APPOINTMENT".equals(topic) ? "CONVENE_APPOINTMENT"
                             : ("DEBT_WAIVER".equals(topic) ? "CONVENE_WAIVER" : "CONVENE");
                     materialDeadline = longArg(args, "materialDeadline");
@@ -8513,9 +9212,6 @@ public final class WorldRuntime implements AutoCloseable {
                     closesAt = longArg(args, "closesAt");
                 }
                 case RoleTradingView.TOOL_BOARD_PROPOSE_WAIVER -> {
-                    if (charterCompany) {
-                        return EngineeringPlanned.rejected("INVALID_ARGUMENT");
-                    }
                     action = "PROPOSE_WAIVER";
                     String waiverId = textArg(args, "waiverId");
                     String waiverContract = textArg(args, "contractId");
@@ -8582,10 +9278,6 @@ public final class WorldRuntime implements AutoCloseable {
             return new EngineeringPlanned(PendingTask.ENGINEERING_BEGIN_V1,
                     new EngineeringBeginPayload(PendingTask.ENGINEERING_BOARD_V1, due,
                             mapper.writeValueAsString(inner)), null);
-        }
-        if (spec == null) {
-            // 章程公司没有工程经营子集：经营类工具在这里就不成立，不静默落到空对象。
-            return EngineeringPlanned.rejected("UNKNOWN_COMPANY");
         }
         String contractId = textArg(args, "contractId");
         String workId = textArg(args, "workId");
@@ -8772,7 +9464,7 @@ public final class WorldRuntime implements AutoCloseable {
      * 以及新决定输入能由打开前的已确认快照逐字重生成。
      */
     private void validateDecisions(WorldState candidate, WorldState previous) throws IOException {
-        if (expectedSchema() < STATE_SCHEMA_DECISIONS) {
+        if (!manifest.hasDecisions()) {
             if (candidate.decisions() != null) {
                 throw new IOException("旧档案不得包含决定子集状态");
             }
@@ -8788,7 +9480,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (!run.state().config().equals(decisionConfig)) {
             throw new IOException("决定配置与冻结开局不一致");
         }
-        boolean liveSchema = expectedSchema() >= STATE_SCHEMA_LIVE_DECISIONS;
+        boolean liveSchema = manifest.hasLiveDecisions();
         if (liveSchema) {
             if (!run.state().config().live()) {
                 throw new IOException("live 档案必须使用 live 决定配置");
@@ -9087,7 +9779,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private void validateDecisionFrame(WorldCommit commit, WorldState candidate,
                                        WorldState previous) throws IOException {
-        if (expectedSchema() < STATE_SCHEMA_LIVE_DECISIONS) {
+        if (!manifest.hasLiveDecisions()) {
             return;
         }
         if (previous == null) {
@@ -10023,15 +10715,52 @@ public final class WorldRuntime implements AutoCloseable {
                     report);
             return;
         }
-        WorldExchange.Outcome outcome = WorldExchange.submit(state.exchange(), state.accounts(),
-                state.securities(), task.taskId(), payload.commandId(), payload.actorOwnerId(),
-                payload.accountId(), payload.symbol(), payload.side(), payload.type(),
-                payload.price(), payload.quantity(), now);
+        WorldExchange.FundContext funds = null;
+        BankRun.Decoded decodedBank = null;
+        if (manifest.hasFunding()) {
+            BankRun current = state.bank();
+            if (current == null) {
+                throw new IOException("资金桶档案缺少银行三态：" + task.taskId());
+            }
+            decodedBank = current.decode(state.accounts());
+            funds = new WorldExchange.FundContext(decodedBank.state(), decodedBank.config(),
+                    new BankContext(bankRunId(), decodedBank.config().fingerprint(),
+                            state.position() + 1, now));
+        }
+        edu.cufe.auction.world.bank.Fund funding = null;
+        if (payload.fundingToken() != null) {
+            try {
+                funding = edu.cufe.auction.world.bank.Fund.parse(payload.fundingToken());
+            } catch (RuntimeException invalid) {
+                OrderReport report = new OrderReport(task.taskId(), payload.commandId(),
+                        task.kind(), false, WorldExchange.REASON_FUND_TOKEN_INVALID + ":"
+                        + payload.fundingToken(), null, List.of(), List.of(), now,
+                        state.position() + 1);
+                finishExchangeTask(task, state.accounts(), state.securities(), state.exchange(),
+                        report, null);
+                return;
+            }
+        }
+        WorldExchange.FundOutcome outcome = WorldExchange.submit(state.exchange(), state.accounts(),
+                state.securities(), funds, manifest.hasCustodyFill() ? decodedBank.book() : null,
+                task.taskId(), payload.commandId(),
+                payload.actorOwnerId(), payload.accountId(), payload.symbol(), payload.side(),
+                payload.type(), payload.price(), payload.quantity(), funding, now);
         OrderReport report = new OrderReport(task.taskId(), payload.commandId(), task.kind(),
                 outcome.accepted(), outcome.reason(), outcome.orderId(), outcome.tradeIds(),
                 outcome.cancelledOrderIds(), now, state.position() + 1);
+        BankRun bankCandidate = null;
+        if (outcome.accepted() && funds != null && outcome.bank() != null) {
+            // 银行三态与托管明细账、订单/现金/证券同批返回；贷款台账原样沿用。
+            edu.cufe.auction.world.bank.CustodyBook book = manifest.hasCustodyFill()
+                    ? outcome.custody() : decodedBank.book();
+            if (manifest.hasCustodyFill() && book == null) {
+                throw new IOException("托管成交缺少候选明细账：" + task.taskId());
+            }
+            bankCandidate = BankRun.of(funds.config(), outcome.bank(), book);
+        }
         finishExchangeTask(task, outcome.accounts(), outcome.securities(),
-                outcome.exchange().withReport(report), report);
+                outcome.exchange().withReport(report), report, bankCandidate);
     }
 
     /** 到期撤单：未知/非属主/终态是业务拒绝，不改变挂单与冻结。 */
@@ -10066,6 +10795,29 @@ public final class WorldRuntime implements AutoCloseable {
                                     SecuritiesLedger.State securities,
                                     WorldExchange.State exchange, OrderReport report)
             throws IOException {
+        finishExchangeTask(task, accounts, securities, exchange, report, null);
+    }
+
+    /**
+     * 世界订单任务的统一收尾（可携带候选银行三态）。
+     *
+     * <p>存款腿成交会改变银行三态，因此银行候选必须与订单/现金/证券/待办/事件在同一个批次里
+     * 持久确认；{@code bankCandidate} 为 null 表示本批不改银行（纯现金档案或纯现金成交）。</p>
+     *
+     * @param task       完成的任务
+     * @param accounts   候选现金账户
+     * @param securities 候选证券台账
+     * @param exchange   候选订单/成交
+     * @param report     业务结果
+     * @param bankCandidate 候选银行三态；null 表示沿用上一帧
+     * @throws IOException 持久失败
+     */
+    private void finishExchangeTask(PendingTask task,
+                                    Map<String, CashLedger.CashAccount> accounts,
+                                    SecuritiesLedger.State securities,
+                                    WorldExchange.State exchange, OrderReport report,
+                                    BankRun bankCandidate)
+            throws IOException {
         List<PendingTask> pending = new ArrayList<>(state.pending());
         pending.remove(task);
         Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
@@ -10083,9 +10835,17 @@ public final class WorldRuntime implements AutoCloseable {
         }
         events.add(new WorldEvent("exchange-report:" + task.taskId(),
                 "EXCHANGE_ORDER_REPORT_V1", mapper.writeValueAsString(report)));
-        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
+        WorldState candidate = bankCandidate == null
+                ? next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
                 state.delivered(), used, state.commandContents(), state.commandOutcomes(),
-                securities, exchange);
+                securities, exchange)
+                : next(task.dueTimeMillis(), task.phase().name(), accounts, pending,
+                state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                securities, exchange, state.manufacturing(), state.governance(), state.roles(),
+                state.information(), state.trading(), state.decisions(), state.dividends(),
+                state.beliefs(), state.media(), state.interviews(), state.evidence(), state.social(),
+                state.engineering(), bankCandidate, state.bankActions(),
+                state.companyGovernance(), state.groups());
         commitAndApply("task:" + task.taskId(), task.payload(), report.reason(), events, candidate);
     }
 
@@ -10652,9 +11412,8 @@ public final class WorldRuntime implements AutoCloseable {
     // schema18b：按公司董事/经理/客户任务
     // ------------------------------------------------------------------
 
-    private record EngineeringBoardApplied(EngineeringRun run, BoardRun governance, RoleRun roles,
-                                           boolean accepted, String reason,
-                                           List<PendingTask> children) {
+    private record EngineeringBoardApplied(EngineeringRun run, RoleRun roles, boolean accepted,
+                                           String reason, List<PendingTask> children) {
     }
 
     private record EngineeringActionApplied(EngineeringRun run, RoleRun roles,
@@ -10681,10 +11440,34 @@ public final class WorldRuntime implements AutoCloseable {
                     wrap.dueMillis(), WorldScheduler.Phase.RULES, wrap.targetKind(),
                     wrap.payload()));
         }
+        String company = decision.companyPartyId();
+        boolean engineeringCompany = engineeringConfig != null
+                && engineeringConfig.specOf(company) != null;
+        if (!engineeringCompany && extraOwns(company)) {
+            // 额外公司（companyGovernance）：屏障只排完成子任务，容器与任职本帧不变。
+            // 章程公司不走这里：它的董事会是治理单例，BEGIN 只排完成子任务并写工程回报，
+            // 与 main 的同一入口保持一致（否则完成帧会缺真实回报，决定意图校验直接拒绝）。
+            finishCompanyBoardTask(task, decision.commandId(), state.companyGovernance(),
+                    state.roles(), state.information(), now, decision.reason() == null,
+                    decision.reason() == null ? REASON_BEGIN_STARTED : decision.reason(),
+                    children);
+            return;
+        }
         finishEngineeringTask(task, decision.commandId(), decision.companyPartyId(),
                 state.engineering(), state.roles(), state.accounts(), now,
                 decision.reason() == null,
                 decision.reason() == null ? REASON_BEGIN_STARTED : decision.reason(), children);
+    }
+
+    /** @return 是否额外公司 */
+    private boolean extraOwns(String company) {
+        return state.companyGovernance() != null && state.companyGovernance().has(company);
+    }
+
+    /** @return 是否章程公司（制造业治理单例） */
+    private boolean governanceOwns(String company) {
+        return state.governance() != null && company != null && company.equals(
+                state.governance().board().charter().companyPartyId());
     }
 
     /** BEGIN 复核结论：公司/命令用于报告，reason 为空表示通过。 */
@@ -10713,10 +11496,22 @@ public final class WorldRuntime implements AutoCloseable {
             }
             return new EngineeringBeginDecision(p.companyPartyId(), p.commandId(), reason);
         }
+        if (PendingTask.ENGINEERING_FUND_V1.equals(wrap.targetKind())) {
+            FundedEngineeringPayload p = mapper.readValue(wrap.payload(),
+                    FundedEngineeringPayload.class);
+            String reason = activeManager(roles, p.personPartyId(), p.companyPartyId(), now)
+                    ? null : REASON_NOT_AUTHORIZED;
+            if (reason == null) {
+                reason = engineeringBeginFocusReject(base, self, p.personPartyId(), now,
+                        wrap.dueMillis());
+            }
+            return new EngineeringBeginDecision(p.companyPartyId(), p.commandId(), reason);
+        }
         if (PendingTask.ENGINEERING_PERIODIC_V1.equals(wrap.targetKind())) {
             PeriodicActionPayload p = mapper.readValue(wrap.payload(),
                     PeriodicActionPayload.class);
-            String reason = engineeringPeriodicBeginReject(run, base.governance(), roles, p, now);
+            String reason = engineeringPeriodicBeginReject(run, base.governance(), roles, p, now,
+                    base.companyGovernance());
             if (reason == null) {
                 reason = engineeringBeginFocusReject(base, self, p.personPartyId(), now,
                         wrap.dueMillis());
@@ -10725,7 +11520,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         EngineeringBoardPayload p = mapper.readValue(wrap.payload(),
                 EngineeringBoardPayload.class);
-        String reason = engineeringBoardBeginReject(run, base.governance(), p);
+        String reason = engineeringBoardBeginReject(base, p);
         if (reason == null) {
             reason = engineeringBeginFocusReject(base, self, p.personPartyId(), now,
                     wrap.dueMillis());
@@ -10775,12 +11570,11 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** BEGIN 复核（周期动作）：准备/授权只给现任经理，评分/批准给真实席位，发布给席位或经理。 */
     private String engineeringPeriodicBeginReject(EngineeringRun run, BoardRun governance,
-            RoleRun roles, PeriodicActionPayload p, long now) {
-        if (!periodicCompany(run, governance, p.companyPartyId())) {
+            RoleRun roles, PeriodicActionPayload p, long now, CompanyGovernanceRun extras) {
+        if (!periodicCompany(run, governance, p.companyPartyId(), extras)) {
             return "UNKNOWN_COMPANY";
         }
-        String seat = seatOfCompanyCharter(run, governance, p.companyPartyId(),
-                p.personPartyId());
+        String seat = periodicSeat(run, governance, p.companyPartyId(), p.personPartyId(), extras);
         boolean manager = activeManager(roles, p.personPartyId(), p.companyPartyId(), now);
         return switch (p.action()) {
             case "ATTEND" -> seat == null ? REASON_NOT_AUTHORIZED : null;
@@ -10791,15 +11585,30 @@ public final class WorldRuntime implements AutoCloseable {
         };
     }
 
-    /** 该公司是否在周期政策里（章程公司或冻结工程公司）。 */
-    private boolean periodicCompany(EngineeringRun run, BoardRun governance, String company) {
+    /** 该公司是否在周期政策里（章程公司、冻结工程公司或额外公司容器）。 */
+    private boolean periodicCompany(EngineeringRun run, BoardRun governance, String company,
+            CompanyGovernanceRun extras) {
         if (company == null || company.isBlank()) {
             return false;
         }
         if (charter != null && company.equals(charter.companyPartyId())) {
             return true;
         }
-        return engineeringConfig != null && engineeringConfig.specOf(company) != null;
+        if (engineeringConfig != null && engineeringConfig.specOf(company) != null) {
+            return true;
+        }
+        return extras != null && extras.has(company);
+    }
+
+    /** 该人此刻在某公司章程中的席位：额外公司容器优先，其次工程/治理单例。 */
+    private String periodicSeat(EngineeringRun run, BoardRun governance, String company,
+            String person, CompanyGovernanceRun extras) {
+        if (extras != null && extras.has(company)) {
+            BoardRun board = extras.boardOf(company);
+            return board == null || person == null ? null
+                    : board.board().charter().seatOf(person);
+        }
+        return seatOfCompanyCharter(run, governance, company, person);
     }
 
     /** 该人此刻在某公司章程中的席位（工程董事会或原治理董事会）；未知公司返回 null。 */
@@ -10818,53 +11627,36 @@ public final class WorldRuntime implements AutoCloseable {
         return board == null ? null : board.board().charter().seatOf(person);
     }
 
-    /**
-     * BEGIN 复核（董事）：公司归属、当时席位与主席专属动作；系统日程只核公司。
-     *
-     * <p>章程公司用治理子集里的唯一董事会，工程公司用工程子集里的董事会；两者都按本次屏障的
-     * 真实帧复核，不看排程时的旧结论。</p>
-     */
-    private String engineeringBoardBeginReject(EngineeringRun run, BoardRun governance,
-            EngineeringBoardPayload p) {
-        if ("CONVENE_WAIVER".equals(p.action()) || "PROPOSE_WAIVER".equals(p.action())) {
-            if (charter != null && charter.companyPartyId().equals(p.companyPartyId())) {
-                return REASON_NOT_AUTHORIZED;
-            }
+    /** BEGIN 复核（董事）：公司归属、当时席位与主席专属动作；系统日程只核公司。 */
+    private String engineeringBoardBeginReject(WorldState base, EngineeringBoardPayload p) {
+        BoardRun boardRun = null;
+        if (base.engineering() != null) {
+            boardRun = base.engineering().boardOf(p.companyPartyId());
         }
-        BoardRun boardRun = boardOf(run, governance, p.companyPartyId());
+        if (boardRun == null && base.companyGovernance() != null) {
+            boardRun = base.companyGovernance().boardOf(p.companyPartyId());
+        }
+        if (boardRun == null && base.governance() != null && p.companyPartyId()
+                .equals(base.governance().board().charter().companyPartyId())) {
+            boardRun = base.governance();
+        }
         if (boardRun == null) {
             return "UNKNOWN_COMPANY";
         }
-        BoardModel.Charter charterOfCompany = boardRun.board().charter();
-        if (!charterOfCompany.companyPartyId().equals(p.companyPartyId())) {
+        BoardModel.Charter charter = boardRun.board().charter();
+        if (!charter.companyPartyId().equals(p.companyPartyId())) {
             return "BOARD_COMPANY_MISMATCH";
         }
         if (p.personPartyId() == null || p.personPartyId().isBlank()) {
             return null;
         }
-        String actual = charterOfCompany.seatOf(p.personPartyId());
+        String actual = charter.seatOf(p.personPartyId());
         if (actual == null || !actual.equals(p.seatId())) {
             return REASON_NOT_AUTHORIZED;
         }
         boolean convene = "CONVENE".equals(p.action()) || "CONVENE_APPOINTMENT".equals(p.action());
-        if (convene && !actual.equals(charterOfCompany.chairSeatId())) {
+        if (convene && !actual.equals(charter.chairSeatId())) {
             return REASON_NOT_AUTHORIZED;
-        }
-        return null;
-    }
-
-    /** 统一取某公司董事会：工程子集优先，其次章程治理子集；未知公司返回 null。 */
-    private BoardRun boardOf(EngineeringRun run, BoardRun governance, String companyPartyId) {
-        if (run != null) {
-            BoardRun board = run.boardOf(companyPartyId);
-            if (board != null) {
-                return board;
-            }
-        }
-        if (governance != null && charter != null
-                && companyPartyId.equals(charter.companyPartyId())
-                && companyPartyId.equals(governance.board().charter().companyPartyId())) {
-            return governance;
         }
         return null;
     }
@@ -10872,14 +11664,33 @@ public final class WorldRuntime implements AutoCloseable {
     private void completeEngineeringBoard(PendingTask task) throws IOException {
         EngineeringBoardPayload payload = mapper.readValue(task.payload(),
                 EngineeringBoardPayload.class);
-        requireBoardCompany(payload.companyPartyId());
-        EngineeringBoardApplied applied = applyEngineeringBoard(state.engineering(),
-                state.governance(), state.roles(), state.information(), task.dueTimeMillis(),
-                payload, task.taskId(), state.position() + 1);
+        CompanyGovernanceRun extra = state.companyGovernance();
+        boolean engineeringCompany = engineeringConfig != null
+                && engineeringConfig.specOf(payload.companyPartyId()) != null;
+        if (!engineeringCompany && extra != null && extra.has(payload.companyPartyId())) {
+            // 组合档额外公司（目前 north）：同一 BoardModel/BoardRun 语义，账仍只在银行三态。
+            CompanyBoardApplied applied = applyCompanyBoard(extra, state.roles(),
+                    state.information(), task.dueTimeMillis(), payload);
+            finishCompanyBoardTask(task, payload.commandId(), applied.container(), applied.roles(),
+                    state.information(), task.dueTimeMillis(), applied.accepted(), applied.reason(),
+                    applied.children());
+            return;
+        }
+        if (!engineeringCompany && state.governance() != null && payload.companyPartyId()
+                .equals(state.governance().board().charter().companyPartyId())) {
+            // 章程公司（cufe）走同一纯 BoardModel；写回唯一制造业治理单例。
+            BoardCoreApplied core = applyGovernanceBoard(state.governance(), state.roles(),
+                    state.information(), task.dueTimeMillis(), payload);
+            finishGovernanceBoardTask(task, payload.commandId(), core, state.information(),
+                    task.dueTimeMillis());
+            return;
+        }
+        requireEngineeringCompany(payload.companyPartyId());
+        EngineeringBoardApplied applied = applyEngineeringBoard(state.engineering(), state.roles(),
+                state.information(), task.dueTimeMillis(), payload, task.taskId());
         finishEngineeringTask(task, payload.commandId(), payload.companyPartyId(), applied.run(),
-                applied.governance() == null ? state.governance() : applied.governance(),
-                applied.roles(), state.accounts(), state.information(), task.dueTimeMillis(),
-                applied.accepted(), applied.reason(), applied.children());
+                applied.roles(), state.accounts(), task.dueTimeMillis(), applied.accepted(),
+                applied.reason(), applied.children());
     }
 
     private void completeEngineeringAction(PendingTask task) throws IOException {
@@ -10896,11 +11707,990 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 显式资金经营动作的完成帧（组合档 v2）。
+     *
+     * <p><b>钱只在这里移动</b>：先用**当前帧**重新解码最新银行三态（绝不复用排程时的快照），
+     * 再把 payload 里冻结的源/目标桶与真实业务主体逐一核对，然后调用纯核同名资金重载。
+     * 候选 accounts/bank/book 与该帧工程状态、待办、事件**同一条 WorldCommit** 提交；
+     * 业务拒绝时不写回资金候选（原子拒绝，只留业务侧的拒绝记录）。</p>
+     */
+    private void completeFundedEngineering(PendingTask task) throws IOException {
+        FundedEngineeringPayload p = mapper.readValue(task.payload(),
+                FundedEngineeringPayload.class);
+        FundedApplied applied = applyFundedEngineering(state, task);
+        EngineeringRun.Report report = new EngineeringRun.Report(task.taskId(), p.commandId(),
+                task.kind(), p.companyPartyId(), applied.accepted(), applied.reason(),
+                task.dueTimeMillis(), state.position() + 1);
+        EngineeringRun next = applied.run() == null ? state.engineering()
+                : applied.run().withReport(report);
+        Map<String, CashLedger.CashAccount> accounts = applied.funds() == null
+                ? state.accounts() : applied.funds().accounts();
+        // 与旧 START_WORK 同一派生：投入成功后按工单 completesAt 排系统完工帧，
+        // 否则资金投入的业务事实永远无法推进到验收/开票。
+        List<PendingTask> children = fundedChildren(applied.run(), p, applied.accepted());
+        finishEngineeringTask(task, p.commandId(), p.companyPartyId(), next, state.governance(),
+                state.roles(), accounts, state.information(), task.dueTimeMillis(),
+                applied.accepted(), applied.reason(), children, applied.funds());
+    }
+
+    /** 显式资金投入成功后的系统完工帧（与 {@code engineeringActionChildren} 同一口径）。 */
+    private List<PendingTask> fundedChildren(EngineeringRun run, FundedEngineeringPayload p,
+            boolean accepted) throws IOException {
+        if (!"INVEST_WORK".equals(p.action()) || !accepted || run == null) {
+            return List.of();
+        }
+        EngineeringModel.State company = run.stateOf(p.companyPartyId());
+        if (company == null) {
+            return List.of();
+        }
+        EngineeringModel.WorkOrder order = company.workOrders().get(p.workId());
+        if (order == null) {
+            return List.of();
+        }
+        String command = SYSTEM_COMMAND_PREFIX + "work-done:" + p.companyPartyId() + ":"
+                + p.workId();
+        EngineeringActionPayload done = new EngineeringActionPayload(command, p.companyPartyId(),
+                "", "COMPLETE_WORK", p.contractId(), p.workId(), 0, 0, ZERO, "", p.period());
+        return List.of(new PendingTask("work-done:" + p.companyPartyId() + ":" + p.workId(),
+                order.completesAt(), WorldScheduler.Phase.RULES,
+                PendingTask.ENGINEERING_ACTION_V1, mapper.writeValueAsString(done)));
+    }
+
+    /** 显式资金动作的纯计算结果：执行帧与逐帧重演共用同一个函数。 */
+    private record FundedApplied(EngineeringRun run, Map<String, CashLedger.CashAccount> accounts,
+                                 edu.cufe.auction.world.bank.FundState funds, boolean accepted,
+                                 String reason) {
+    }
+
+    /**
+     * 显式资金经营动作的**纯计算**：给定基准帧与原任务，返回候选工程状态、账户与资金三态。
+     *
+     * <p>正常执行与逐帧重演调用同一实现（同顺序、同拒绝码、同资金三态），所以改写桶、金额或
+     * 主体都会被重演拒绝；拒绝时返回的 funds 为 null，即不写回资金候选。</p>
+     */
+    private FundedApplied applyFundedEngineering(WorldState base, PendingTask task)
+            throws IOException {
+        FundedEngineeringPayload p = mapper.readValue(task.payload(),
+                FundedEngineeringPayload.class);
+        long now = task.dueTimeMillis();
+        EngineeringRun run = base.engineering();
+        EngineeringRun.CompanySpec spec = run == null ? null
+                : engineeringConfig.specOf(p.companyPartyId());
+        if (spec == null) {
+            return new FundedApplied(run, base.accounts(), null, false, "UNKNOWN_COMPANY");
+        }
+        if (!activeManager(base.roles(), p.personPartyId(), p.companyPartyId(), p.observedAt())
+                || !activeManager(base.roles(), p.personPartyId(), p.companyPartyId(), now)) {
+            return new FundedApplied(run, base.accounts(), null, false, REASON_NOT_AUTHORIZED);
+        }
+        if (base.bank() == null) {
+            throw new IOException("显式资金动作缺少银行三态：" + task.taskId());
+        }
+        BankRun.Decoded decoded;
+        try {
+            decoded = base.bank().decode(base.accounts());
+        } catch (RuntimeException invalid) {
+            throw new IOException("银行三态无法解码：" + invalid.getMessage(), invalid);
+        }
+        edu.cufe.auction.world.bank.CashFreeze frozen = base.exchange() == null
+                ? edu.cufe.auction.world.bank.CashFreeze.none()
+                : WorldExchange.freezeSnapshot(base.exchange());
+        edu.cufe.auction.world.bank.FundState funds = new edu.cufe.auction.world.bank.FundState(
+                base.accounts(), decoded.state(), decoded.book());
+        EngineeringModel.State company = run.stateOf(p.companyPartyId());
+
+        String sourceAccount;
+        String targetAccount;
+        String sourceOwner;
+        String targetOwner;
+        switch (p.action()) {
+            case "ADVANCE", "COLLECT_DUE", "COLLECT_RETENTION", "RECOVER" -> {
+                sourceAccount = spec.customerAccountId();
+                targetAccount = spec.companyAccountId();
+                sourceOwner = ownerIn(base, spec.customerAccountId());
+                targetOwner = spec.companyOwnerId();
+            }
+            case "INVEST_WORK" -> {
+                sourceAccount = spec.companyAccountId();
+                targetAccount = spec.opsAccountId();
+                sourceOwner = spec.companyOwnerId();
+                targetOwner = ownerIn(base, spec.opsAccountId());
+            }
+            default -> {
+                return new FundedApplied(run, base.accounts(), null, false,
+                        "UNSUPPORTED_FUND_ACTION");
+            }
+        }
+        // 公司端可以显式选桶（沿真实权限）；对方端必须就是合同固定的现金账户。
+        boolean companyPays = "INVEST_WORK".equals(p.action());
+        ResolvedBucket companyBucket = resolveCompanyBucket(funds, base,
+                companyPays ? p.fundSource() : p.fundTarget(), spec.companyAccountId(),
+                spec.companyOwnerId(), companyPays ? "FUND_OWNER_MISMATCH" : "PAYEE_MISMATCH");
+        if (companyBucket.problem() != null) {
+            return new FundedApplied(run, base.accounts(), null, false, companyBucket.problem());
+        }
+        ResolvedBucket counterBucket = fixedCashBucket(funds, base,
+                companyPays ? p.fundTarget() : p.fundSource(),
+                companyPays ? targetAccount : sourceAccount,
+                companyPays ? targetOwner : sourceOwner,
+                companyPays ? "PAYEE_MISMATCH" : "FUND_OWNER_MISMATCH");
+        if (counterBucket.problem() != null) {
+            return new FundedApplied(run, base.accounts(), null, false, counterBucket.problem());
+        }
+        ResolvedBucket source = companyPays ? companyBucket : counterBucket;
+        ResolvedBucket target = companyPays ? counterBucket : companyBucket;
+
+        BigDecimal labor = ZERO;
+        BigDecimal subcontract = ZERO;
+        BoardModel.State reservedBoard = null;
+        if ("INVEST_WORK".equals(p.action())) {
+            BoardRun boardRun = run.boardOf(p.companyPartyId());
+            EngineeringModel.Contract contract = company.contracts().get(p.contractId());
+            if (boardRun == null || contract == null) {
+                return new FundedApplied(run, base.accounts(), null, false, "UNKNOWN_CONTRACT");
+            }
+            BigDecimal total = CashLedger.money(contract.unitCost()
+                    .multiply(BigDecimal.valueOf(p.units())));
+            labor = CashLedger.money(total.multiply(BigDecimal.valueOf(spec.laborBp()))
+                    .divide(BigDecimal.valueOf(10000), 2, java.math.RoundingMode.HALF_UP));
+            subcontract = CashLedger.money(total.subtract(labor));
+            String laborId = task.taskId() + ":labor";
+            String subId = task.taskId() + ":subcontract";
+            BoardModel.Outcome reservedLabor = BoardModel.reserveBudget(boardRun.board(), now,
+                    laborId, p.period(), BoardModel.BudgetCategory.PRODUCTION_LABOR, labor);
+            if (!reservedLabor.accepted()) {
+                return new FundedApplied(run, base.accounts(), null, false,
+                        reservedLabor.reason());
+            }
+            BoardModel.Outcome reservedSub = BoardModel.reserveBudget(reservedLabor.state(), now,
+                    subId, p.period(), BoardModel.BudgetCategory.PROCUREMENT, subcontract);
+            if (!reservedSub.accepted()) {
+                return new FundedApplied(run, base.accounts(), null, false, reservedSub.reason());
+            }
+            reservedBoard = reservedSub.state();
+        }
+
+        edu.cufe.auction.world.FundPayer payer =
+                new edu.cufe.auction.world.bank.PaymentPortFundPayer(decoded.config(),
+                        new BankContext(bankRunId(), decoded.config().fingerprint(),
+                                base.position() + 1, now),
+                        frozen, source.payerKey(), source.bucket(), target.bucket());
+        EngineeringModel.FundOutcome outcome = switch (p.action()) {
+            case "ADVANCE" -> EngineeringModel.receiveAdvance(company, p.commandId(),
+                    spec.companyOwnerId(), p.contractId(), p.amount(), now, funds, payer);
+            case "COLLECT_DUE" -> EngineeringModel.collectDue(company, p.commandId(),
+                    spec.companyOwnerId(), p.contractId(), p.trancheIndex(), p.amount(), now,
+                    funds, payer);
+            case "COLLECT_RETENTION" -> EngineeringModel.collectRetention(company, p.commandId(),
+                    spec.companyOwnerId(), p.contractId(), p.trancheIndex(), p.amount(), now,
+                    funds, payer);
+            case "RECOVER" -> EngineeringModel.recover(company, p.commandId(),
+                    spec.companyOwnerId(), p.contractId(), p.amount(), now, funds, payer);
+            case "INVEST_WORK" -> EngineeringModel.investWork(company, p.commandId(),
+                    spec.companyOwnerId(), p.contractId(), p.workId(), p.units(), now, funds,
+                    payer);
+            default -> throw new IOException("未知显式资金工程动作：" + p.action());
+        };
+        if (!outcome.accepted()) {
+            return new FundedApplied(run, base.accounts(), null, false, outcome.reason());
+        }
+        EngineeringRun nextRun = run.withCompanyState(p.companyPartyId(), outcome.state());
+        if (reservedBoard != null) {
+            BoardModel.Outcome spentLabor = BoardModel.spendBudget(reservedBoard, now,
+                    task.taskId() + ":labor", labor);
+            BoardModel.Outcome spentSub = spentLabor.accepted()
+                    ? BoardModel.spendBudget(spentLabor.state(), now,
+                            task.taskId() + ":subcontract", subcontract)
+                    : spentLabor;
+            if (!spentSub.accepted()) {
+                return new FundedApplied(run, base.accounts(), null, false, spentSub.reason());
+            }
+            nextRun = nextRun.withBoard(p.companyPartyId(),
+                    nextRun.boardOf(p.companyPartyId()).withBoard(spentSub.state()));
+        }
+        return new FundedApplied(nextRun, outcome.funds().accounts(), outcome.funds(), true,
+                outcome.reason());
+    }
+
+    /** 基准帧里某现金账户的真实 ownerId；账户不存在返回 null。 */
+    private static String ownerIn(WorldState base, String accountId) {
+        CashLedger.CashAccount account = base.accounts().get(accountId);
+        return account == null ? null : account.ownerId();
+    }
+
+    /** 单个资金桶的解析结果：桶 + 付款人档案 key，或拒绝原因。 */
+    private record ResolvedBucket(edu.cufe.auction.world.bank.Fund bucket, String payerKey,
+                                  String problem) {
+    }
+
+    /**
+     * 把 payload 里的桶 token 与真实业务主体核对。
+     *
+     * <p>CASH 桶必须就是该腿配置的账户；DEPOSIT 桶必须在冻结档案里真实存在且开通存款科目，
+     * 且持有人 owner 等于业务付款方/收款方。解析不出、未开通、owner 不符一律拒绝，
+     * 不猜银行、不回退现金、不跨桶补足。</p>
+     */
+    private ResolvedBucket resolveCompanyBucket(edu.cufe.auction.world.bank.FundState funds,
+            WorldState base, String token, String accountId, String expectedOwner,
+            String mismatchReason) {
+        if (token == null || token.isBlank()) {
+            return new ResolvedBucket(null, null, "FUND_TOKEN_MISSING");
+        }
+        edu.cufe.auction.world.bank.Fund bucket;
+        try {
+            bucket = edu.cufe.auction.world.bank.Fund.parse(token);
+        } catch (RuntimeException invalid) {
+            return new ResolvedBucket(null, null, "FUND_TOKEN_INVALID:" + token);
+        }
+        edu.cufe.auction.world.bank.BankingProfile profile = funds.bank().chart().profile();
+        if (bucket instanceof edu.cufe.auction.world.bank.Fund.Cash cash) {
+            if (!cash.accountId().equals(accountId)) {
+                return new ResolvedBucket(null, null, "FUND_ACCOUNT_MISMATCH:" + cash.accountId());
+            }
+            if (expectedOwner == null || !expectedOwner.equals(ownerIn(base, cash.accountId()))) {
+                return new ResolvedBucket(null, null, mismatchReason);
+            }
+            for (Map.Entry<String, edu.cufe.auction.world.bank.BankingProfile.PartyRef> entry
+                    : new TreeMap<>(profile.parties()).entrySet()) {
+                if (entry.getValue().cashAccountId().equals(cash.accountId())) {
+                    return new ResolvedBucket(bucket, entry.getKey(), null);
+                }
+            }
+            return new ResolvedBucket(null, null, "FUND_PAYER_UNKNOWN:" + cash.accountId());
+        }
+        if (bucket instanceof edu.cufe.auction.world.bank.Fund.Deposit deposit) {
+            if (!funds.bank().chart().banks().contains(deposit.bankKey())) {
+                return new ResolvedBucket(null, null, "FUND_BUCKET_UNAVAILABLE:" + token);
+            }
+            edu.cufe.auction.world.bank.BankingProfile.PartyRef ref =
+                    profile.parties().get(deposit.holderKey());
+            if (ref == null || ref.depositGl() == null) {
+                return new ResolvedBucket(null, null, "FUND_BUCKET_UNAVAILABLE:" + token);
+            }
+            if (expectedOwner == null || !ref.ownerId().equals(expectedOwner)) {
+                return new ResolvedBucket(null, null, mismatchReason);
+            }
+            return new ResolvedBucket(bucket, deposit.holderKey(), null);
+        }
+        if (bucket instanceof edu.cufe.auction.world.bank.Fund.Custody custody) {
+            if (!profile.custodians().containsKey(custody.custodianKey())) {
+                return new ResolvedBucket(null, null, "FUND_BUCKET_UNAVAILABLE:" + token);
+            }
+            edu.cufe.auction.world.bank.BankingProfile.PartyRef ref =
+                    profile.parties().get(custody.clientKey());
+            if (ref == null || expectedOwner == null || !ref.ownerId().equals(expectedOwner)) {
+                return new ResolvedBucket(null, null, mismatchReason);
+            }
+            return new ResolvedBucket(bucket, custody.clientKey(), null);
+        }
+        return new ResolvedBucket(null, null, "FUND_BUCKET_UNSUPPORTED:" + token);
+    }
+
+    /**
+     * 对方（客户 / 作业方）端的资金桶：**只允许合同固定的那个现金账户**。
+     *
+     * <p>冻结合同与开局配置只固定了对方的现金账户，没有任何“对方允许用其银行存款桶”的政策；
+     * 因此哪怕 token 的 owner 与余额都合适，只要不是该现金账户就明确拒绝
+     * {@code COUNTERPARTY_BUCKET_NOT_AUTHORIZED}，绝不静默替换成现金或别的桶。</p>
+     */
+    private ResolvedBucket fixedCashBucket(edu.cufe.auction.world.bank.FundState funds,
+            WorldState base, String token, String accountId, String expectedOwner,
+            String mismatchReason) {
+        if (token == null || token.isBlank()) {
+            return new ResolvedBucket(null, null, "FUND_TOKEN_MISSING");
+        }
+        edu.cufe.auction.world.bank.Fund bucket;
+        try {
+            bucket = edu.cufe.auction.world.bank.Fund.parse(token);
+        } catch (RuntimeException invalid) {
+            return new ResolvedBucket(null, null, "FUND_TOKEN_INVALID:" + token);
+        }
+        if (!(bucket instanceof edu.cufe.auction.world.bank.Fund.Cash cash)
+                || !cash.accountId().equals(accountId)) {
+            return new ResolvedBucket(null, null, "COUNTERPARTY_BUCKET_NOT_AUTHORIZED:" + token);
+        }
+        String owner = ownerIn(base, accountId);
+        if (expectedOwner == null || !expectedOwner.equals(owner)) {
+            return new ResolvedBucket(null, null, mismatchReason);
+        }
+        edu.cufe.auction.world.bank.BankingProfile profile = funds.bank().chart().profile();
+        for (Map.Entry<String, edu.cufe.auction.world.bank.BankingProfile.PartyRef> entry
+                : new TreeMap<>(profile.parties()).entrySet()) {
+            if (entry.getValue().cashAccountId().equals(accountId)) {
+                return new ResolvedBucket(bucket, entry.getKey(), null);
+            }
+        }
+        return new ResolvedBucket(null, null, "FUND_PAYER_UNKNOWN:" + accountId);
+    }
+
+    /** 某现金账户的真实 ownerId；账户不存在返回 null。 */
+    private String accountOwner(String accountId) {
+        CashLedger.CashAccount account = state.accounts().get(accountId);
+        return account == null ? null : account.ownerId();
+    }
+
+    /**
+     * 显式资金动作的统一收尾：写业务回报，成功时把资金候选与工程状态同批提交，
+     * 拒绝时只提交业务侧记录、不动账户与银行。
+     */
+    private void finishFundedEngineering(PendingTask task, FundedEngineeringPayload p,
+            EngineeringRun run, edu.cufe.auction.world.bank.FundState funds, boolean accepted,
+            String reason) throws IOException {
+        EngineeringRun.Report report = new EngineeringRun.Report(task.taskId(), p.commandId(),
+                task.kind(), p.companyPartyId(), accepted, reason, task.dueTimeMillis(),
+                state.position() + 1);
+        EngineeringRun next = run == null ? state.engineering() : run;
+        if (next != null) {
+            next = next.withReport(report);
+        }
+        Map<String, CashLedger.CashAccount> accounts = funds == null
+                ? state.accounts() : funds.accounts();
+        finishEngineeringTask(task, p.commandId(), p.companyPartyId(), next, state.governance(),
+                state.roles(), accounts, state.information(), task.dueTimeMillis(), accepted,
+                reason, List.<PendingTask>of(), funds);
+    }
+
+    /**
      * 周期期末采样：真实账报表、基准与证据引用一次性绑定，并由章程自动入口建会议日程。
      */
+    /**
+     * 额外公司（银行）期末采样：只按该帧真实 {@code BankCompanyReport} 与总账出数。
+     *
+     * <p>与工程/制造共用同一 {@link PeriodicModel} 纯核与同一冻结政策：周期快照、
+     * 考核会议（{@link BoardModel#conveneByCharter}）、材料文档、关期与披露截止子任务
+     * 全部沿用原路径。未知维度不补 0，逐条写入 unsupported。</p>
+     */
+    private void completeCompanyPeriodCapture(PendingTask task) throws IOException {
+        PeriodicCapturePayload payload = mapper.readValue(task.payload(),
+                PeriodicCapturePayload.class);
+        long now = task.dueTimeMillis();
+        String company = payload.companyPartyId();
+        CompanyGovernanceRun container = state.companyGovernance();
+        if (container == null || !container.has(company)) {
+            throw new IOException("额外公司不存在：" + company);
+        }
+        PeriodicModel.CompanyPeriods periods = container.periodsOf(company);
+        long capturedAt = Math.multiplyExact(payload.period(), PeriodicModel.PERIOD_MILLIS);
+        if (now < capturedAt) {
+            finishCompanyPeriodic(task, container, state.information(), false,
+                    PeriodicModel.REASON_NOT_DUE, List.of());
+            return;
+        }
+        for (PeriodicModel.Snapshot snapshot : periods.snapshots()) {
+            if (snapshot.period() == payload.period()) {
+                finishCompanyPeriodic(task, container, state.information(), true,
+                        PeriodicModel.REASON_OK, List.of());
+                return;
+            }
+        }
+        BoardRun board = container.boardOf(company);
+        String meetingId = PeriodicWorldEngine.meetingId(company, payload.period());
+        if (board.board().meeting(meetingId) != null) {
+            finishCompanyPeriodic(task, container, state.information(), false,
+                    PeriodicModel.REASON_PERIOD_ALREADY_CAPTURED, List.of());
+            return;
+        }
+        long opensAt = capturedAt + periods.policy().materialLeadMillis();
+        long closesAt = opensAt + periods.policy().reviewWindowMillis();
+        if (now >= closesAt) {
+            finishCompanyPeriodic(task, container, state.information(), false,
+                    PeriodicModel.REASON_REVIEW_WINDOW_CLOSED, List.of());
+            return;
+        }
+        BoardModel.Outcome convened = BoardModel.conveneByCharter(board.board(), now, meetingId,
+                opensAt, opensAt, closesAt);
+        if (!convened.accepted()) {
+            finishCompanyPeriodic(task, container, state.information(), false,
+                    convened.reason(), List.of());
+            return;
+        }
+        String statement = bankPeriodicStatement(state, company, payload.period(), capturedAt);
+        String basis = bankPeriodicBasis(company, payload.period(), capturedAt);
+        String materialDoc = PeriodicWorldEngine.materialDocId(company, payload.period());
+        String materialSource = PeriodicWorldEngine.materialSourceRef(company, payload.period());
+        InformationRun information = state.information();
+        if (information == null) {
+            finishCompanyPeriodic(task, container, information, false, "NO_INFORMATION", List.of());
+            return;
+        }
+        // 采样只冻结真值：报表正文摘要 + 未来材料编号/来源，不发布任何资料、不产生人物署名。
+        // 董事材料由经理真实 PREPARE 动作发布（与工程/制造同一分工）。
+        InformationModel.State info = information.information();
+        Set<String> refs = new TreeSet<>();
+        refs.add(materialSource);
+        refs.add("account:" + BankChart.RESERVE);
+        refs.addAll(bankPeriodicAccountRefs(company));
+        PeriodicModel.Snapshot snapshot = new PeriodicModel.Snapshot(company, payload.period(),
+                meetingId, capturedAt, state.position() + 1, sha256Hex(basis),
+                sha256Hex(statement), materialDoc, 1L, materialSource, List.copyOf(refs));
+        PeriodicModel.Outcome captured = PeriodicModel.capture(container.periods(), snapshot);
+        if (!captured.accepted()) {
+            finishCompanyPeriodic(task, container, information, false, captured.reason(),
+                    List.of());
+            return;
+        }
+        BoardRun nextBoard = new BoardRun(convened.state(), board.reports(),
+                board.periodEvidence());
+        CompanyGovernanceRun next = container.withBoard(company, nextBoard)
+                .withPeriods(captured.state());
+        List<PendingTask> children = new ArrayList<>();
+        children.add(new PendingTask("periodic-close:" + company + ":" + payload.period(),
+                closesAt, WorldScheduler.Phase.RULES, PendingTask.PERIOD_CLOSE_V1,
+                mapper.writeValueAsString(new PeriodicCapturePayload(
+                        "system:periodic-close:" + company + ":" + payload.period(), company,
+                        payload.period(), periods.policy().digest()))));
+        long deadline = capturedAt + periods.policy().disclosureWindowMillis();
+        children.add(new PendingTask("periodic-deadline:" + company + ":" + payload.period(),
+                deadline, WorldScheduler.Phase.RULES, PendingTask.PERIOD_DISCLOSURE_DEADLINE_V1,
+                mapper.writeValueAsString(new PeriodicCapturePayload(
+                        "system:periodic-deadline:" + company + ":" + payload.period(), company,
+                        payload.period(), periods.policy().digest()))));
+        if (manifest.hasDefaultPeriodicGovernance()) {
+            // 下一期由本次真实采样派生：唯一待办、唯一标识，重复不追加。
+            long nextPeriod = payload.period() + 1L;
+            String nextTaskId = "periodic-capture:" + company + ":" + nextPeriod;
+            long nextDue;
+            try {
+                nextDue = Math.multiplyExact(nextPeriod, PeriodicModel.PERIOD_MILLIS);
+            } catch (ArithmeticException overflow) {
+                nextDue = -1L;
+            }
+            if (nextDue > 0 && !state.usedTaskIds().contains(nextTaskId)) {
+                children.add(new PendingTask(nextTaskId, nextDue,
+                        WorldScheduler.Phase.PERIOD_BOUNDARY_CAPTURE,
+                        PendingTask.PERIOD_CAPTURE_V1,
+                        mapper.writeValueAsString(new PeriodicCapturePayload(
+                                SYSTEM_COMMAND_PREFIX + "periodic-capture:" + company + ":"
+                                        + nextPeriod, company, nextPeriod,
+                                periods.policy().digest()))));
+            }
+        }
+        finishCompanyPeriodic(task, next, new InformationRun(info, information.reports()), true,
+                PeriodicModel.REASON_OK, children);
+    }
+
+    /**
+     * 额外公司周期人物动作：PREPARE/APPROVE/AUTHORIZE/PUBLISH 只走 {@link PeriodicModel} 纯核，
+     * 席位、经理、实读与回忆一律由 {@link PeriodicWorldAccess} 按该帧真实证据判定。
+     */
+    private void completeCompanyPeriodic(PendingTask task) throws IOException {
+        PeriodicActionPayload payload = mapper.readValue(task.payload(),
+                PeriodicActionPayload.class);
+        long now = task.dueTimeMillis();
+        String company = payload.companyPartyId();
+        CompanyGovernanceRun container = state.companyGovernance();
+        if (container == null || !container.has(company)) {
+            throw new IOException("额外公司不存在：" + company);
+        }
+        PeriodicModel.CompanyPeriods periods = container.periodsOf(company);
+        PeriodicModel.Snapshot snapshot = companySnapshot(periods, payload.period());
+        InformationRun information = state.information();
+        PeriodicWorldAccess access = companyPeriodicAccess(company, snapshot, information);
+        PeriodicModel.Outcome outcome;
+        InformationRun nextInfo = information;
+        BoardRun board = container.boardOf(company);
+        if ("PREPARE".equals(payload.action())) {
+            if (snapshot == null) {
+                finishCompanyPeriodic(task, container, information, false,
+                        PeriodicModel.REASON_NOT_CAPTURED, List.of());
+                return;
+            }
+            BoardModel.Meeting meeting = board.board().meeting(snapshot.meetingId());
+            if (meeting == null) {
+                finishCompanyPeriodic(task, container, information, false,
+                        PeriodicModel.REASON_NOT_MEETING, List.of());
+                return;
+            }
+            // 采样期只冻结了真值（摘要 + 未来材料编号）；董事材料在这里由经理真实编制动作发布。
+            // 正文必须由该期「冻结帧」重算并等于快照摘要，不读当前总账、不读未来账。
+            String body;
+            try {
+                body = bankPeriodicStatement(frameFromJournal(snapshot.position()), company,
+                        payload.period(), snapshot.capturedAt());
+            } catch (RuntimeException | IOException invalid) {
+                finishCompanyPeriodic(task, container, information, false,
+                        "STATEMENT_UNAVAILABLE", List.of());
+                return;
+            }
+            if (!sha256Hex(body).equals(snapshot.statementDigest())) {
+                finishCompanyPeriodic(task, container, information, false,
+                        "STATEMENT_UNAVAILABLE", List.of());
+                return;
+            }
+            int index = 1;
+            for (PeriodicModel.Draft draft : periods.drafts()) {
+                if (draft.period() == payload.period()) {
+                    index++;
+                }
+            }
+            String docId = companyDraftDocId(company, payload.period(), index);
+            if (InformationModel.version(information.information(), docId, 1L).isPresent()) {
+                finishCompanyPeriodic(task, container, information, false,
+                        "MATERIAL_EXISTS", List.of());
+                return;
+            }
+            InformationModel.VersionDraft version = new InformationModel.VersionDraft(
+                    "周期材料 " + company + " 第" + payload.period() + "期", body,
+                    "periodic-bank-exp", now, 10L, List.of(snapshot.materialSourceRef()));
+            InformationModel.State published = InformationModel.publish(
+                    information.information(), docId, payload.personPartyId(),
+                    InformationModel.Audience.board(company), version);
+            BoardRun nextBoard = board;
+            if (meeting.status() == BoardModel.MeetingStatus.CONVENED) {
+                BoardModel.Outcome frozen = BoardModel.freezePeriodicMaterials(board.board(), now,
+                        meeting.meetingId(), docId, snapshot.materialSourceRef(), 1L);
+                if (!frozen.accepted()) {
+                    finishCompanyPeriodic(task, container, information, false, frozen.reason(),
+                            List.of());
+                    return;
+                }
+                nextBoard = new BoardRun(frozen.state(), board.reports(),
+                        board.periodEvidence());
+            }
+            PeriodicModel.Draft draft = new PeriodicModel.Draft(
+                    "periodic-draft:" + company + ":" + payload.period() + ":" + index, company,
+                    payload.period(), docId, 1L, sha256Hex(body), payload.personPartyId(), now,
+                    state.position() + 1, snapshot.position(), snapshot.basisDigest());
+            outcome = PeriodicModel.prepareDraft(container.periods(), draft, access, now);
+            if (!outcome.accepted()) {
+                finishCompanyPeriodic(task, container, information, false, outcome.reason(),
+                        List.of());
+                return;
+            }
+            finishCompanyPeriodic(task, container.withBoard(company, nextBoard)
+                            .withPeriods(outcome.state()),
+                    new InformationRun(published, information.reports()), true,
+                    PeriodicModel.REASON_OK, List.of());
+            return;
+        }
+        if (snapshot == null) {
+            finishCompanyPeriodic(task, container, information, false,
+                    PeriodicModel.REASON_NOT_CAPTURED, List.of());
+            return;
+        }
+        PeriodicModel.Draft draft = companyDraftOf(periods, payload);
+        if (draft == null) {
+            finishCompanyPeriodic(task, container, information, false,
+                    PeriodicModel.REASON_UNKNOWN_DRAFT, List.of());
+            return;
+        }
+        switch (payload.action()) {
+            case "APPROVE" -> {
+                String seat = access.seatOf(company, payload.personPartyId(), now);
+                PeriodicModel.Approval approval = new PeriodicModel.Approval(company,
+                        payload.period(), draft.draftId(), draft.version(), draft.bodyDigest(),
+                        payload.personPartyId(), seat == null ? "" : seat, now,
+                        state.position() + 1);
+                long windowClosesAt = -1L;
+                if (manifest.hasDefaultPeriodicGovernance() && snapshot != null) {
+                    BoardModel.Meeting window = board.board().meeting(snapshot.meetingId());
+                    if (window != null) {
+                        windowClosesAt = window.closesAt();
+                    }
+                }
+                outcome = PeriodicModel.approve(container.periods(), approval, access, now,
+                        windowClosesAt);
+            }
+            case "AUTHORIZE" -> {
+                Set<String> approvers = new TreeSet<>();
+                for (PeriodicModel.Approval approval : periods.approvals()) {
+                    if (approval.draftId().equals(draft.draftId())
+                            && approval.draftVersion() == draft.version()) {
+                        approvers.add(approval.approverPersonId());
+                    }
+                }
+                if (approvers.size() < PeriodicModel.MIN_COMPLETE_SEATS) {
+                    finishCompanyPeriodic(task, container, information, false,
+                            PeriodicModel.REASON_DRAFT_NOT_APPROVED, List.of());
+                    return;
+                }
+                String authorizationId = payload.authorizationId().isBlank()
+                        ? "periodic-auth:" + company + ":" + payload.period() + ":"
+                                + sha256Hex(draft.draftId() + "#" + draft.version() + "#"
+                                        + payload.publisherPersonId() + "#" + payload.expiresAt())
+                                        .substring(0, 16)
+                        : payload.authorizationId();
+                PeriodicModel.Authorization authorization = new PeriodicModel.Authorization(
+                        authorizationId, company, payload.period(), draft.draftId(),
+                        draft.version(), draft.bodyDigest(), new ArrayList<>(approvers),
+                        payload.publisherPersonId(), PeriodicModel.PURPOSE_DISCLOSE, now,
+                        payload.expiresAt(), 0L);
+                outcome = PeriodicModel.authorize(container.periods(), authorization, access,
+                        now);
+            }
+            case "PUBLISH" -> {
+                Optional<InformationModel.DocumentVersion> material = InformationModel.version(
+                        information.information(), draft.docId(), draft.version());
+                if (material.isEmpty()
+                        || !sha256Hex(material.get().body()).equals(draft.bodyDigest())) {
+                    finishCompanyPeriodic(task, container, information, false,
+                            "BODY_MISMATCH", List.of());
+                    return;
+                }
+                PeriodicModel.Authorization authorization = null;
+                for (PeriodicModel.Authorization each : periods.authorizations()) {
+                    if (payload.authorizationId().isBlank()
+                            ? (each.period() == payload.period()
+                                    && each.draftId().equals(draft.draftId()))
+                            : each.authorizationId().equals(payload.authorizationId())) {
+                        authorization = each;
+                    }
+                }
+                if (authorization == null) {
+                    finishCompanyPeriodic(task, container, information, false,
+                            PeriodicModel.REASON_APPROVAL_MISSING, List.of());
+                    return;
+                }
+                String publicDoc = "periodic-public:" + company + ":" + payload.period();
+                InformationModel.State info = information.information();
+                if (InformationModel.version(info, publicDoc, 1L).isEmpty()) {
+                    InformationModel.VersionDraft version = new InformationModel.VersionDraft(
+                            "周期披露 " + company + " 第" + payload.period() + "期",
+                            material.get().body(), "periodic-bank-exp", now, 10L,
+                            List.of(snapshot.materialSourceRef()));
+                    info = InformationModel.publish(info, publicDoc, payload.personPartyId(),
+                            InformationModel.Audience.publicAudience(), version);
+                }
+                PeriodicModel.Release release = new PeriodicModel.Release(
+                        authorization.authorizationId(), company, payload.period(),
+                        draft.draftId(), draft.version(), draft.docId(), draft.version(),
+                        draft.bodyDigest(), payload.personPartyId(), now,
+                        now >= Math.addExact(Math.multiplyExact(payload.period(),
+                                periods.policy().periodMillis()),
+                                periods.policy().disclosureWindowMillis()));
+                outcome = PeriodicModel.publish(container.periods(), release, access, now);
+                if (outcome.accepted()) {
+                    finishCompanyPeriodic(task, container.withPeriods(outcome.state()),
+                            new InformationRun(info, information.reports()), true,
+                            PeriodicModel.REASON_OK, List.of());
+                    return;
+                }
+            }
+            default -> {
+                finishCompanyPeriodic(task, container, information, false, "UNKNOWN_ACTION",
+                        List.of());
+                return;
+            }
+        }
+        if (!outcome.accepted()) {
+            finishCompanyPeriodic(task, container, information, false, outcome.reason(),
+                    List.of());
+            return;
+        }
+        finishCompanyPeriodic(task, container.withPeriods(outcome.state()), nextInfo, true,
+                PeriodicModel.REASON_OK, List.of());
+    }
+
+    /** 额外公司周期帧收尾：容器、资料与回报同批提交。 */
+    private void finishCompanyPeriodic(PendingTask task, CompanyGovernanceRun container,
+            InformationRun information, boolean accepted, String reason,
+            List<PendingTask> children) throws IOException {
+        EngineeringRun.Report report = new EngineeringRun.Report(task.taskId(),
+                task.kind().equals(PendingTask.PERIOD_CAPTURE_V1)
+                        ? "system:periodic-capture" : "system:periodic-action",
+                task.kind(), state.companyGovernance().companies().isEmpty() ? "north"
+                        : state.companyGovernance().companies().get(0),
+                accepted, reason, task.dueTimeMillis(), state.position() + 1);
+        EngineeringRun run = state.engineering();
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        for (PendingTask child : children) {
+            pending.add(child);
+            used.add(child.taskId());
+            events.add(new WorldEvent("task-scheduled:" + child.taskId(), "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(child)));
+        }
+        events.add(new WorldEvent("periodic-report:" + task.taskId(), "PERIODIC_REPORT_V1",
+                mapper.writeValueAsString(orderedPayload("taskId", task.taskId(),
+                        "accepted", accepted, "reason", reason))));
+        WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
+                pending, state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), state.manufacturing(), state.governance(),
+                state.roles(), information == null ? state.information() : information,
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(),
+                state.media(), state.interviews(), state.evidence(), state.social(),
+                run == null ? state.engineering() : run, state.bank(), state.bankActions(),
+                container, state.groups());
+        commitAndApply("task:" + task.taskId(), task.payload(),
+                accepted ? "ACCEPTED" : reason, events, candidate);
+    }
+
+    /** 额外公司周期访问：章程、会议、资料与任职全部取该帧真实证据。 */
+    private PeriodicWorldAccess companyPeriodicAccess(String company,
+            PeriodicModel.Snapshot snapshot, InformationRun information) {
+        CompanyGovernanceRun container = state.companyGovernance();
+        BoardRun board = container == null ? null : container.boardOf(company);
+        List<BoardModel.Meeting> meetings = new ArrayList<>();
+        if (board != null) {
+            meetings.addAll(board.board().meetings().values());
+        }
+        meetings.sort(Comparator.comparing(BoardModel.Meeting::meetingId));
+        return PeriodicWorldAccess.onFrame(company,
+                board == null ? null : board.board().charter(), meetings,
+                information == null ? null : information.information(),
+                informationConfig == null ? null : informationConfig.recallPolicy(),
+                state.roles() == null ? null : state.roles().access(),
+                snapshot == null ? null : snapshot.meetingId());
+    }
+
+    private static PeriodicModel.Snapshot companySnapshot(PeriodicModel.CompanyPeriods periods,
+            long period) {
+        for (PeriodicModel.Snapshot snapshot : periods.snapshots()) {
+            if (snapshot.period() == period) {
+                return snapshot;
+            }
+        }
+        return null;
+    }
+
+    private static PeriodicModel.Draft companyDraftOf(PeriodicModel.CompanyPeriods periods,
+            PeriodicActionPayload payload) {
+        for (PeriodicModel.Draft draft : periods.drafts()) {
+            if (draft.period() != payload.period()) {
+                continue;
+            }
+            if (payload.draftId().isBlank() || draft.draftId().equals(payload.draftId())) {
+                return draft;
+            }
+        }
+        return null;
+    }
+
+    private static String companyDraftDocId(String company, long period, int index) {
+        return "periodic-draft-doc:" + company + ":" + period + ":" + index;
+    }
+
+    /**
+     * 银行期末报表正文：只列该帧真实科目，未知维度写 unsupported，不补 0。
+     *
+     * <p><b>口径</b>：{@code currentEarnings} 是总账里的<b>未结转累计</b>损益，不是单期损益。
+     * 单期流量只由「本期累计 − 上一期冻结帧累计」派生：两个端点都取自真实冻结快照，不读当前总账、
+     * 不用差额回填利润。没有上一期快照时，本期流量退化为累计本身，并在正文里写明。</p>
+     *
+     * @param frame      该期冻结帧（采样时是当前候选帧，编制时是日志里该位置的历史帧）
+     * @param company    银行公司
+     * @param period     期间
+     * @param capturedAt 期间边界（冻结）
+     * @return 报表正文
+     * @throws IOException 上一期冻结帧不可读
+     */
+    private String bankPeriodicStatement(WorldState frame, String company, long period,
+            long capturedAt) throws IOException {
+        BankCompanyReport report = BankCompanyReport.of(frame.bank(), frame.accounts(), company);
+        BigDecimal cumIncome = sumAmounts(report.income());
+        BigDecimal cumExpense = sumAmounts(report.expense());
+        BigDecimal periodIncome = cumIncome;
+        BigDecimal periodExpense = cumExpense;
+        String flowNote = "本期＝累计（无上一期冻结快照）";
+        WorldState prior = priorPeriodicFrame(company, period);
+        if (prior != null) {
+            BankCompanyReport before = BankCompanyReport.of(prior.bank(), prior.accounts(), company);
+            periodIncome = cumIncome.subtract(sumAmounts(before.income()));
+            periodExpense = cumExpense.subtract(sumAmounts(before.expense()));
+            flowNote = "本期＝本期累计 − 上一期冻结帧累计（区间 (" + (period - 1L) + "," + period
+                    + "]）";
+        }
+        BigDecimal periodPnl = periodIncome.subtract(periodExpense);
+        StringBuilder text = new StringBuilder();
+        text.append("银行期末报表（EXP 实验账，未按监管口径校准）\n");
+        text.append("公司=").append(company).append(" 期间=").append(period)
+                .append(" 采样时点=").append(capturedAt).append('\n');
+        text.append("资产（含减值准备按负值）：\n");
+        for (Map.Entry<String, BigDecimal> entry : report.assets().entrySet()) {
+            text.append("  ").append(entry.getKey()).append('=').append(entry.getValue())
+                    .append('\n');
+        }
+        for (Map.Entry<String, BigDecimal> entry : report.contra().entrySet()) {
+            text.append("  准备 ").append(entry.getKey()).append('=')
+                    .append(entry.getValue()).append('\n');
+        }
+        text.append("负债：\n");
+        for (Map.Entry<String, BigDecimal> entry : report.liabilities().entrySet()) {
+            text.append("  ").append(entry.getKey()).append('=').append(entry.getValue())
+                    .append('\n');
+        }
+        text.append("已记权益：\n");
+        for (Map.Entry<String, BigDecimal> entry : report.equity().entrySet()) {
+            text.append("  ").append(entry.getKey()).append('=').append(entry.getValue())
+                    .append('\n');
+        }
+        text.append("累计未结转损益=").append(report.currentEarnings())
+                .append("（总账未结转累计，不是单期损益）\n");
+        text.append("账面权益合计=").append(report.totalEquity())
+                .append("（已记权益 + 未结转累计损益）\n");
+        text.append("收入：\n");
+        for (Map.Entry<String, BigDecimal> entry : report.income().entrySet()) {
+            text.append("  ").append(entry.getKey()).append('=').append(entry.getValue())
+                    .append('\n');
+        }
+        text.append("费用（含信用减值）：\n");
+        for (Map.Entry<String, BigDecimal> entry : report.expense().entrySet()) {
+            text.append("  ").append(entry.getKey()).append('=').append(entry.getValue())
+                    .append('\n');
+        }
+        text.append("本期流量（由两期冻结累计派生）：\n");
+        text.append("  本期收入=").append(periodIncome).append('\n');
+        text.append("  本期费用=").append(periodExpense).append('\n');
+        text.append("  本期损益=").append(periodPnl).append('\n');
+        text.append("  累计收入=").append(cumIncome).append('\n');
+        text.append("  累计费用=").append(cumExpense).append('\n');
+        text.append("  累计损益=").append(cumIncome.subtract(cumExpense)).append('\n');
+        text.append("  口径=").append(flowNote).append('\n');
+        text.append("资本监管指标（不是账面权益）：\n");
+        for (Map.Entry<String, BigDecimal> entry : report.metrics().entrySet()) {
+            text.append("  ").append(entry.getKey()).append('=').append(entry.getValue())
+                    .append('\n');
+        }
+        text.append("A=").append(report.totalAssets()).append(" L=")
+                .append(report.totalLiabilities()).append(" E=")
+                .append(report.totalEquity()).append(" balanced=")
+                .append(report.balanced()).append('\n');
+        text.append("未支持维度（不填 0）：\n");
+        for (String item : report.unsupported()) {
+            text.append("  - ").append(item).append('\n');
+        }
+        return text.toString();
+    }
+
+    /** 科目金额合计；空表返回 0.00。 */
+    private static BigDecimal sumAmounts(Map<String, BigDecimal> amounts) {
+        BigDecimal sum = BigDecimal.ZERO.setScale(2);
+        for (BigDecimal amount : amounts.values()) {
+            sum = sum.add(amount);
+        }
+        return sum;
+    }
+
+    /**
+     * 固定字段序的事件 payload。
+     *
+     * <p>{@code Map.of} 的迭代序由 JVM 内部盐值决定：同一份真实业务在不同进程会写出键序
+     * 不同的 JSON 字节，恢复期逐事件比较就把它误判成状态不一致。这里用显式声明序的
+     * {@link LinkedHashMap}，键序跨 JVM 逐字一致。</p>
+     *
+     * @param keyValues 交替出现的字段名与值
+     * @return 声明序 payload
+     */
+    private static Map<String, Object> orderedPayload(Object... keyValues) {
+        if (keyValues.length % 2 != 0) {
+            throw new IllegalArgumentException("事件 payload 必须成对给出字段与值");
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        for (int index = 0; index < keyValues.length; index += 2) {
+            payload.put((String) keyValues[index], keyValues[index + 1]);
+        }
+        return payload;
+    }
+
+    /**
+     * 该公司该期之前最近一期「已冻结」快照对应的历史帧。
+     *
+     * <p>只读日志里该快照位置的真实帧：单期流量用它做减项，绝不读当前总账、也不用残差回填。</p>
+     *
+     * @param company 公司
+     * @param period  目标期间
+     * @return 上一期冻结帧；没有上一期返回 null
+     * @throws IOException 历史帧不可读
+     */
+    private WorldState priorPeriodicFrame(String company, long period) throws IOException {
+        CompanyGovernanceRun container = state.companyGovernance();
+        if (container == null || !container.has(company)) {
+            return null;
+        }
+        PeriodicModel.CompanyPeriods periods = container.periodsOf(company);
+        PeriodicModel.Snapshot prior = null;
+        for (PeriodicModel.Snapshot snapshot : periods.snapshots()) {
+            if (snapshot.period() < period
+                    && (prior == null || snapshot.period() > prior.period())) {
+                prior = snapshot;
+            }
+        }
+        return prior == null ? null : frameFromJournal(prior.position());
+    }
+
+    /** 银行期末基准正文：冻结政策与口径边界，不含行情或事后事件。 */
+    private String bankPeriodicBasis(String company, long period, long capturedAt) {
+        CompanyGovernanceRun container = state.companyGovernance();
+        PeriodicModel.CompanyPeriods periods = container == null ? null
+                : container.periodsOf(company);
+        String policy = periods == null ? "" : periods.policy().digest();
+        return "期间基准：company=" + company + " period=" + period
+                + " capturedAt=" + capturedAt + " policy=" + policy
+                + "\n口径：资产/负债/权益/损益全部取该帧银行总账与现金权威，"
+                + "证券与托管未接维度不填 0；不以市价重估银行账面。\n";
+    }
+
+    private Set<String> bankPeriodicAccountRefs(String company) {
+        Set<String> refs = new TreeSet<>();
+        BankChart chart = state.bank().decode(state.accounts()).state().chart();
+        for (String account : chart.liabilities()) {
+            refs.add("account:" + account);
+        }
+        for (String account : chart.assets()) {
+            refs.add("account:" + account);
+        }
+        for (String account : chart.equity()) {
+            refs.add("account:" + account);
+        }
+        return refs;
+    }
+
+    /**
+     * 排程一次额外公司期末采样（系统日程）：到期按该帧真实银行报表出数并建考核会议。
+     *
+     * <p>与工程/制造同一 {@link PeriodicModel} 政策与关期/披露子任务，不另建周期算法。</p>
+     *
+     * @param companyPartyId 额外公司
+     * @param period         期间序号（必须为下一期）
+     * @param dueTimeMillis  采样到期（不早于期间边界）
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public synchronized String scheduleCompanyPeriodCapture(String companyPartyId, long period,
+            long dueTimeMillis) throws IOException {
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        CompanyGovernanceRun extras = state.companyGovernance();
+        if (extras == null || !extras.has(companyPartyId)) {
+            throw new IllegalArgumentException("该公司不是额外治理公司：" + companyPartyId);
+        }
+        PeriodicModel.CompanyPeriods periods = extras.periodsOf(companyPartyId);
+        long expected = periods.snapshots().isEmpty() ? 1L
+                : periods.snapshots().get(periods.snapshots().size() - 1).period() + 1L;
+        if (period != expected) {
+            throw new IllegalArgumentException("采样期间必须为下一期：" + expected);
+        }
+        long capturedAt = Math.multiplyExact(period, PeriodicModel.PERIOD_MILLIS);
+        if (dueTimeMillis < capturedAt) {
+            throw new IllegalArgumentException("采样到期不得早于期间边界：" + capturedAt);
+        }
+        String taskId = "periodic-capture:" + companyPartyId + ":" + period;
+        if (state.usedTaskIds().contains(taskId)) {
+            throw new IllegalArgumentException("采样任务已排： " + taskId);
+        }
+        String command = "system:periodic-capture:" + companyPartyId + ":" + period;
+        PeriodicCapturePayload payload = new PeriodicCapturePayload(command, companyPartyId,
+                period, periods.policy().digest());
+        PendingTask task = new PendingTask(taskId, dueTimeMillis,
+                WorldScheduler.Phase.OBSERVATION, PendingTask.PERIOD_CAPTURE_V1,
+                mapper.writeValueAsString(payload));
+        return scheduleCompletionTask(task, command, mapper.writeValueAsString(payload));
+    }
+
     private void completePeriodCapture(PendingTask task) throws IOException {
         PeriodicCapturePayload payload = mapper.readValue(task.payload(),
                 PeriodicCapturePayload.class);
+        if (state.companyGovernance() != null
+                && state.companyGovernance().has(payload.companyPartyId())) {
+            completeCompanyPeriodCapture(task);
+            return;
+        }
         long now = task.dueTimeMillis();
         long capturedAt = Math.multiplyExact(payload.period(), PeriodicModel.PERIOD_MILLIS);
         long closed = state.manufacturing() == null ? Long.MAX_VALUE
@@ -10927,6 +12717,23 @@ public final class WorldRuntime implements AutoCloseable {
         PeriodicCapturePayload payload = mapper.readValue(task.payload(),
                 PeriodicCapturePayload.class);
         long now = task.dueTimeMillis();
+        CompanyGovernanceRun extras = state.companyGovernance();
+        if (extras != null && extras.has(payload.companyPartyId())) {
+            BoardRun board = extras.boardOf(payload.companyPartyId());
+            PeriodicModel.CompanyPeriods periods = extras.periodsOf(payload.companyPartyId());
+            PeriodicModel.Snapshot snapshot = companySnapshot(periods, payload.period());
+            if (board == null || snapshot == null) {
+                finishCompanyPeriodic(task, extras, state.information(), false,
+                        PeriodicModel.REASON_NOT_CAPTURED, List.of());
+                return;
+            }
+            BoardModel.Meeting meeting = board.board().meeting(snapshot.meetingId());
+            PeriodicModel.Outcome closed = PeriodicModel.closeReview(extras.periods(),
+                    payload.companyPartyId(), payload.period(), meeting, now);
+            finishCompanyPeriodic(task, extras.withPeriods(closed.state()), state.information(),
+                    closed.accepted(), closed.reason(), List.of());
+            return;
+        }
         PeriodicWorldEngine.Applied applied = PeriodicWorldEngine.close(state.engineering(),
                 state.governance(), payload, now);
         finishEngineeringTask(task, payload.commandId(), payload.companyPartyId(), applied.run(),
@@ -10939,6 +12746,24 @@ public final class WorldRuntime implements AutoCloseable {
         PeriodicCapturePayload payload = mapper.readValue(task.payload(),
                 PeriodicCapturePayload.class);
         long now = task.dueTimeMillis();
+        CompanyGovernanceRun extras = state.companyGovernance();
+        if (extras != null && extras.has(payload.companyPartyId())) {
+            PeriodicModel.CompanyPeriods periods = extras.periodsOf(payload.companyPartyId());
+            for (PeriodicModel.Release release : periods.releases()) {
+                if (release.period() == payload.period()) {
+                    finishCompanyPeriodic(task, extras, state.information(), true,
+                            PeriodicModel.REASON_OK, List.of());
+                    return;
+                }
+            }
+            PeriodicModel.Outcome missed = PeriodicModel.markMissed(extras.periods(),
+                    payload.companyPartyId(), payload.period(), now);
+            boolean ok = missed.accepted()
+                    || PeriodicModel.REASON_MISSED_EXISTS.equals(missed.reason());
+            finishCompanyPeriodic(task, extras.withPeriods(missed.state()), state.information(),
+                    ok, missed.reason(), List.of());
+            return;
+        }
         PeriodicWorldEngine.Applied applied = PeriodicWorldEngine.deadline(state.engineering(),
                 state.governance(), payload, now);
         finishEngineeringTask(task, payload.commandId(), payload.companyPartyId(), applied.run(),
@@ -10950,6 +12775,11 @@ public final class WorldRuntime implements AutoCloseable {
     private void completeEngineeringPeriodic(PendingTask task) throws IOException {
         PeriodicActionPayload payload = mapper.readValue(task.payload(),
                 PeriodicActionPayload.class);
+        if (state.companyGovernance() != null
+                && state.companyGovernance().has(payload.companyPartyId())) {
+            completeCompanyPeriodic(task);
+            return;
+        }
         long now = task.dueTimeMillis();
         PeriodicWorldEngine.Applied applied = PeriodicWorldEngine.action(state.engineering(),
                 state.governance(), state.roles(), state.information(),
@@ -11117,21 +12947,12 @@ public final class WorldRuntime implements AutoCloseable {
                 task.dueTimeMillis(), applied.accepted(), applied.reason(), List.of());
     }
 
-    private EngineeringBoardApplied applyEngineeringBoard(EngineeringRun run, BoardRun governance,
-            RoleRun roles, InformationRun information, long now, EngineeringBoardPayload p,
-            String taskId, long nextPosition) throws IOException {
-        boolean charterCompany = charter != null
-                && charter.companyPartyId().equals(p.companyPartyId());
-        if (charterCompany && ("CONVENE_WAIVER".equals(p.action())
-                || "PROPOSE_WAIVER".equals(p.action()))) {
-            // 制造章程公司没有工程合同可豁免：不为路由成功伪造一份合同账。
-            return new EngineeringBoardApplied(run, governance, roles, false,
-                    REASON_NOT_AUTHORIZED, List.of());
-        }
-        BoardRun boardRun = boardOf(run, governance, p.companyPartyId());
+    private EngineeringBoardApplied applyEngineeringBoard(EngineeringRun run, RoleRun roles,
+            InformationRun information, long now, EngineeringBoardPayload p, String taskId)
+            throws IOException {
+        BoardRun boardRun = run.boardOf(p.companyPartyId());
         if (boardRun == null) {
-            return new EngineeringBoardApplied(run, governance, roles, false, "UNKNOWN_COMPANY",
-                    List.of());
+            return new EngineeringBoardApplied(run, roles, false, "UNKNOWN_COMPANY", List.of());
         }
         BoardModel.State board = boardRun.board();
         // FINISH 复核：本人动作必须仍对应真实席位与本董事会；系统开关会（无人物）只核公司归属。
@@ -11139,19 +12960,19 @@ public final class WorldRuntime implements AutoCloseable {
             BoardModel.Charter live = board.charter();
             String actual = live.seatOf(p.personPartyId());
             if (actual == null || !actual.equals(p.seatId())) {
-                return new EngineeringBoardApplied(run, governance, roles, false,
+                return new EngineeringBoardApplied(run, roles, false,
                         REASON_NOT_AUTHORIZED, List.of());
             }
         }
         if (!board.charter().companyPartyId().equals(p.companyPartyId())) {
-            return new EngineeringBoardApplied(run, governance, roles, false,
-                    "BOARD_COMPANY_MISMATCH", List.of());
+            return new EngineeringBoardApplied(run, roles, false, "BOARD_COMPANY_MISMATCH",
+                    List.of());
         }
         BoardModel.Outcome outcome;
         List<PendingTask> children = new ArrayList<>();
         RoleRun nextRoles = roles;
-        List<BoardModel.DebtWaiver> companyWaivers = charterCompany ? List.of()
-                : new ArrayList<>(run.waiversOf(p.companyPartyId()));
+        List<BoardModel.DebtWaiver> companyWaivers =
+                new ArrayList<>(run.waiversOf(p.companyPartyId()));
         switch (p.action()) {
             case "CONVENE", "CONVENE_APPOINTMENT", "CONVENE_WAIVER" -> {
                 BoardModel.Topic topic = "CONVENE_APPOINTMENT".equals(p.action())
@@ -11256,7 +13077,7 @@ public final class WorldRuntime implements AutoCloseable {
                         if (authorization == null || !BoardModel
                                 .verifiesManagerAppointmentAuthorization(outcome.state(),
                                         authorization, request)) {
-                            return new EngineeringBoardApplied(run, governance, roles, false,
+                            return new EngineeringBoardApplied(run, roles, false,
                                     "AUTHORIZATION_INVALID", List.of());
                         }
                         RoleAccess.State access = roles.access();
@@ -11310,22 +13131,11 @@ public final class WorldRuntime implements AutoCloseable {
                     companyWaivers);
             default -> throw new IllegalArgumentException("未知董事动作：" + p.action());
         }
-        if (charterCompany) {
-            // 章程公司：董事会状态写回唯一治理子集，工程子集与制造账都不复制。
-            // 实施动作按既有治理回报种类记账，满足既有校验（已实施会议必须有成功实施回报）。
-            String kind = "IMPLEMENT".equals(p.action())
-                    ? PendingTask.GOVERNANCE_IMPLEMENT_V1 : PendingTask.ENGINEERING_BOARD_V1;
-            BoardRun nextGovernance = boardRun.withBoard(outcome.state())
-                    .withReport(new BoardRun.Report(taskId, p.commandId(), kind, p.meetingId(),
-                            outcome.accepted(), outcome.reason(), now, nextPosition));
-            return new EngineeringBoardApplied(run, nextGovernance, nextRoles,
-                    outcome.accepted(), outcome.reason(), children);
-        }
         EngineeringRun next = run.withBoardAndWaivers(p.companyPartyId(),
                 boardRun.withBoard(outcome.state()),
                 mergeWaivers(run, p.companyPartyId(), companyWaivers));
-        return new EngineeringBoardApplied(next, null, nextRoles, outcome.accepted(),
-                outcome.reason(), children);
+        return new EngineeringBoardApplied(next, nextRoles, outcome.accepted(), outcome.reason(),
+                children);
     }
 
     /** 用某公司的新豁免决议替换旧的同公司记录，保留其它公司记录。 */
@@ -12110,7 +13920,7 @@ public final class WorldRuntime implements AutoCloseable {
             long now, boolean accepted, String reason, List<PendingTask> children)
             throws IOException {
         finishEngineeringTask(task, commandId, company, run, state.governance(), roles, accounts,
-                state.information(), now, accepted, reason, children);
+                state.information(), now, accepted, reason, children, null);
     }
 
     private void finishEngineeringTask(PendingTask task, String commandId, String company,
@@ -12118,13 +13928,22 @@ public final class WorldRuntime implements AutoCloseable {
             InformationRun information, long now, boolean accepted, String reason,
             List<PendingTask> children) throws IOException {
         finishEngineeringTask(task, commandId, company, run, state.governance(), roles, accounts,
-                information, now, accepted, reason, children);
+                information, now, accepted, reason, children, null);
     }
 
     private void finishEngineeringTask(PendingTask task, String commandId, String company,
             EngineeringRun run, BoardRun governance, RoleRun roles,
             Map<String, CashLedger.CashAccount> accounts, InformationRun information, long now,
             boolean accepted, String reason, List<PendingTask> children) throws IOException {
+        finishEngineeringTask(task, commandId, company, run, governance, roles, accounts,
+                information, now, accepted, reason, children, null);
+    }
+
+    private void finishEngineeringTask(PendingTask task, String commandId, String company,
+            EngineeringRun run, BoardRun governance, RoleRun roles,
+            Map<String, CashLedger.CashAccount> accounts, InformationRun information, long now,
+            boolean accepted, String reason, List<PendingTask> children,
+            edu.cufe.auction.world.bank.FundState funds) throws IOException {
         EngineeringRun.Report report = new EngineeringRun.Report(task.taskId(), commandId,
                 task.kind(), company, accepted, reason, now, state.position() + 1);
         run = run.withReport(report);
@@ -12143,15 +13962,287 @@ public final class WorldRuntime implements AutoCloseable {
         }
         events.add(new WorldEvent("engineering-report:" + task.taskId(),
                 "ENGINEERING_REPORT_V1", mapper.writeValueAsString(report)));
-        WorldState candidate = next(now, task.phase().name(), accounts, pending,
+        // 显式资金动作：把候选资金三态与工程状态放进同一条 WorldCommit（不新建槽位）。
+        BankRun bankCandidate = null;
+        if (funds != null && state.bank() != null) {
+            // 用上一帧账户解码只取冻结档案；候选三态本身来自 funds（当前帧重算后的结果）。
+            BankRun.Decoded decoded = state.bank().decode(state.accounts());
+            bankCandidate = BankRun.of(decoded.config(), funds.bank(), funds.book());
+        }
+        WorldState candidate = bankCandidate == null
+                ? next(now, task.phase().name(), accounts, pending,
                 state.delivered(), used, state.commandContents(), state.commandOutcomes(),
                 state.securities(), state.exchange(), state.manufacturing(),
                 governance == null ? state.governance() : governance,
                 roles == null ? state.roles() : roles, information, state.trading(),
                 state.decisions(), state.dividends(), state.beliefs(), state.media(),
-                state.interviews(), state.evidence(), state.social(), run);
+                state.interviews(), state.evidence(), state.social(), run)
+                : next(now, task.phase().name(), accounts, pending,
+                state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), state.manufacturing(),
+                governance == null ? state.governance() : governance,
+                roles == null ? state.roles() : roles, information, state.trading(),
+                state.decisions(), state.dividends(), state.beliefs(), state.media(),
+                state.interviews(), state.evidence(), state.social(), run, bankCandidate,
+                state.bankActions(), state.companyGovernance(), state.groups());
         commitAndApply("task:" + task.taskId(), task.payload(),
                 accepted ? "ACCEPTED" : reason, events, candidate);
+    }
+
+    /** 单个董事会动作的纯结果：新董事会状态、任职与子任务。 */
+    private record BoardCoreApplied(BoardModel.State board, RoleRun roles, boolean accepted,
+                                    String reason, List<PendingTask> children) {
+    }
+
+    /** 额外公司董事会候选结果：容器、任职与子任务。 */
+    private record CompanyBoardApplied(CompanyGovernanceRun container, RoleRun roles,
+                                       boolean accepted, String reason,
+                                       List<PendingTask> children) {
+    }
+
+    /**
+     * 额外公司董事动作：只调用同一 {@link BoardModel} 纯函数，账与证券一概不动。
+     *
+     * <p>本轮只接任免/会议链路（召集、到会、材料、提案、表决、实施、自动开关会）；
+     * 预算与债务豁免仍走工程/制造原流程，额外公司显式拒绝，不伪造业务。</p>
+     */
+    private CompanyBoardApplied applyCompanyBoard(CompanyGovernanceRun container, RoleRun roles,
+            InformationRun information, long now, EngineeringBoardPayload p) throws IOException {
+        BoardRun boardRun = container == null ? null : container.boardOf(p.companyPartyId());
+        BoardCoreApplied core = applyBoardCore(boardRun, roles, information, now, p);
+        if (core.board() == null) {
+            return new CompanyBoardApplied(container, core.roles(), core.accepted(), core.reason(),
+                    core.children());
+        }
+        CompanyGovernanceRun next = container.withBoard(p.companyPartyId(),
+                boardRun.withBoard(core.board()));
+        return new CompanyBoardApplied(next, core.roles(), core.accepted(), core.reason(),
+                core.children());
+    }
+
+    /** 章程公司（制造业治理单例）的董事动作：同一纯核，写回唯一 BoardRun。 */
+    private BoardCoreApplied applyGovernanceBoard(BoardRun governance, RoleRun roles,
+            InformationRun information, long now, EngineeringBoardPayload p) throws IOException {
+        return applyBoardCore(governance, roles, information, now, p);
+    }
+
+    private BoardCoreApplied applyBoardCore(BoardRun boardRun, RoleRun roles,
+            InformationRun information, long now, EngineeringBoardPayload p) throws IOException {
+        if (boardRun == null) {
+            return new BoardCoreApplied(null, roles, false, "UNKNOWN_COMPANY", List.of());
+        }
+        BoardModel.State board = boardRun.board();
+        if (p.personPartyId() != null && !p.personPartyId().isBlank()) {
+            String actual = board.charter().seatOf(p.personPartyId());
+            if (actual == null || !actual.equals(p.seatId())) {
+                return new BoardCoreApplied(null, roles, false, REASON_NOT_AUTHORIZED, List.of());
+            }
+        }
+        if (!board.charter().companyPartyId().equals(p.companyPartyId())) {
+            return new BoardCoreApplied(null, roles, false, "BOARD_COMPANY_MISMATCH", List.of());
+        }
+        BoardModel.Outcome outcome;
+        List<PendingTask> children = new ArrayList<>();
+        RoleRun nextRoles = roles;
+        switch (p.action()) {
+            case "CONVENE", "CONVENE_APPOINTMENT" -> {
+                BoardModel.Topic topic = "CONVENE_APPOINTMENT".equals(p.action())
+                        || p.appointment() != null
+                        ? BoardModel.Topic.MANAGER_APPOINTMENT : BoardModel.Topic.BUDGET;
+                outcome = BoardModel.convene(board, now, new BoardModel.MeetingRequest(
+                        p.meetingId(), topic, p.seatId(), p.materialDeadline(), p.opensAt(),
+                        p.closesAt(), p.attendeeSeatIds(), p.recusedSeatIds()));
+                if (outcome.accepted()) {
+                    children.add(engineeringBoardChild(p.companyPartyId(), p.meetingId(), "OPEN",
+                            p.opensAt(), "board-open:" + p.companyPartyId() + ":"));
+                }
+            }
+            case "ATTEND", "ATTEND_RECUSED" -> outcome = BoardModel.attend(board, now,
+                    p.meetingId(), p.seatId(), "ATTEND_RECUSED".equals(p.action()));
+            case "MATERIAL" -> {
+                BoardModel.Meeting meeting = board.meeting(p.meetingId());
+                if (meeting == null) {
+                    outcome = new BoardModel.Outcome(false, BoardModel.REASON_UNKNOWN_MEETING, board);
+                } else if (!meeting.attendeeSeatIds().contains(p.seatId())
+                        || meeting.recusedSeatIds().contains(p.seatId())) {
+                    outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT, board);
+                } else {
+                    outcome = BoardModel.addMaterial(board, now, p.meetingId(),
+                            new BoardModel.MaterialRef(p.materialId(), p.sourceRef(), p.version(),
+                                    now));
+                }
+            }
+            case "PROPOSE_APPOINTMENT" -> {
+                BoardModel.Meeting meeting = board.meeting(p.meetingId());
+                if (meeting == null || !meeting.attendeeSeatIds().contains(p.seatId())
+                        || meeting.recusedSeatIds().contains(p.seatId())) {
+                    outcome = new BoardModel.Outcome(false, meeting == null
+                            ? BoardModel.REASON_UNKNOWN_MEETING : REASON_NOT_ELIGIBLE_SEAT, board);
+                } else if (p.appointment() == null) {
+                    outcome = new BoardModel.Outcome(false, BoardModel.REASON_INVALID_ARGUMENT, board);
+                } else {
+                    outcome = BoardModel.proposeManagerAppointment(board, now, p.meetingId(),
+                            p.seatId(), p.recusedSeatIds(), p.appointment());
+                }
+            }
+            case "VOTE" -> {
+                BoardModel.Meeting meeting = board.meeting(p.meetingId());
+                if (meeting == null) {
+                    outcome = new BoardModel.Outcome(false, BoardModel.REASON_UNKNOWN_MEETING, board);
+                } else if (!materialsRead(information, board.charter(), p.seatId(), meeting, now)) {
+                    outcome = new BoardModel.Outcome(false, "MATERIAL_NOT_READ", board);
+                } else {
+                    outcome = BoardModel.castVote(board, now, p.meetingId(), p.seatId(),
+                            BoardModel.Vote.valueOf(p.vote()));
+                }
+            }
+            case "IMPLEMENT" -> {
+                BoardModel.Meeting meeting = board.meeting(p.meetingId());
+                if (meeting == null) {
+                    outcome = new BoardModel.Outcome(false, BoardModel.REASON_UNKNOWN_MEETING, board);
+                } else if (meeting.topic() == BoardModel.Topic.MANAGER_APPOINTMENT) {
+                    BoardModel.AppointmentRequest request = meeting.appointmentProposal() == null
+                            ? null : meeting.appointmentProposal().request();
+                    outcome = BoardModel.executeAdoptedManagerAppointment(board, now, p.meetingId());
+                    if (outcome.accepted() && request != null) {
+                        BoardModel.Meeting resolved = outcome.state().meeting(p.meetingId());
+                        String authorization = resolved == null
+                                || resolved.appointmentResolution() == null ? null
+                                : resolved.appointmentResolution().authorizationRef();
+                        if (authorization == null || !BoardModel
+                                .verifiesManagerAppointmentAuthorization(outcome.state(),
+                                        authorization, request)) {
+                            return new BoardCoreApplied(null, roles, false,
+                                    "AUTHORIZATION_INVALID", List.of());
+                        }
+                        RoleAccess.State access = roles.access();
+                        if (request.action() == BoardModel.AppointmentAction.APPOINT) {
+                            access = RoleAccess.appoint(registry, access, request.appointmentId(),
+                                    request.personPartyId(), request.companyPartyId(),
+                                    request.role(), request.effectiveAt(), request.endsAt(), now);
+                        } else {
+                            access = RoleAccess.revoke(access, request.appointmentId(), now);
+                        }
+                        nextRoles = new RoleRun(access, roles.reports());
+                    }
+                } else {
+                    // 预算/豁免/经营审查在额外公司未接：显式拒绝，不伪造通过。
+                    return new BoardCoreApplied(null, nextRoles, false,
+                            "COMPANY_GOVERNANCE_TOPIC_NOT_SUPPORTED", List.of());
+                }
+            }
+            case "OPEN" -> {
+                outcome = BoardModel.freezeMaterials(board, now, p.meetingId());
+                if (outcome.accepted()) {
+                    BoardModel.Meeting opened = outcome.state().meeting(p.meetingId());
+                    boolean hasProposal = switch (opened.topic()) {
+                        case BUDGET -> !opened.proposedLines().isEmpty();
+                        case MANAGER_APPOINTMENT -> opened.appointmentProposal() != null;
+                        default -> false;
+                    };
+                    if (opened.topic() != BoardModel.Topic.OPERATING_REVIEW && hasProposal) {
+                        outcome = BoardModel.startVoting(outcome.state(), now, p.meetingId(),
+                                List.of());
+                    }
+                }
+                BoardModel.Meeting current = outcome.state().meeting(p.meetingId());
+                if (current != null && (current.status() == BoardModel.MeetingStatus.MATERIALS_FROZEN
+                        || current.status() == BoardModel.MeetingStatus.VOTING)) {
+                    children.add(engineeringBoardChild(p.companyPartyId(), p.meetingId(), "CLOSE",
+                            current.closesAt(), "board-close:" + p.companyPartyId() + ":"));
+                }
+            }
+            case "CLOSE" -> outcome = BoardModel.closeVoting(board, now, p.meetingId(), List.of());
+            case "PROPOSE_BUDGET", "PROPOSE_WAIVER" ->
+                    throw new IllegalArgumentException("额外公司本轮未接预算/豁免提案：" + p.action());
+            default -> throw new IllegalArgumentException("未知董事动作：" + p.action());
+        }
+        return new BoardCoreApplied(outcome.state(), nextRoles, outcome.accepted(),
+                outcome.reason(), children);
+    }
+
+    /** 额外公司董事帧收尾：工程回报留痕 + 容器董事会 + 真实 RoleAccess 同批。 */
+    private void finishCompanyBoardTask(PendingTask task, String commandId,
+            CompanyGovernanceRun container, RoleRun roles, InformationRun information, long now,
+            boolean accepted, String reason, List<PendingTask> children) throws IOException {
+        EngineeringRun.Report report = new EngineeringRun.Report(task.taskId(), commandId,
+                task.kind(), "north", accepted, reason, now, state.position() + 1);
+        EngineeringRun run = state.engineering();
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        for (PendingTask child : children) {
+            pending.add(child);
+            used.add(child.taskId());
+            events.add(new WorldEvent("task-scheduled:" + child.taskId(), "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(child)));
+        }
+        events.add(new WorldEvent("company-board-report:" + task.taskId(),
+                "COMPANY_BOARD_REPORT_V1", mapper.writeValueAsString(orderedPayload(
+                        "taskId", task.taskId(), "company", "north",
+                        "accepted", accepted, "reason", reason))));
+        WorldState candidate = next(now, task.phase().name(), state.accounts(), pending,
+                state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), state.manufacturing(), state.governance(),
+                roles == null ? state.roles() : roles,
+                information == null ? state.information() : information,
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(),
+                state.media(), state.interviews(), state.evidence(), state.social(),
+                run == null ? state.engineering() : run, state.bank(), state.bankActions(),
+                container, state.groups());
+        commitAndApply("task:" + task.taskId(), task.payload(),
+                accepted ? "ACCEPTED" : reason, events, candidate);
+    }
+
+    /** 章程公司董事帧收尾：唯一治理单例 + 真实 RoleAccess 同批，工程回报留痕。 */
+    private void finishGovernanceBoardTask(PendingTask task, String commandId,
+            BoardCoreApplied core, InformationRun information, long now) throws IOException {
+        BoardRun current = state.governance();
+        BoardRun nextBoard = current.withBoard(core.board());
+        EngineeringRun.Report report = new EngineeringRun.Report(task.taskId(), commandId,
+                task.kind(), nextBoard.board().charter().companyPartyId(), core.accepted(),
+                core.reason(), now, state.position() + 1);
+        // 章程公司的董事动作同样是工程批次：本帧必须留下可重演的工程回报与对应事件，
+        // 否则恢复期会把“由真实董事任务产生的任职/治理变化”当成无因改写而拒绝。
+        EngineeringRun run = state.engineering() == null ? null
+                : state.engineering().withReport(report);
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        for (PendingTask child : core.children()) {
+            pending.add(child);
+            used.add(child.taskId());
+            events.add(new WorldEvent("task-scheduled:" + child.taskId(), "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(child)));
+        }
+        events.add(new WorldEvent("company-board-report:" + task.taskId(),
+                "COMPANY_BOARD_REPORT_V1", mapper.writeValueAsString(orderedPayload(
+                        "taskId", task.taskId(),
+                        "company", nextBoard.board().charter().companyPartyId(),
+                        "accepted", core.accepted(), "reason", core.reason()))));
+        if (run != null) {
+            events.add(new WorldEvent("engineering-report:" + task.taskId(),
+                    "ENGINEERING_REPORT_V1", mapper.writeValueAsString(report)));
+        }
+        WorldState candidate = next(now, task.phase().name(), state.accounts(), pending,
+                state.delivered(), used, state.commandContents(), state.commandOutcomes(),
+                state.securities(), state.exchange(), state.manufacturing(), nextBoard,
+                core.roles() == null ? state.roles() : core.roles(),
+                information == null ? state.information() : information,
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(),
+                state.media(), state.interviews(), state.evidence(), state.social(),
+                run == null ? state.engineering() : run, state.bank(), state.bankActions(),
+                state.companyGovernance(), state.groups());
+        commitAndApply("task:" + task.taskId(), task.payload(),
+                core.accepted() ? "ACCEPTED" : core.reason(), events, candidate);
     }
 
     /** 测试只读：是否存在某公司当前有效的经理任职。 */
@@ -12271,6 +14362,9 @@ public final class WorldRuntime implements AutoCloseable {
         AppointmentPayload payload = mapper.readValue(task.payload(), AppointmentPayload.class);
         long now = task.dueTimeMillis();
         RoleRun run = before.roles();
+        if (run == null) {
+            throw new IOException("该档案没有任职子集：" + task.kind());
+        }
         RoleAccess.State access = run.access();
         boolean accepted;
         String reason;
@@ -12329,7 +14423,8 @@ public final class WorldRuntime implements AutoCloseable {
                 before.manufacturing(), before.governance(), run.withAccess(access).withReport(entry),
                 before.information(), before.trading(), before.decisions(), before.dividends(),
                 before.beliefs(), before.media(), before.interviews(), before.evidence(),
-                before.social(), before.engineering(), before.groups());
+                before.social(), before.engineering(), before.bank(), before.bankActions(),
+                before.companyGovernance(), before.groups());
         return new RoleTransition(after, entry.reason(), List.copyOf(events));
     }
 
@@ -12778,6 +14873,130 @@ public final class WorldRuntime implements AutoCloseable {
         return account.cash();
     }
 
+    /**
+     * 某个资金桶的可用额：现金看现金账户、存款看银行三态，两者都扣该桶自己的买单冻结。
+     *
+     * <p>这是订单受理与付款共用的查询口径；桶本身不成立（未登记、托管桶）时抛
+     * {@link IllegalArgumentException}，不返回零冒充“没有钱”。</p>
+     *
+     * @param bucket   资金桶
+     * @param accounts 现金账户
+     * @return 可用额
+     */
+    private BigDecimal availableIn(edu.cufe.auction.world.bank.Fund bucket,
+                                   Map<String, CashLedger.CashAccount> accounts) {
+        Objects.requireNonNull(bucket, "资金桶");
+        WorldExchange.State exchange = state.exchange();
+        if (exchange == null) {
+            throw new IllegalStateException("当前运行没有撮合档案：" + manifest.rulesVersion());
+        }
+        edu.cufe.auction.world.bank.CustodyBook custody;
+        try {
+            custody = custodyOf(state);
+        } catch (IOException invalid) {
+            throw new IllegalStateException("托管三态无法解码：" + invalid.getMessage(), invalid);
+        }
+        return WorldExchange.freeIn(exchange, accounts, bankStateOrNull(accounts), bucket, custody);
+    }
+
+    /** 当前银行三态；没有银行档案返回 null。 */
+    private BankState bankStateOrNull(Map<String, CashLedger.CashAccount> accounts) {
+        if (state.bank() == null) {
+            return null;
+        }
+        try {
+            return state.bank().decode(accounts).state();
+        } catch (RuntimeException invalid) {
+            throw new IllegalStateException("银行三态无法解码：" + invalid.getMessage(), invalid);
+        }
+    }
+
+    /**
+     * 订单资金桶的入口校验：只允许 CASH（必须是本账户）与同一 owner 的 DEPOSIT。
+     *
+     * <p>这里只做“这个桶是否真属于该账户”的静态判断；金额级可用额在到期执行时按当时状态重算。
+     * 没有 {@code funding} 模块的档案一律不接受显式标记，避免旧档被写入新形状。</p>
+     *
+     * @param accountId    下单账户
+     * @param ownerId      账户真实财产主体
+     * @param side         买卖方向
+     * @param fundingToken 资金桶规范文本；null 表示旧口径
+     */
+    private void requireFundingToken(String accountId, String ownerId, Side side,
+                                     String fundingToken) {
+        if (fundingToken == null) {
+            return;
+        }
+        if (!manifest.hasFunding()) {
+            throw new IllegalArgumentException("当前规则档案不接受显式资金桶：" + fundingToken);
+        }
+        edu.cufe.auction.world.bank.Fund bucket;
+        try {
+            bucket = edu.cufe.auction.world.bank.Fund.parse(fundingToken);
+        } catch (RuntimeException invalid) {
+            throw new IllegalArgumentException("资金桶标记不是规范文本：" + fundingToken, invalid);
+        }
+        if (bucket.kind() == edu.cufe.auction.world.bank.Fund.Kind.CUSTODY) {
+            if (!manifest.hasCustodyFill()) {
+                throw new IllegalArgumentException("托管桶不能作为订单资金腿（B7b）：" + fundingToken);
+            }
+            edu.cufe.auction.world.bank.Fund.Custody beneficial =
+                    (edu.cufe.auction.world.bank.Fund.Custody) bucket;
+            BankState bank = bankStateOrNull(state.accounts());
+            if (bank == null) {
+                throw new IllegalArgumentException("没有银行档案，不能用托管桶结算：" + fundingToken);
+            }
+            edu.cufe.auction.world.bank.BankingProfile profile = bank.chart().profile();
+            edu.cufe.auction.world.bank.BankingProfile.CustodyRef ref =
+                    profile.custodians().get(beneficial.custodianKey());
+            if (ref == null) {
+                throw new IllegalArgumentException("托管桶引用了未登记托管人："
+                        + beneficial.custodianKey());
+            }
+            edu.cufe.auction.world.bank.BankingProfile.PartyRef client =
+                    profile.parties().get(beneficial.clientKey());
+            if (client == null) {
+                throw new IllegalArgumentException("托管桶引用了未登记客户："
+                        + beneficial.clientKey());
+            }
+            if (client.ownerId().equals(ref.ownerId())) {
+                throw new IllegalArgumentException("托管人不能用自己的池分享受益权："
+                        + fundingToken);
+            }
+            if (!client.ownerId().equals(ownerId)) {
+                throw new IllegalArgumentException("托管桶不属于该账户的真实财产主体："
+                        + fundingToken);
+            }
+            return;
+        }
+        if (bucket instanceof edu.cufe.auction.world.bank.Fund.Cash cash) {
+            if (!cash.accountId().equals(accountId)) {
+                throw new IllegalArgumentException("现金资金腿必须是本账户：" + fundingToken);
+            }
+            return;
+        }
+        edu.cufe.auction.world.bank.Fund.Deposit deposit =
+                (edu.cufe.auction.world.bank.Fund.Deposit) bucket;
+        BankState bank = bankStateOrNull(state.accounts());
+        if (bank == null) {
+            throw new IllegalArgumentException("没有银行档案，不能用存款桶结算：" + fundingToken);
+        }
+        BankChart chart = bank.chart();
+        if (!chart.isBank(deposit.bankKey())) {
+            throw new IllegalArgumentException("资金桶引用了未登记银行：" + deposit.bankKey());
+        }
+        if (!chart.hasParty(deposit.holderKey()) && !chart.isCustodian(deposit.holderKey())) {
+            throw new IllegalArgumentException("资金桶引用了未登记持有人：" + deposit.holderKey());
+        }
+        if (manifest.hasCustodyFill() && chart.isCustodian(deposit.holderKey())) {
+            throw new IllegalArgumentException("托管池存款桶是客户的钱，不能作为订单资金桶："
+                    + fundingToken);
+        }
+        if (!chart.ownerIdOf(deposit.holderKey()).equals(ownerId)) {
+            throw new IllegalArgumentException("资金桶不属于该账户的真实财产主体：" + fundingToken);
+        }
+    }
+
     private BigDecimal customerFree(ManufacturingModel.State ledger,
                                     Map<String, CashLedger.CashAccount> accounts) {
         return availableCash(ledger.opening().customerAccountId(), accounts);
@@ -13000,275 +15219,273 @@ public final class WorldRuntime implements AutoCloseable {
         validateMedia(candidate, previous, commit);
         validateSocial(candidate, previous, commit);
         validateEngineering(candidate, previous, commit);
-        validateGroups(candidate, previous, commit);
         validateInterviews(candidate, previous, commit);
+        // 时钟帧放在领域检查之后：领域错误先给出具体原因，时钟口径不会掩盖它。
         validateClockFrame(candidate, commit, previous);
+        validateBank(candidate, previous, commit);
+        validateCompanyGovernance(candidate, previous, commit);
+        validateGroups(candidate, previous, commit);
         requireCommandOrigin(candidate, commit, previous);
     }
 
     /**
-     * 命令来源白名单：每帧必须能回到既有入口产生的命令标识。
+     * 银行/托管三态校验：模块与状态成对、运行/档案/profile 绑定、现金后备、银行不变量与托管组合
+     * 校验；没有银行人物动作的档案除开局外任何批次都不得改变银行三态。
      *
-     * <p>只按前缀识别会让“未知命令换成某个已知前缀”混进通用校验，因此这里逐类核对动态来源：
-     * {@code task:} 必须对应上一帧真实待办且内容即该待办原文；{@code cmd:} 必须是本批新增的
-     * 命令记录并伴随真实排程事件；{@code roleT:} 必须绑定本批新增的人物命令；分红任务批次必须
-     * 绑定上一帧分红待办；决定批次只接受明确的内建会话命令或上一帧已存在的动作/尝试身份。
-     * 其余一律拒绝。未知命令即使完全不改状态也不能静默持久化。</p>
-     *
-     * <p>本检查证明“帧来自既有入口且来源键真实存在”，各域完整逐帧重演仍由现有校验承担；
-     * 它不构成外部签名，把原命令与全部派生状态整体改写成另一条合法命令不在可鉴别范围内。</p>
+     * <p><b>不按命令标识前缀豁免</b>：命令标识由调用方自选，前缀既不是历史真实性也不是授权。
+     * 银行人物动作档案（{@code banking-roles-experiment-v1}）只在三条路径上放行——排程 BEGIN 屏障、
+     * BEGIN 完成、完成帧——且每条都必须由“上一帧 + 原任务/原命令”纯重算出完全相同的状态与事件；
+     * 其它任何批次仍要求银行三态与贷款台账逐字段不变。</p>
      */
-    private void requireCommandOrigin(WorldState candidate, WorldCommit commit, WorldState previous)
+    private void validateBank(WorldState candidate, WorldState previous, WorldCommit commit)
             throws IOException {
-        String id = commit.commandId();
+        if (!manifest.hasBank()) {
+            if (candidate.bank() != null) {
+                throw new IOException("旧档案不得包含银行状态：" + commit.commandId());
+            }
+            if (candidate.bankActions() != null) {
+                throw new IOException("旧档案不得包含贷款台账：" + commit.commandId());
+            }
+            return;
+        }
+        BankRun bank = candidate.bank();
+        if (bank == null) {
+            throw new IOException("银行档案缺少银行状态");
+        }
+        try {
+            bank.validate(candidate.accounts());
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("银行三态不成立：" + invalid.getMessage(), invalid);
+        }
+        if (!bank.runId().equals(bankRunId())) {
+            throw new IOException("银行状态运行标识不匹配");
+        }
+        if (!bank.configFingerprint().equals(bankOpening.config().fingerprint())
+                || !bank.profileFingerprint().equals(bankOpening.profileFingerprint())) {
+            throw new IOException("银行状态档案/profile 与开局冻结申请不一致");
+        }
         if (previous == null) {
-            if (!OPEN_COMMAND.equals(id)) {
-                throw new IOException("开局批次命令不属于开局入口：" + id);
+            if (candidate.bankActions() != null) {
+                throw new IOException("开局批次不得预置贷款台账");
             }
             return;
         }
-        if (id.startsWith("clock:") || id.startsWith("barrier:")) {
-            // 时钟/屏障由 validateClockFrame 精确重算标识、内容、事件与纯派生状态。
+        if (manifest.hasFunding()) {
+            validateFundsBankFrame(candidate, previous, commit);
             return;
         }
-        if (id.startsWith("task:")) {
-            PendingTask task = pendingOf(previous, id.substring("task:".length()));
-            if (task == null || !task.payload().equals(commit.commandContent())) {
-                throw new IOException("任务批次必须对应上一帧真实待办：" + id);
+        if (!manifest.hasBankRoles()) {
+            // 原 B5 口径逐字不变：没有银行人物动作的档案，任何批次都不得改变银行三态或台账。
+            if (candidate.bankActions() != null) {
+                throw new IOException("该档案不得包含贷款台账：" + commit.commandId());
             }
-            requireDerivedTaskFrame(candidate, commit, previous, task);
-            return;
-        }
-        if (id.startsWith("cmd:")) {
-            String command = id.substring("cmd:".length());
-            boolean recorded = !command.isEmpty()
-                    && !previous.commandContents().containsKey(command)
-                    && commit.commandContent().equals(candidate.commandContents().get(command))
-                    && commit.result().equals(candidate.commandOutcomes().get(command));
-            boolean scheduled = commit.events().stream()
-                    .anyMatch(event -> "TASK_SCHEDULED_V1".equals(event.type()));
-            if (!recorded || !scheduled) {
-                throw new IOException("命令批次必须绑定本批新增命令与真实排程：" + id);
+            if (!bank.sameAs(previous.bank())) {
+                throw new IOException("非开局批次不得改变银行三态：" + commit.commandId());
             }
-            requireNonExecutionFrame(candidate, commit, previous, "cmd");
             return;
         }
-        if (id.startsWith("roleT:")) {
-            requireRoleCommandOrigin(candidate, commit, previous, id);
-            requireNonExecutionFrame(candidate, commit, previous, "roleT");
-            return;
-        }
-        if (id.startsWith("div-batch:")) {
-            PendingTask task = pendingOf(previous, id.substring("div-batch:".length()));
-            if (task == null || !isDividendTaskKind(task.kind())
-                    || !task.payload().equals(commit.commandContent())) {
-                throw new IOException("分红批次必须对应上一帧分红待办：" + id);
+        validateBankActionFrame(candidate, previous, commit);
+    }
+
+    /** B6 可逐帧重放的任务种类：任职、四岗阅读、回报、资料动作与成交/银行动作。 */
+    private static boolean fundsReplayableTask(String kind) {
+        return PendingTask.ROLE_APPOINT_V1.equals(kind)
+                || PendingTask.ROLE_REVOKE_V1.equals(kind)
+                || PendingTask.ROLE_TRADING_READ_V1.equals(kind)
+                || PendingTask.ROLE_TRADING_UNREAD_V1.equals(kind)
+                || PendingTask.TRANSFER_NOTICE_V1.equals(kind)
+                || PendingTask.INFORMATION_PUBLISH_V1.equals(kind)
+                || PendingTask.INFORMATION_PUBLISH_VERSION_V1.equals(kind)
+                || PendingTask.INFORMATION_START_READ_V1.equals(kind)
+                || PendingTask.INFORMATION_CANCEL_READ_V1.equals(kind)
+                || PendingTask.INFORMATION_COMPLETE_READ_V1.equals(kind)
+                || PendingTask.EXCHANGE_ORDER_V1.equals(kind)
+                || PendingTask.EXCHANGE_CANCEL_V1.equals(kind)
+                || PendingTask.EXCHANGE_CLOSE_V1.equals(kind)
+                || PendingTask.BANK_ACTION_V1.equals(kind);
+    }
+
+    /**
+     * 额外公司治理容器校验：模块与状态成对；除该公司的董事完成帧外逐字段不变；
+     * 董事完成帧必须能由上一帧 + 原待办用同一 BoardModel 重算，并把真实任职写回 RoleAccess。
+     *
+     * @param candidate 候选帧
+     * @param previous  上一帧
+     * @param commit    本批提交
+     * @throws IOException 容器被非法改变或无法重算
+     */
+    private void validateCompanyGovernance(WorldState candidate, WorldState previous,
+            WorldCommit commit) throws IOException {
+        CompanyGovernanceRun extra = candidate.companyGovernance();
+        if (!manifest.hasCompanyGovernance()) {
+            if (extra != null) {
+                throw new IOException("未启用额外公司治理的档案不得包含该容器："
+                        + commit.commandId());
             }
-            requireDerivedTaskBatch(candidate, commit, previous, task);
             return;
         }
-        for (PendingTask task : previous.pending()) {
-            if (isDividendTaskKind(task.kind()) && id.equals(commandIdOf(task.payload()))
-                    && task.payload().equals(commit.commandContent())) {
-                requireDerivedTaskBatch(candidate, commit, previous, task);
+        if (extra == null) {
+            throw new IOException("组合档缺少额外公司治理容器");
+        }
+        if (previous == null) {
+            return;
+        }
+        CompanyGovernanceRun before = previous.companyGovernance();
+        if (before == null || !before.companies().equals(extra.companies())) {
+            throw new IOException("额外公司治理公司集合被改变：" + commit.commandId());
+        }
+        String id = commit.commandId();
+        PendingTask task = id.startsWith("task:") ? pendingOf(previous, id.substring(5)) : null;
+        if (task != null && (PendingTask.PERIOD_CAPTURE_V1.equals(task.kind())
+                || PendingTask.PERIOD_CLOSE_V1.equals(task.kind())
+                || PendingTask.PERIOD_DISCLOSURE_DEADLINE_V1.equals(task.kind())
+                || PendingTask.ENGINEERING_PERIODIC_V1.equals(task.kind()))) {
+            // 周期采样/关期/披露截止与周期人物动作：容器必须等于「上一帧 + 原待办」的整帧重演，
+            // 由 requireCommandOrigin → requireDerivedTaskFrame 用同一份 executeTask 证明，
+            // 这里不另立字段白名单。
+            return;
+        }
+        if (task != null && PendingTask.ENGINEERING_BOARD_V1.equals(task.kind())) {
+            EngineeringBoardPayload payload = mapper.readValue(task.payload(),
+                    EngineeringBoardPayload.class);
+            if (extra.has(payload.companyPartyId())) {
+                CompanyBoardApplied applied = applyCompanyBoard(before, previous.roles(),
+                        previous.information(), task.dueTimeMillis(), payload);
+                if (!applied.container().equals(extra)) {
+                    throw new IOException("额外公司董事会无法从原待办重算："
+                            + payload.companyPartyId());
+                }
+                if (applied.roles() != null && !applied.roles().equals(candidate.roles())) {
+                    throw new IOException("额外公司任免任职与重算不一致："
+                            + payload.companyPartyId());
+                }
+                return;
+            }
+            if (previous.governance() != null && payload.companyPartyId()
+                    .equals(previous.governance().board().charter().companyPartyId())) {
+                BoardCoreApplied core = applyGovernanceBoard(previous.governance(),
+                        previous.roles(), previous.information(), task.dueTimeMillis(), payload);
+                if (!previous.governance().withBoard(core.board())
+                        .equals(candidate.governance())) {
+                    throw new IOException("章程公司董事会无法从原待办重算："
+                            + payload.companyPartyId());
+                }
+                if (core.roles() != null && !core.roles().equals(candidate.roles())) {
+                    throw new IOException("章程公司任免任职与重算不一致："
+                            + payload.companyPartyId());
+                }
+                if (!before.equals(extra)) {
+                    throw new IOException("章程公司董事帧不得改变额外公司治理容器："
+                            + commit.commandId());
+                }
                 return;
             }
         }
-        if (id.startsWith("dec-")) {
-            requireDecisionOrigin(candidate, previous, commit, id);
-            requireNonExecutionFrame(candidate, commit, previous, "dec");
-            return;
-        }
-        throw new IOException("提交命令不属于任何既有入口：" + id);
-    }
-
-    /** roleT 命令批次：必须绑定本批新增的人物命令原文，人物取自命令标识的长度前缀。 */
-    private void requireRoleCommandOrigin(WorldState candidate, WorldCommit commit,
-                                          WorldState previous, String id) throws IOException {
-        String person = roleCommandPerson(id);
-        boolean recorded = person != null
-                && !previous.commandContents().containsKey(id)
-                && commit.commandContent().equals(candidate.commandContents().get(id))
-                && commit.result().equals(candidate.commandOutcomes().get(id));
-        RoleActionPayload payload = null;
-        if (recorded) {
-            try {
-                payload = mapper.readValue(commit.commandContent(), RoleActionPayload.class);
-            } catch (IOException invalid) {
-                payload = null;
-            }
-        }
-        if (payload == null || !id.equals(payload.commandId())
-                || !person.equals(payload.personPartyId())) {
-            throw new IOException("角色命令批次必须绑定本批新增的人物命令：" + id);
-        }
-    }
-
-    /** 决定批次：内建会话/回执命令要求本批新增记录；失败/超时批次只要求上一帧已存在尝试身份。 */
-    private void requireDecisionOrigin(WorldState candidate, WorldState previous, WorldCommit commit,
-                                       String id) throws IOException {
-        // 失败与超时批次沿用既有写法：只追加审计与决定状态，不向命令表补记录。
-        if (id.startsWith("dec-fail:")) {
-            String attemptId = id.substring("dec-fail:".length());
-            if (!hasAttempt(previous, null, attemptId)) {
-                throw new IOException("决定失败批次缺少上一帧尝试身份：" + attemptId);
-            }
-            requireAnyEvent(commit, "DECISION_FAILED_V1");
-            return;
-        }
-        if (id.startsWith("dec-timeout:")) {
-            String rest = id.substring("dec-timeout:".length());
-            int sep = rest.lastIndexOf(':');
-            if (sep <= 0 || !hasAttempt(previous, rest.substring(0, sep),
-                    rest.substring(sep + 1))) {
-                throw new IOException("决定超时批次缺少上一帧动作/尝试身份：" + id);
-            }
-            requireAnyEvent(commit, "DECISION_TIMEOUT_V1");
-            return;
-        }
-        boolean recorded = !previous.commandContents().containsKey(id)
-                && commit.commandContent().equals(candidate.commandContents().get(id))
-                && commit.result().equals(candidate.commandOutcomes().get(id));
-        if (!recorded) {
-            throw new IOException("决定批次必须为本批新增命令记录：" + id);
-        }
-        if (id.startsWith("dec-session:")) {
-            requireAnyEvent(commit, "DECISION_SESSION_OPEN_V1");
-            return;
-        }
-        if (id.startsWith("dec-open:")) {
-            requireAnyEvent(commit, "DECISION_OPENED_V1");
-            return;
-        }
-        if (id.startsWith("dec-reply:")) {
-            requireAnyEvent(commit, "DECISION_REPLIED_V1", "DECISION_STALE_ARCHIVED_V1",
-                    "DECISION_AUDIT_V1");
-            return;
-        }
-        if (id.startsWith("dec-dispatch:")) {
-            requireAnyEvent(commit, "DECISION_DISPATCH_V1");
-            return;
-        }
-        if (id.startsWith("dec-provider-failed:")) {
-            String attemptId = id.substring("dec-provider-failed:".length());
-            if (!hasAttempt(previous, null, attemptId)) {
-                throw new IOException("提供方失败批次缺少上一帧尝试身份：" + attemptId);
-            }
-            requireAnyEvent(commit, "DECISION_PROVIDER_FAILED_V1");
-            return;
-        }
-        throw new IOException("未知决定批次前缀：" + id);
-    }
-
-    /**
-     * 非执行帧（cmd 排程、roleT 人物命令、dec 决定）不得凭空新增或改写消费者报告。
-     *
-     * <p>按实际调用证据：这些入口只追加待办/已用/命令记录；dec 另改决定与群呈现；roleT 的
-     * 社交写信/群组动作另改自己的社交或群子集（各自由 validateSocial/validateGroups 逐帧重演）。
-     * 其余业务子集与时间/阶段/现金/回执必须与上一帧逐字相同。旧报告改写与凭空新增都会在这里被拒，
-     * 不只检查 taskId；同真实来源 ID 改 accepted/reason/subject 同样被拒。</p>
-     *
-     * <p>待办形状：cmd 恰好新增一个排程任务，roleT 新增零或一个；旧待办不得删除或改写，已用标识
-     * 只能等于旧集合并上新任务。dec 的多动作待办由决定动作引用校验负责。</p>
-     */
-    private void requireNonExecutionFrame(WorldState candidate, WorldCommit commit,
-                                          WorldState previous, String family) throws IOException {
-        String id = commit.commandId();
-        if (candidate.timeMillis() != previous.timeMillis()
-                || !candidate.lastPhase().equals(previous.lastPhase())) {
-            throw new IOException("非执行帧不得推进时间或阶段：" + id);
-        }
-        if (!candidate.accounts().equals(previous.accounts())) {
-            throw new IOException("非执行帧不得改动现金账户：" + id);
-        }
-        if (!candidate.delivered().equals(previous.delivered())) {
-            throw new IOException("非执行帧不得追加或改写业务回执：" + id);
-        }
-        requireUnchanged(previous.securities(), candidate.securities(), "证券", id);
-        requireUnchanged(previous.exchange(), candidate.exchange(), "订单/成交", id);
-        requireUnchanged(previous.manufacturing(), candidate.manufacturing(), "制造", id);
-        requireUnchanged(previous.governance(), candidate.governance(), "Board/治理", id);
-        requireUnchanged(previous.roles(), candidate.roles(), "任职", id);
-        requireUnchanged(previous.information(), candidate.information(), "资料", id);
-        requireUnchanged(previous.trading(), candidate.trading(), "交易", id);
-        requireUnchanged(previous.beliefs(), candidate.beliefs(), "信念", id);
-        requireUnchanged(previous.media(), candidate.media(), "媒体", id);
-        requireUnchanged(previous.interviews(), candidate.interviews(), "采访", id);
-        requireUnchanged(previous.evidence(), candidate.evidence(), "证据", id);
-        requireUnchanged(previous.dividends(), candidate.dividends(), "分红", id);
-        boolean decision = "dec".equals(family);
-        boolean social = "roleT".equals(family) && roleKind(commit)
-                .equals(PendingTask.SOCIAL_FINISH_V1);
-        boolean groups = "roleT".equals(family) && roleKind(commit).equals(GroupsRun.KIND_FINISH);
-        if (!social) {
-            requireUnchanged(previous.social(), candidate.social(), "社交", id);
-        }
-        if (!groups && !decision) {
-            requireUnchanged(previous.groups(), candidate.groups(), "群组", id);
-        }
-        if (!decision) {
-            requireUnchanged(previous.decisions(), candidate.decisions(), "决定", id);
-            requireScheduleOnlyPending(previous, candidate, commit, family);
-        }
-    }
-
-    /** 非执行帧的已知子集必须与上一帧逐字相同。 */
-    private static void requireUnchanged(Object before, Object after, String label, String id)
-            throws IOException {
-        if (!java.util.Objects.equals(before, after)) {
-            throw new IOException("非执行帧不得改动" + label + "报告或状态：" + id);
-        }
-    }
-
-    /** role 命令 payload 的种类；无法解析时返回空串（按“不得改动子集”处理）。 */
-    private String roleKind(WorldCommit commit) {
-        try {
-            RoleActionPayload payload = mapper.readValue(commit.commandContent(),
-                    RoleActionPayload.class);
-            return payload.kind() == null ? "" : payload.kind();
-        } catch (IOException | RuntimeException invalid) {
-            return "";
+        if (!before.equals(extra)) {
+            throw new IOException("非董事批次不得改变额外公司治理容器：" + commit.commandId());
         }
     }
 
     /**
-     * 非执行帧只能追加由本批原命令派生的排程任务：旧待办原样保留，已用标识等于旧集合并新任务。
+     * B7a 资金桶档案的银行批次校验：只有成交帧可以改变银行三态或贷款台账，
+     * 且该帧必须能由“上一帧 + 原任务”整帧纯重算出来（含成交、现金、证券、银行与事件）。
      *
-     * <p>数量：cmd 恰好一个，roleT 零或一个（真实业务日志逐帧只出现 0..1，两个同批排程不是任何
-     * 既有入口的形状）。只保证「事件与快照一致」只能证明同步造假——攻击者可以把待办与事件一起
-     * 改成另一组数值而保留原命令正文，因此每个新增待办还必须由
-     * {@link #requireDerivedScheduledTask} 按原命令重演真实排程入口。</p>
+     * <p>这不是按命令前缀豁免：任务种类来自批次里真实的 {@code EXCHANGE_ORDER_REPORT_V1} 事件，
+     * 重放走与正常执行完全相同的 reducer，任何字段被改写都拒。</p>
      *
-     * @param family 帧族：{@code cmd} 或 {@code roleT}
+     * @param candidate 候选帧
+     * @param previous  上一帧
+     * @param commit    本批提交
+     * @throws IOException 银行三态被非法改变或无法重算
      */
-    private void requireScheduleOnlyPending(WorldState previous, WorldState candidate,
-                                            WorldCommit commit, String family) throws IOException {
-        List<PendingTask> scheduled = new ArrayList<>();
+    private void validateFundsBankFrame(WorldState candidate, WorldState previous,
+                                        WorldCommit commit) throws IOException {
+        if (bankActionFrame(previous, commit)) {
+            // 银行人物动作（存款/取现/支付/借贷）与 B6 同一套 BEGIN→完成重算；
+            // 其 freezing 输入也是同一份“活动订单逐桶冻结”。
+            validateBankActionFrame(candidate, previous, commit);
+            return;
+        }
+        String commandId = commit.commandId();
+        if (commandId.startsWith("cmd:")) {
+            // 排程帧的完整派生统一由 requireCommandOrigin → requireScheduleOnlyPending →
+            // requireDerivedScheduledTask（含意图信封身份与真实入口重演）承担；这里只额外要求
+            // 银行子集不变（排程本身不动账）。
+            requireCommandOrigin(candidate, commit, previous);
+            if (!candidate.bank().sameAs(previous.bank())) {
+                throw new IOException("排程帧不得改变银行三态：" + commandId);
+            }
+            if (!Objects.equals(candidate.bankActions(), previous.bankActions())) {
+                throw new IOException("排程帧不得改变贷款台账：" + commandId);
+            }
+            return;
+        }
+        if (commandId.startsWith("clock:")) {
+            // 旧 B6 时钟帧口径原样保留：只推进时间/阶段，其它逐字段不变。
+            requireClockFrame(candidate, previous, commit);
+            return;
+        }
+        // 任务/成交/排程帧的整帧派生统一由 requireCommandOrigin（含 executeTask 受控重演）承担：
+        // 成交/银行人物动作/分红等会真实改动银行三态的完成帧，其银行子集同样由重演逐字段证明。
+        requireCommandOrigin(candidate, commit, previous);
+    }
+
+    /** 该提交对应的已登记待办；没有返回 null。 */
+    private static PendingTask pendingTaskOf(WorldState previous, String commandId) {
+        for (PendingTask task : previous.pending()) {
+            if (("task:" + task.taskId()).equals(commandId)) {
+                return task;
+            }
+        }
+        return null;
+    }
+
+    /** 排程帧专用：从命令正文经**原入口**重建一帧，用于与候选整帧比较。 */
+    private interface ScheduleAction {
+        void run() throws IOException;
+    }
+
+    /**
+     * 校验一条 {@code cmd:} 排程帧。
+     *
+     * <p>任务参数与命令正文并不同形（订单命令多 {@code taskId/dueTimeMillis}，现金转账更是两种
+     * 记录），因此**不能**拿 {@code content == task.payload()} 作判据；这里按待办种类分派：
+     * 证券类走“从原命令参数重跑原入口”，其余沿用 B6 既有口径（含转账按原命令重建）。</p>
+     *
+     * @param candidate 候选帧
+     * @param previous  上一帧
+     * @param commit    本批提交
+     * @throws IOException 待办缺失/重复、命令不可解析或重演结果与候选不一致
+     */
+    /**
+     * 本帧是否为“只排一条新待办”的排程帧：结构判定，不按命令前缀白名单放行。
+     *
+     * <p>排程帧在人物命名空间下提交（例如群组/周期动作），命令标识不带 {@code cmd:} 前缀；
+     * 这里只看事件结构：恰好一条 {@code TASK_SCHEDULED_V1}，且没有完成事件。
+     * 之后仍由 {@code requireFundsScheduleFrame}/{@code requireScheduleFrame} 用原命令正文
+     * 逐字段重建整帧比对，因此不是放宽校验。</p>
+     *
+     * @param commit 提交
+     * @return 是排程帧返回 true
+     */
+    private boolean scheduleOnlyFrame(WorldCommit commit) {
+        int scheduled = 0;
+        String taskId = null;
         for (WorldEvent event : commit.events()) {
+            if ("TASK_COMPLETED_V1".equals(event.type())) {
+                return false;
+            }
             if ("TASK_SCHEDULED_V1".equals(event.type())) {
-                scheduled.add(mapper.readValue(event.payload(), PendingTask.class));
+                scheduled++;
+                try {
+                    taskId = mapper.readTree(event.payload()).path("taskId").asText(null);
+                } catch (IOException unreadable) {
+                    return false;
+                }
             }
         }
-        int min = "cmd".equals(family) ? 1 : 0;
-        if (scheduled.size() < min || scheduled.size() > 1) {
-            throw new IOException("非执行帧的排程任务数量不合法：" + commit.commandId());
-        }
-        List<PendingTask> expectedPending = new ArrayList<>(previous.pending());
-        expectedPending.addAll(scheduled);
-        if (!candidate.pending().equals(expectedPending)) {
-            throw new IOException("非执行帧必须只追加排程任务，不得删除或改写旧待办："
-                    + commit.commandId());
-        }
-        Set<String> expectedUsed = new LinkedHashSet<>(previous.usedTaskIds());
-        for (PendingTask task : scheduled) {
-            expectedUsed.add(task.taskId());
-        }
-        if (!candidate.usedTaskIds().equals(expectedUsed)) {
-            throw new IOException("非执行帧的已用任务标识与排程不一致：" + commit.commandId());
-        }
-        for (PendingTask task : scheduled) {
-            requireDerivedScheduledTask(commit, candidate, previous, task);
-        }
+        return scheduled == 1 && commit.result() != null
+                && commit.result().startsWith("SCHEDULED");
     }
 
     /**
@@ -13304,6 +15521,13 @@ public final class WorldRuntime implements AutoCloseable {
                 }
                 return;
             }
+        }
+        if (PendingTask.BANK_ACTION_BEGIN_V1.equals(task.kind())
+                || PendingTask.BANK_ACTION_V1.equals(task.kind())) {
+            // 银行人物动作与系统计息排程由银行域自己的严格派生整帧重算（BEGIN 屏障/合同期次），
+            // 与通用信封身份检查并列，不互相替代。
+            requireScheduleFrame(candidate, previous, commit);
+            return;
         }
         switch (task.kind()) {
             case PendingTask.EXCHANGE_ORDER_V1, PendingTask.EXCHANGE_CANCEL_V1,
@@ -13519,6 +15743,22 @@ public final class WorldRuntime implements AutoCloseable {
             "WRITE_OFF", "REQUEST_RECOVERY", "REQUEST_ACCEPTANCE", "REQUEST_PAYMENT",
             "REQUEST_RETENTION", "WAIVE");
 
+    /**
+     * 显式资金工程动作的允许集合（组合档 v2）：只有这五个真实动钱口子可以带桶。
+     *
+     * <p>签约/开票/终止/减值/核销不是动钱动作，不允许借显式资金入口绕过。</p>
+     */
+    private static final Set<String> FUNDED_ENGINEERING_ACTIONS = Set.of(
+            "ADVANCE", "COLLECT_DUE", "COLLECT_RETENTION", "RECOVER", "INVEST_WORK");
+
+    /**
+     * 显式资金政策标签：**公司端显式选择，对方端固定为合同现金账户**。
+     *
+     * <p>本轮只接受这一种；`EXPLICIT_BOTH_V1` 已被 Root 否决（owner 一致只证明钱的归属，
+     * 不证明对方授权用其存款桶）。其它标签一律拒绝，避免把未实现的政策当成已支持。</p>
+     */
+    private static final String FUND_POLICY_COMPANY_CHOICE = "COMPANY_CHOICE_V1";
+
     /** 周期动作（出席/准备/评分/审批/授权/发布）。 */
     private static final Set<String> ENGINEERING_PERIODIC_ACTIONS = Set.of(
             "ATTEND", "PREPARE", "SCORE", "APPROVE", "AUTHORIZE", "PUBLISH");
@@ -13552,6 +15792,17 @@ public final class WorldRuntime implements AutoCloseable {
                         EngineeringActionPayload.class, "经营");
                 if (!ENGINEERING_ACTION_ACTIONS.contains(payload.action())) {
                     throw new IOException("工程 BEGIN 目标种类与经营动作不一致：" + payload.action());
+                }
+            }
+            case PendingTask.ENGINEERING_FUND_V1 -> {
+                FundedEngineeringPayload payload = readEngineeringBody(body,
+                        FundedEngineeringPayload.class, "显式资金经营");
+                if (!FUNDED_ENGINEERING_ACTIONS.contains(payload.action())) {
+                    throw new IOException("工程 BEGIN 目标种类与显式资金动作不一致："
+                            + payload.action());
+                }
+                if (!FUND_POLICY_COMPANY_CHOICE.equals(payload.fundPolicy())) {
+                    throw new IOException("工程 BEGIN 资金来源政策未冻结：" + payload.fundPolicy());
                 }
             }
             case PendingTask.ENGINEERING_PERIODIC_V1 -> {
@@ -13649,7 +15900,8 @@ public final class WorldRuntime implements AutoCloseable {
                 OrderCommand command = readScheduleContent(commit, OrderCommand.class, "订单");
                 scheduleOrder(command.commandId(), command.taskId(), command.dueTimeMillis(),
                         command.actorOwnerId(), command.accountId(), command.symbol(),
-                        command.side(), command.type(), command.price(), command.quantity());
+                        command.side(), command.type(), command.price(), command.quantity(),
+                        command.fundingToken());
             }
             case PendingTask.EXCHANGE_CANCEL_V1 -> {
                 CancelOrderCommand command = readScheduleContent(commit, CancelOrderCommand.class,
@@ -14021,65 +16273,1262 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
-    /** 从 roleT 标识解出人物；长度前缀不合法返回 null。 */
-    private static String roleCommandPerson(String id) {
-        String rest = id.substring("roleT:".length());
-        int sep = rest.indexOf(':');
-        if (sep <= 0) {
-            return null;
-        }
-        int length;
-        try {
-            length = Integer.parseInt(rest.substring(0, sep));
-        } catch (NumberFormatException invalid) {
-            return null;
-        }
-        int start = sep + 1;
-        if (length <= 0 || start + length >= rest.length() || rest.charAt(start + length) != ':') {
-            return null;
-        }
-        return rest.substring(start, start + length);
-    }
-
-    /** 上一帧决定里是否存在指定尝试；actionId 为空时不限动作。 */
-    private static boolean hasAttempt(WorldState previous, String actionId, String attemptId) {
-        if (previous.decisions() == null || attemptId == null || attemptId.isEmpty()) {
-            return false;
-        }
-        for (DecisionModel.Decision decision : previous.decisions().state().decisions()) {
-            if (actionId != null && !actionId.equals(decision.actionId())) {
+    /** 该提交是否是某个银行人物动作（BEGIN 或完成）的执行帧。 */
+    private static boolean bankActionFrame(WorldState previous, WorldCommit commit) {
+        for (PendingTask task : previous.pending()) {
+            if (!("task:" + task.taskId()).equals(commit.commandId())) {
                 continue;
             }
-            for (DecisionModel.Attempt attempt : decision.attempts()) {
-                if (attemptId.equals(attempt.attemptId())) {
-                    return true;
-                }
-            }
+            return PendingTask.BANK_ACTION_V1.equals(task.kind())
+                    || PendingTask.BANK_ACTION_BEGIN_V1.equals(task.kind());
         }
         return false;
     }
 
-    /** 本批必须出现指定类型之一的事件。 */
-    private static void requireAnyEvent(WorldCommit commit, String... types) throws IOException {
-        for (WorldEvent event : commit.events()) {
-            for (String type : types) {
-                if (type.equals(event.type())) {
-                    return;
+    // ==================================================================
+    // B6 银行人物动作：BEGIN 屏障 → 完成帧，全部由上一帧纯重算
+    // ==================================================================
+
+    /**
+     * 一条银行人物动作的命令正文（会话命名空间下的内部命令标识 + 冻结的业务请求）。
+     *
+     * @param commandId      内部命令标识（{@code roleT:...}）
+     * @param clientCommandId 人物自己的命令标识
+     * @param clientTaskId    人物自己的任务标识
+     * @param personPartyId   真实人物
+     * @param requestJson     冻结的 {@link BankActions.Request} 规范 JSON
+     * @param dueMillis       真实完成时点
+     * @param durationMillis  声明工时（必须为正）
+     * @param system          是否运行层按合同到期创建的系统计息任务
+     */
+    private record BankActionPayload(String commandId, String clientCommandId,
+                                     String clientTaskId, String personPartyId,
+                                     String requestJson, long dueMillis, long durationMillis,
+                                     boolean system) {
+    }
+
+    /**
+     * BEGIN 屏障正文：到期点在真实开始时点，复核通过后按同一份动作正文排完成帧。
+     *
+     * @param dueMillis  真实完成时点
+     * @param actionJson 冻结的 {@link BankActionPayload}
+     */
+    private record BankBeginPayload(long dueMillis, String actionJson) {
+    }
+
+    /**
+     * 银行动作报告（只作同批事件，不建第二本账）。
+     *
+     * @param taskId        真正执行的任务
+     * @param commandId     内部命令标识
+     * @param personPartyId 人物
+     * @param kind          动作种类
+     * @param bankKey       银行
+     * @param customerKey   客户/借款人主体
+     * @param accepted      是否成立
+     * @param reason        结果码
+     * @param receipt       纯核回执原文（拒绝时为空）
+     * @param atMillis      执行时点
+     * @param position      本批位置
+     */
+    private record BankActionReport(String taskId, String commandId, String personPartyId,
+                                    String kind, String bankKey, String customerKey,
+                                    boolean accepted, String reason, String receipt,
+                                    long atMillis, long position) {
+    }
+
+    /** 一帧银行完成的纯计算结果：候选状态 + 领域事件 + 批次结果码。 */
+    private record BankFrame(WorldState candidate, List<WorldEvent> events, String result) {
+    }
+
+    /** 动作方解析结果：通过时 actor 非空，拒绝时 reason 非空。 */
+    private record BankActorResolution(BankActions.Actor actor, String reason) {
+    }
+
+    /** 银行人物动作档案是否启用。 */
+    private void requireBankRolesEnabled() {
+        if (!manifest.hasBankRoles() || state.bank() == null || state.roles() == null
+                || state.information() == null) {
+            throw new IllegalStateException("当前运行未启用银行人物动作档案："
+                    + manifest.rulesVersion());
+        }
+    }
+
+    /**
+     * 由显式快照构造一格银行候选帧：除现金、银行三态、贷款台账、待办与命令记录外全部沿用。
+     *
+     * <p>静态方法且不读成员 {@code state}，因此正常写入与恢复重算走完全相同的构造。</p>
+     */
+    private static WorldState bankCandidate(WorldState base, long timeMillis, String lastPhase,
+                                            Map<String, CashLedger.CashAccount> accounts,
+                                            List<PendingTask> pending, Set<String> used,
+                                            Map<String, String> contents,
+                                            Map<String, String> outcomes, BankRun bank,
+                                            BankActions.Book bankActions) {
+        return new WorldState(base.schemaVersion(), base.runId(), base.position() + 1, timeMillis,
+                lastPhase, accounts, pending, base.delivered(), used, contents, outcomes,
+                base.securities(), base.exchange(), base.manufacturing(), base.governance(),
+                base.roles(), base.information(), base.trading(), base.decisions(), base.dividends(),
+                base.beliefs(), base.media(), base.interviews(), base.evidence(), base.social(),
+                base.engineering(), bank, bankActions, base.companyGovernance(), base.groups());
+    }
+
+    /**
+     * 排程一条银行人物动作：观察时授权 → 正工时 → 单焦点 → 真实 BEGIN 屏障。
+     *
+     * <p>动作方与主体都不由调用方自报：人物来自会话，主体只能是自己或本人当时有效任职的公司；
+     * 银行经理只能审批本行贷款。真正的资金变化只发生在完成帧。</p>
+     *
+     * @param session         人物会话
+     * @param clientCommandId 人物命令标识
+     * @param clientTaskId    人物任务标识
+     * @param dueMillis       真实完成时点
+     * @param durationMillis  声明工时，必须为正
+     * @param draft           业务字段
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException              持久提交失败
+     * @throws IllegalArgumentException 静态字段、时间、授权或焦点非法
+     */
+    String scheduleBankAction(WorldRoleSession session, String clientCommandId, String clientTaskId,
+                              long dueMillis, long durationMillis,
+                              WorldRoleSession.BankActionDraft draft) throws IOException {
+        requireBankRolesEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        Objects.requireNonNull(session, "会话");
+        Objects.requireNonNull(draft, "银行动作草稿");
+        requireText(clientCommandId, "命令标识");
+        requireText(clientTaskId, "任务标识");
+        if (durationMillis <= 0) {
+            throw new IllegalArgumentException("银行动作必须声明正工时：" + durationMillis);
+        }
+        String person = session.personPartyId();
+        long now = state.timeMillis();
+        String internalCommand = roleCommandId(person, clientCommandId);
+        String internalTask = roleTaskId(person, clientTaskId);
+        String customerKey = bankCustomerKey(state, session, draft);
+        BankActions.Request request = draft.toRequest(customerKey);
+        BankActionPayload action = new BankActionPayload(internalCommand, clientCommandId,
+                clientTaskId, person, mapper.writeValueAsString(request), dueMillis,
+                durationMillis, false);
+        String content = mapper.writeValueAsString(action);
+        String existing = state.commandContents().get(internalCommand);
+        if (existing != null) {
+            if (!content.equals(existing)) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(internalCommand);
+        }
+        long begin = requireBankFocusWindow(state, person, now, dueMillis, durationMillis,
+                request.kind().name());
+        requireBankObservationAuthority(state, person, request, now);
+        BankBeginPayload wrap = new BankBeginPayload(dueMillis, content);
+        PendingTask planned = new PendingTask(internalTask, begin, WorldScheduler.Phase.RULES,
+                PendingTask.BANK_ACTION_BEGIN_V1, mapper.writeValueAsString(wrap));
+        if (takenTaskId(state, internalTask)) {
+            throw new IllegalArgumentException("任务标识运行内不复用：" + internalTask);
+        }
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.add(planned);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(planned.taskId());
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(internalCommand, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        String result = "SCHEDULED:" + clientTaskId;
+        outcomes.put(internalCommand, result);
+        WorldState candidate = bankCandidate(state, now, state.lastPhase(), state.accounts(),
+                pending, used, contents, outcomes, state.bank(), state.bankActions());
+        commitAndApply("cmd:" + internalCommand, content, result,
+                List.of(new WorldEvent("task-scheduled:" + planned.taskId(), "TASK_SCHEDULED_V1",
+                        mapper.writeValueAsString(planned))), candidate);
+        return result;
+    }
+
+    /**
+     * 由合同创建一条真实计息任务（运行层系统日程；不由经理报告或任意时钟制造利息）。
+     *
+     * @param commandId 命令标识
+     * @param taskId    任务标识
+     * @param loanId    合同标识
+     * @param toMs      计息时点，必须落在该合同已提款日与到期日之间
+     * @return {@code SCHEDULED:taskId}
+     * @throws IOException              持久提交失败或合同不可读
+     * @throws IllegalArgumentException 合同不存在、未提款或时点越界
+     */
+    public synchronized String scheduleLoanAccrual(String commandId, String taskId, String loanId,
+                                                   long toMs) throws IOException {
+        requireBankRolesEnabled();
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        requireText(commandId, "命令标识");
+        requireText(taskId, "任务标识");
+        requireText(loanId, "合同标识");
+        BankActions.Book book = state.bankActions() == null ? BankActions.Book.empty()
+                : state.bankActions();
+        BankActions.Loan loan = book.loan(loanId);
+        if (loan == null) {
+            throw new IllegalArgumentException("未知合同：" + loanId);
+        }
+        // 幂等优先：同命令同请求在时间推进后重放，必须返回原回执且不二次计提。
+        BankActions.Request request = new BankActions.Request(loanId + ":accrue@" + toMs,
+                BankActions.Kind.LOAN_ACCRUE, loan.bankKey(), loan.borrowerKey(), null, null,
+                loan.amount(), 0L, 0L, "", loanId, toMs);
+        BankActionPayload action = new BankActionPayload(commandId, commandId, taskId,
+                loan.borrowerKey(), mapper.writeValueAsString(request), toMs, 0L, true);
+        String content = mapper.writeValueAsString(action);
+        String existing = state.commandContents().get(commandId);
+        if (existing != null) {
+            if (!content.equals(existing)) {
+                throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+            }
+            return state.commandOutcomes().get(commandId);
+        }
+        if (loan.status() != BankActions.LoanStatus.DRAWN) {
+            throw new IllegalArgumentException("合同尚未提款或已结清，不能计息：" + loanId);
+        }
+        if (loan.tenorMs() <= 0 || loan.trancheId() == null) {
+            throw new IllegalArgumentException("合同没有期限或未绑定期次，不能计息：" + loanId);
+        }
+        if (toMs <= state.timeMillis()) {
+            throw new IllegalArgumentException("计息时点必须晚于当前时点：" + toMs);
+        }
+        long start;
+        long maturity;
+        long lastAccrued;
+        try {
+            BankState bankState = state.bank().decode(state.accounts()).state();
+            BankState.Loan bankLoan = bankState.loan(loan.bankKey(), loan.borrowerKey());
+            BankState.Tranche tranche = bankLoan == null ? null
+                    : bankLoan.tranche(loan.trancheId());
+            if (tranche == null || tranche.terms() == null) {
+                throw new IllegalArgumentException("合同期次不存在：" + loanId);
+            }
+            start = tranche.terms().startMs();
+            maturity = tranche.terms().maturityMs();
+            lastAccrued = tranche.terms().lastAccruedMs();
+        } catch (RuntimeException invalid) {
+            throw new IllegalArgumentException("银行三态无法解码：" + invalid.getMessage(), invalid);
+        }
+        if (toMs > maturity || toMs < start || toMs < lastAccrued) {
+            throw new IllegalArgumentException("计息时点必须落在本合同起止与已计提之后：" + toMs);
+        }
+        if (takenTaskId(state, taskId)) {
+            throw new IllegalArgumentException("任务标识运行内不复用：" + taskId);
+        }
+        PendingTask planned = new PendingTask(taskId, toMs, WorldScheduler.Phase.COMPLETION,
+                PendingTask.BANK_ACTION_V1, content);
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.add(planned);
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        used.add(taskId);
+        Map<String, String> contents = new TreeMap<>(state.commandContents());
+        contents.put(commandId, content);
+        Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
+        String result = "SCHEDULED:" + taskId;
+        outcomes.put(commandId, result);
+        WorldState candidate = bankCandidate(state, state.timeMillis(), state.lastPhase(),
+                state.accounts(), pending, used, contents, outcomes, state.bank(),
+                state.bankActions());
+        commitAndApply("cmd:" + commandId, content, result,
+                List.of(new WorldEvent("task-scheduled:" + taskId, "TASK_SCHEDULED_V1",
+                        mapper.writeValueAsString(planned))), candidate);
+        return result;
+    }
+
+    /** 目标主体：只能是自己，或本人当前有效任职的公司；已有合同只按合同借款人建档。 */
+    private String bankCustomerKey(WorldState base, WorldRoleSession session,
+                                   WorldRoleSession.BankActionDraft draft) {
+        String person = session.personPartyId();
+        String target = draft.organizationPartyId() == null || draft.organizationPartyId().isBlank()
+                ? person : draft.organizationPartyId();
+        BankActions.Book book = base.bankActions() == null ? BankActions.Book.empty()
+                : base.bankActions();
+        BankActions.Loan loan = book.loan(draft.loanId());
+        if (loan != null && draft.kind() != BankActions.Kind.LOAN_REQUEST) {
+            // 已有合同只认合同上的借款人；不是自己的合同会在完成帧被真实授权拒绝。
+            return loan.borrowerKey();
+        }
+        return target;
+    }
+
+    /**
+     * 观察时授权：人物必须能用上一帧的真实任职解释“替谁做、凭什么做”。
+     *
+     * <p>纯读上一帧，不写状态；正常排程与恢复重算共用，因此伪造的排程无法只靠自洽 JSON 通过。</p>
+     */
+    private void requireBankObservationAuthority(WorldState base, String person,
+                                                 BankActions.Request request, long now) {
+        BankChart chart = bankChartOf(base);
+        if (!registeredPerson(base, person)) {
+            throw new IllegalArgumentException("会话人物不在登记读者里：" + person);
+        }
+        if (request.kind() == BankActions.Kind.LOAN_ACCRUE) {
+            throw new IllegalArgumentException("计息任务只能由运行层按合同到期创建");
+        }
+        if (!chart.profile().banks().containsKey(request.bankKey())) {
+            throw new IllegalArgumentException("未知银行：" + request.bankKey());
+        }
+        String party = request.customerKey();
+        if (request.kind() == BankActions.Kind.LOAN_APPROVE) {
+            String bankOrg = bankOrganizationOf(chart, request.bankKey());
+            if (bankOrg == null || !activeManager(base.roles(), person, bankOrg, now)) {
+                throw new IllegalArgumentException("只有该银行当时有效的公司经理可以批准贷款："
+                        + request.bankKey());
+            }
+            return;
+        }
+        if (party.equals(person)) {
+            return;
+        }
+        if (!activeManager(base.roles(), person, party, now)) {
+            throw new IllegalArgumentException("本人不是该组织当时有效的公司经理：" + party);
+        }
+    }
+
+    /** 单焦点：本人从真实开始到完成之间必须没有其它在办/已排工作。 */
+    private long requireBankFocusWindow(WorldState base, String person, long now, long dueMillis,
+                                        long durationMillis, String action) {
+        long begin = dueMillis - durationMillis;
+        if (begin <= now) {
+            throw new IllegalArgumentException("银行动作真实开始时点必须晚于当前时点："
+                    + action + " " + begin);
+        }
+        InterviewModel.Interval slot = new InterviewModel.Interval(begin, dueMillis);
+        for (InterviewModel.Interval busy : runtimeBusy(base, person, null, now)) {
+            if (busy.overlaps(slot)) {
+                throw new IllegalArgumentException("本人焦点已被占用：" + person + " " + begin
+                        + ".." + dueMillis);
+            }
+        }
+        return begin;
+    }
+
+    /** BEGIN 屏障：在真实开始时点复核任职、主体与焦点；通过则排完成帧，拒绝则不留完成帧。 */
+    private void completeBankBegin(PendingTask task) throws IOException {
+        WorldState base = state;
+        BankBeginPayload wrap = mapper.readValue(task.payload(), BankBeginPayload.class);
+        BankActionPayload action = bankActionPayload(wrap.actionJson());
+        long now = task.dueTimeMillis();
+        String reason = bankBeginReject(base, task, action, now);
+        List<PendingTask> pending = new ArrayList<>(base.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(base.usedTaskIds());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        PendingTask finish = null;
+        if (reason == null) {
+            finish = new PendingTask(freeTaskId(base, task.taskId() + ":finish"), wrap.dueMillis(),
+                    WorldScheduler.Phase.COMPLETION, PendingTask.BANK_ACTION_V1,
+                    wrap.actionJson());
+            pending.add(finish);
+            used.add(finish.taskId());
+            events.add(new WorldEvent("schedule:" + finish.taskId(), "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(finish)));
+        }
+        events.add(new WorldEvent("bank-begin:" + task.taskId(), "BANK_ACTION_BEGIN_V1",
+                mapper.writeValueAsString(bankReport(task.taskId(), action, reason == null,
+                        reason == null ? "STARTED" : reason, "", now, base.position() + 1))));
+        WorldState candidate = bankCandidate(base, now, task.phase().name(), base.accounts(),
+                pending, used, base.commandContents(), base.commandOutcomes(), base.bank(),
+                base.bankActions());
+        commitAndApply("task:" + task.taskId(), task.payload(),
+                reason == null ? "OK" : reason, events, candidate);
+    }
+
+    /** BEGIN 复核的纯结论：null 表示通过。 */
+    private String bankBeginReject(WorldState base, PendingTask self, BankActionPayload action,
+                                   long now) {
+        BankActions.Request request;
+        try {
+            request = mapper.readValue(action.requestJson(), BankActions.Request.class);
+        } catch (IOException unreadable) {
+            return "PROTOCOL_ERROR:request";
+        }
+        if (action.system()) {
+            return "PROTOCOL_ERROR:system-task-needs-no-begin";
+        }
+        BankActorResolution resolution = resolveBankActor(base, action.personPartyId(), request,
+                false, now);
+        if (resolution.reason() != null) {
+            return resolution.reason();
+        }
+        BankBeginPayload wrap = new BankBeginPayload(action.dueMillis(), action.requestJson());
+        if (wrap.dueMillis() != action.dueMillis()) {
+            return "PROTOCOL_ERROR:window";
+        }
+        return bankFocusReject(base, self, action.personPartyId(), now, action.dueMillis());
+    }
+
+    /** 完成帧：从上一帧纯重算一次银行动作，结果、待办与事件一起提交。 */
+    private void completeBankTask(PendingTask task) throws IOException {
+        BankFrame frame = computeBankFrame(state, task);
+        commitAndApply("task:" + task.taskId(), task.payload(), frame.result(), frame.events(),
+                frame.candidate());
+    }
+
+    /**
+     * 一帧银行完成的纯计算：只读 {@code base}，不提交、不读成员状态。
+     *
+     * <p>现金账户、银行三态与贷款台账都取自同一份上一帧；动作方由真实任职重新解析，
+     * 因此“BEGIN 后撤权”“他人资金”“他行经理”在完成帧同样被拒。</p>
+     */
+    private BankFrame computeBankFrame(WorldState base, PendingTask task) throws IOException {
+        BankActionPayload action = bankActionPayload(task.payload());
+        BankRun.Decoded decoded = base.bank() == null ? null : base.bank().decode(base.accounts());
+        if (decoded == null) {
+            throw new IOException("银行档案缺少三态：" + task.taskId());
+        }
+        BankActions.Request request = mapper.readValue(action.requestJson(),
+                BankActions.Request.class);
+        long now = Math.max(task.dueTimeMillis(), base.timeMillis());
+        BankActions.Book book = base.bankActions() == null ? BankActions.Book.empty()
+                : base.bankActions();
+        BankActorResolution resolution = resolveBankActor(base, action.personPartyId(), request,
+                action.system(), now);
+        Map<String, CashLedger.CashAccount> accounts = base.accounts();
+        BankRun bank = base.bank();
+        // 台账原样沿用上一帧（旧档没有贷款时保持 null，不写空对象）。
+        BankActions.Book loans = base.bankActions();
+        boolean accepted = false;
+        String reason;
+        String receipt = "";
+        if (resolution.reason() != null) {
+            reason = resolution.reason();
+        } else {
+            BankActions.Outcome outcome = null;
+            String failure = null;
+            try {
+                BankContext ctx = new BankContext(bankRunId(),
+                        decoded.config().fingerprint(), base.position() + 1, now);
+                // 受信冻结快照：当前活动买限价单的逐桶冻结（没有撮合档案时为空表）。
+                edu.cufe.auction.world.bank.CashFreeze frozen = base.exchange() == null
+                        ? edu.cufe.auction.world.bank.CashFreeze.none()
+                        : WorldExchange.freezeSnapshot(base.exchange());
+                outcome = BankActions.apply(decoded.state(), accounts, decoded.book(), book,
+                        decoded.config(), ctx, request, resolution.actor(), frozen,
+                        manifest.hasCustodyFill());
+            } catch (RuntimeException invalid) {
+                failure = "BANK_ERROR:" + shortReason(invalid);
+            }
+            if (outcome == null) {
+                reason = failure == null ? "BANK_ERROR:unknown" : failure;
+            } else {
+                accepted = outcome.accepted();
+                reason = outcome.reason();
+                receipt = outcome.receipt() == null ? "" : outcome.receipt();
+                if (accepted) {
+                    accounts = outcome.accounts();
+                    bank = BankRun.of(decoded.config(), outcome.bank(), outcome.book());
+                    try {
+                        // 台账每帧从真实期次派生（本金/状态），不是第二本金账。
+                        BankActions.Book derived = BankActions.derive(outcome.loans(),
+                                outcome.bank());
+                        loans = derived.loans().isEmpty() ? base.bankActions() : derived;
+                    } catch (RuntimeException invalid) {
+                        loans = base.bankActions();
+                        accepted = false;
+                        reason = shortReason(invalid);
+                        receipt = "";
+                        accounts = base.accounts();
+                        bank = base.bank();
+                    }
                 }
             }
         }
-        throw new IOException("批次缺少与命令一致的事件");
+        List<PendingTask> pending = new ArrayList<>(base.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(base.usedTaskIds());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        if (accepted && request.kind() == BankActions.Kind.LOAN_DRAW) {
+            PendingTask accrual = bankAccrualTask(base, task, request, loans, now);
+            if (accrual != null) {
+                pending.add(accrual);
+                used.add(accrual.taskId());
+                events.add(new WorldEvent("schedule:" + accrual.taskId(), "TASK_SCHEDULED_V1",
+                        mapper.writeValueAsString(accrual)));
+            }
+        }
+        events.add(new WorldEvent("bank-action:" + task.taskId(), "BANK_ACTION_V1",
+                mapper.writeValueAsString(bankReport(task.taskId(), action, accepted, reason,
+                        receipt, now, base.position() + 1))));
+        WorldState candidate = bankCandidate(base, now, task.phase().name(), accounts, pending,
+                used, base.commandContents(), base.commandOutcomes(), bank, loans);
+        return new BankFrame(candidate, events, accepted ? "OK" : reason);
     }
 
-    /** 分红任务种类：完成帧与付款批次都以这些待办为来源。 */
-    private static boolean isDividendTaskKind(String kind) {
-        return PendingTask.DIVIDEND_MEETING_V1.equals(kind)
-                || PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1.equals(kind)
-                || PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(kind)
-                || PendingTask.DIVIDEND_REGISTER_V1.equals(kind)
-                || PendingTask.DIVIDEND_BOOK_EX_V1.equals(kind)
-                || PendingTask.DIVIDEND_SETTLE_V1.equals(kind)
-                || PendingTask.DIVIDEND_IMPAIR_V1.equals(kind);
+    /** 提款成功时按合同到期排一条真实计息任务（系统日程，不占人物焦点）。 */
+    private PendingTask bankAccrualTask(WorldState base, PendingTask task,
+                                        BankActions.Request request, BankActions.Book loans,
+                                        long now) throws IOException {
+        BankActions.Loan loan = loans.loan(request.loanId());
+        if (loan == null || loan.tenorMs() <= 0 || loan.trancheId() == null) {
+            return null;
+        }
+        long maturity = now + loan.tenorMs();
+        BankActions.Request accrue = new BankActions.Request(
+                request.requestId() + ":accrue@" + maturity, BankActions.Kind.LOAN_ACCRUE,
+                loan.bankKey(), loan.borrowerKey(), null, null, loan.amount(), 0L, 0L, "",
+                loan.loanId(), maturity);
+        BankActionPayload payload = new BankActionPayload(
+                request.requestId() + ":accrue@" + maturity, "", "", loan.borrowerKey(),
+                mapper.writeValueAsString(accrue), maturity, 0L, true);
+        return new PendingTask(freeTaskId(base, "bank-accrue:" + loan.loanId()), maturity,
+                WorldScheduler.Phase.COMPLETION, PendingTask.BANK_ACTION_V1,
+                mapper.writeValueAsString(payload));
+    }
+
+    /** 报告事件正文。 */
+    private static BankActionReport bankReport(String taskId, BankActionPayload action,
+                                               boolean accepted, String reason, String receipt,
+                                               long atMillis, long position) throws IOException {
+        BankActions.Request request = new ObjectMapper().readValue(action.requestJson(),
+                BankActions.Request.class);
+        return new BankActionReport(taskId, action.commandId(), action.personPartyId(),
+                request.kind().name(), request.bankKey(), request.customerKey(), accepted, reason,
+                receipt, atMillis, position);
+    }
+
+    /**
+     * 动作方：由上一帧的真实登记与任职解析；绝不使用请求或报告里自报的身份。
+     *
+     * <p>个人只能用自己的主体；公司只能由该公司当时有效的 {@code COMPANY_MANAGER} 代行；
+     * 银行经理必须是该银行组织当时有效的经理，且只能用于审批本行贷款。</p>
+     */
+    private BankActorResolution resolveBankActor(WorldState base, String person,
+                                                 BankActions.Request request, boolean system,
+                                                 long now) {
+        if (system) {
+            return request.kind() == BankActions.Kind.LOAN_ACCRUE
+                    ? new BankActorResolution(BankActions.Actor.system(), null)
+                    : new BankActorResolution(null, "ACTOR_NOT_AUTHORIZED:system");
+        }
+        if (request.kind() == BankActions.Kind.LOAN_ACCRUE) {
+            return new BankActorResolution(null, "ACTOR_NOT_AUTHORIZED:system-only");
+        }
+        BankChart chart = bankChartOf(base);
+        String party = request.customerKey();
+        try {
+            if (request.kind() == BankActions.Kind.LOAN_APPROVE) {
+                String bankOrg = bankOrganizationOf(chart, request.bankKey());
+                if (bankOrg == null || !activeManager(base.roles(), person, bankOrg, now)) {
+                    return new BankActorResolution(null, "ACTOR_NOT_AUTHORIZED:bank-manager");
+                }
+                String owner = personOwnerOf(person);
+                if (owner == null) {
+                    return new BankActorResolution(null, "ACTOR_NOT_AUTHORIZED:owner");
+                }
+                return new BankActorResolution(
+                        BankActions.Actor.manager(person, owner, request.bankKey()), null);
+            }
+            if (!chart.hasParty(party)) {
+                return new BankActorResolution(null, "UNKNOWN_ACCOUNT:party:" + party);
+            }
+            String owner = chart.ownerIdOf(party);
+            String registered = registeredOwnerParty(base, owner);
+            if (registered == null || !registered.equals(party)) {
+                return new BankActorResolution(null, "ACTOR_NOT_AUTHORIZED:owner");
+            }
+            if (!party.equals(person) && !activeManager(base.roles(), person, party, now)) {
+                return new BankActorResolution(null, "ACTOR_NOT_AUTHORIZED:company-manager");
+            }
+            return new BankActorResolution(BankActions.Actor.customer(party, owner), null);
+        } catch (RuntimeException invalid) {
+            return new BankActorResolution(null, "UNKNOWN_ACCOUNT:" + shortReason(invalid));
+        }
+    }
+
+    /** 银行档案的会计图（解码自上一帧的三态；解码失败即拒绝）。 */
+    private BankChart bankChartOf(WorldState base) {
+        return base.bank().decode(base.accounts()).config().chart();
+    }
+
+    private static String bankOrganizationOf(BankChart chart, String bankKey) {
+        edu.cufe.auction.world.bank.BankingProfile.BankRef ref =
+                chart.profile().banks().get(bankKey);
+        return ref == null ? null : ref.partyId();
+    }
+
+    /** 人物自己的财产主体：取登记里第一个属于该人物的 owner（产品/聚合 owner 的 partyId 合法为 null）。 */
+    private String personOwnerOf(String person) {
+        if (registry == null) {
+            return null;
+        }
+        for (OpeningRegistry.PropertyOwner owner : registry.owners()) {
+            if (person.equals(owner.partyId())) {
+                return owner.ownerId();
+            }
+        }
+        return null;
+    }
+
+    /** 某个 owner 在登记里声明的主体。 */
+    private String registeredOwnerParty(WorldState base, String ownerId) {
+        if (registry == null) {
+            return null;
+        }
+        OpeningRegistry.PropertyOwner owner = registry.owner(ownerId);
+        return owner == null ? null : owner.partyId();
+    }
+
+    /** 是否登记人物/读者（会话已要求，但恢复期还要独立复核）。 */
+    private boolean registeredPerson(WorldState base, String person) {
+        if (base.information() == null) {
+            return false;
+        }
+        return base.information().information().persons().contains(person);
+    }
+
+    /** 从命令正文解析银行动作（严格：字段必须完整且命名空间一致）。 */
+    private BankActionPayload bankActionPayload(String json) throws IOException {
+        BankActionPayload payload;
+        try {
+            payload = mapper.readValue(json, BankActionPayload.class);
+        } catch (IOException | RuntimeException invalid) {
+            throw new IOException("银行动作正文无法解析", invalid);
+        }
+        if (payload == null) {
+            throw new IOException("银行动作正文为空");
+        }
+        return payload;
+    }
+
+    /** BEGIN 的焦点重核：与本身以外的在办/已排工作不得重叠。 */
+    private String bankFocusReject(WorldState base, PendingTask self, String person, long begin,
+                                   long end) {
+        if (person == null || person.isBlank() || end <= begin) {
+            return null;
+        }
+        InterviewModel.Interval slot = new InterviewModel.Interval(begin, end);
+        for (InterviewModel.Interval busy : runtimeBusy(base, person, null, begin, self.taskId())) {
+            if (busy.overlaps(slot)) {
+                return "FOCUS_CONFLICT";
+            }
+        }
+        return null;
+    }
+
+    /** 银行在途动作占用的真实区间（BEGIN 屏障与完成帧首尾相接，不双算）。 */
+    private List<InterviewModel.Interval> bankingBusyOf(WorldState base, String person,
+                                                        String excludeTaskId) {
+        List<InterviewModel.Interval> busy = new ArrayList<>();
+        for (PendingTask task : base.pending()) {
+            if (task.taskId().equals(excludeTaskId)) {
+                continue;
+            }
+            if (PendingTask.BANK_ACTION_BEGIN_V1.equals(task.kind())) {
+                BankBeginPayload wrap;
+                BankActionPayload action;
+                try {
+                    wrap = mapper.readValue(task.payload(), BankBeginPayload.class);
+                    action = bankActionPayload(wrap.actionJson());
+                } catch (IOException | RuntimeException invalid) {
+                    continue;
+                }
+                long begin = task.dueTimeMillis();
+                if (action.personPartyId().equals(person) && wrap.dueMillis() > begin) {
+                    busy.add(new InterviewModel.Interval(begin, wrap.dueMillis()));
+                }
+                continue;
+            }
+            if (!PendingTask.BANK_ACTION_V1.equals(task.kind())) {
+                continue;
+            }
+            BankActionPayload action;
+            try {
+                action = bankActionPayload(task.payload());
+            } catch (IOException | RuntimeException invalid) {
+                continue;
+            }
+            if (!action.personPartyId().equals(person) || action.durationMillis() <= 0) {
+                continue;
+            }
+            long end = task.dueTimeMillis();
+            long begin = end - action.durationMillis();
+            if (end > begin) {
+                busy.add(new InterviewModel.Interval(begin, end));
+            }
+        }
+        return busy;
+    }
+
+    /**
+     * 银行角色档案的逐帧推导：每个批次都必须是“上一帧 + 真实待办”或“上一帧 + 新排程”。
+     *
+     * <p>先校验台账确实由真实期次派生（不是第二本金账），再按命令标识解析：
+     * ①命令必须对应上一帧里真实存在的待办（银行三帧/现金转账全量重算，其它已登记任务
+     * 只允许非现金、非银行字段变化）；②或是一条尚未登记的新排程（恰一条 TASK_SCHEDULED）；
+     * ③其余任何 commandId（含改名、改事件种类的伪造帧）一律拒绝——不认前缀、不认事件白名单。</p>
+     */
+    private void validateBankActionFrame(WorldState candidate, WorldState previous,
+                                         WorldCommit commit) throws IOException {
+        requireBookDerived(candidate);
+        PendingTask registered = null;
+        for (PendingTask task : previous.pending()) {
+            if (("task:" + task.taskId()).equals(commit.commandId())) {
+                registered = task;
+            }
+        }
+        if (registered != null) {
+            switch (registered.kind()) {
+                case PendingTask.BANK_ACTION_BEGIN_V1 ->
+                        requireBankBeginFrame(candidate, previous, commit, registered);
+                case PendingTask.BANK_ACTION_V1 -> {
+                    BankFrame frame = computeBankFrame(previous, registered);
+                    requireSameBankFrame(candidate, commit, frame.candidate(), frame.events(),
+                            "task:" + registered.taskId(), registered.payload(), frame.result());
+                }
+                case PendingTask.CASH_TRANSFER_V1 ->
+                        requireCashTransferFrame(candidate, previous, commit, registered);
+                default -> requireCommandOrigin(candidate, commit, previous);
+            }
+            return;
+        }
+        if (commit.commandId().startsWith("cmd:")) {
+            requireScheduleFrame(candidate, previous, commit);
+            return;
+        }
+        if (commit.commandId().startsWith("clock:")) {
+            requireClockFrame(candidate, previous, commit);
+            return;
+        }
+        throw new IOException("提交不属于任何真实待办或新排程：" + commit.commandId());
+    }
+
+    /** 时钟推进帧：只允许时间/阶段推进，现金、银行三态、台账与待办全部不变。 */
+    private void requireClockFrame(WorldState candidate, WorldState previous, WorldCommit commit)
+            throws IOException {
+        long target = candidate.timeMillis();
+        String content = "{\"timeMillis\":" + target + "}";
+        if (target <= previous.timeMillis() || !("clock:" + target).equals(commit.commandId())
+                || !content.equals(commit.commandContent()) || !"ADVANCED".equals(commit.result())) {
+            throw new IOException("时钟推进帧与时间不一致：" + commit.commandId());
+        }
+        WorldState expected = bankCandidate(previous, target,
+                WorldScheduler.Phase.OBSERVATION.name(), previous.accounts(), previous.pending(),
+                previous.usedTaskIds(), previous.commandContents(), previous.commandOutcomes(),
+                previous.bank(), previous.bankActions());
+        List<WorldEvent> events = List.of(new WorldEvent("clock:" + target,
+                "CLOCK_ADVANCED_V1", content));
+        requireSameBankFrame(candidate, commit, expected, events, "clock:" + target, content,
+                "ADVANCED");
+    }
+
+    /** 台账必须等于由当前银行三态派生出的台账（缺期次/条款不符/本金不符都拒绝）。 */
+    private void requireBookDerived(WorldState candidate) throws IOException {
+        if (candidate.bankActions() == null) {
+            return;
+        }
+        BankState state;
+        try {
+            state = candidate.bank().decode(candidate.accounts()).state();
+        } catch (RuntimeException invalid) {
+            throw new IOException("银行三态无法解码：" + invalid.getMessage(), invalid);
+        }
+        try {
+            BankActions.Book derived = BankActions.derive(candidate.bankActions(), state);
+            if (!sameBook(derived, candidate.bankActions())) {
+                throw new IOException("贷款台账不是由真实期次派生（本金/状态被改写或未同步）："
+                        + candidate.position());
+            }
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("贷款台账与真实期次不一致：" + invalid.getMessage(), invalid);
+        }
+    }
+
+    /** BEGIN 帧必须能由上一帧与原屏障任务完全重算。 */
+    private void requireBankBeginFrame(WorldState candidate, WorldState previous,
+                                       WorldCommit commit, PendingTask task) throws IOException {
+        BankBeginPayload wrap = mapper.readValue(task.payload(), BankBeginPayload.class);
+        BankActionPayload action = bankActionPayload(wrap.actionJson());
+        long now = task.dueTimeMillis();
+        String reason = bankBeginReject(previous, task, action, now);
+        List<PendingTask> pending = new ArrayList<>(previous.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        if (reason == null) {
+            PendingTask finish = new PendingTask(freeTaskId(previous, task.taskId() + ":finish"),
+                    wrap.dueMillis(), WorldScheduler.Phase.COMPLETION, PendingTask.BANK_ACTION_V1,
+                    wrap.actionJson());
+            pending.add(finish);
+            used.add(finish.taskId());
+            events.add(new WorldEvent("schedule:" + finish.taskId(), "TASK_SCHEDULED_V1",
+                    mapper.writeValueAsString(finish)));
+        }
+        events.add(new WorldEvent("bank-begin:" + task.taskId(), "BANK_ACTION_BEGIN_V1",
+                mapper.writeValueAsString(bankReport(task.taskId(), action, reason == null,
+                        reason == null ? "STARTED" : reason, "", now, previous.position() + 1))));
+        WorldState expected = bankCandidate(previous, now, task.phase().name(),
+                previous.accounts(), pending, used, previous.commandContents(),
+                previous.commandOutcomes(), previous.bank(), previous.bankActions());
+        requireSameBankFrame(candidate, commit, expected, events, "task:" + task.taskId(),
+                task.payload(), reason == null ? "OK" : reason);
+    }
+
+    /**
+     * 新排程帧：必须是一条尚未登记的 {@code cmd:} 命令，且恰排一条待办。
+     *
+     * <p>事件里必须恰有一条 {@code TASK_SCHEDULED_V1}；银行 BEGIN / 系统计息走各自的严格路径，
+     * 其它待办走“纯排程”路径（不得同时改现金、银行三态或贷款台账）。命令标识前缀不是凭据：
+     * 这里比的是“上一帧 + 这一条待办”的完整状态与事件。</p>
+     */
+    private void requireScheduleFrame(WorldState candidate, WorldState previous,
+                                      WorldCommit commit) throws IOException {
+        if (previous.commandContents().containsKey(commit.commandId())) {
+            throw new IOException("排程命令不得复用已记录命令：" + commit.commandId());
+        }
+        PendingTask scheduled = null;
+        for (WorldEvent event : commit.events()) {
+            if (!"TASK_SCHEDULED_V1".equals(event.type())) {
+                continue;
+            }
+            PendingTask task;
+            try {
+                task = mapper.readValue(event.payload(), PendingTask.class);
+            } catch (IOException invalid) {
+                throw new IOException("排程事件无法解析：" + commit.commandId(), invalid);
+            }
+            if (scheduled != null) {
+                throw new IOException("一个批次只能排一条待办：" + commit.commandId());
+            }
+            scheduled = task;
+        }
+        if (scheduled == null) {
+            throw new IOException("排程批次缺少 TASK_SCHEDULED_V1 事件：" + commit.commandId());
+        }
+        if (PendingTask.BANK_ACTION_BEGIN_V1.equals(scheduled.kind())) {
+            requireBankScheduleBody(candidate, previous, commit, scheduled);
+            return;
+        }
+        if (PendingTask.BANK_ACTION_V1.equals(scheduled.kind())) {
+            BankActionPayload action = bankActionPayload(commit.commandContent());
+            requireBankAccrualScheduleFrame(candidate, previous, commit, scheduled, action);
+            return;
+        }
+        requirePlainScheduleFrame(candidate, previous, commit, scheduled);
+    }
+
+    /** 银行动作排程：命令正文就是同一份动作正文、标识落在会话命名空间、观察时授权与焦点成立。 */
+    private void requireBankScheduleBody(WorldState candidate, WorldState previous,
+                                         WorldCommit commit, PendingTask scheduled)
+            throws IOException {
+        BankActionPayload action = bankActionPayload(commit.commandContent());
+        if (action.system()) {
+            throw new IOException("系统计息任务不得使用银行 BEGIN 屏障：" + scheduled.taskId());
+        }
+        if (!roleCommandId(action.personPartyId(), action.clientCommandId())
+                .equals(action.commandId())) {
+            throw new IOException("银行动作命令标识与会话命名空间不一致：" + action.commandId());
+        }
+        if (!roleTaskId(action.personPartyId(), action.clientTaskId())
+                .equals(scheduled.taskId())) {
+            throw new IOException("银行动作任务标识与会话命名空间不一致：" + scheduled.taskId());
+        }
+        BankBeginPayload wrap = mapper.readValue(scheduled.payload(), BankBeginPayload.class);
+        if (wrap.dueMillis() != action.dueMillis()
+                || !wrap.actionJson().equals(commit.commandContent())) {
+            throw new IOException("银行 BEGIN 屏障与命令正文不一致：" + scheduled.taskId());
+        }
+        if (action.durationMillis() <= 0
+                || scheduled.dueTimeMillis() != action.dueMillis() - action.durationMillis()) {
+            throw new IOException("银行 BEGIN 屏障到期必须等于完成时点减正工时："
+                    + scheduled.taskId());
+        }
+        BankActions.Request request = mapper.readValue(action.requestJson(),
+                BankActions.Request.class);
+        requireBankObservationAuthority(previous, action.personPartyId(), request,
+                previous.timeMillis());
+        requireBankFocusWindow(previous, action.personPartyId(), previous.timeMillis(),
+                action.dueMillis(), action.durationMillis(), request.kind().name());
+        List<PendingTask> pending = new ArrayList<>(previous.pending());
+        pending.add(scheduled);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        used.add(scheduled.taskId());
+        Map<String, String> contents = new TreeMap<>(previous.commandContents());
+        // 命令记录以内部命令标识为键（不带 cmd: 前缀），与既有角色动作口径一致。
+        contents.put(action.commandId(), commit.commandContent());
+        Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+        String result = "SCHEDULED:" + action.clientTaskId();
+        outcomes.put(action.commandId(), result);
+        WorldState expected = bankCandidate(previous, previous.timeMillis(), previous.lastPhase(),
+                previous.accounts(), pending, used, contents, outcomes, previous.bank(),
+                previous.bankActions());
+        List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + scheduled.taskId(),
+                "TASK_SCHEDULED_V1", mapper.writeValueAsString(scheduled)));
+        requireSameBankFrame(candidate, commit, expected, events,
+                "cmd:" + action.commandId(), commit.commandContent(), result);
+    }
+
+    /**
+     * 非银行排程（现金转账、任职、其它受信日程）：只排待办，不得同批改现金/银行/台账。
+     *
+     * <p>现金转账的命令正文是 {@link ScheduleCommand}、待办参数是 {@link TransferPayload}，两者
+     * 本就不同形：这里按原命令**重建**预期待办（含 from/to/actor/amount/receiptDelay/noticeDue/
+     * 到期与阶段）再逐字段比对，而不是要求 content 与 payload 逐字相等；重建不出、或与记录的
+     * 待办不一致即拒绝。其它受信日程仍要求正文就是待办参数。</p>
+     */
+    private void requirePlainScheduleFrame(WorldState candidate, WorldState previous,
+                                           WorldCommit commit, PendingTask scheduled)
+            throws IOException {
+        PendingTask expected;
+        if (PendingTask.CASH_TRANSFER_V1.equals(scheduled.kind())) {
+            expected = rebuildCashTransfer(previous, commit, scheduled);
+        } else {
+            if (!commit.commandContent().equals(scheduled.payload())) {
+                throw new IOException("排程命令正文与待办参数不一致：" + scheduled.taskId());
+            }
+            expected = scheduled;
+        }
+        if (!scheduled.equals(expected)) {
+            throw new IOException("排程待办与原命令不一致：" + scheduled.taskId());
+        }
+        if (!candidate.accounts().equals(previous.accounts())
+                || !candidate.bank().sameAs(previous.bank())
+                || !Objects.equals(candidate.bankActions(), previous.bankActions())) {
+            throw new IOException("排程批次不得改变现金、银行三态或贷款台账："
+                    + commit.commandId());
+        }
+        List<PendingTask> pending = new ArrayList<>(previous.pending());
+        pending.add(expected);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        used.add(expected.taskId());
+        String internal = commit.commandId().substring("cmd:".length());
+        Map<String, String> contents = new TreeMap<>(previous.commandContents());
+        contents.put(internal, commit.commandContent());
+        Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+        String result = "SCHEDULED:" + expected.taskId();
+        outcomes.put(internal, result);
+        WorldState expectedState = bankCandidate(previous, previous.timeMillis(),
+                previous.lastPhase(), previous.accounts(), pending, used, contents, outcomes,
+                previous.bank(), previous.bankActions());
+        List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + expected.taskId(),
+                "TASK_SCHEDULED_V1", mapper.writeValueAsString(expected)));
+        requireSameBankFrame(candidate, commit, expectedState, events, commit.commandId(),
+                commit.commandContent(), result);
+    }
+
+    /**
+     * 由原 {@link ScheduleCommand} 重建现金转账待办，并复核排程期的结构事实。
+     *
+     * <p>金额、来源/收款账户、财产主体、回报延迟与回报时点全部来自命令原文；`transferOutcome`
+     * 在完成帧再按真实余额判可否，本方法只证明“这条待办确实是该命令排出来的”。</p>
+     */
+    private PendingTask rebuildCashTransfer(WorldState previous, WorldCommit commit,
+                                            PendingTask scheduled) throws IOException {
+        ScheduleCommand command;
+        try {
+            command = mapper.readValue(commit.commandContent(), ScheduleCommand.class);
+        } catch (IOException | RuntimeException invalid) {
+            throw new IOException("现金转账命令正文无法解析：" + commit.commandId(), invalid);
+        }
+        if (command.capital() != null) {
+            throw new IOException("银行角色档案不接受资本流转账：" + command.commandId());
+        }
+        if (!command.commandId().equals(commit.commandId().substring("cmd:".length()))
+                || !command.taskId().equals(scheduled.taskId())) {
+            throw new IOException("现金转账命令与会话标识不一致：" + command.commandId());
+        }
+        BigDecimal amount = CashLedger.money(command.amount());
+        if (amount.signum() <= 0 || command.receiptDelayMillis() < 0) {
+            throw new IOException("现金转账金额或回报延迟非法：" + command.commandId());
+        }
+        long noticeDue;
+        try {
+            noticeDue = Math.addExact(command.dueTimeMillis(),
+                    Math.max(1L, command.receiptDelayMillis()));
+        } catch (ArithmeticException overflow) {
+            throw new IOException("现金转账回报时点溢出：" + command.commandId(), overflow);
+        }
+        CashLedger.CashAccount from = previous.accounts().get(command.fromId());
+        if (from == null || !from.ownerId().equals(command.actorOwnerId())) {
+            throw new IOException("现金转账来源账户不属于该财产主体：" + command.fromId());
+        }
+        if (!previous.accounts().containsKey(command.toId())) {
+            throw new IOException("现金转账收款账户未登记：" + command.toId());
+        }
+        if (command.dueTimeMillis() <= previous.timeMillis()) {
+            throw new IOException("现金转账到期必须晚于排程时点：" + command.commandId());
+        }
+        TransferPayload payload = new TransferPayload(command.commandId(), command.actorOwnerId(),
+                command.fromId(), command.toId(), amount, command.receiptDelayMillis(), noticeDue,
+                null);
+        return new PendingTask(command.taskId(), command.dueTimeMillis(),
+                WorldScheduler.Phase.COMPLETION, PendingTask.CASH_TRANSFER_V1,
+                mapper.writeValueAsString(payload));
+    }
+
+    /** 现金转账帧：账户结果由纯转账函数重算，通知待办与事件同批重建。 */
+    private void requireCashTransferFrame(WorldState candidate, WorldState previous,
+                                          WorldCommit commit, PendingTask task)
+            throws IOException {
+        TransferPayload payload = mapper.readValue(task.payload(), TransferPayload.class);
+        if (payload.capital() != null) {
+            throw new IOException("银行角色档案不接受资本流转账：" + task.taskId());
+        }
+        CashLedger.TransferOutcome outcome = transferOutcome(previous, payload);
+        List<PendingTask> pending = new ArrayList<>(previous.pending());
+        pending.remove(task);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        used.add(task.taskId());
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
+                task.payload()));
+        if (outcome.accepted()) {
+            events.add(new WorldEvent("cash:" + task.taskId(), "CASH_TRANSFERRED_V1",
+                    mapper.writeValueAsString(payload)));
+        }
+        String noticeTaskId = freeNoticeTaskId(task.taskId(), pending, used);
+        String noticeId = "notice:" + task.taskId();
+        PendingTask noticeTask = new PendingTask(noticeTaskId, payload.noticeDueMillis(),
+                WorldScheduler.Phase.DELIVERY, PendingTask.TRANSFER_NOTICE_V1,
+                mapper.writeValueAsString(new NoticePayload(noticeId, task.taskId(),
+                        payload.commandId(), payload.fromId(), payload.toId(), payload.amount(),
+                        outcome.accepted(), outcome.reason())));
+        pending.add(noticeTask);
+        used.add(noticeTaskId);
+        events.add(new WorldEvent("task-scheduled:" + noticeTaskId, "TASK_SCHEDULED_V1",
+                mapper.writeValueAsString(noticeTask)));
+        WorldState expected = bankCandidate(previous, task.dueTimeMillis(), task.phase().name(),
+                outcome.accounts(), pending, used, previous.commandContents(),
+                previous.commandOutcomes(), previous.bank(), previous.bankActions());
+        requireSameBankFrame(candidate, commit, expected, events, "task:" + task.taskId(),
+                task.payload(), outcome.reason());
+    }
+
+    /**
+     * 执行一个到期任务：真实推进、恢复期逐帧重演与受控重演共用这一份按 kind 派发。
+     *
+     * <p>只负责把任务交给对应完成器；完成器自身在 {@link #commitAndApply} 落到唯一批次。
+     * 不在这里写日志、发事件或改时钟，避免出现第二套会漂移的分支。</p>
+     *
+     * @param task 本批要处理的任务
+     * @throws IOException 持久提交失败
+     */
+    private void executeTask(PendingTask task) throws IOException {
+        switch (task.kind()) {
+            case PendingTask.CASH_TRANSFER_V1 -> completeTransfer(task);
+            case PendingTask.TRANSFER_NOTICE_V1 -> deliverNotice(task);
+            case PendingTask.SELL_RESERVE_V1 -> completeReserve(task);
+            case PendingTask.SELL_CANCEL_V1 -> completeCancel(task);
+            case PendingTask.FILL_SETTLE_V1 -> completeFill(task);
+            case PendingTask.EXCHANGE_ORDER_V1 -> completeOrder(task);
+            case PendingTask.EXCHANGE_CANCEL_V1 -> completeCancelOrder(task);
+            case PendingTask.EXCHANGE_CLOSE_V1 -> completeCloseMarket(task);
+            case PendingTask.MANUFACTURING_PURCHASE_ORDER_V1,
+                 PendingTask.MANUFACTURING_PRODUCTION_V1,
+                 PendingTask.MANUFACTURING_SALES_CONTRACT_V1,
+                 PendingTask.MANUFACTURING_DELIVERY_V1,
+                 PendingTask.MANUFACTURING_COLLECT_RECEIVABLE_V1,
+                 PendingTask.MANUFACTURING_PAY_EXPENSE_BILL_V1 -> completeManufacturing(task);
+            case PendingTask.MANUFACTURING_GOODS_RECEIPT_V1,
+                 PendingTask.MANUFACTURING_BATCH_COMPLETION_V1,
+                 PendingTask.MANUFACTURING_AUTO_COLLECTION_V1 -> completeManufacturingChild(task);
+            case PendingTask.MANUFACTURING_PERIOD_CLOSE_V1 -> completePeriodClose(task);
+            case PendingTask.GOVERNANCE_MEETING_V1,
+                 PendingTask.GOVERNANCE_MATERIAL_V1,
+                 PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1,
+                 PendingTask.GOVERNANCE_VOTE_V1,
+                 PendingTask.GOVERNANCE_IMPLEMENT_V1 -> completeGovernance(task);
+            case PendingTask.BOARD_OPEN_V1 -> completeBoardOpen(task);
+            case PendingTask.BOARD_CLOSE_V1 -> completeBoardClose(task);
+            case PendingTask.BOARD_REVIEW_V1 -> completeBoardReview(task);
+            case PendingTask.ENGINEERING_BEGIN_V1 -> completeEngineeringBegin(task);
+            case PendingTask.ENGINEERING_BOARD_V1,
+                 PendingTask.BOARD_ATTEND_V1 -> completeEngineeringBoard(task);
+            case PendingTask.ENGINEERING_ACTION_V1 -> completeEngineeringAction(task);
+            case PendingTask.ENGINEERING_FUND_V1 -> completeFundedEngineering(task);
+            case PendingTask.ENGINEERING_PERIODIC_V1 -> completeEngineeringPeriodic(task);
+            case PendingTask.PERIOD_CAPTURE_V1 -> completePeriodCapture(task);
+            case PendingTask.PERIOD_CLOSE_V1 -> completePeriodCloseTask(task);
+            case PendingTask.PERIOD_DISCLOSURE_DEADLINE_V1 -> completePeriodDeadline(task);
+            case PendingTask.CUSTOMER_EVENT_V1 -> completeCustomerEvent(task);
+            case PendingTask.ROLE_APPOINT_V1,
+                 PendingTask.ROLE_REVOKE_V1 -> completeRole(task);
+            case PendingTask.INFORMATION_PUBLISH_V1,
+                 PendingTask.INFORMATION_PUBLISH_VERSION_V1,
+                 PendingTask.INFORMATION_START_READ_V1,
+                 PendingTask.INFORMATION_CANCEL_READ_V1,
+                 PendingTask.INFORMATION_COMPLETE_READ_V1 -> completeInformation(task);
+            case PendingTask.ROLE_TRADING_READ_V1,
+                 PendingTask.ROLE_TRADING_UNREAD_V1 -> completeRoleReading(task);
+            case PendingTask.ROLE_TRADING_RESEARCH_V1,
+                 PendingTask.ROLE_TRADING_TARGET_V1,
+                 PendingTask.ROLE_TRADING_REVIEW_V1,
+                 PendingTask.ROLE_TRADING_CONFIRM_V1,
+                 PendingTask.ROLE_TRADING_HALT_V1,
+                 PendingTask.ROLE_TRADING_CANCEL_V1,
+                 PendingTask.ROLE_TRADING_CHILD_V1,
+                 PendingTask.ROLE_TRADING_CHILD_CANCEL_V1,
+                 PendingTask.ROLE_TRADING_BELIEF_V1,
+                 PendingTask.ROLE_TRADING_FORECAST_V1,
+                 PendingTask.ROLE_TRADING_COMPANY_REPORT_V1 -> completeRoleAction(task);
+            case PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 -> completeBeliefCapture(task);
+            case PendingTask.INFORMATION_BELIEF_PUBLISH_FACT_V1 -> completeBeliefPublish(task);
+            case PendingTask.MEDIA_STORY_PROPOSE_V1,
+                 PendingTask.MEDIA_STORY_SUBMIT_V1,
+                 PendingTask.MEDIA_STORY_REVIEW_V1,
+                 PendingTask.MEDIA_STORY_PUBLISH_V1,
+                 PendingTask.MEDIA_STORY_CORRECTION_V1,
+                 PendingTask.MEDIA_WORK_CANCEL_V1,
+                 PendingTask.MEDIA_EVIDENCE_SHARE_V1 -> completeMediaTask(task);
+            case PendingTask.SOCIAL_BEGIN_V1,
+                 PendingTask.SOCIAL_FINISH_V1,
+                 PendingTask.SOCIAL_DELIVER_V1,
+                 PendingTask.SOCIAL_BLOCK_V1,
+                 PendingTask.SOCIAL_UNBLOCK_V1 -> completeSocialTask(task);
+            case PendingTask.GROUP_BEGIN_V1,
+                 PendingTask.GROUP_FINISH_V1,
+                 PendingTask.GROUP_PUBLISH_V1 -> completeGroupTask(task);
+            case PendingTask.INTERVIEW_INVITE_V1,
+                 PendingTask.INTERVIEW_RESPOND_V1,
+                 PendingTask.INTERVIEW_CANCEL_V1,
+                 PendingTask.INTERVIEW_END_V1,
+                 PendingTask.INTERVIEW_START_GATE_V1,
+                 PendingTask.INTERVIEW_MISS_GATE_V1,
+                 PendingTask.INTERVIEW_END_GATE_V1,
+                 PendingTask.INTERVIEW_TTL_GATE_V1,
+                 PendingTask.INTERVIEW_SPEAK_V1,
+                 PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1 -> completeInterviewTask(task);
+            case PendingTask.ROLE_TRADING_SWEEP_V1 -> completeRoleSweep(task);
+            case PendingTask.ROLE_TRADING_EXPIRE_V1 -> completeRoleExpire(task);
+            case PendingTask.ROLE_TRADING_APPOINTMENT_END_V1 -> completeAppointmentEnd(task);
+            case PendingTask.ROLE_TRADING_HALT_RELEASE_V1 -> completeHaltRelease(task);
+            case PendingTask.DIVIDEND_MEETING_V1,
+                 PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1,
+                 PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1,
+                 PendingTask.DIVIDEND_REGISTER_V1,
+                 PendingTask.DIVIDEND_BOOK_EX_V1,
+                 PendingTask.DIVIDEND_SETTLE_V1,
+                 PendingTask.DIVIDEND_IMPAIR_V1 -> completeDividend(task);
+            case PendingTask.BANK_ACTION_BEGIN_V1 -> completeBankBegin(task);
+            case PendingTask.BANK_ACTION_V1 -> completeBankTask(task);
+            default -> throw new IllegalStateException("未启用的任务种类：" + task.kind());
+        }
+    }
+
+    /**
+     * 非执行帧（cmd 排程、roleT 人物命令、dec 决定）不得凭空新增或改写消费者报告。
+     *
+     * <p>按实际调用证据：这些入口只追加待办/已用/命令记录；dec 另改决定与群呈现；roleT 的
+     * 社交写信/群组动作另改自己的社交或群子集（各自由 validateSocial/validateGroups 逐帧重演）。
+     * 其余业务子集与时间/阶段/现金/回执必须与上一帧逐字相同。旧报告改写与凭空新增都会在这里被拒，
+     * 不只检查 taskId；同真实来源 ID 改 accepted/reason/subject 同样被拒。</p>
+     *
+     * <p>待办形状：cmd 恰好新增一个排程任务，roleT 新增零或一个；旧待办不得删除或改写，已用标识
+     * 只能等于旧集合并上新任务。dec 的多动作待办由决定动作引用校验负责。</p>
+     */
+    private void requireNonExecutionFrame(WorldState candidate, WorldCommit commit,
+                                          WorldState previous, String family) throws IOException {
+        String id = commit.commandId();
+        if (candidate.timeMillis() != previous.timeMillis()
+                || !candidate.lastPhase().equals(previous.lastPhase())) {
+            throw new IOException("非执行帧不得推进时间或阶段：" + id);
+        }
+        if (!candidate.accounts().equals(previous.accounts())) {
+            throw new IOException("非执行帧不得改动现金账户：" + id);
+        }
+        if (!candidate.delivered().equals(previous.delivered())) {
+            throw new IOException("非执行帧不得追加或改写业务回执：" + id);
+        }
+        requireUnchanged(previous.securities(), candidate.securities(), "证券", id);
+        requireUnchanged(previous.exchange(), candidate.exchange(), "订单/成交", id);
+        requireUnchanged(previous.manufacturing(), candidate.manufacturing(), "制造", id);
+        requireUnchanged(previous.governance(), candidate.governance(), "Board/治理", id);
+        requireUnchanged(previous.roles(), candidate.roles(), "任职", id);
+        requireUnchanged(previous.information(), candidate.information(), "资料", id);
+        requireUnchanged(previous.trading(), candidate.trading(), "交易", id);
+        requireUnchanged(previous.beliefs(), candidate.beliefs(), "信念", id);
+        requireUnchanged(previous.media(), candidate.media(), "媒体", id);
+        requireUnchanged(previous.interviews(), candidate.interviews(), "采访", id);
+        requireUnchanged(previous.evidence(), candidate.evidence(), "证据", id);
+        requireUnchanged(previous.dividends(), candidate.dividends(), "分红", id);
+        requireUnchanged(previous.bank(), candidate.bank(), "银行三态", id);
+        requireUnchanged(previous.bankActions(), candidate.bankActions(), "贷款台账", id);
+        // cp8 原稿在非执行帧守卫里只列了 bank/bankActions，漏了额外公司治理子集；
+        // 非执行帧同样不得改写公司治理账（治理推进只走真实任务帧）。此条为接入补全，非合并丢行。
+        requireUnchanged(previous.companyGovernance(), candidate.companyGovernance(),
+                "额外公司治理", id);
+        boolean decision = "dec".equals(family);
+        boolean social = "roleT".equals(family) && roleKind(commit)
+                .equals(PendingTask.SOCIAL_FINISH_V1);
+        boolean groups = "roleT".equals(family) && roleKind(commit).equals(GroupsRun.KIND_FINISH);
+        if (!social) {
+            requireUnchanged(previous.social(), candidate.social(), "社交", id);
+        }
+        if (!groups && !decision) {
+            requireUnchanged(previous.groups(), candidate.groups(), "群组", id);
+        }
+        if (!decision) {
+            requireUnchanged(previous.decisions(), candidate.decisions(), "决定", id);
+            requireScheduleOnlyPending(previous, candidate, commit, family);
+        }
+    }
+
+    /** 非执行帧的已知子集必须与上一帧逐字相同。 */
+    private static void requireUnchanged(Object before, Object after, String label, String id)
+            throws IOException {
+        if (!java.util.Objects.equals(before, after)) {
+            throw new IOException("非执行帧不得改动" + label + "报告或状态：" + id);
+        }
+    }
+
+    /** role 命令 payload 的种类；无法解析时返回空串（按“不得改动子集”处理）。 */
+    private String roleKind(WorldCommit commit) {
+        try {
+            RoleActionPayload payload = mapper.readValue(commit.commandContent(),
+                    RoleActionPayload.class);
+            return payload.kind() == null ? "" : payload.kind();
+        } catch (IOException | RuntimeException invalid) {
+            return "";
+        }
+    }
+
+    /**
+     * 非执行帧只能追加由本批原命令派生的排程任务：旧待办原样保留，已用标识等于旧集合并新任务。
+     *
+     * <p>数量：cmd 恰好一个，roleT 零或一个（真实业务日志逐帧只出现 0..1，两个同批排程不是任何
+     * 既有入口的形状）。只保证「事件与快照一致」只能证明同步造假——攻击者可以把待办与事件一起
+     * 改成另一组数值而保留原命令正文，因此每个新增待办还必须由
+     * {@link #requireDerivedScheduledTask} 按原命令重演真实排程入口。</p>
+     *
+     * @param family 帧族：{@code cmd} 或 {@code roleT}
+     */
+    private void requireScheduleOnlyPending(WorldState previous, WorldState candidate,
+                                            WorldCommit commit, String family) throws IOException {
+        List<PendingTask> scheduled = new ArrayList<>();
+        for (WorldEvent event : commit.events()) {
+            if ("TASK_SCHEDULED_V1".equals(event.type())) {
+                scheduled.add(mapper.readValue(event.payload(), PendingTask.class));
+            }
+        }
+        int min = "cmd".equals(family) ? 1 : 0;
+        if (scheduled.size() < min || scheduled.size() > 1) {
+            throw new IOException("非执行帧的排程任务数量不合法：" + commit.commandId());
+        }
+        List<PendingTask> expectedPending = new ArrayList<>(previous.pending());
+        expectedPending.addAll(scheduled);
+        if (!candidate.pending().equals(expectedPending)) {
+            throw new IOException("非执行帧必须只追加排程任务，不得删除或改写旧待办："
+                    + commit.commandId());
+        }
+        Set<String> expectedUsed = new LinkedHashSet<>(previous.usedTaskIds());
+        for (PendingTask task : scheduled) {
+            expectedUsed.add(task.taskId());
+        }
+        if (!candidate.usedTaskIds().equals(expectedUsed)) {
+            throw new IOException("非执行帧的已用任务标识与排程不一致：" + commit.commandId());
+        }
+        for (PendingTask task : scheduled) {
+            requireDerivedScheduledTask(commit, candidate, previous, task);
+        }
     }
 
     /**
@@ -14289,7 +17738,433 @@ public final class WorldRuntime implements AutoCloseable {
         if (!java.util.Objects.equals(expected.groups(), actual.groups())) {
             diff.add("groups");
         }
+        if (!java.util.Objects.equals(expected.bank(), actual.bank())) {
+            diff.add("bank");
+        }
+        if (!java.util.Objects.equals(expected.bankActions(), actual.bankActions())) {
+            diff.add("bankActions");
+        }
+        if (!java.util.Objects.equals(expected.companyGovernance(), actual.companyGovernance())) {
+            diff.add("companyGovernance");
+        }
         return String.join(",", diff);
+    }
+
+    /**
+     * 系统计息任务的排程帧：只能由运行层按“已提款合同 + 到期时点”创建。
+     *
+     * <p>合同、期限与提款时点都从上一帧台账与唯一日志派生，模型/经理无法用任意时钟造利息；
+     * 候选帧仍必须等于“上一帧 + 这一条任务”的纯重算结果。</p>
+     */
+    private boolean requireBankAccrualScheduleFrame(WorldState candidate, WorldState previous,
+                                                    WorldCommit commit, PendingTask scheduled,
+                                                    BankActionPayload action) throws IOException {
+        if (!PendingTask.BANK_ACTION_V1.equals(scheduled.kind())
+                || action.durationMillis() != 0) {
+            throw new IOException("系统计息任务必须是无工时的完成帧：" + scheduled.taskId());
+        }
+        if (previous.commandContents().containsKey(commit.commandId())) {
+            throw new IOException("计息命令不得复用已记录命令：" + commit.commandId());
+        }
+        BankActions.Request request = mapper.readValue(action.requestJson(),
+                BankActions.Request.class);
+        if (request.kind() != BankActions.Kind.LOAN_ACCRUE) {
+            throw new IOException("系统任务只允许计息：" + scheduled.taskId());
+        }
+        BankActions.Book book = previous.bankActions() == null ? BankActions.Book.empty()
+                : previous.bankActions();
+        BankActions.Loan loan = book.loan(request.loanId());
+        if (loan == null || loan.trancheId() == null
+                || loan.status() != BankActions.LoanStatus.DRAWN || loan.tenorMs() <= 0) {
+            throw new IOException("计息任务没有已提款且绑定期次的合同：" + scheduled.taskId());
+        }
+        if (!loan.bankKey().equals(request.bankKey())
+                || !loan.borrowerKey().equals(request.customerKey())) {
+            throw new IOException("计息任务的银行或借款人与合同不一致：" + scheduled.taskId());
+        }
+        BankState.Tranche tranche;
+        try {
+            BankState bankState = previous.bank().decode(previous.accounts()).state();
+            BankState.Loan bankLoan = bankState.loan(loan.bankKey(), loan.borrowerKey());
+            tranche = bankLoan == null ? null : bankLoan.tranche(loan.trancheId());
+        } catch (RuntimeException invalid) {
+            throw new IOException("银行三态无法解码：" + invalid.getMessage(), invalid);
+        }
+        if (tranche == null || tranche.terms() == null) {
+            throw new IOException("计息任务引用的期次不存在：" + scheduled.taskId());
+        }
+        // 边界来自真实期次的起止：只能落在本合同期内，且不得倒流到已计提时点之前。
+        long start = tranche.terms().startMs();
+        long maturity = tranche.terms().maturityMs();
+        if (request.toMs() < start || request.toMs() > maturity
+                || request.toMs() < tranche.terms().lastAccruedMs()) {
+            throw new IOException("计息时点必须落在本合同起止与已计提之后：" + scheduled.taskId());
+        }
+        if (scheduled.dueTimeMillis() != request.toMs()) {
+            throw new IOException("计息任务到期必须等于合同计息时点：" + scheduled.taskId());
+        }
+        if (!scheduled.payload().equals(commit.commandContent())) {
+            throw new IOException("计息任务正文与命令不一致：" + scheduled.taskId());
+        }
+        List<PendingTask> pending = new ArrayList<>(previous.pending());
+        pending.add(scheduled);
+        Set<String> used = new LinkedHashSet<>(previous.usedTaskIds());
+        used.add(scheduled.taskId());
+        Map<String, String> contents = new TreeMap<>(previous.commandContents());
+        contents.put(action.commandId(), commit.commandContent());
+        Map<String, String> outcomes = new TreeMap<>(previous.commandOutcomes());
+        String result = "SCHEDULED:" + action.clientTaskId();
+        outcomes.put(action.commandId(), result);
+        WorldState expected = bankCandidate(previous, previous.timeMillis(), previous.lastPhase(),
+                previous.accounts(), pending, used, contents, outcomes, previous.bank(),
+                previous.bankActions());
+        List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + scheduled.taskId(),
+                "TASK_SCHEDULED_V1", mapper.writeValueAsString(scheduled)));
+        requireSameBankFrame(candidate, commit, expected, events,
+                "cmd:" + action.commandId(), commit.commandContent(), result);
+        return true;
+    }
+
+    /**
+     * 候选批次必须与纯重算结果逐字段相同（含事件、命令身份与结果码）。
+     *
+     * <p>银行三态按<b>解码后的经济内容</b>比较：换一种等价 JSON 写法不算篡改，但任何金额、
+     * 条款、回执或绑定的差异都会被拒绝。</p>
+     */
+    private void requireSameBankFrame(WorldState candidate, WorldCommit commit, WorldState expected,
+                                      List<WorldEvent> events, String commandId, String content,
+                                      String result) throws IOException {
+        List<WorldEvent> actual = commit.events().stream()
+                .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
+        if (!sameStateEconomy(candidate, expected) || !events.equals(actual)
+                || !commit.commandId().equals(commandId)
+                || !commit.commandContent().equals(content)
+                || !commit.result().equals(result)) {
+            throw new IOException("该批次无法从原命令与上一帧重算：" + commandId);
+        }
+    }
+
+    /** 逐子集比较两帧；银行三态比较解码后的经济内容（表示差异不算篡改）。 */
+    private static boolean sameStateEconomy(WorldState left, WorldState right) throws IOException {
+        if (left == null || right == null) {
+            return left == right;
+        }
+        return left.schemaVersion() == right.schemaVersion()
+                && left.runId().equals(right.runId())
+                && left.position() == right.position()
+                && left.timeMillis() == right.timeMillis()
+                && left.lastPhase().equals(right.lastPhase())
+                && sameAccounts(left.accounts(), right.accounts())
+                && left.pending().equals(right.pending())
+                && left.delivered().equals(right.delivered())
+                && left.usedTaskIds().equals(right.usedTaskIds())
+                && left.commandContents().equals(right.commandContents())
+                && left.commandOutcomes().equals(right.commandOutcomes())
+                && Objects.equals(left.securities(), right.securities())
+                && Objects.equals(left.exchange(), right.exchange())
+                && Objects.equals(left.manufacturing(), right.manufacturing())
+                && Objects.equals(left.governance(), right.governance())
+                && Objects.equals(left.roles(), right.roles())
+                && Objects.equals(left.information(), right.information())
+                && Objects.equals(left.trading(), right.trading())
+                && Objects.equals(left.decisions(), right.decisions())
+                && Objects.equals(left.dividends(), right.dividends())
+                && Objects.equals(left.beliefs(), right.beliefs())
+                && Objects.equals(left.media(), right.media())
+                && Objects.equals(left.interviews(), right.interviews())
+                && Objects.equals(left.evidence(), right.evidence())
+                && Objects.equals(left.social(), right.social())
+                && Objects.equals(left.engineering(), right.engineering())
+                && sameBook(left.bankActions(), right.bankActions())
+                && sameBankEconomy(left, right)
+                && Objects.equals(left.groups(), right.groups());
+    }
+
+    /** 贷款台账按经济内容比较：金额按数值比，条款/状态/期次绑定按字段比。 */
+    private static boolean sameBook(BankActions.Book left, BankActions.Book right) {
+        if (left == right) {
+            return true;
+        }
+        if (left == null || right == null || !left.loans().keySet().equals(right.loans().keySet())) {
+            return false;
+        }
+        for (Map.Entry<String, BankActions.Loan> entry : left.loans().entrySet()) {
+            BankActions.Loan a = entry.getValue();
+            BankActions.Loan b = right.loans().get(entry.getKey());
+            if (b == null
+                    || !a.loanId().equals(b.loanId())
+                    || !a.bankKey().equals(b.bankKey())
+                    || !a.borrowerKey().equals(b.borrowerKey())
+                    || a.amount().compareTo(b.amount()) != 0
+                    || a.rateU() != b.rateU() || a.tenorMs() != b.tenorMs()
+                    || !a.purpose().equals(b.purpose())
+                    || a.status() != b.status()
+                    || a.accepted() != b.accepted()
+                    || !Objects.equals(a.approvedBy(), b.approvedBy())
+                    || a.drawn().compareTo(b.drawn()) != 0
+                    || !Objects.equals(a.trancheId(), b.trancheId())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 银行三态的经济等价：解出档案、账簿与托管明细后逐字段比较。 */
+    private static boolean sameBankEconomy(WorldState left, WorldState right) throws IOException {
+        BankRun a = left.bank();
+        BankRun b = right.bank();
+        if (a == null || b == null) {
+            return a == b;
+        }
+        if (a == b || a.equals(b)) {
+            return true;
+        }
+        BankRun.Decoded da;
+        BankRun.Decoded db;
+        try {
+            da = a.decode(left.accounts());
+            db = b.decode(right.accounts());
+        } catch (RuntimeException invalid) {
+            return false;
+        }
+        return da.config().equals(db.config()) && da.state().equals(db.state())
+                && da.book().equals(db.book());
+    }
+
+    /** 现金账户按经济内容比较：金额按数值比（`1000.0` 与 `1000.00` 是同一笔钱）。 */
+    private static boolean sameAccounts(Map<String, CashLedger.CashAccount> left,
+                                        Map<String, CashLedger.CashAccount> right) {
+        if (left == right) {
+            return true;
+        }
+        if (left == null || right == null || !left.keySet().equals(right.keySet())) {
+            return false;
+        }
+        for (Map.Entry<String, CashLedger.CashAccount> entry : left.entrySet()) {
+            CashLedger.CashAccount a = entry.getValue();
+            CashLedger.CashAccount b = right.get(entry.getKey());
+            if (b == null || !a.ownerId().equals(b.ownerId())
+                    || !a.source().equals(b.source())
+                    || a.cash().compareTo(b.cash()) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 命令来源白名单：每帧必须能回到既有入口产生的命令标识。
+     *
+     * <p>只按前缀识别会让“未知命令换成某个已知前缀”混进通用校验，因此这里逐类核对动态来源：
+     * {@code task:} 必须对应上一帧真实待办且内容即该待办原文；{@code cmd:} 必须是本批新增的
+     * 命令记录并伴随真实排程事件；{@code roleT:} 必须绑定本批新增的人物命令；分红任务批次必须
+     * 绑定上一帧分红待办；决定批次只接受明确的内建会话命令或上一帧已存在的动作/尝试身份。
+     * 其余一律拒绝。未知命令即使完全不改状态也不能静默持久化。</p>
+     *
+     * <p>本检查证明“帧来自既有入口且来源键真实存在”，各域完整逐帧重演仍由现有校验承担；
+     * 它不构成外部签名，把原命令与全部派生状态整体改写成另一条合法命令不在可鉴别范围内。</p>
+     */
+    private void requireCommandOrigin(WorldState candidate, WorldCommit commit, WorldState previous)
+            throws IOException {
+        String id = commit.commandId();
+        if (previous == null) {
+            if (!OPEN_COMMAND.equals(id)) {
+                throw new IOException("开局批次命令不属于开局入口：" + id);
+            }
+            return;
+        }
+        if (id.startsWith("clock:") || id.startsWith("barrier:")) {
+            // 时钟/屏障随后由 validateClockFrame 精确重算标识、内容、事件与纯派生状态。
+            return;
+        }
+        if (id.startsWith("task:")) {
+            PendingTask task = pendingOf(previous, id.substring("task:".length()));
+            if (task == null || !task.payload().equals(commit.commandContent())) {
+                throw new IOException("任务批次必须对应上一帧真实待办：" + id);
+            }
+            requireDerivedTaskFrame(candidate, commit, previous, task);
+            return;
+        }
+        if (id.startsWith("cmd:")) {
+            String command = id.substring("cmd:".length());
+            boolean recorded = !command.isEmpty()
+                    && !previous.commandContents().containsKey(command)
+                    && commit.commandContent().equals(candidate.commandContents().get(command))
+                    && commit.result().equals(candidate.commandOutcomes().get(command));
+            boolean scheduled = commit.events().stream()
+                    .anyMatch(event -> "TASK_SCHEDULED_V1".equals(event.type()));
+            if (!recorded || !scheduled) {
+                throw new IOException("命令批次必须绑定本批新增命令与真实排程：" + id);
+            }
+            requireNonExecutionFrame(candidate, commit, previous, "cmd");
+            return;
+        }
+        if (id.startsWith("roleT:")) {
+            requireRoleCommandOrigin(candidate, commit, previous, id);
+            requireNonExecutionFrame(candidate, commit, previous, "roleT");
+            return;
+        }
+        if (id.startsWith("div-batch:")) {
+            PendingTask task = pendingOf(previous, id.substring("div-batch:".length()));
+            if (task == null || !isDividendTaskKind(task.kind())
+                    || !task.payload().equals(commit.commandContent())) {
+                throw new IOException("分红批次必须对应上一帧分红待办：" + id);
+            }
+            requireDerivedTaskBatch(candidate, commit, previous, task);
+            return;
+        }
+        for (PendingTask task : previous.pending()) {
+            if (isDividendTaskKind(task.kind()) && id.equals(commandIdOf(task.payload()))
+                    && task.payload().equals(commit.commandContent())) {
+                requireDerivedTaskBatch(candidate, commit, previous, task);
+                return;
+            }
+        }
+        if (id.startsWith("dec-")) {
+            requireDecisionOrigin(candidate, previous, commit, id);
+            requireNonExecutionFrame(candidate, commit, previous, "dec");
+            return;
+        }
+        throw new IOException("提交命令不属于任何既有入口：" + id);
+    }
+
+    /** roleT 命令批次：必须绑定本批新增的人物命令原文，人物取自命令标识的长度前缀。 */
+    private void requireRoleCommandOrigin(WorldState candidate, WorldCommit commit,
+                                          WorldState previous, String id) throws IOException {
+        String person = roleCommandPerson(id);
+        boolean recorded = person != null
+                && !previous.commandContents().containsKey(id)
+                && commit.commandContent().equals(candidate.commandContents().get(id))
+                && commit.result().equals(candidate.commandOutcomes().get(id));
+        RoleActionPayload payload = null;
+        if (recorded) {
+            try {
+                payload = mapper.readValue(commit.commandContent(), RoleActionPayload.class);
+            } catch (IOException invalid) {
+                payload = null;
+            }
+        }
+        if (payload == null || !id.equals(payload.commandId())
+                || !person.equals(payload.personPartyId())) {
+            throw new IOException("角色命令批次必须绑定本批新增的人物命令：" + id);
+        }
+    }
+
+    /** 决定批次：内建会话/回执命令要求本批新增记录；失败/超时批次只要求上一帧已存在尝试身份。 */
+    private void requireDecisionOrigin(WorldState candidate, WorldState previous, WorldCommit commit,
+                                       String id) throws IOException {
+        // 失败与超时批次沿用既有写法：只追加审计与决定状态，不向命令表补记录。
+        if (id.startsWith("dec-fail:")) {
+            String attemptId = id.substring("dec-fail:".length());
+            if (!hasAttempt(previous, null, attemptId)) {
+                throw new IOException("决定失败批次缺少上一帧尝试身份：" + attemptId);
+            }
+            requireAnyEvent(commit, "DECISION_FAILED_V1");
+            return;
+        }
+        if (id.startsWith("dec-timeout:")) {
+            String rest = id.substring("dec-timeout:".length());
+            int sep = rest.lastIndexOf(':');
+            if (sep <= 0 || !hasAttempt(previous, rest.substring(0, sep),
+                    rest.substring(sep + 1))) {
+                throw new IOException("决定超时批次缺少上一帧动作/尝试身份：" + id);
+            }
+            requireAnyEvent(commit, "DECISION_TIMEOUT_V1");
+            return;
+        }
+        boolean recorded = !previous.commandContents().containsKey(id)
+                && commit.commandContent().equals(candidate.commandContents().get(id))
+                && commit.result().equals(candidate.commandOutcomes().get(id));
+        if (!recorded) {
+            throw new IOException("决定批次必须为本批新增命令记录：" + id);
+        }
+        if (id.startsWith("dec-session:")) {
+            requireAnyEvent(commit, "DECISION_SESSION_OPEN_V1");
+            return;
+        }
+        if (id.startsWith("dec-open:")) {
+            requireAnyEvent(commit, "DECISION_OPENED_V1");
+            return;
+        }
+        if (id.startsWith("dec-reply:")) {
+            requireAnyEvent(commit, "DECISION_REPLIED_V1", "DECISION_STALE_ARCHIVED_V1",
+                    "DECISION_AUDIT_V1");
+            return;
+        }
+        if (id.startsWith("dec-dispatch:")) {
+            requireAnyEvent(commit, "DECISION_DISPATCH_V1");
+            return;
+        }
+        if (id.startsWith("dec-provider-failed:")) {
+            String attemptId = id.substring("dec-provider-failed:".length());
+            if (!hasAttempt(previous, null, attemptId)) {
+                throw new IOException("提供方失败批次缺少上一帧尝试身份：" + attemptId);
+            }
+            requireAnyEvent(commit, "DECISION_PROVIDER_FAILED_V1");
+            return;
+        }
+        throw new IOException("未知决定批次前缀：" + id);
+    }
+
+    /** 从 roleT 标识解出人物；长度前缀不合法返回 null。 */
+    private static String roleCommandPerson(String id) {
+        String rest = id.substring("roleT:".length());
+        int sep = rest.indexOf(':');
+        if (sep <= 0) {
+            return null;
+        }
+        int length;
+        try {
+            length = Integer.parseInt(rest.substring(0, sep));
+        } catch (NumberFormatException invalid) {
+            return null;
+        }
+        int start = sep + 1;
+        if (length <= 0 || start + length >= rest.length() || rest.charAt(start + length) != ':') {
+            return null;
+        }
+        return rest.substring(start, start + length);
+    }
+
+    /** 上一帧决定里是否存在指定尝试；actionId 为空时不限动作。 */
+    private static boolean hasAttempt(WorldState previous, String actionId, String attemptId) {
+        if (previous.decisions() == null || attemptId == null || attemptId.isEmpty()) {
+            return false;
+        }
+        for (DecisionModel.Decision decision : previous.decisions().state().decisions()) {
+            if (actionId != null && !actionId.equals(decision.actionId())) {
+                continue;
+            }
+            for (DecisionModel.Attempt attempt : decision.attempts()) {
+                if (attemptId.equals(attempt.attemptId())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 本批必须出现指定类型之一的事件。 */
+    private static void requireAnyEvent(WorldCommit commit, String... types) throws IOException {
+        for (WorldEvent event : commit.events()) {
+            for (String type : types) {
+                if (type.equals(event.type())) {
+                    return;
+                }
+            }
+        }
+        throw new IOException("批次缺少与命令一致的事件");
+    }
+
+    /** 分红任务种类：完成帧与付款批次都以这些待办为来源。 */
+    private static boolean isDividendTaskKind(String kind) {
+        return PendingTask.DIVIDEND_MEETING_V1.equals(kind)
+                || PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1.equals(kind)
+                || PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(kind)
+                || PendingTask.DIVIDEND_REGISTER_V1.equals(kind)
+                || PendingTask.DIVIDEND_BOOK_EX_V1.equals(kind)
+                || PendingTask.DIVIDEND_SETTLE_V1.equals(kind)
+                || PendingTask.DIVIDEND_IMPAIR_V1.equals(kind);
     }
 
     /** 纯时间推进只能改变位置、时间和阶段，不能夹带业务或待办变化。 */
@@ -14478,7 +18353,8 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
                 previous.dividends(), previous.beliefs(), media, run, previous.evidence(),
-                previous.social(), previous.engineering(), previous.groups());
+                previous.social(), previous.engineering(), previous.bank(),
+                previous.bankActions(), previous.companyGovernance(), previous.groups());
     }
 
     /** 决定来源：按任务标识在已接收决定动作引用里查找同一任务。 */
@@ -15039,7 +18915,8 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
                 previous.dividends(), previous.beliefs(), run, previous.interviews(), evidence,
-                previous.social(), previous.engineering(), previous.groups());
+                previous.social(), previous.engineering(), previous.bank(),
+                previous.bankActions(), previous.companyGovernance(), previous.groups());
     }
 
     /**
@@ -15096,7 +18973,8 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
                 previous.dividends(), previous.beliefs(), previous.media(), previous.interviews(),
-                previous.evidence(), social, previous.engineering(), previous.groups());
+                previous.evidence(), social, previous.engineering(), previous.bank(),
+                previous.bankActions(), previous.companyGovernance(), previous.groups());
     }
 
     /**
@@ -15711,6 +19589,7 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         busy.addAll(engineeringBusyOf(base, person, excludeTaskId));
+        busy.addAll(bankingBusyOf(base, person, excludeTaskId));
         busy.sort(Comparator.comparingLong(InterviewModel.Interval::fromMillis)
                 .thenComparingLong(InterviewModel.Interval::toMillis));
         return List.copyOf(busy);
@@ -17007,7 +20886,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private void validateRoleReading(WorldState candidate, WorldState previous, WorldCommit commit)
             throws IOException {
-        if (expectedSchema() < STATE_SCHEMA_ROLE_READING) {
+        if (!manifest.hasRoles()) {
             if (candidate.roles() != null || candidate.information() != null) {
                 throw new IOException("旧档案不得包含任职或阅读子集状态");
             }
@@ -17030,11 +20909,14 @@ public final class WorldRuntime implements AutoCloseable {
                 .filter(task -> pendingOf(candidate, task.taskId()) == null).toList();
         PendingTask named = commit.commandId().startsWith("task:")
                 ? pendingOf(previous, commit.commandId().substring(5)) : null;
+        boolean companyBoardFrame = named != null
+                && PendingTask.ENGINEERING_BOARD_V1.equals(named.kind())
+                && manifest.hasComposedBankWorld();
         boolean roleFrame = !removed.isEmpty()
                 || named != null && isAppointmentTask(named.kind())
                 || commit.events().stream().anyMatch(event -> "ROLE_REPORT_V1".equals(event.type()));
         if (!roleFrame) {
-            if (!(manifest.hasEngineering() && engineeringTouched(commit))
+            if (!(manifest.hasEngineering() && engineeringTouched(commit)) && !companyBoardFrame
                     && !Objects.equals(previous.roles(), candidate.roles())) {
                 throw new IOException("没有真实任职任务的批次改变了任职子集");
             }
@@ -17236,12 +21118,277 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 组合档公司派生财务头寸：资产、负债、权益三分，全部按真实事件与冻结开局派生。
+     *
+     * <p><b>为什么不能用“净差额”</b>：只把「存款 + 证券成本 − 开局证券成本」当作一个净额加进
+     * 资产侧，借款到账、应计利息、证券溢价/折价卖出都会算错。因此这里把三侧分开派生：</p>
+     * <ul>
+     *   <li><b>资产</b>：银行存款本金 + 客户应收存款利息 + 证券持仓按成本计值（全额）。</li>
+     *   <li><b>负债</b>：本公司借款的名义本金（{@code Loan.contract()}，WIRE_OFF 后仍有追索）
+     *       + 应计未付借款利息（银行已入账的 {@code Loan.interestReceivable()}）。</li>
+     *   <li><b>权益</b>：已实现证券投资损益（真实成交现金流 + 持仓成本变动）+
+     *       存款利息收入 − 借款利息费用 + 冻结的开局证券成本。
+     *       最后一项是开局登记的常数：子账本开局权益当初不含证券持仓，
+     *       把证券按全额成本计入资产后必须同时给出这条基线，A=L+E 才成立。</li>
+     * </ul>
+     *
+     * <p>所有数字都来自真实权威：{@code BankState}（存贷/利息）、{@code WorldExchange} 成交、
+     * {@code SecuritiesLedger} 批次成本、{@code OpeningRegistry} 开局分配。任何一个差额都不会被
+     * 直接塞进利润；没有真实事件就没有损益。</p>
+     *
+     * @param bankDeposits        该主体在各银行的存款本金
+     * @param depositInterest     该主体应计未付存款利息（客户应收）
+     * @param securitiesCost      该主体名下证券持仓按成本计值（全额）
+     * @param openingSecuritiesCost 冻结开局证券成本（子账本开局权益未含此部分）
+     * @param securityTradeCashFlow 真实成交现金流（卖出为正、买入为负，与资金桶无关）
+     * @param realizedSecuritiesPnl 已实现证券投资损益 = 成交现金流 +（当前成本 − 开局成本）
+     * @param loanPrincipal       本公司借款名义本金合计
+     * @param loanInterest        本公司应计未付借款利息合计
+     */
+    public record ComposedFinancialPosition(BigDecimal bankDeposits, BigDecimal depositInterest,
+                                            BigDecimal securitiesCost,
+                                            BigDecimal openingSecuritiesCost,
+                                            BigDecimal securityTradeCashFlow,
+                                            BigDecimal realizedSecuritiesPnl,
+                                            BigDecimal loanPrincipal, BigDecimal loanInterest,
+                                            BigDecimal custodyBeneficial,
+                                            BigDecimal custodyPoolAssets,
+                                            BigDecimal custodyClientLiabilities,
+                                            BigDecimal openingCustodyBeneficial) {
+
+        /**
+         * 派生资产 = 存款本金 + 应收存款利息 + 证券成本 + 自有客户托管受益权
+         * + 作为托管机构持有的池存款。
+         *
+         * <p>池存款与客户负债成对出现，只用于托管机构自身的真实总资产/总负债列示，
+         * 净额为零；非托管公司的这两项恒为零，不会把别人的池算成自己的财富。</p>
+         *
+         * @return 派生资产
+         */
+        public BigDecimal assets() {
+            return CashLedger.money(bankDeposits.add(depositInterest).add(securitiesCost)
+                    .add(custodyBeneficial).add(custodyPoolAssets));
+        }
+
+        /**
+         * 派生负债 = 借款名义本金 + 应计未付利息 + 托管机构对客户的池负债。
+         *
+         * @return 派生负债
+         */
+        public BigDecimal liabilities() {
+            return CashLedger.money(loanPrincipal.add(loanInterest)
+                    .add(custodyClientLiabilities));
+        }
+
+        /**
+         * 派生权益 = 已实现投资损益 + 存款利息收入 − 借款利息费用 + 开局证券成本
+         * + 开局客户托管受益权。
+         *
+         * <p>开局权益只来自冻结的真实开局金融禀赋（证券分配与托管明细），不按当前资产残差
+         * 补差，也不把当期买入或营业支付计成注资。</p>
+         *
+         * @return 派生权益
+         */
+        public BigDecimal equity() {
+            return CashLedger.money(realizedSecuritiesPnl.add(depositInterest)
+                    .subtract(loanInterest).add(openingSecuritiesCost)
+                    .add(openingCustodyBeneficial));
+        }
+    }
+
+    /**
+     * 组合档公司派生财务头寸（只读派生）。旧档或未启用组合银行世界时全零。
+     *
+     * <p>公司完整报表、God 审计与制造/工程平衡校验共用这一份派生，不建立第二本账。</p>
+     *
+     * @param cashAccountId 该公司子账本的经营现金账户
+     * @return 派生头寸
+     */
+    public synchronized ComposedFinancialPosition composedFinancialPosition(String cashAccountId) {
+        return composedFinancialPositionOf(state, cashAccountId);
+    }
+
+    private ComposedFinancialPosition composedFinancialPositionOf(WorldState base,
+            String cashAccountId) {
+        ComposedFinancialPosition zero = new ComposedFinancialPosition(ZERO, ZERO, ZERO, ZERO,
+                ZERO, ZERO, ZERO, ZERO, ZERO, ZERO, ZERO, ZERO);
+        CashLedger.CashAccount cash = base.accounts().get(cashAccountId);
+        if (cash == null || !manifest.hasComposedBankWorld() || registry == null) {
+            return zero;
+        }
+        String ownerId = cash.ownerId();
+        BigDecimal deposits = ZERO;
+        BigDecimal depositInterest = ZERO;
+        BigDecimal loanPrincipal = ZERO;
+        BigDecimal loanInterest = ZERO;
+        if (base.bank() != null) {
+            BankState bankState = base.bank().decode(base.accounts()).state();
+            BankChart chart = bankState.chart();
+            for (Map.Entry<String, edu.cufe.auction.world.bank.BankingProfile.PartyRef> entry
+                    : new TreeMap<>(chart.profile().parties()).entrySet()) {
+                edu.cufe.auction.world.bank.BankingProfile.PartyRef ref = entry.getValue();
+                if (!ref.ownerId().equals(ownerId) || ref.depositGl() == null) {
+                    continue;
+                }
+                for (String bank : chart.banks()) {
+                    deposits = deposits.add(bankState.depositOf(bank, entry.getKey()));
+                    BankState.DepositAccount account = bankState.depositAccount(bank,
+                            entry.getKey());
+                    if (account != null) {
+                        depositInterest = depositInterest.add(account.interestPayable());
+                    }
+                }
+            }
+            for (Map.Entry<String, BankState.Loan> entry : new TreeMap<>(bankState.loans()).entrySet()) {
+                String borrower = chart.borrowerOfLoanKey(entry.getKey());
+                if (borrower == null) {
+                    continue;
+                }
+                edu.cufe.auction.world.bank.BankingProfile.PartyRef ref =
+                        chart.profile().parties().get(borrower);
+                if (ref == null || !ref.ownerId().equals(ownerId)) {
+                    continue;
+                }
+                loanPrincipal = loanPrincipal.add(entry.getValue().contract());
+                loanInterest = loanInterest.add(entry.getValue().interestReceivable());
+            }
+        }
+        BigDecimal securities = ZERO;
+        BigDecimal tradeFlow = ZERO;
+        if (base.securities() != null) {
+            for (SecuritiesLedger.Lot lot : base.securities().lots()) {
+                CashLedger.CashAccount account = base.accounts().get(lot.accountId());
+                if (account != null && account.ownerId().equals(ownerId)) {
+                    securities = securities.add(lot.costPrice()
+                            .multiply(BigDecimal.valueOf(lot.remaining())));
+                }
+            }
+        }
+        if (base.exchange() != null) {
+            for (WorldExchange.Trade trade : base.exchange().trades()) {
+                BigDecimal amount = trade.price().multiply(BigDecimal.valueOf(trade.quantity()));
+                if (owns(base.accounts(), trade.sellAccountId(), ownerId)) {
+                    tradeFlow = tradeFlow.add(amount);
+                }
+                if (owns(base.accounts(), trade.buyAccountId(), ownerId)) {
+                    tradeFlow = tradeFlow.subtract(amount);
+                }
+            }
+        }
+        BigDecimal opening = openingSecuritiesCost(ownerId);
+        BigDecimal custodyBeneficial = ZERO;
+        BigDecimal custodyPoolAssets = ZERO;
+        BigDecimal custodyClientLiabilities = ZERO;
+        BigDecimal openingCustody = ZERO;
+        if (manifest.hasCustodyFill() && base.bank() != null) {
+            BankRun.Decoded decoded;
+            try {
+                decoded = base.bank().decode(base.accounts());
+            } catch (RuntimeException invalid) {
+                throw new IllegalStateException("托管三态无法解码："
+                        + invalid.getMessage(), invalid);
+            }
+            edu.cufe.auction.world.bank.CustodyBook book = decoded.book();
+            edu.cufe.auction.world.bank.BankingProfile profile =
+                    decoded.state().chart().profile();
+            if (book != null) {
+                for (Map.Entry<String, edu.cufe.auction.world.bank.BankingProfile.PartyRef> party
+                        : new TreeMap<>(profile.parties()).entrySet()) {
+                    if (!party.getValue().ownerId().equals(ownerId)) {
+                        continue;
+                    }
+                    for (String custodian : new TreeMap<>(profile.custodians()).keySet()) {
+                        custodyBeneficial = custodyBeneficial
+                                .add(book.detailOf(custodian, party.getKey()));
+                    }
+                }
+                for (Map.Entry<String, edu.cufe.auction.world.bank.BankingProfile.CustodyRef>
+                        custodian : new TreeMap<>(profile.custodians()).entrySet()) {
+                    if (!custodian.getValue().ownerId().equals(ownerId)) {
+                        continue;
+                    }
+                    custodyPoolAssets = custodyPoolAssets.add(decoded.state()
+                            .depositOf(custodian.getValue().bankId(), custodian.getKey()));
+                    String prefix = custodian.getKey()
+                            + edu.cufe.auction.world.bank.CustodyBook.KEY_SEPARATOR;
+                    for (Map.Entry<String, BigDecimal> detail
+                            : new TreeMap<>(book.details()).entrySet()) {
+                        if (detail.getKey().startsWith(prefix)) {
+                            custodyClientLiabilities =
+                                    custodyClientLiabilities.add(detail.getValue());
+                        }
+                    }
+                }
+            }
+            openingCustody = openingCustodyBeneficialOf(profile, ownerId);
+        }
+        return new ComposedFinancialPosition(CashLedger.money(deposits),
+                CashLedger.money(depositInterest), CashLedger.money(securities), opening,
+                CashLedger.money(tradeFlow),
+                CashLedger.money(tradeFlow.add(securities).subtract(opening)),
+                CashLedger.money(loanPrincipal), CashLedger.money(loanInterest),
+                CashLedger.money(custodyBeneficial), CashLedger.money(custodyPoolAssets),
+                CashLedger.money(custodyClientLiabilities), CashLedger.money(openingCustody));
+    }
+
+    /**
+     * 冻结开局里属于该 owner 的客户托管受益权：只取开局申请声明的历史明细，
+     * 按真实客户 party 的 owner 归属；不读当前明细，也不按当前资产残差补权益。
+     *
+     * @param profile 冻结银行档案
+     * @param ownerId 财产主体
+     * @return 开局托管受益权
+     */
+    private BigDecimal openingCustodyBeneficialOf(
+            edu.cufe.auction.world.bank.BankingProfile profile, String ownerId) {
+        if (bankOpening == null || bankOpening.custodyDeclared().isEmpty()) {
+            return ZERO;
+        }
+        BigDecimal total = ZERO;
+        for (Map<String, BigDecimal> details : bankOpening.custodyDeclared().values()) {
+            for (Map.Entry<String, BigDecimal> detail : details.entrySet()) {
+                edu.cufe.auction.world.bank.BankingProfile.PartyRef client =
+                        profile.parties().get(detail.getKey());
+                if (client != null && client.ownerId().equals(ownerId)) {
+                    total = total.add(detail.getValue());
+                }
+            }
+        }
+        return total;
+    }
+
+    private static boolean owns(Map<String, CashLedger.CashAccount> accounts, String accountId,
+            String ownerId) {
+        CashLedger.CashAccount account = accounts.get(accountId);
+        return account != null && account.ownerId().equals(ownerId);
+    }
+
+    /** 冻结的开局证券成本：只来自开局登记分配，按同一 owner 名下账户汇总，不随行情变化。 */
+    private BigDecimal openingSecuritiesCost(String ownerId) {
+        BigDecimal total = ZERO;
+        for (OpeningRegistry.ShareAllocation allocation : registry.allocations()) {
+            OpeningAccount account = null;
+            for (OpeningAccount candidate : orderedOpenings) {
+                if (candidate.accountId().equals(allocation.accountId())) {
+                    account = candidate;
+                    break;
+                }
+            }
+            if (account != null && account.ownerId().equals(ownerId)) {
+                total = total.add(allocation.costPrice()
+                        .multiply(BigDecimal.valueOf(allocation.quantity())));
+            }
+        }
+        return CashLedger.money(total);
+    }
+
+    /**
      * 校验制造子集：档案一致、公司平衡式与世界现金守恒、旧记录不可改写、报告只增不改，
      * 并要求活动采购/在制/未到期应收必须由持久待办推动。
      */
     private void validateManufacturing(WorldState candidate, WorldState previous) throws IOException {
         ManufacturingRun run = candidate.manufacturing();
-        if (expectedSchema() < STATE_SCHEMA_MANUFACTURING) {
+        if (!manifest.hasManufacturing()) {
             if (run != null) {
                 throw new IOException("旧档案不得包含制造子集状态");
             }
@@ -17257,8 +21404,11 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("制造子集账户绑定与开局配置不一致");
         }
         try {
+            ComposedFinancialPosition position = composedFinancialPositionOf(candidate,
+                    run.ledger().opening().companyAccountId());
             ManufacturingModel.validate(run.ledger(), candidate.accounts(),
-                    dividendPositionOf(candidate.dividends()));
+                    dividendPositionOf(candidate.dividends()),
+                    position.assets(), position.liabilities(), position.equity());
         } catch (RuntimeException invalid) {
             throw new IOException("制造账不平衡：" + invalid.getMessage(), invalid);
         }
@@ -17445,13 +21595,264 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 本批真实完成的任务种类（按 {@code task-completed:} 事件对照上一帧待办）。
+     *
+     * @param previous 上一帧
+     * @param commit   本批提交
+     * @return 已完成任务种类集合
+     */
+    private static Set<String> completedTaskKinds(WorldState previous, WorldCommit commit) {
+        Map<String, String> kinds = new LinkedHashMap<>();
+        for (PendingTask task : previous.pending()) {
+            kinds.put(task.taskId(), task.kind());
+        }
+        Set<String> done = new LinkedHashSet<>();
+        String prefix = "task-completed:";
+        for (WorldEvent event : commit.events()) {
+            if (!"TASK_COMPLETED_V1".equals(event.type())
+                    || !event.eventId().startsWith(prefix)) {
+                continue;
+            }
+            String kind = kinds.get(event.eventId().substring(prefix.length()));
+            if (kind != null) {
+                done.add(kind);
+            }
+        }
+        return done;
+    }
+
+    /**
+     * 本批真实完成的任务：只按 {@code task-completed:<taskId>} 事件到上一帧待办里取原任务，
+     * 要求事件 payload 与原待办逐字相同、同一任务只消费一次，并按事件顺序返回。
+     *
+     * @param previous 上一帧
+     * @param commit   本批提交
+     * @return 原任务列表
+     * @throws IOException 完成事件找不到原待办、内容不一致或重复消费
+     */
+    private static List<PendingTask> consumedTasks(WorldState previous, WorldCommit commit)
+            throws IOException {
+        java.util.Map<String, PendingTask> tasks = new java.util.LinkedHashMap<>();
+        for (PendingTask task : previous.pending()) {
+            tasks.put(task.taskId(), task);
+        }
+        List<PendingTask> consumed = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        String prefix = "task-completed:";
+        for (WorldEvent event : commit.events()) {
+            if (!"TASK_COMPLETED_V1".equals(event.type())
+                    || !event.eventId().startsWith(prefix)) {
+                continue;
+            }
+            String taskId = event.eventId().substring(prefix.length());
+            PendingTask task = tasks.get(taskId);
+            if (task == null) {
+                throw new IOException("完成事件没有对应的原待办：" + taskId);
+            }
+            if (!task.payload().equals(event.payload())) {
+                throw new IOException("完成事件内容与原待办不一致：" + taskId);
+            }
+            if (!seen.add(taskId)) {
+                throw new IOException("同一任务被重复消费：" + taskId);
+            }
+            consumed.add(task);
+        }
+        return List.copyOf(consumed);
+    }
+
+    /**
+     * 工程档案里，非工程批次的治理子集必须精确等于“上一帧 + 本批真实原任务”的派生结果：
+     * 每个会议的到会/回避/材料/选票/提案/决议、期间证据/考核、回报与预算承诺都在比较范围内。
+     * 无治理效应的批次（含制造关期）期望值就是上一帧原样，任何字段都不能凭空变化。
+     *
+     * <p>分红类批次的治理子集已由 {@link #validateDividends} 按同一原任务逐字段重算并比较，
+     * 这里不重复实现、也不放宽。旧非工程档案不进入本规则。</p>
+     */
+    private void requireGovernanceDerivableFromConsumedTasks(WorldState previous,
+            WorldState candidate, WorldCommit commit) throws IOException {
+        if (!manifest.hasEngineering()) {
+            return;
+        }
+        BoardRun before = previous.governance();
+        BoardRun after = candidate.governance();
+        if (java.util.Objects.equals(before, after)) {
+            return;
+        }
+        List<PendingTask> consumed = consumedTasks(previous, commit);
+        for (PendingTask task : consumed) {
+            if (isDividendKind(task.kind()) || isDividendGovernanceTask(previous, task)) {
+                return;
+            }
+        }
+        BoardRun expected = before;
+        for (PendingTask task : consumed) {
+            expected = deriveGovernanceForTask(previous, expected, task, commit.position());
+        }
+        if (!java.util.Objects.equals(expected, after)) {
+            throw new IOException("非工程批次治理子集与按原任务派生结果不一致"
+                    + "（会议/到会/回避/材料/选票/提案/决议/证据/回报）：" + commit.commandId());
+        }
+    }
+
+    /**
+     * 单个真实任务对治理子集的唯一允许结果：复用正常写入所用的同一批纯模型调用。
+     *
+     * <p>工程档案里制造关期不产生治理变化（旧档复盘评审有独立分支），其它无治理效应的
+     * 任务种类也保持原样；因此这些批次只要治理有任何变化就会在比较中被拒。</p>
+     *
+     * @param previous 上一帧（取该帧制造关期与期间证据）
+     * @param run      已累计的治理子集
+     * @param task     本批真实原任务
+     * @param position 本批提交位置
+     * @return 该任务执行后的治理子集
+     * @throws IOException 原任务内容不可解析或复盘缺少期间证据
+     */
+    private BoardRun deriveGovernanceForTask(WorldState previous, BoardRun run, PendingTask task,
+            long position) throws IOException {
+        long now = task.dueTimeMillis();
+        long closed = previous.manufacturing() == null ? Long.MAX_VALUE
+                : previous.manufacturing().ledger().closedPeriods();
+        // 章程公司董事帧（组合档新增入口）：写路径就是 applyGovernanceBoard 的同一份纯核，
+        // 只把 core.board() 写回治理单例，不追加 BoardRun 报告、不动额外公司容器。
+        // 因此这里按同一纯核重算；公司不是治理单例的章程公司（例如额外公司）时治理单例必须不变。
+        if (PendingTask.ENGINEERING_BOARD_V1.equals(task.kind())) {
+            EngineeringBoardPayload payload = mapper.readValue(task.payload(),
+                    EngineeringBoardPayload.class);
+            if (!payload.companyPartyId().equals(run.board().charter().companyPartyId())) {
+                return run;
+            }
+            BoardCoreApplied core = applyGovernanceBoard(run, previous.roles(),
+                    previous.information(), now, payload);
+            return core.board() == null ? run : run.withBoard(core.board());
+        }
+        BoardModel.Outcome outcome;
+        String meetingId;
+        String commandId;
+        switch (task.kind()) {
+            case PendingTask.GOVERNANCE_MEETING_V1, PendingTask.GOVERNANCE_MATERIAL_V1,
+                 PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1, PendingTask.GOVERNANCE_VOTE_V1,
+                 PendingTask.GOVERNANCE_IMPLEMENT_V1 -> {
+                GovernancePayload payload = mapper.readValue(task.payload(),
+                        GovernancePayload.class);
+                meetingId = payload.meetingId();
+                commandId = payload.commandId();
+                BoardModel.State board = run.board();
+                BoardModel.Meeting meeting = board.meeting(meetingId);
+                switch (task.kind()) {
+                    case PendingTask.GOVERNANCE_MEETING_V1 -> outcome = BoardModel.convene(board,
+                            now, new BoardModel.MeetingRequest(meetingId, BoardModel.Topic.BUDGET,
+                                    payload.seatId(), payload.materialDeadline(),
+                                    payload.opensAt(), payload.closesAt(),
+                                    payload.attendeeSeatIds(), payload.recusedSeatIds()));
+                    case PendingTask.GOVERNANCE_MATERIAL_V1 -> {
+                        if (meeting == null) {
+                            outcome = new BoardModel.Outcome(false,
+                                    BoardModel.REASON_UNKNOWN_MEETING, board);
+                        } else if (!meeting.attendeeSeatIds().contains(payload.seatId())
+                                || meeting.recusedSeatIds().contains(payload.seatId())) {
+                            outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT,
+                                    board);
+                        } else {
+                            outcome = BoardModel.addMaterial(board, now, meetingId,
+                                    new BoardModel.MaterialRef(payload.materialId(),
+                                            payload.sourceRef(), payload.version(), now));
+                        }
+                    }
+                    case PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1 -> {
+                        if (meeting == null) {
+                            outcome = new BoardModel.Outcome(false,
+                                    BoardModel.REASON_UNKNOWN_MEETING, board);
+                        } else if (!meeting.attendeeSeatIds().contains(payload.seatId())
+                                || meeting.recusedSeatIds().contains(payload.seatId())) {
+                            outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT,
+                                    board);
+                        } else if (hasClosedPeriod(payload.lines(), closed)) {
+                            outcome = new BoardModel.Outcome(false, REASON_BUDGET_PERIOD_CLOSED,
+                                    board);
+                        } else {
+                            outcome = BoardModel.proposeBudget(board, now, meetingId,
+                                    payload.lines());
+                        }
+                    }
+                    case PendingTask.GOVERNANCE_VOTE_V1 -> outcome = BoardModel.castVote(board, now,
+                            meetingId, payload.seatId(), BoardModel.Vote.valueOf(payload.vote()));
+                    default -> {
+                        if (meeting != null && meeting.status() == BoardModel.MeetingStatus.ADOPTED
+                                && hasClosedPeriod(meeting.proposedLines(), closed)) {
+                            outcome = new BoardModel.Outcome(false, REASON_BUDGET_PERIOD_CLOSED,
+                                    board);
+                        } else {
+                            outcome = BoardModel.executeAdoptedResolution(board, now, meetingId);
+                        }
+                    }
+                }
+            }
+            case PendingTask.BOARD_OPEN_V1, PendingTask.BOARD_CLOSE_V1,
+                 PendingTask.BOARD_REVIEW_V1 -> {
+                ManufacturingChildPayload payload = mapper.readValue(task.payload(),
+                        ManufacturingChildPayload.class);
+                meetingId = payload.businessId();
+                BoardModel.State board = run.board();
+                if (PendingTask.BOARD_OPEN_V1.equals(task.kind())) {
+                    commandId = SYSTEM_COMMAND_PREFIX + "board-open:" + meetingId;
+                    BoardModel.Meeting meeting = board.meeting(meetingId);
+                    if (meeting == null) {
+                        outcome = new BoardModel.Outcome(false,
+                                BoardModel.REASON_UNKNOWN_MEETING, board);
+                    } else {
+                        outcome = BoardModel.freezeMaterials(board, now, meetingId);
+                        if (outcome.accepted()) {
+                            BoardModel.Meeting opened = outcome.state().meeting(meetingId);
+                            boolean hasProposal = opened.topic() == BoardModel.Topic.BUDGET
+                                    ? !opened.proposedLines().isEmpty()
+                                    : opened.dividendProposal() != null;
+                            if (opened.topic() != BoardModel.Topic.OPERATING_REVIEW
+                                    && hasProposal) {
+                                outcome = BoardModel.startVoting(outcome.state(), now, meetingId);
+                            }
+                        }
+                    }
+                } else if (PendingTask.BOARD_CLOSE_V1.equals(task.kind())) {
+                    commandId = SYSTEM_COMMAND_PREFIX + "board-close:" + meetingId;
+                    outcome = BoardModel.closeVoting(board, now, meetingId);
+                } else {
+                    commandId = SYSTEM_COMMAND_PREFIX + "board-review:" + meetingId;
+                    BoardRun.PeriodEvidence evidence = run.evidence(payload.period())
+                            .orElseThrow(() -> new IOException(
+                                    "复盘任务缺少期间证据：" + payload.period()));
+                    List<BoardModel.EvidenceMetric> metrics = new ArrayList<>();
+                    if (evidence.operatingCommitment() != null) {
+                        metrics.add(new BoardModel.EvidenceMetric(
+                                BoardModel.Dimension.OPERATING_COMMITMENT,
+                                evidence.operatingCommitment(), evidence.contractSource(),
+                                evidence.capturedAt()));
+                    }
+                    metrics.add(new BoardModel.EvidenceMetric(
+                            BoardModel.Dimension.CASH_SOLVENCY, evidence.cashSolvency(),
+                            evidence.reportSource(), evidence.capturedAt()));
+                    metrics.add(new BoardModel.EvidenceMetric(BoardModel.Dimension.RISK,
+                            evidence.risk(), evidence.receivableSource(),
+                            evidence.capturedAt()));
+                    outcome = BoardModel.calculateReview(board, now, meetingId, metrics);
+                }
+            }
+            default -> {
+                return run;
+            }
+        }
+        return run.withBoard(outcome.state())
+                .withReport(new BoardRun.Report(task.taskId(), commandId, task.kind(), meetingId,
+                        outcome.accepted(), outcome.reason(), now, position));
+    }
+
+    /**
      * 校验治理子集：章程一致、回报只增不改、期间证据不被未来快照覆盖、会议原文不被改写，
      * 并把每一条预算承诺与制造原始业务记录/实际付款交叉核对。
      */
     private void validateGovernance(WorldState candidate, WorldState previous, WorldCommit commit)
             throws IOException {
         BoardRun run = candidate.governance();
-        if (expectedSchema() < STATE_SCHEMA_GOVERNANCE) {
+        if (!manifest.hasGovernance()) {
             if (run != null) {
                 throw new IOException("旧档案不得包含治理子集状态");
             }
@@ -17466,11 +21867,11 @@ public final class WorldRuntime implements AutoCloseable {
         for (BoardModel.Meeting meeting : run.board().meetings().values()) {
             if (meeting.topic() == BoardModel.Topic.MANAGER_APPOINTMENT
                     && !manifest.hasEngineering()) {
-                // 旧 ≤17 档案仍不接受任免议题；工程档案把已接受的任免机制接到章程公司。
+                // 旧 ≤17 档案仍不接受任免议题；工程/组合档案把已接受的任免机制接到章程公司。
                 throw new IOException("当前规则档案不得包含公司经理任免议题："
                         + meeting.meetingId());
             }
-            if (expectedSchema() <= STATE_SCHEMA_DECISIONS
+            if (!manifest.hasDividend()
                     && meeting.topic() == BoardModel.Topic.DIVIDEND_AUTHORIZATION) {
                 throw new IOException("旧规则档案不得包含分红治理议题：" + meeting.meetingId());
             }
@@ -17630,11 +22031,13 @@ public final class WorldRuntime implements AutoCloseable {
             }
             // 没有工程事件也不得增删/改写工程待办：BEGIN 屏障与完成子任务只能由真实命令排程产生。
             if (!engineeringExpectedScheduling(previous, candidate, commit)
-                    .equals(engineeringPendingOf(candidate.pending()))) {
+                    .equals(engineeringPendingOwned(candidate.pending(),
+                            candidate.companyGovernance()))) {
                 throw new IOException("无工程动作的批次改写或增删了工程待办（BEGIN 屏障/完成帧）："
                         + commit.commandId() + " expect="
                         + taskIdsOf(engineeringExpectedScheduling(previous, candidate, commit))
-                        + " actual=" + taskIdsOf(engineeringPendingOf(candidate.pending())));
+                        + " actual=" + taskIdsOf(engineeringPendingOwned(candidate.pending(),
+                                candidate.companyGovernance())));
             }
             // 工程档案里，非工程批次的治理子集必须等于“上一帧 + 本批真实原任务”的派生结果：
             // 到会/回避/选票/提案/决议/证据/回报逐字段比较，无治理效应的批次必须原样。
@@ -17648,13 +22051,17 @@ public final class WorldRuntime implements AutoCloseable {
         }
         // 工程待办也必须等于“上一帧 − 本批消费 + 重演出的子任务”：自洽改开始时间、
         // 改写/删除 BEGIN 屏障或完成子任务都会被拒绝。
-        if (!replay.pending().equals(engineeringPendingOf(candidate.pending()))) {
+        if (!engineeringPendingOwned(replay.pending(), candidate.companyGovernance())
+                .equals(engineeringPendingOwned(candidate.pending(),
+                        candidate.companyGovernance()))) {
             throw new IOException("工程待办与按原任务重演结果不一致（拒绝自洽改开始时间/角色/子任务）："
                     + commit.commandId() + " expect=" + taskIdsOf(replay.pending())
-                    + " actual=" + taskIdsOf(engineeringPendingOf(candidate.pending())));
+                    + " actual=" + taskIdsOf(engineeringPendingOwned(candidate.pending(),
+                            candidate.companyGovernance())));
         }
         // 本批排出的工程子任务必须正好是原任务派生出来的那些，不能凭空多排。
-        for (PendingTask scheduled : engineeringScheduledEvents(commit)) {
+        for (PendingTask scheduled : engineeringScheduledEvents(commit,
+                candidate.companyGovernance())) {
             if (!replay.pending().contains(scheduled)) {
                 throw new IOException("工程批次排出了未由原任务派生的子任务：" + scheduled.taskId());
             }
@@ -17706,6 +22113,18 @@ public final class WorldRuntime implements AutoCloseable {
         return List.copyOf(mine);
     }
 
+    /** 候选帧中纳入工程比较的待办（章程/额外公司的任务由各自子集校验）。 */
+    private List<PendingTask> engineeringPendingOwned(List<PendingTask> pending,
+            CompanyGovernanceRun extra) throws IOException {
+        List<PendingTask> mine = new ArrayList<>();
+        for (PendingTask task : engineeringPendingOf(pending)) {
+            if (engineeringOwns(task, extra)) {
+                mine.add(task);
+            }
+        }
+        return List.copyOf(mine);
+    }
+
     /** 任务标识清单：异常信息只带标识，避免把整份 payload 写进日志。 */
     private static List<String> taskIdsOf(List<PendingTask> tasks) {
         List<String> ids = new ArrayList<>();
@@ -17728,8 +22147,62 @@ public final class WorldRuntime implements AutoCloseable {
                 || PendingTask.CUSTOMER_EVENT_V1.equals(kind);
     }
 
+    /**
+     * 该待办是否纳入「工程子集待办」比较。
+     *
+     * <p>判定只按 payload 里的真实公司与<b>冻结</b>归属（工程配置、章程、本帧额外治理容器），
+     * 不读运行层当前状态；期望侧与候选侧使用同一函数，因此过滤是对称的：</p>
+     * <ul>
+     *   <li>无公司字段的系统日程：纳入；</li>
+     *   <li>冻结工程配置里的工程公司：纳入；</li>
+     *   <li>冻结章程公司：不纳入——它与工程共用 BEGIN/董事框架，但周期/治理/决定各自有整态校验；</li>
+     *   <li>本帧额外治理公司：不纳入——由 CompanyGovernance 自己的整态与全量原意重演校验；</li>
+     *   <li>其它公司或不可解析 payload：拒绝，不当作杂项放过。</li>
+     * </ul>
+     *
+     * @param task  待判断待办
+     * @param extra 本帧额外治理容器（可为 null）
+     * @return 是否纳入工程比较
+     * @throws IOException payload 不可解析或指向未知公司
+     */
+    private boolean engineeringOwns(PendingTask task, CompanyGovernanceRun extra)
+            throws IOException {
+        String json = task.payload();
+        if (PendingTask.ENGINEERING_BEGIN_V1.equals(task.kind())) {
+            EngineeringBeginPayload begin;
+            try {
+                begin = mapper.readValue(json, EngineeringBeginPayload.class);
+            } catch (IOException invalid) {
+                throw new IOException("工程待办缺少 BEGIN 包装：", invalid);
+            }
+            json = begin.payload();
+        }
+        JsonNode node;
+        try {
+            node = mapper.readTree(json);
+        } catch (IOException invalid) {
+            throw new IOException("待办 payload 不是合法 JSON：" + task.taskId(), invalid);
+        }
+        String company = node == null ? "" : node.path("companyPartyId").asText("");
+        if (company.isEmpty()) {
+            return true;
+        }
+        if (engineeringConfig != null && engineeringConfig.specOf(company) != null) {
+            return true;
+        }
+        if (charter != null && company.equals(charter.companyPartyId())) {
+            return false;
+        }
+        if (extra != null && extra.has(company)) {
+            return false;
+        }
+        throw new IOException("待办指向未知公司（非工程/章程/额外治理公司）：" + task.taskId()
+                + " company=" + company);
+    }
+
     /** 本批 {@code TASK_SCHEDULED_V1} 里排出的工程任务（按事件顺序）。 */
-    private List<PendingTask> engineeringScheduledEvents(WorldCommit commit) throws IOException {
+    private List<PendingTask> engineeringScheduledEvents(WorldCommit commit,
+            CompanyGovernanceRun extra) throws IOException {
         List<PendingTask> scheduled = new ArrayList<>();
         for (WorldEvent event : commit.events()) {
             if (!"TASK_SCHEDULED_V1".equals(event.type())) {
@@ -17741,7 +22214,7 @@ public final class WorldRuntime implements AutoCloseable {
             } catch (IOException invalid) {
                 throw new IOException("排程事件不可解析：" + event.eventId(), invalid);
             }
-            if (isEngineeringTask(task.kind())) {
+            if (isEngineeringTask(task.kind()) && engineeringOwns(task, extra)) {
                 scheduled.add(task);
             }
         }
@@ -17758,13 +22231,20 @@ public final class WorldRuntime implements AutoCloseable {
             WorldCommit commit) throws IOException {
         Map<String, PendingTask> expected = new TreeMap<>();
         for (PendingTask task : engineeringPendingOf(previous.pending())) {
+            if (!engineeringOwns(task, previous.companyGovernance())) {
+                continue;
+            }
             expected.put(task.taskId(), task);
         }
-        for (PendingTask task : engineeringScheduledEvents(commit)) {
+        for (PendingTask task : engineeringScheduledEvents(commit, candidate.companyGovernance())) {
             bindScheduledToCommand(task, commit, candidate);
             expected.put(task.taskId(), task);
         }
         for (PendingTask task : engineeringDecisionScheduled(candidate, commit)) {
+            // 期望侧与候选侧用同一套归属判定：章程公司/额外公司不在此子集，未知公司直接拒绝。
+            if (!engineeringOwns(task, candidate.companyGovernance())) {
+                continue;
+            }
             bindScheduledToCommand(task, commit, candidate);
             expected.put(task.taskId(), task);
         }
@@ -17894,6 +22374,7 @@ public final class WorldRuntime implements AutoCloseable {
                     || PendingTask.ENGINEERING_BOARD_V1.equals(task.kind())
                     || PendingTask.BOARD_ATTEND_V1.equals(task.kind())
                     || PendingTask.ENGINEERING_ACTION_V1.equals(task.kind())
+                    || PendingTask.ENGINEERING_FUND_V1.equals(task.kind())
                     || PendingTask.ENGINEERING_PERIODIC_V1.equals(task.kind())
                     || PendingTask.PERIOD_CAPTURE_V1.equals(task.kind())
                     || PendingTask.PERIOD_CLOSE_V1.equals(task.kind())
@@ -17938,16 +22419,32 @@ public final class WorldRuntime implements AutoCloseable {
                     || PendingTask.BOARD_ATTEND_V1.equals(task.kind())) {
                 EngineeringBoardPayload payload = mapper.readValue(task.payload(),
                         EngineeringBoardPayload.class);
-                EngineeringBoardApplied applied = applyEngineeringBoard(run, governance, roles,
-                        previous.information(), now, payload, task.taskId(), commit.position());
-                run = applied.run();
-                governance = applied.governance() == null ? governance : applied.governance();
-                roles = applied.roles() == null ? roles : applied.roles();
-                accepted = applied.accepted();
-                reason = applied.reason();
-                companyPartyId = payload.companyPartyId();
-                commandId = payload.commandId();
-                expectedPending.addAll(applied.children());
+                boolean charterBoard = run.boardOf(payload.companyPartyId()) == null
+                        && charter != null
+                        && charter.companyPartyId().equals(payload.companyPartyId());
+                if (charterBoard) {
+                    // 章程公司的董事动作只写唯一治理单例：同一纯核重演到治理子集与任职。
+                    BoardCoreApplied core = applyGovernanceBoard(governance, roles,
+                            previous.information(), now, payload);
+                    governance = core.board() == null ? governance
+                            : governance.withBoard(core.board());
+                    roles = core.roles() == null ? roles : core.roles();
+                    accepted = core.accepted();
+                    reason = core.reason();
+                    companyPartyId = payload.companyPartyId();
+                    commandId = payload.commandId();
+                    expectedPending.addAll(core.children());
+                } else {
+                    EngineeringBoardApplied applied = applyEngineeringBoard(run, roles,
+                            previous.information(), now, payload, task.taskId());
+                    run = applied.run();
+                    roles = applied.roles() == null ? roles : applied.roles();
+                    accepted = applied.accepted();
+                    reason = applied.reason();
+                    companyPartyId = payload.companyPartyId();
+                    commandId = payload.commandId();
+                    expectedPending.addAll(applied.children());
+                }
             } else if (PendingTask.ENGINEERING_ACTION_V1.equals(task.kind())) {
                 EngineeringActionPayload payload = mapper.readValue(task.payload(),
                         EngineeringActionPayload.class);
@@ -17962,6 +22459,18 @@ public final class WorldRuntime implements AutoCloseable {
                 commandId = payload.commandId();
                 expectedPending.addAll(engineeringActionChildren(applied.run(), payload,
                         applied.accepted()));
+            } else if (PendingTask.ENGINEERING_FUND_V1.equals(task.kind())) {
+                // 显式资金动作：重演走与执行帧完全相同的纯函数（同桶校验、同金额、同拒绝码）。
+                FundedEngineeringPayload payload = mapper.readValue(task.payload(),
+                        FundedEngineeringPayload.class);
+                FundedApplied applied = applyFundedEngineering(previous, task);
+                run = applied.run();
+                accounts = applied.accounts();
+                accepted = applied.accepted();
+                reason = applied.reason();
+                companyPartyId = payload.companyPartyId();
+                commandId = payload.commandId();
+                expectedPending.addAll(fundedChildren(applied.run(), payload, applied.accepted()));
             } else if (PendingTask.ENGINEERING_PERIODIC_V1.equals(task.kind())) {
                 PeriodicActionPayload payload = mapper.readValue(task.payload(),
                         PeriodicActionPayload.class);
@@ -18048,245 +22557,6 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         return false;
-    }
-
-    /**
-     * 本批真实完成的任务：只按 {@code task-completed:<taskId>} 事件到上一帧待办里取原任务，
-     * 要求事件 payload 与原待办逐字相同、同一任务只消费一次，并按事件顺序返回。
-     *
-     * @param previous 上一帧
-     * @param commit   本批提交
-     * @return 原任务列表
-     * @throws IOException 完成事件找不到原待办、内容不一致或重复消费
-     */
-    private static List<PendingTask> consumedTasks(WorldState previous, WorldCommit commit)
-            throws IOException {
-        java.util.Map<String, PendingTask> tasks = new java.util.LinkedHashMap<>();
-        for (PendingTask task : previous.pending()) {
-            tasks.put(task.taskId(), task);
-        }
-        List<PendingTask> consumed = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
-        String prefix = "task-completed:";
-        for (WorldEvent event : commit.events()) {
-            if (!"TASK_COMPLETED_V1".equals(event.type())
-                    || !event.eventId().startsWith(prefix)) {
-                continue;
-            }
-            String taskId = event.eventId().substring(prefix.length());
-            PendingTask task = tasks.get(taskId);
-            if (task == null) {
-                throw new IOException("完成事件没有对应的原待办：" + taskId);
-            }
-            if (!task.payload().equals(event.payload())) {
-                throw new IOException("完成事件内容与原待办不一致：" + taskId);
-            }
-            if (!seen.add(taskId)) {
-                throw new IOException("同一任务被重复消费：" + taskId);
-            }
-            consumed.add(task);
-        }
-        return List.copyOf(consumed);
-    }
-
-    /**
-     * 本批真实完成的任务种类：只按 {@code task-completed:<taskId>} 事件的标识到上一帧待办里
-     * 取任务种类，不读任何回报文字或 payload 自述。
-     *
-     * @param previous 上一帧
-     * @param commit   本批提交
-     * @return 已完成任务种类集合
-     */
-    private static java.util.Set<String> completedTaskKinds(WorldState previous, WorldCommit commit) {
-        java.util.Map<String, String> kinds = new java.util.LinkedHashMap<>();
-        for (PendingTask task : previous.pending()) {
-            kinds.put(task.taskId(), task.kind());
-        }
-        java.util.Set<String> done = new java.util.LinkedHashSet<>();
-        String prefix = "task-completed:";
-        for (WorldEvent event : commit.events()) {
-            if (!"TASK_COMPLETED_V1".equals(event.type())
-                    || !event.eventId().startsWith(prefix)) {
-                continue;
-            }
-            String kind = kinds.get(event.eventId().substring(prefix.length()));
-            if (kind != null) {
-                done.add(kind);
-            }
-        }
-        return done;
-    }
-
-    /**
-     * 工程档案里，非工程批次的治理子集必须精确等于“上一帧 + 本批真实原任务”的派生结果：
-     * 每个会议的到会/回避/材料/选票/提案/决议、期间证据/考核、回报与预算承诺都在比较范围内。
-     * 无治理效应的批次（含制造关期）期望值就是上一帧原样，任何字段都不能凭空变化。
-     *
-     * <p>分红类批次的治理子集已由 {@link #validateDividends} 按同一原任务逐字段重算并比较，
-     * 这里不重复实现、也不放宽。旧非工程档案不进入本规则。</p>
-     */
-    private void requireGovernanceDerivableFromConsumedTasks(WorldState previous,
-            WorldState candidate, WorldCommit commit) throws IOException {
-        if (!manifest.hasEngineering()) {
-            return;
-        }
-        BoardRun before = previous.governance();
-        BoardRun after = candidate.governance();
-        if (java.util.Objects.equals(before, after)) {
-            return;
-        }
-        List<PendingTask> consumed = consumedTasks(previous, commit);
-        for (PendingTask task : consumed) {
-            if (isDividendKind(task.kind()) || isDividendGovernanceTask(previous, task)) {
-                return;
-            }
-        }
-        BoardRun expected = before;
-        for (PendingTask task : consumed) {
-            expected = deriveGovernanceForTask(previous, expected, task, commit.position());
-        }
-        if (!java.util.Objects.equals(expected, after)) {
-            throw new IOException("非工程批次治理子集与按原任务派生结果不一致"
-                    + "（会议/到会/回避/材料/选票/提案/决议/证据/回报）：" + commit.commandId());
-        }
-    }
-
-    /**
-     * 单个真实任务对治理子集的唯一允许结果：复用正常写入所用的同一批纯模型调用。
-     *
-     * <p>工程档案里制造关期不产生治理变化（旧档复盘评审有独立分支），其它无治理效应的
-     * 任务种类也保持原样；因此这些批次只要治理有任何变化就会在比较中被拒。</p>
-     *
-     * @param previous 上一帧（取该帧制造关期与期间证据）
-     * @param run      已累计的治理子集
-     * @param task     本批真实原任务
-     * @param position 本批提交位置
-     * @return 该任务执行后的治理子集
-     * @throws IOException 原任务内容不可解析或复盘缺少期间证据
-     */
-    private BoardRun deriveGovernanceForTask(WorldState previous, BoardRun run, PendingTask task,
-            long position) throws IOException {
-        long now = task.dueTimeMillis();
-        long closed = previous.manufacturing() == null ? Long.MAX_VALUE
-                : previous.manufacturing().ledger().closedPeriods();
-        BoardModel.Outcome outcome;
-        String meetingId;
-        String commandId;
-        switch (task.kind()) {
-            case PendingTask.GOVERNANCE_MEETING_V1, PendingTask.GOVERNANCE_MATERIAL_V1,
-                 PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1, PendingTask.GOVERNANCE_VOTE_V1,
-                 PendingTask.GOVERNANCE_IMPLEMENT_V1 -> {
-                GovernancePayload payload = mapper.readValue(task.payload(),
-                        GovernancePayload.class);
-                meetingId = payload.meetingId();
-                commandId = payload.commandId();
-                BoardModel.State board = run.board();
-                BoardModel.Meeting meeting = board.meeting(meetingId);
-                switch (task.kind()) {
-                    case PendingTask.GOVERNANCE_MEETING_V1 -> outcome = BoardModel.convene(board,
-                            now, new BoardModel.MeetingRequest(meetingId, BoardModel.Topic.BUDGET,
-                                    payload.seatId(), payload.materialDeadline(),
-                                    payload.opensAt(), payload.closesAt(),
-                                    payload.attendeeSeatIds(), payload.recusedSeatIds()));
-                    case PendingTask.GOVERNANCE_MATERIAL_V1 -> {
-                        if (meeting == null) {
-                            outcome = new BoardModel.Outcome(false,
-                                    BoardModel.REASON_UNKNOWN_MEETING, board);
-                        } else if (!meeting.attendeeSeatIds().contains(payload.seatId())
-                                || meeting.recusedSeatIds().contains(payload.seatId())) {
-                            outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT,
-                                    board);
-                        } else {
-                            outcome = BoardModel.addMaterial(board, now, meetingId,
-                                    new BoardModel.MaterialRef(payload.materialId(),
-                                            payload.sourceRef(), payload.version(), now));
-                        }
-                    }
-                    case PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1 -> {
-                        if (meeting == null) {
-                            outcome = new BoardModel.Outcome(false,
-                                    BoardModel.REASON_UNKNOWN_MEETING, board);
-                        } else if (!meeting.attendeeSeatIds().contains(payload.seatId())
-                                || meeting.recusedSeatIds().contains(payload.seatId())) {
-                            outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT,
-                                    board);
-                        } else if (hasClosedPeriod(payload.lines(), closed)) {
-                            outcome = new BoardModel.Outcome(false, REASON_BUDGET_PERIOD_CLOSED,
-                                    board);
-                        } else {
-                            outcome = BoardModel.proposeBudget(board, now, meetingId,
-                                    payload.lines());
-                        }
-                    }
-                    case PendingTask.GOVERNANCE_VOTE_V1 -> outcome = BoardModel.castVote(board, now,
-                            meetingId, payload.seatId(), BoardModel.Vote.valueOf(payload.vote()));
-                    default -> {
-                        if (meeting != null && meeting.status() == BoardModel.MeetingStatus.ADOPTED
-                                && hasClosedPeriod(meeting.proposedLines(), closed)) {
-                            outcome = new BoardModel.Outcome(false, REASON_BUDGET_PERIOD_CLOSED,
-                                    board);
-                        } else {
-                            outcome = BoardModel.executeAdoptedResolution(board, now, meetingId);
-                        }
-                    }
-                }
-            }
-            case PendingTask.BOARD_OPEN_V1, PendingTask.BOARD_CLOSE_V1,
-                 PendingTask.BOARD_REVIEW_V1 -> {
-                ManufacturingChildPayload payload = mapper.readValue(task.payload(),
-                        ManufacturingChildPayload.class);
-                meetingId = payload.businessId();
-                BoardModel.State board = run.board();
-                if (PendingTask.BOARD_OPEN_V1.equals(task.kind())) {
-                    commandId = SYSTEM_COMMAND_PREFIX + "board-open:" + meetingId;
-                    BoardModel.Meeting meeting = board.meeting(meetingId);
-                    if (meeting == null) {
-                        outcome = new BoardModel.Outcome(false,
-                                BoardModel.REASON_UNKNOWN_MEETING, board);
-                    } else {
-                        outcome = BoardModel.freezeMaterials(board, now, meetingId);
-                        if (outcome.accepted()) {
-                            BoardModel.Meeting opened = outcome.state().meeting(meetingId);
-                            boolean hasProposal = opened.topic() == BoardModel.Topic.BUDGET
-                                    ? !opened.proposedLines().isEmpty()
-                                    : opened.dividendProposal() != null;
-                            if (opened.topic() != BoardModel.Topic.OPERATING_REVIEW
-                                    && hasProposal) {
-                                outcome = BoardModel.startVoting(outcome.state(), now, meetingId);
-                            }
-                        }
-                    }
-                } else if (PendingTask.BOARD_CLOSE_V1.equals(task.kind())) {
-                    commandId = SYSTEM_COMMAND_PREFIX + "board-close:" + meetingId;
-                    outcome = BoardModel.closeVoting(board, now, meetingId);
-                } else {
-                    commandId = SYSTEM_COMMAND_PREFIX + "board-review:" + meetingId;
-                    BoardRun.PeriodEvidence evidence = run.evidence(payload.period())
-                            .orElseThrow(() -> new IOException(
-                                    "复盘任务缺少期间证据：" + payload.period()));
-                    List<BoardModel.EvidenceMetric> metrics = new ArrayList<>();
-                    if (evidence.operatingCommitment() != null) {
-                        metrics.add(new BoardModel.EvidenceMetric(
-                                BoardModel.Dimension.OPERATING_COMMITMENT,
-                                evidence.operatingCommitment(), evidence.contractSource(),
-                                evidence.capturedAt()));
-                    }
-                    metrics.add(new BoardModel.EvidenceMetric(
-                            BoardModel.Dimension.CASH_SOLVENCY, evidence.cashSolvency(),
-                            evidence.reportSource(), evidence.capturedAt()));
-                    metrics.add(new BoardModel.EvidenceMetric(BoardModel.Dimension.RISK,
-                            evidence.risk(), evidence.receivableSource(),
-                            evidence.capturedAt()));
-                    outcome = BoardModel.calculateReview(board, now, meetingId, metrics);
-                }
-            }
-            default -> {
-                return run;
-            }
-        }
-        return run.withBoard(outcome.state())
-                .withReport(new BoardRun.Report(task.taskId(), commandId, task.kind(), meetingId,
-                        outcome.accepted(), outcome.reason(), now, position));
     }
 
     /**
@@ -18589,13 +22859,50 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
+    /** 当前帧的资金腿上下文；没有资金桶模块或没有银行档案返回 null。 */
+    private WorldExchange.FundContext fundsContext(WorldState frame) throws IOException {
+        if (!manifest.hasFunding() || frame.bank() == null) {
+            return null;
+        }
+        BankRun.Decoded decoded;
+        try {
+            decoded = frame.bank().decode(frame.accounts());
+        } catch (RuntimeException invalid) {
+            throw new IOException("银行三态无法解码：" + invalid.getMessage(), invalid);
+        }
+        return new WorldExchange.FundContext(decoded.state(), decoded.config(),
+                new BankContext(bankRunId(), decoded.config().fingerprint(),
+                        frame.position(), frame.timeMillis()));
+    }
+
+    /**
+     * 当前帧的托管明细账；不是 B7b 档案或没有银行三态时返回 null。
+     *
+     * <p>明细账不是第二本现金：它随 {@code BankRun.custodyJson} 同批提交，解码时会跑
+     * {@code CustodyBook.restoreChecked} 的经济校验，篡改的明细在这一步就被拒绝。</p>
+     *
+     * @param frame 状态帧
+     * @return 已校验的托管明细账或 null
+     * @throws IOException 银行/托管三态无法解码或不自洽
+     */
+    private edu.cufe.auction.world.bank.CustodyBook custodyOf(WorldState frame) throws IOException {
+        if (!manifest.hasCustodyFill() || frame.bank() == null) {
+            return null;
+        }
+        try {
+            return frame.bank().decode(frame.accounts()).book();
+        } catch (RuntimeException invalid) {
+            throw new IOException("托管三态无法解码：" + invalid.getMessage(), invalid);
+        }
+    }
+
     /**
      * 校验世界订单子集：版本与档案一致、证券引用有效、旧订单/成交/结果不可改写、
      * 计数器只增、收盘不可撤销，以及 {@link WorldExchange#validate} 的结构不变量。
      */
     private void validateExchange(WorldState candidate, WorldState previous) throws IOException {
         WorldExchange.State exchange = candidate.exchange();
-        if (expectedSchema() < STATE_SCHEMA_EXCHANGE) {
+        if (!manifest.hasMatching()) {
             if (exchange != null) {
                 throw new IOException("旧档案不得包含世界订单子集状态");
             }
@@ -18607,7 +22914,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (candidate.securities() == null) {
             throw new IOException("撮合档案缺少持仓子集状态");
         }
-        WorldExchange.validate(exchange, candidate.accounts(), candidate.securities());
+        WorldExchange.validate(exchange, candidate.accounts(), candidate.securities(),
+                fundsContext(candidate), custodyOf(candidate));
         for (WorldExchange.Order order : exchange.orders()) {
             if (registry.security(order.symbol()) == null) {
                 throw new IOException("订单引用了未登记证券：" + order.orderId());
@@ -18683,7 +22991,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private void validateSecurities(WorldState candidate, WorldState previous) throws IOException {
         SecuritiesLedger.State securities = candidate.securities();
-        if (expectedSchema() < STATE_SCHEMA_SECURITIES) {
+        if (!manifest.hasSecurities()) {
             if (securities != null) {
                 throw new IOException("现金/登记档案不得包含证券子集状态");
             }
@@ -18992,7 +23300,8 @@ public final class WorldRuntime implements AutoCloseable {
                 base.securities(), base.exchange(), base.manufacturing(), base.governance(),
                 base.roles(), base.information(), base.trading(), decisions, base.dividends(),
                 base.beliefs(), base.media(), base.interviews(), base.evidence(), base.social(),
-                base.engineering(), base.groups());
+                base.engineering(), base.bank(), base.bankActions(), base.companyGovernance(),
+                base.groups());
     }
 
     /** 开局不一致时列出不同的子集名，便于定位且不泄露角色数据。 */
@@ -19024,6 +23333,18 @@ public final class WorldRuntime implements AutoCloseable {
         if (!Objects.equals(expected.social(), actual.social())) diffs.add("social");
         if (!Objects.equals(expected.engineering(), actual.engineering())) {
             diffs.add("engineering");
+        }
+        if (!Objects.equals(expected.bank(), actual.bank())) {
+            diffs.add("bank");
+        }
+        if (!Objects.equals(expected.bankActions(), actual.bankActions())) {
+            diffs.add("bankActions");
+        }
+        if (!Objects.equals(expected.companyGovernance(), actual.companyGovernance())) {
+            diffs.add("companyGovernance");
+        }
+        if (!Objects.equals(expected.groups(), actual.groups())) {
+            diffs.add("groups");
         }
         return diffs.toString();
     }
@@ -19598,7 +23919,8 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 information, previous.trading(), previous.decisions(), previous.dividends(),
                 previous.beliefs(), previous.media(), previous.interviews(), previous.evidence(),
-                previous.social(), previous.engineering(), previous.groups());
+                previous.social(), previous.engineering(), previous.bank(),
+                previous.bankActions(), previous.companyGovernance(), previous.groups());
         List<WorldEvent> events = List.of(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()), new WorldEvent("information-report:" + task.taskId(), "INFORMATION_REPORT_V1",
                 mapper.writeValueAsString(report)));
@@ -19725,7 +24047,8 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.governance(), previous.roles(), previous.information(), previous.trading(),
                 previous.decisions(), previous.dividends(), previous.beliefs(),
                 previous.media(), previous.interviews(), previous.evidence(), previous.social(),
-                previous.engineering(), previous.groups());
+                previous.engineering(), previous.bank(), previous.bankActions(),
+                previous.companyGovernance(), previous.groups());
         List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + added.taskId(), "TASK_SCHEDULED_V1",
                 mapper.writeValueAsString(added)));
         List<WorldEvent> actual = commit.events().stream()
@@ -20132,8 +24455,18 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private WorldEvent snapshotEvent(WorldState snapshot) throws IOException {
+        // 旧规则：保持原持久 writer（含其原有的集合/键序行为），不改旧档案序列化契约。
+        // 新组合规则（composed-v2）：用显式规范 writer（map 键排序 + Set 排序数组），
+        // 使同一份真实状态在不同 JVM 写出同一段字节，恢复期才能把真实篡改与表示差异分开。
+        ObjectMapper writer = manifest.hasDefaultPeriodicGovernance() ? composedCanonicalMapper
+                : mapper;
         return new WorldEvent("state:" + snapshot.position(), SNAPSHOT_TYPE,
-                mapper.writeValueAsString(snapshot));
+                writer.writeValueAsString(snapshot));
+    }
+
+    /** 状态摘要/快照正文使用的规范 writer：只有新组合规则启用集合排序。 */
+    private ObjectMapper stateCanonical() {
+        return manifest.hasDefaultPeriodicGovernance() ? composedCanonicalMapper : canonicalMapper;
     }
 
     private String openingContent(List<OpeningAccount> ordered) throws IOException {
@@ -20174,6 +24507,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (engineeringConfig != null) {
             // 只有 schema18 工程档案才加这个键：旧档开局内容保持逐字节不变
             content.put("engineering", engineeringConfig);
+        }
+        if (bankOpening != null) {
+            // 只有银行档案才加这个键：档案/禀赋/托管明细随第一帧冻结
+            content.put("bank", bankOpening.canonical());
         }
         return content;
     }
@@ -20332,7 +24669,13 @@ public final class WorldRuntime implements AutoCloseable {
      * 的同一口径；初始任职不得携带撤销记录（由 {@link RoleRun.Config} 构造期拒绝）。</p>
      */
     private void validateRoleReadingOpening() {
-        if (registry == null || manufacturingConfig == null || charter == null) {
+        if (registry == null) {
+            throw new IllegalArgumentException("任职与阅读档案必须提供开局登记");
+        }
+        if (!manifest.hasBankRoles() && !manifest.hasFunding()
+                && (manufacturingConfig == null || charter == null)) {
+            // 银行角色档案与 B7a 资金桶档案只冻结任职与读者，不需要制造配置或董事会章程；
+            // 其它档案仍要求全套。
             throw new IllegalArgumentException("任职与阅读档案必须同时提供登记、制造配置与章程");
         }
         for (RoleAccess.Appointment appointment : roleConfig.appointments()) {
@@ -20347,7 +24690,8 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** schema 1..12 仅支持四岗；媒体岗位只在 schema13 媒体档案显式放开。 */
     private void requireLegacyRole(RoleAccess.Role role) {
-        if (role == RoleAccess.Role.COMPANY_MANAGER && !manifest.hasEngineering()) {
+        if (role == RoleAccess.Role.COMPANY_MANAGER && !manifest.hasEngineering()
+                && !manifest.hasBankRoles() && !manifest.hasFunding()) {
             throw new IllegalArgumentException("当前规则档案尚未启用公司经理岗位：" + role);
         }
         if (manifest.hasMedia()) {
@@ -20523,7 +24867,8 @@ public final class WorldRuntime implements AutoCloseable {
     /** 工程 BEGIN 信封可指向的真实完成种类：与正文类型/动作严格映射。 */
     private static final Set<String> ENGINEERING_INTENT_KINDS = Set.of(
             PendingTask.ENGINEERING_BOARD_V1, PendingTask.BOARD_ATTEND_V1,
-            PendingTask.ENGINEERING_ACTION_V1, PendingTask.ENGINEERING_PERIODIC_V1);
+            PendingTask.ENGINEERING_ACTION_V1, PendingTask.ENGINEERING_FUND_V1,
+            PendingTask.ENGINEERING_PERIODIC_V1);
 
     /**
      * 外部排程落盘：新规则档把完整原意信封写进命令记录，旧档保留域正文字节。
@@ -20785,6 +25130,38 @@ public final class WorldRuntime implements AutoCloseable {
                 }
             }
         }
+        BankRun bank = null;
+        if (manifest.hasBank()) {
+            // 真实开局：调用已接受的 BankOpening/托管开局，只绑定已有登记与现金账户
+            bank = bankOpening.open(registry, accounts, manifest.runId());
+            bank.validate(accounts);
+        }
+        if (manifest.hasCompanyGovernance() && manifest.hasDefaultPeriodicGovernance()) {
+            // composed-v2：额外治理公司开局就拥有第 1 期期末采样待办；之后每期由实际采样任务派生，
+            // 正常 advanceTo 即可触发，不依赖任何管理端手动排程。旧组合档不新增任务、JSON 不变。
+            List<String> governed = new ArrayList<>(companyCharters.keySet());
+            Collections.sort(governed);
+            for (String company : governed) {
+                long due;
+                try {
+                    due = Math.multiplyExact(1L, PeriodicModel.PERIOD_MILLIS);
+                } catch (ArithmeticException overflow) {
+                    continue;
+                }
+                String taskId = "periodic-capture:" + company + ":1";
+                if (used.contains(taskId)) {
+                    continue;
+                }
+                PeriodicCapturePayload payload = new PeriodicCapturePayload(
+                        SYSTEM_COMMAND_PREFIX + "periodic-capture:" + company + ":1", company, 1L,
+                        PeriodicWorldEngine.policy().digest());
+                PendingTask capture = new PendingTask(taskId, due,
+                        WorldScheduler.Phase.PERIOD_BOUNDARY_CAPTURE,
+                        PendingTask.PERIOD_CAPTURE_V1, mapper.writeValueAsString(payload));
+                pending.add(capture);
+                used.add(taskId);
+            }
+        }
         return new WorldState(expectedSchema(), manifest.runId(), 1, 0L,
                 WorldScheduler.Phase.OBSERVATION.name(), accounts, pending, List.of(), used,
                 Map.of(), Map.of(),
@@ -20801,7 +25178,10 @@ public final class WorldRuntime implements AutoCloseable {
                         : null,
                 manifest.hasSocial() ? SocialRun.open(socialConfig, socialBlockMillis,
                         socialContacts) : null,
-                engineering,
+                engineering, bank, null,
+                manifest.hasCompanyGovernance()
+                        ? CompanyGovernanceRun.open(registry, companyCharters,
+                                PeriodicWorldEngine.policy()) : null,
                 manifest.hasGroups() ? GroupsRun.open(groupConfig, platformConfig, groupFeedLimit,
                         groupReadMillis, registeredPersons(), 0L) : null);
     }
@@ -20931,8 +25311,15 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasComposedBankWorld()) {
+            return STATE_SCHEMA_COMPOSED;
+        }
         if (manifest.hasGroups()) {
             return STATE_SCHEMA_GROUPS;
+        }
+        if (manifest.hasBank()) {
+            // 显式银行模块：schema19 只能由模块存在决定，不能靠 schema>=19 反推银行
+            return STATE_SCHEMA_BANKING;
         }
         if (manifest.hasEngineering()) {
             return STATE_SCHEMA_ENGINEERING;
@@ -21254,9 +25641,11 @@ public final class WorldRuntime implements AutoCloseable {
         return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
                 roles, information, trading, decisions, dividends, beliefs, media, interviews,
-                evidence, social, engineering, state.groups());
+                evidence, social, engineering, state.bank(), state.bankActions(),
+                state.companyGovernance(), state.groups());
     }
 
+    /** 群组显式、银行三态沿用当前状态的候选帧（群组呈现帧使用）。 */
     private WorldState next(long timeMillis, String lastPhase,
                             Map<String, CashLedger.CashAccount> accounts,
                             List<PendingTask> pending, List<Notice> delivered,
@@ -21278,11 +25667,45 @@ public final class WorldRuntime implements AutoCloseable {
                             SocialRun social,
                             EngineeringRun engineering,
                             GroupsRun groups) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, trading, decisions, dividends, beliefs, media, interviews,
+                evidence, social, engineering, state.bank(), state.bankActions(),
+                state.companyGovernance(), groups);
+    }
+
+    /**
+     * 带显式银行三态与贷款台账的候选帧：只有银行动作完成帧使用，其余批次沿用 {@code state}。
+     */
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading,
+                            DecisionRun decisions,
+                            DividendModel.State dividends,
+                            BeliefRun beliefs,
+                            MediaRun media,
+                            InterviewRun interviews,
+                            EvidenceRun evidence,
+                            SocialRun social,
+                            EngineeringRun engineering,
+                            BankRun bank,
+                            BankActions.Book bankActions,
+                            CompanyGovernanceRun companyGovernance,
+                            GroupsRun groups) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
                 roles, information, trading, decisions, dividends, beliefs, media, interviews,
-                evidence, social, engineering, groups);
+                evidence, social, engineering, bank, bankActions, companyGovernance, groups);
     }
 
     // ==================================================================
@@ -21711,7 +26134,8 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 previous.information(), previous.trading(), previous.decisions(),
                 previous.dividends(), previous.beliefs(), previous.media(), previous.interviews(), previous.evidence(),
-                previous.social(), previous.engineering(), previous.groups());
+                previous.social(), previous.engineering(), previous.bank(),
+                previous.bankActions(), previous.companyGovernance(), previous.groups());
     }
 
     private void requireCashBatch(WorldCommit commit, WorldState candidate, WorldState expected,
@@ -22654,7 +27078,10 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized WorldRoleSession openRoleSession(String personPartyId) throws IOException {
         requireOpen();
         requireRoleReadingEnabled();
-        requireTradingEnabled();
+        if (!manifest.hasBankRoles()) {
+            // 银行人物动作档案只需要任职与阅读；其它档案仍要求四岗交易已启用（原行为不变）。
+            requireTradingEnabled();
+        }
         if (personPartyId == null || personPartyId.isBlank()) {
             throw new IllegalArgumentException("角色会话不可用");
         }
@@ -22675,7 +27102,10 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         requireOpen();
         requireRoleReadingEnabled();
-        requireTradingEnabled();
+        if (!manifest.hasBankRoles()) {
+            // 银行人物动作档案只需要任职与阅读；其它档案仍要求四岗交易已启用（原行为不变）。
+            requireTradingEnabled();
+        }
         if (personPartyId == null || personPartyId.isBlank()) {
             throw new IllegalArgumentException("角色会话不可用");
         }
@@ -26255,7 +30685,7 @@ public final class WorldRuntime implements AutoCloseable {
      * @throws IOException 违反不变量
      */
     private void validateTrading(WorldState candidate, WorldState previous) throws IOException {
-        if (expectedSchema() < STATE_SCHEMA_ROLE_TRADING) {
+        if (!manifest.hasTrading()) {
             if (candidate.trading() != null) {
                 throw new IOException("旧档案不得包含四岗交易子集状态");
             }
@@ -28069,7 +32499,8 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
                 previous.dividends(), previous.beliefs(), previous.media(), previous.interviews(),
-                previous.evidence(), previous.social(), previous.engineering(), groups);
+                previous.evidence(), previous.social(), previous.engineering(), previous.bank(),
+                previous.bankActions(), previous.companyGovernance(), groups);
     }
 
     /** 排程批的群组重算：只从本批原命令重放 begin，其它动作不改群组状态。 */

@@ -1,6 +1,7 @@
 package edu.cufe.auction.world;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import edu.cufe.auction.world.bank.BankActions;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -1235,5 +1236,88 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
     public String cancelMediaWork(String clientCommandId, String clientTaskId, long dueMillis)
             throws IOException {
         return runtime.scheduleMediaCancel(this, clientCommandId, clientTaskId, dueMillis);
+    }
+
+    // ------------------------------------------------------------------
+    // 银行人物动作（schema19 银行角色档案）：只给业务字段，人物/主体/动作方由运行层解析
+    // ------------------------------------------------------------------
+
+    /**
+     * 一条银行动作草稿：只含模型可见的业务字段。
+     *
+     * <p>{@code organizationPartyId} 为空表示动自己的钱；非空表示以该公司当时有效的
+     * {@code COMPANY_MANAGER} 身份替公司动作，运行层会按真实任职核对，调用方不能自报身份。
+     * {@code amount}/{@code rateU}/{@code tenorMs}/{@code purpose} 只在贷款类动作使用；
+     * {@code sourceToken}/{@code payeeToken} 只在支付时使用（规范文本 {@code CASH|账户}、
+     * {@code DEPOSIT|银行|持有人}）。</p>
+     *
+     * @param requestId            本人请求标识（幂等）
+     * @param kind                 动作种类
+     * @param bankKey              银行 key
+     * @param organizationPartyId  以公司身份动作时的组织；个人动作为空
+     * @param amount               金额（正、两位小数）
+     * @param rateU                贷款利率（定标 1e6；非贷款为 0）
+     * @param tenorMs              贷款期限（非贷款为 0）
+     * @param purpose              贷款用途（贷款请求必填）
+     * @param sourceToken          支付出款桶
+     * @param payeeToken           支付收款桶
+     * @param loanId               已有合同的标识；新申请为空（默认取 requestId）
+     */
+    public record BankActionDraft(String requestId, BankActions.Kind kind, String bankKey,
+                                  String organizationPartyId, BigDecimal amount, long rateU,
+                                  long tenorMs, String purpose, String sourceToken,
+                                  String payeeToken, String loanId) {
+
+        /** 校验静态字段并冻结。 */
+        public BankActionDraft {
+            requireText(requestId, "请求标识");
+            Objects.requireNonNull(kind, "动作种类");
+            requireText(bankKey, "银行");
+            organizationPartyId = organizationPartyId == null ? "" : organizationPartyId;
+            sourceToken = sourceToken == null ? "" : sourceToken;
+            payeeToken = payeeToken == null ? "" : payeeToken;
+            purpose = purpose == null ? "" : purpose;
+            loanId = loanId == null || loanId.isBlank() ? requestId : loanId;
+            if (amount == null || amount.signum() <= 0) {
+                throw new IllegalArgumentException("金额必须为正");
+            }
+            if (rateU < 0 || tenorMs < 0) {
+                throw new IllegalArgumentException("利率与期限不能为负");
+            }
+            if (kind == BankActions.Kind.LOAN_REQUEST && purpose.isBlank()) {
+                throw new IllegalArgumentException("贷款请求必须写明用途");
+            }
+        }
+
+        /**
+         * 生成冻结的纯核请求；客户主体由运行层解析后传入，草稿不携带。
+         *
+         * @param customerKey 运行层解析出的客户/借款人主体
+         * @return 纯核请求
+         */
+        BankActions.Request toRequest(String customerKey) {
+            return new BankActions.Request(requestId, kind, bankKey, customerKey, sourceToken,
+                    payeeToken, amount, rateU, tenorMs, purpose, loanId, 0L);
+        }
+    }
+
+    /**
+     * 排程一条银行人物动作（存款/取现/支付/双边借贷）。
+     *
+     * <p>本入口只冻结意图并排真实 BEGIN 屏障；到期才复核任职与焦点，完成帧再从上一批现金、
+     * 银行三态与贷款台账重新执行一次纯动作。银行经理只能审批本行贷款，绝不代客动钱。</p>
+     *
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId    本人任务标识
+     * @param dueMillis       真实完成时点
+     * @param durationMillis  声明工时，必须为正
+     * @param draft           业务字段
+     * @return {@code SCHEDULED:clientTaskId}
+     * @throws IOException 持久提交失败
+     */
+    public String bankAction(String clientCommandId, String clientTaskId, long dueMillis,
+                             long durationMillis, BankActionDraft draft) throws IOException {
+        return runtime.scheduleBankAction(this, clientCommandId, clientTaskId, dueMillis,
+                durationMillis, draft);
     }
 }

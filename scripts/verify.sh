@@ -134,6 +134,7 @@ if node --check src/main/resources/web/app.js > "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/branch-ui-async-probe.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/groups-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/groups-entry-check.cjs >> "$LOG/web-chart.log" 2>&1 \
+    && node src/test/js/bank-page-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && PYTHONIOENCODING=utf-8 python scripts/test-interview-layout.py >> "$LOG/web-chart.log" 2>&1; then
   ok "Web 图表、采访身份隔离与页面结构"
 else

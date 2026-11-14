@@ -22,12 +22,13 @@ import java.util.concurrent.CountDownLatch;
  * 凭据只加载到服务端内存，用于场景调用及遮罩/显式查看，控制台只打印一次性管理员引导凭据，
  * 绝不打印 API key。启动不调用模型；只有管理员显式开始后，已启用场景才可发送有界请求。</p>
  *
- * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media|engineering]}；默认
+ * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media|engineering|composed|custody]}；默认
  * {@code logs/web-workbench}、{@code C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt}、
  * 端口 18080（被占用则明确失败，不会杀掉已有服务）；默认live用独立world-live.journal，scripted仍用world.journal，
  * 显式cognition使用world-cognition.journal与冻结的回忆实验策略，belief使用独立world-belief.journal
  * 并启用判断、核验与来源学习实验，engineering使用独立world-engineering.journal按现有工程场景与
- * 冻结工程配置启动（全部场景默认关闭，未自动调用模型）。</p>
+ * 冻结工程配置启动，composed使用独立world-composed.journal按组合档（含一家真实银行）开局
+ * （全部场景默认关闭，未自动调用模型）。</p>
  */
 public final class WorldWebApp {
 
@@ -69,12 +70,15 @@ public final class WorldWebApp {
                 && !mode.equals("belief") && !mode.equals("media") && !mode.equals("interview")
                 && !mode.equals("dialogue") && !mode.equals("evidence")
                 && !mode.equals("social") && !mode.equals("engineering")
-                && !mode.equals("groups") && !mode.equals("intent")) {
+                && !mode.equals("groups") && !mode.equals("intent")
+                && !mode.equals("composed") && !mode.equals("custody")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering、groups或intent");
+                            + "evidence、social、engineering、groups、intent、composed或custody");
         }
         boolean groups = mode.equals("groups");
+        boolean composed = mode.equals("composed");
+        boolean custody = mode.equals("custody");
         boolean intent = mode.equals("intent");
         boolean live = mode.equals("live");
         boolean cognition = mode.equals("cognition");
@@ -98,7 +102,18 @@ public final class WorldWebApp {
         }
 
         SceneRoutes routes = SceneRoutes.open(workDir);
-        WorldWebHost host = intent
+        WorldWebHost host = custody
+                ? new WorldWebHost(() -> {
+                    var runtime = edu.cufe.auction.world.composed.ComposedCustodyScenario.open(
+                            workDir.resolve("world-custody.journal"));
+                    return new WorldWebHost.Opened(runtime,
+                            edu.cufe.auction.world.composed.ComposedCustodyScenario.manifest().runId());
+                }, routes, new LiveDecisionProvider(keys))
+                : composed
+                ? new WorldWebHost(() -> WorldWebScenario.openComposed(
+                        workDir.resolve("world-composed.journal")),
+                        routes, new LiveDecisionProvider(keys))
+                : intent
                 ? new WorldWebHost(() -> WorldWebScenario.openCommandIntent(
                         workDir.resolve("world-intent.journal")),
                         routes, new LiveDecisionProvider(keys))
@@ -180,7 +195,13 @@ public final class WorldWebApp {
         System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
         System.out.println("分支运行管理：本机端口 " + BRANCH_PORT_FROM + "-" + BRANCH_PORT_TO
                 + "，最多 " + MAX_BRANCH_RUNS + " 个；创建不等于启动，页面按真实状态显示。");
-        System.out.println(intent
+        System.out.println(custody
+                ? "模式：银行托管组合实验（composed-v3；独立 world-custody.journal）；"
+                        + "开局禀赋与参数均为实验假设，全部模型场景默认关闭。"
+                : composed
+                ? "模式：组合档（schema24，含一家真实银行 north；独立 world-composed.journal）；"
+                        + "未自动调用模型。全部场景默认关闭，请在页面核对场景配置并明确开始一轮。"
+                : intent
                 ? "模式：完整指令原意实验（独立 world-intent.journal）；未自动调用模型。"
                         + "全部场景默认关闭，请在页面核对场景配置并明确开始一轮。"
                 : groups

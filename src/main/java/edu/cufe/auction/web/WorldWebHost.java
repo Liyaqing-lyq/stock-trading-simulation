@@ -44,6 +44,16 @@ import edu.cufe.auction.world.ValuationModel;
 import edu.cufe.auction.world.WorldExchange;
 import edu.cufe.auction.world.WorldRuntime;
 import edu.cufe.auction.world.WorldScheduler;
+import edu.cufe.auction.world.bank.BankActions;
+import edu.cufe.auction.world.bank.BankChart;
+import edu.cufe.auction.world.bank.BankConfig;
+import edu.cufe.auction.world.bank.BankMetrics;
+import edu.cufe.auction.world.bank.BankRun;
+import edu.cufe.auction.world.bank.BankState;
+import edu.cufe.auction.world.bank.BankingProfile;
+import edu.cufe.auction.world.bank.CustodyBook;
+import edu.cufe.auction.world.bank.Money;
+import edu.cufe.auction.world.composed.BankCompanyReport;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -1281,6 +1291,13 @@ public final class WorldWebHost implements AutoCloseable {
     /** 单页最多返回的行数；总量另行给出，不截断计数。 */
     public static final int MAX_ROWS = 50;
 
+    /**
+     * 本人银行动作的进程内幂等缓存：同 person+commandId 重放返回原回执（含到期时点），
+     * 内容不一致直接拒绝；跨进程仍由核心的「同命令不同内容」校验兜底。
+     */
+    private final Map<String, BankActionReceipt> bankCommandCache =
+            new java.util.LinkedHashMap<>();
+
     /** 本页允许计算期间表现的最大确认帧数；超过时不计算，避免长日志拖死只读请求。 */
     public static final long MAX_PERFORMANCE_FRAMES = 400;
 
@@ -2424,6 +2441,975 @@ public final class WorldWebHost implements AutoCloseable {
             return new OwnerValue(ownerId, value.position(), value.atMillis(),
                     value.status().name(), value.netWorth(), value.cash(), value.holdings());
         });
+    }
+
+    /**
+     * God 银行审计：在同一 writer 任务、同一 {@link WorldRuntime.Snapshot} 上派生全账，
+     * 不跨时刻拼表、不在前端记账。
+     *
+     * <p>全部字段都来自既有权威数据：准备金=真实现金账户余额，存款负债=银行总账贷方，
+     * 贷款=贷款台账绑定的真实期次，门槛=纯核 {@link BankMetrics}。旧档未启用银行时返回
+     * {@code available=false} 与原因，不用 0 冒充"银行存在但没钱"。</p>
+     *
+     * <p>这不是写入口：不提供任何存款/取现/支付/借贷动作，也不开放任意 JSON 动作表单。</p>
+     *
+     * @return 只读审计视图（Map → JSON）
+     * @throws BusyException 队列满
+     * @throws Exception     读取失败或银行档案不可信
+     */
+    public Map<String, Object> bankAuditView() throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            Map<String, Object> view = new LinkedHashMap<>();
+            view.put("runId", runId);
+            view.put("position", num(snapshot.position()));
+            view.put("timeMillis", num(snapshot.timeMillis()));
+            view.put("phase", snapshot.lastPhase());
+            java.util.Optional<BankRun> bankRun = current.bankOf();
+            if (bankRun.isEmpty()) {
+                view.put("available", false);
+                view.put("reason", "本档未启用银行模块（旧档案），没有可审计的银行账");
+                view.put("banks", List.of());
+                view.put("actions", List.of());
+                view.put("custody", Map.of("enabled", false, "reason", "本档未启用银行模块",
+                        "pools", List.of(), "beneficial", List.of()));
+                view.put("notes", List.of("旧档不升级、不补银行；这里不显示零余额银行。"));
+                return view;
+            }
+            BankRun run = bankRun.get();
+            BankRun.Decoded decoded = run.decode(snapshot.accounts());
+            BankRun.Audit audit = run.audit(snapshot.accounts());
+            BankConfig config = decoded.config();
+            BankState state = decoded.state();
+            BankChart chart = state.chart();
+            BankActions.Book book = current.bankBook();
+
+            view.put("available", true);
+            view.put("reason", "");
+            view.put("configFingerprint", run.configFingerprint());
+            view.put("digest", run.digest());
+            view.put("backing", audit.backing().toPlainString());
+            Map<String, Object> archive = new LinkedHashMap<>();
+            archive.put("archiveId", config.archiveId());
+            archive.put("version", num(config.version()));
+            archive.put("label", config.label());
+            archive.put("coverageRule", config.coverageRule());
+            archive.put("required", config.required());
+            archive.put("implemented", config.implemented());
+            archive.put("omitted", config.omitted());
+            archive.put("provenanceStatus", "names_and_links_only_unverified");
+            archive.put("experimentOnly", true);
+            view.put("archive", archive);
+
+            List<Map<String, Object>> banks = new ArrayList<>();
+            for (String bankKey : chart.banks()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("bankKey", bankKey);
+                row.put("reserve", money(audit.reserves().get(bankKey)));
+                row.put("depositsTotal", money(audit.deposits().get(bankKey)));
+                row.put("customerDeposits", customerDeposits(config, state, bankKey));
+                List<Map<String, Object>> loanRows = loanRows(config, state, book, bankKey);
+                row.put("loans", loanRows);
+                // 账面值合计由服务端 BigDecimal 汇总本银行的真实 onbook（浏览器只显示字符串）。
+                row.put("loansOnbookTotal", sumOnbookColumn(loanRows));
+                // 正常方向由既有权威报表给：负债/权益/收入按贷方余额取正，资产/费用按借方取正。
+                // 原始总账（借正贷负）另存为 glRaw，供折叠审计；不做 abs，因此亏损/冲回仍是负数。
+                BankCompanyReport report = BankCompanyReport.of(run, snapshot.accounts(), bankKey);
+                Map<String, Object> interest = new LinkedHashMap<>();
+                interest.put("interestReceivable",
+                        money(normalAmount("ASSET", state.gl(bankKey, BankChart.INTEREST_RECEIVABLE))));
+                interest.put("interestPayable", money(report.liabilities()
+                        .getOrDefault(BankChart.INTEREST_PAYABLE, Money.zero())));
+                interest.put("interestIncome", money(report.income()
+                        .getOrDefault(BankChart.INTEREST_INCOME, Money.zero())));
+                interest.put("interestExpense", money(report.expense()
+                        .getOrDefault(BankChart.INTEREST_EXPENSE, Money.zero())));
+                row.put("interest", interest);
+                Map<String, Object> equity = new LinkedHashMap<>();
+                equity.put("paidIn", money(report.equity().getOrDefault("PAIDIN", Money.zero())));
+                equity.put("retained", money(report.equity().getOrDefault("RETAINED", Money.zero())));
+                equity.put("nonDistributable",
+                        money(normalAmount("EQUITY", state.gl(bankKey, BankChart.DISCHARGE_EQUITY))));
+                equity.put("bookEquity", money(report.bookedEquity()));
+                equity.put("totalEquity", money(report.totalEquity()));
+                equity.put("unbookedPnl", money(report.pnl()));
+                row.put("equity", equity);
+                Map<String, Object> totals = new LinkedHashMap<>();
+                totals.put("assets", money(report.totalAssets()));
+                totals.put("liabilities", money(report.totalLiabilities()));
+                totals.put("contra", money(sumValues(report.contra())));
+                totals.put("equity", money(report.totalEquity()));
+                totals.put("pnl", money(report.pnl()));
+                totals.put("balanced", report.balanced());
+                totals.put("complete", report.balanced() && report.unsupported().isEmpty());
+                List<String> unsupported = new ArrayList<>(report.unsupported());
+                // 旧报告正文参与历史重演，保持原序列化；网页按本档冻结能力裁剪过时提示。
+                if (current.profile().manifest().hasCustodyFill()) {
+                    unsupported.removeIf(note -> note.startsWith("世界路径未接：托管客户受益权成交"));
+                }
+                totals.put("unsupported", unsupported);
+                totals.put("basis", "BankCompanyReport：准备金现金 + 资产科目 + 减值准备（负资产）；"
+                        + "负债/权益/收入按正常方向取正；合计含未结转累计损益");
+                row.put("totals", totals);
+                Map<String, Object> rawGl = new LinkedHashMap<>();
+                for (String account : chart.glAccounts()) {
+                    rawGl.put(account, money(state.gl(bankKey, account)));
+                }
+                rawGl.put(BankChart.RESERVE, money(state.gl(bankKey, BankChart.RESERVE)));
+                row.put("glRaw", rawGl);
+                Map<String, Object> capitalView = new LinkedHashMap<>();
+                BankMetrics.Capital capital = BankMetrics.capital(state, bankKey);
+                capitalView.put("equityBase", money(capital.equityBase()));
+                capitalView.put("retained", money(capital.retained()));
+                capitalView.put("pnl", money(capital.pnl()));
+                capitalView.put("cet1", money(capital.cet1()));
+                capitalView.put("at1", money(capital.at1()));
+                capitalView.put("t1", money(capital.t1()));
+                capitalView.put("t2", money(capital.t2()));
+                capitalView.put("tcr", money(capital.tcr()));
+                row.put("capital", capitalView);
+                row.put("gate", gateRow(BankMetrics.gate(state, snapshot.accounts(), config,
+                        bankKey)));
+                banks.add(row);
+            }
+            view.put("banks", banks);
+
+            Map<String, Object> custody = new LinkedHashMap<>();
+            custody.put("enabled", !config.profile().custodians().isEmpty());
+            custody.put("fillEnabled", current.profile().manifest().hasCustodyFill());
+            custody.put("reason", config.profile().custodians().isEmpty()
+                    ? "本档未登记托管人，客户受益权为缺项，不补零"
+                    : "");
+            List<Map<String, Object>> pools = new ArrayList<>();
+            List<Map<String, Object>> beneficial = new ArrayList<>();
+            for (String custodian : codePointSorted(config.profile().custodians().keySet())) {
+                Map<String, Object> pool = new LinkedHashMap<>();
+                pool.put("custodian", custodian);
+                pool.put("poolAsset", money(audit.custodyPools().get(custodian)));
+                pools.add(pool);
+                for (Map.Entry<String, BigDecimal> entry
+                        : new java.util.TreeMap<>(run.custodyDetails()).entrySet()) {
+                    if (!entry.getKey().startsWith(custodian + "|")) {
+                        continue;
+                    }
+                    Map<String, Object> detail = new LinkedHashMap<>();
+                    detail.put("custodian", custodian);
+                    detail.put("detailKey", entry.getKey());
+                    detail.put("ownerKey", entry.getKey().substring(custodian.length() + 1));
+                    detail.put("amount", money(entry.getValue()));
+                    beneficial.add(detail);
+                }
+            }
+            custody.put("pools", pools);
+            custody.put("beneficial", beneficial);
+            custody.put("note", "客户受益权与托管池资产并列核对，不相加当资产；池资产只计一次");
+            view.put("custody", custody);
+
+            view.put("actions", actionRows(current.bankActionAudits(), true));
+            view.put("notes", List.of(
+                    "全部金额为精确十进制字符串；存款是客户债权与银行负债，不再算作现金。",
+                    "存款负债、准备金与托管客户现金不可相加成三份世界财富。",
+                    "门槛与阈值均为 EXP 实验规则，来源仅名称与链接线索，未升级为现实校准或合规证据。",
+                    "本页只读：网页不提供存款、取现、支付或借贷动作入口。"));
+            return view;
+        });
+    }
+
+    /**
+     * 人物本人银行视图：owner 只由会话真实绑定派生（该人物的可见账户属主），
+     * 不接受任何 owner/person 请求参数，也不把 God 报表在前端筛一遍。
+     *
+     * @param personId 会话绑定的真实人物
+     * @return 只读本人视图（Map → JSON）
+     * @throws BusyException 队列满
+     * @throws Exception     人物不可见或读取失败
+     */
+    public Map<String, Object> bankPersonView(String personId) throws BusyException, Exception {
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            RoleView role = current.roleView(personId);
+            Map<String, Object> view = new LinkedHashMap<>();
+            view.put("runId", runId);
+            view.put("personPartyId", role.personPartyId());
+            // 普通角色不得读取全局审计序号：本人银行视图不带 snapshot.position。
+            view.put("timeMillis", num(role.timeMillis()));
+            view.put("tools", role.tools());
+            java.util.Optional<BankRun> bankRun = current.bankOf();
+            if (bankRun.isEmpty()) {
+                view.put("available", false);
+                view.put("reason", "此档未启用银行模块");
+                view.put("owners", List.of());
+                view.put("deposits", List.of());
+                view.put("custody", List.of());
+                view.put("actions", List.of());
+                view.put("actionsEnabled", false);
+                view.put("actionsReason", "此档没有银行动作");
+                return view;
+            }
+            BankRun run = bankRun.get();
+            BankRun.Decoded decoded = run.decode(snapshot.accounts());
+            BankConfig config = decoded.config();
+            BankState state = decoded.state();
+            // 只说本人：属主来自真实账户绑定（任职/产品授权），重复属主去重
+            Set<String> owners = new java.util.TreeSet<>();
+            for (RoleView.Account account : role.accounts()) {
+                owners.add(account.ownerId());
+            }
+            List<Map<String, Object>> ownerRows = new ArrayList<>();
+            List<Map<String, Object>> depositRows = new ArrayList<>();
+            List<Map<String, Object>> custodyRows = new ArrayList<>();
+            for (String ownerId : owners) {
+                java.util.Optional<BankRun.Projection> projection =
+                        current.bankProjection(ownerId);
+                if (projection.isEmpty()) {
+                    continue;
+                }
+                BankRun.Projection value = projection.get();
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("ownerId", value.ownerId());
+                row.put("cash", money(value.cash()));
+                row.put("deposits", money(value.deposits()));
+                row.put("beneficial", money(value.beneficial()));
+                ownerRows.add(row);
+                for (Map.Entry<String, BankingProfile.PartyRef> entry
+                        : new java.util.TreeMap<>(config.profile().parties()).entrySet()) {
+                    BankingProfile.PartyRef party = entry.getValue();
+                    if (!party.ownerId().equals(ownerId) || party.depositGl() == null) {
+                        continue;
+                    }
+                    for (String bankKey : state.chart().banks()) {
+                        BigDecimal amount = state.depositOf(bankKey, entry.getKey());
+                        Map<String, Object> deposit = new LinkedHashMap<>();
+                        deposit.put("bankKey", bankKey);
+                        deposit.put("partyKey", entry.getKey());
+                        deposit.put("amount", money(amount));
+                        BankConfig.DepositOffer offer = config.depositOffer(bankKey);
+                        deposit.put("offerId", offer == null ? "" : offer.offerId());
+                        deposit.put("rateU", offer == null ? "0" : Long.toString(offer.rateU()));
+                        deposit.put("rateText", offer == null ? "—" : rateText(offer.rateU()));
+                        BankState.DepositAccount account =
+                                state.depositAccount(bankKey, entry.getKey());
+                        deposit.put("nonAccrual", account != null && account.nonAccrual());
+                        depositRows.add(deposit);
+                    }
+                }
+            }
+            // 本人托管受益：owner 来自身份的真实授权账户，再按 profile 的 partyKey 逐人取明细。
+            // 与 God 全池审计口径不同：这里只有本人那一份，且显式带 ownerId 以免多属主重复。
+            custodyRows = personalCustodyRows(owners, config.profile(), decoded.book());
+            view.put("available", true);
+            view.put("reason", "");
+            view.put("owners", ownerRows);
+            view.put("deposits", depositRows);
+            view.put("custody", custodyRows);
+            List<Map<String, Object>> own = new ArrayList<>();
+            for (Map<String, Object> row : actionRows(current.bankActionAudits(), false)) {
+                if (role.personPartyId().equals(row.get("personPartyId"))) {
+                    own.add(row);
+                }
+            }
+            view.put("actions", own);
+            // ---- 可操作范围（全部来自真实任职/账户，不接受客户端自报身份） ----
+            BankChart chart = decoded.state().chart();
+            Set<String> myParties = new java.util.TreeSet<>();
+            for (Map.Entry<String, BankingProfile.PartyRef> entry
+                    : new java.util.TreeMap<>(config.profile().parties()).entrySet()) {
+                if (owners.contains(entry.getValue().ownerId())) {
+                    myParties.add(entry.getKey());
+                }
+            }
+            Set<String> managedOrgs = new java.util.TreeSet<>();
+            for (RoleView.Appointment appointment : role.appointments()) {
+                if (appointment.role() == edu.cufe.auction.world.RoleAccess.Role.COMPANY_MANAGER) {
+                    managedOrgs.add(appointment.organizationPartyId());
+                }
+            }
+            List<String> managedBanks = new ArrayList<>();
+            for (String bankKey : chart.banks()) {
+                BankingProfile.BankRef ref = config.profile().banks().get(bankKey);
+                if (ref != null && managedOrgs.contains(ref.partyId())) {
+                    managedBanks.add(bankKey);
+                }
+            }
+            Set<String> payableOrgs = new java.util.TreeSet<>();
+            if (config.profile().parties().containsKey(personId)) {
+                payableOrgs.add(personId);
+            }
+            for (String org : managedOrgs) {
+                if (config.profile().parties().containsKey(org)) {
+                    payableOrgs.add(org);
+                }
+            }
+            view.put("entitlements", entitlements(managedBanks));
+            view.put("options", actionOptions(config, state, chart, role, owners, myParties,
+                    payableOrgs));
+            view.put("loans", loanContracts(config, chart, current.bankBook(), payableOrgs,
+                    managedBanks));
+            view.put("actionsEnabled", true);
+            view.put("actionsReason", "动作经真实 WorldRoleSession 排程：提交后先显示「已排程」，"
+                    + "到期由世界调度真实执行，再按回执显示已开始/已完成/拒绝；不由点击瞬时完成。");
+            view.put("custodyBasis", "本人受益权按授权的 owner → partyKey 逐人求明细，"
+                    + "不是托管池全客户合计；全池合计只在 God 审计页");
+            view.put("notes", List.of(
+                    "现金、存款与托管受益权分列，不相加当\"总财富\"；同一笔钱只出现一次。",
+                    "这里只含本人真实绑定的账户与本人对应的托管明细；别人的账户、别人的明细、"
+                            + "托管池全客户合计都不在本视图。",
+                    "本视图不含全局批次位置或全局审计序号，只给世界时点用于显示新鲜度；"
+                            + "拒绝机理与原回执也不带全局位置。"));
+            return view;
+        });
+    }
+
+    /**
+     * 本人托管受益明细：只按「授权的 owner → 该 owner 的 partyKey」取本人那一份。
+     *
+     * <p><b>不能用池合计</b>：{@code custodyDetailTotal} / {@code poolAsset} 是全客户合计，
+     * 只属于 God 审计。这里逐 (owner, partyKey, custodian) 调用 {@code detailOf}，显式带
+     * {@code ownerId} 以支持多属主且不重复；金额为零不列。</p>
+     *
+     * @param owners  本次会话真实可见账户的属主集合
+     * @param profile 冻结档案（提供 partyKey → ownerId 与托管人清单）
+     * @param book    托管明细账
+     * @return 本人明细行（ownerId / partyKey / custodian / amount）
+     */
+    static List<Map<String, Object>> personalCustodyRows(Set<String> owners,
+                                                        BankingProfile profile,
+                                                        CustodyBook book) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        if (owners == null || owners.isEmpty() || profile == null || book == null) {
+            return rows;
+        }
+        for (String ownerId : new java.util.TreeSet<>(owners)) {
+            for (Map.Entry<String, BankingProfile.PartyRef> entry
+                    : new java.util.TreeMap<>(profile.parties()).entrySet()) {
+                if (!entry.getValue().ownerId().equals(ownerId)) {
+                    continue;
+                }
+                String partyKey = entry.getKey();
+                for (String custodian : codePointSorted(profile.custodians().keySet())) {
+                    BigDecimal amount = book.detailOf(custodian, partyKey);
+                    if (amount.signum() == 0) {
+                        continue;
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("ownerId", ownerId);
+                    row.put("partyKey", partyKey);
+                    row.put("custodian", custodian);
+                    row.put("amount", money(amount));
+                    rows.add(row);
+                }
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * 可执行动作清单：全部来自本人真实账户与任职；银行经理只多一条审批本行合同。
+     *
+     * @param managedBanks 本人是该行有效公司经理的银行 key
+     * @return 动作种类原码
+     */
+    static List<String> entitlements(List<String> managedBanks) {
+        List<String> list = new ArrayList<>(List.of("DEPOSIT", "WITHDRAW", "PAY",
+                "LOAN_REQUEST", "LOAN_ACCEPT", "LOAN_DRAW", "LOAN_REPAY", "LOAN_PAY_INTEREST"));
+        if (managedBanks != null && !managedBanks.isEmpty()) {
+            list.add("LOAN_APPROVE");
+        }
+        return list;
+    }
+
+    /** 表单选项：只列本人可见账户/存款与本人任职组织的桶；普通用户不手写内部 token。 */
+    static Map<String, Object> actionOptions(BankConfig config, BankState state, BankChart chart,
+                                             RoleView role, Set<String> owners,
+                                             Set<String> myParties, Set<String> payableOrgs) {
+        List<Map<String, Object>> cash = new ArrayList<>();
+        List<Map<String, Object>> deposits = new ArrayList<>();
+        List<Map<String, Object>> payees = new ArrayList<>();
+        List<Map<String, Object>> subjects = new ArrayList<>();
+        for (String partyKey : payableOrgs) {
+            BankingProfile.PartyRef party = config.profile().parties().get(partyKey);
+            if (party == null) {
+                continue;
+            }
+            boolean personal = partyKey.equals(role.personPartyId());
+            subjects.add(Map.of("token", personal ? "" : partyKey,
+                    "label", personal ? "本人" : "任职公司 " + partyKey));
+            if (party.cashAccountId() != null) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("token", "CASH|" + party.cashAccountId());
+                row.put("label", "现金 " + party.cashAccountId() + " · " + partyKey);
+                row.put("ownerId", party.ownerId());
+                row.put("partyKey", partyKey);
+                cash.add(row);
+                payees.add(row);
+            }
+            for (String bankKey : chart.banks()) {
+                if (party.depositGl() == null) {
+                    continue;
+                }
+                BigDecimal amount = state.depositOf(bankKey, partyKey);
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("token", "DEPOSIT|" + bankKey + "|" + partyKey);
+                row.put("label", "存款 " + partyKey + " · " + bankKey + " · "
+                        + money(amount) + " 元");
+                row.put("partyKey", partyKey);
+                row.put("ownerId", party.ownerId());
+                deposits.add(row);
+                payees.add(row);
+            }
+        }
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("cash", cash);
+        options.put("subjects", subjects);
+        options.put("deposits", deposits);
+        options.put("payees", payees);
+        options.put("workMillis", Map.of("min", "1", "max", "3600000", "default", "1000"));
+        options.put("banks", new ArrayList<>(chart.banks()));
+        return options;
+    }
+
+    /**
+     * 本人可见的真实贷款合同（客户看自己的；银行经理看本行）。
+     *
+     * <p>条款是冻结事实，页面只读；阶段由状态与批准人派生，客户端不能改条款冒充新协议。</p>
+     */
+    static List<Map<String, Object>> loanContracts(BankConfig config, BankChart chart,
+                                                   BankActions.Book book, Set<String> myParties,
+                                                   List<String> managedBanks) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (BankActions.Loan loan : new java.util.TreeMap<>(book.loans()).values()) {
+            boolean mine = myParties.contains(loan.borrowerKey());
+            boolean bankSide = managedBanks.contains(loan.bankKey());
+            if (!mine && !bankSide) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("loanId", loan.loanId());
+            row.put("bankKey", loan.bankKey());
+            row.put("borrowerKey", loan.borrowerKey());
+            row.put("status", loan.status().name());
+            row.put("statusLabel", loanStatusLabel(loan.status().name()));
+            row.put("amount", money(loan.amount()));
+            row.put("rateText", rateText(loan.rateU()));
+            row.put("rateU", Long.toString(loan.rateU()));
+            row.put("tenorText", tenorText(loan.tenorMs()));
+            row.put("tenorMs", Long.toString(loan.tenorMs()));
+            row.put("purpose", loan.purpose());
+            row.put("accepted", loan.accepted());
+            row.put("approvedBy", loan.approvedBy() == null ? "" : loan.approvedBy());
+            row.put("drawn", money(loan.drawn()));
+            row.put("trancheId", loan.trancheId() == null ? "" : loan.trancheId());
+            row.put("mine", mine);
+            row.put("bankSide", bankSide);
+            row.put("canAccept", mine && !loan.accepted()
+                    && loan.status() == BankActions.LoanStatus.PROPOSED);
+            row.put("canApprove", bankSide && loan.accepted()
+                    && loan.approvedBy() == null
+                    && loan.status() != BankActions.LoanStatus.DRAWN
+                    && loan.status() != BankActions.LoanStatus.CLOSED);
+            row.put("canDraw", mine && loan.accepted() && loan.approvedBy() != null
+                    && loan.status() == BankActions.LoanStatus.APPROVED);
+            row.put("canRepay", mine && loan.status() == BankActions.LoanStatus.DRAWN);
+            row.put("canPayInterest", mine && loan.status() == BankActions.LoanStatus.DRAWN);
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /** 一条本人银行动作请求（身份、主体与资金桶都由服务端按真实绑定复核）。 */
+    public record BankActionCommand(String commandId, String taskId, String kind,
+                                    String organizationPartyId, String amount, long rateU,
+                                    long tenorMs, String purpose, String sourceToken,
+                                    String payeeToken, String loanId, long workMillis) {
+    }
+
+    /** 排程回执：只给本人动作的回执、种类与到期时点（世界时间，不含全局位置）。 */
+    public record BankActionReceipt(String receipt, String kind, String dueTimeMillis,
+                                    String status, String signature) {
+    }
+
+    /**
+     * 通过真实 {@link WorldRoleSession#bankAction} 排程一条银行动作。
+     *
+     * <p>服务端只做三件事：从会话取人物、从真实任职/账户校验资金桶与组织范围、把业务字段
+     * 交给权威入口排程；余额、授权与放款阶段全部由 Runtime 在完成帧复核。网页不另记账，
+     * 也不用上帝入口代操作。</p>
+     *
+     * @param personId 会话绑定的人物
+     * @param command  业务字段（不含 ownerId/personId 等身份字段）
+     * @return 排程回执
+     * @throws BusyException 队列满
+     * @throws Exception     校验或排程失败
+     */
+    public BankActionReceipt bankPersonAction(String personId, BankActionCommand command)
+            throws BusyException, Exception {
+        if (command == null) {
+            throw new IllegalArgumentException("动作不能为空");
+        }
+        return call(() -> {
+            WorldRuntime current = readyNow();
+            WorldRuntime.Snapshot snapshot = current.snapshot();
+            RoleView role = current.roleView(personId);
+            java.util.Optional<BankRun> bankRun = current.bankOf();
+            if (bankRun.isEmpty()) {
+                throw new IllegalArgumentException("此档未启用银行模块");
+            }
+            BankRun run = bankRun.get();
+            BankRun.Decoded decoded = run.decode(snapshot.accounts());
+            BankConfig config = decoded.config();
+            BankState state = decoded.state();
+            BankChart chart = state.chart();
+            Set<String> owners = new java.util.TreeSet<>();
+            for (RoleView.Account account : role.accounts()) {
+                owners.add(account.ownerId());
+            }
+            Set<String> myParties = new java.util.TreeSet<>();
+            for (Map.Entry<String, BankingProfile.PartyRef> entry
+                    : new java.util.TreeMap<>(config.profile().parties()).entrySet()) {
+                if (owners.contains(entry.getValue().ownerId())) {
+                    myParties.add(entry.getKey());
+                }
+            }
+            Set<String> managedOrgs = new java.util.TreeSet<>();
+            for (RoleView.Appointment appointment : role.appointments()) {
+                if (appointment.role() == edu.cufe.auction.world.RoleAccess.Role.COMPANY_MANAGER) {
+                    managedOrgs.add(appointment.organizationPartyId());
+                }
+            }
+            List<String> managedBanks = new ArrayList<>();
+            for (String bankKey : chart.banks()) {
+                BankingProfile.BankRef ref = config.profile().banks().get(bankKey);
+                if (ref != null && managedOrgs.contains(ref.partyId())) {
+                    managedBanks.add(bankKey);
+                }
+            }
+            BankActions.Kind kind;
+            try {
+                kind = BankActions.Kind.valueOf(command.kind());
+            } catch (RuntimeException invalid) {
+                throw new IllegalArgumentException("未知的银行动作：" + command.kind());
+            }
+            if (kind == BankActions.Kind.LOAN_ACCRUE) {
+                throw new IllegalArgumentException("计息只能由世界按合同到期创建");
+            }
+            if (!entitlements(managedBanks).contains(kind.name())) {
+                throw new IllegalArgumentException("当前身份不能执行该动作：" + kind);
+            }
+            if (command.workMillis() <= 0 || command.workMillis() > 3_600_000L) {
+                throw new IllegalArgumentException("声明工时必须在 1 毫秒到 1 小时之间");
+            }
+            String org = command.organizationPartyId() == null ? "" : command.organizationPartyId();
+            if (!org.isBlank() && !managedOrgs.contains(org) && !myParties.contains(org)) {
+                throw new IllegalArgumentException("本人不是该组织当时有效的经理：" + org);
+            }
+            String bankKey = resolveBankKey(command, chart, myParties, managedBanks);
+            if (needsFunds(kind)) {
+                Set<String> ownCash = new java.util.HashSet<>();
+                for (RoleView.Account account : role.accounts()) {
+                    ownCash.add("CASH|" + account.accountId());
+                }
+                Set<String> ownDeposits = new java.util.HashSet<>();
+                for (String partyKey : myParties) {
+                    BankingProfile.PartyRef own = config.profile().parties().get(partyKey);
+                    if (own == null || own.depositGl() == null) {
+                        continue;
+                    }
+                    for (String key : chart.banks()) {
+                        ownDeposits.add("DEPOSIT|" + key + "|" + partyKey);
+                    }
+                }
+                String source = command.sourceToken() == null ? "" : command.sourceToken();
+                if (!source.isBlank() && !ownCash.contains(source)
+                        && !ownDeposits.contains(source) && !managedOrgToken(source, managedOrgs, config)) {
+                    throw new IllegalArgumentException("出款账户不属于本人：" + source);
+                }
+                if (kind == BankActions.Kind.PAY) {
+                    String payee = command.payeeToken() == null ? "" : command.payeeToken();
+                    if (payee.isBlank()) {
+                        throw new IllegalArgumentException("支付必须选择收款对象");
+                    }
+                    if (!ownCash.contains(payee) && !ownDeposits.contains(payee)
+                            && !managedOrgToken(payee, managedOrgs, config)) {
+                        throw new IllegalArgumentException("收款对象不在本人可见范围：" + payee);
+                    }
+                }
+            }
+            java.math.BigDecimal amount = parseMoney(command.amount());
+            // 完整请求含 taskId；JSON 转义避免业务文本中的分隔符产生碰撞。
+            String signature = PAYLOAD_MAPPER.writeValueAsString(command);
+            String cacheKey = PAYLOAD_MAPPER.writeValueAsString(List.of(runId, personId, command.commandId()));
+            BankActionReceipt cached = bankCommandCache.get(cacheKey);
+            if (cached != null) {
+                if (!cached.signature().equals(signature)) {
+                    throw new IllegalArgumentException("同一命令标识不能对应不同内容");
+                }
+                return cached;
+            }
+            WorldRoleSession.BankActionDraft draft = new WorldRoleSession.BankActionDraft(
+                    command.commandId(), kind, bankKey, org, amount, command.rateU(),
+                    command.tenorMs(), command.purpose(),
+                    needsFunds(kind) && command.sourceToken() != null ? command.sourceToken() : "",
+                    needsFunds(kind) && command.payeeToken() != null ? command.payeeToken() : "",
+                    command.loanId());
+            long due = snapshot.timeMillis() + command.workMillis() + 1L;
+            String receipt = current.openRoleSession(personId).bankAction(command.commandId(),
+                    command.taskId(), due, command.workMillis(), draft);
+            String status = receipt != null && receipt.startsWith("SCHEDULED")
+                    ? "SCHEDULED" : receipt;
+            BankActionReceipt result = new BankActionReceipt(receipt, kind.name(),
+                    Long.toString(due), status, signature);
+            if (bankCommandCache.size() >= 256) {
+                java.util.Iterator<String> oldest = bankCommandCache.keySet().iterator();
+                if (oldest.hasNext()) {
+                    oldest.next();
+                    oldest.remove();
+                }
+            }
+            bankCommandCache.put(cacheKey, result);
+            return result;
+        });
+    }
+
+    /** 资金类动作（存入/取出/支付）才需要资金桶。 */
+    private static boolean needsFunds(BankActions.Kind kind) {
+        return kind == BankActions.Kind.DEPOSIT || kind == BankActions.Kind.WITHDRAW
+                || kind == BankActions.Kind.PAY;
+    }
+
+    /** 出款/收款桶是否属于本人有效任职的组织。 */
+    private static boolean managedOrgToken(String token, Set<String> managedOrgs, BankConfig config) {
+        if (token == null || token.isBlank()) {
+            return false;
+        }
+        String[] parts = token.split("\\|", -1);
+        if ("CASH".equals(parts[0]) && parts.length == 2) {
+            for (String org : managedOrgs) {
+                BankingProfile.PartyRef party = config.profile().parties().get(org);
+                if (party != null && parts[1].equals(party.cashAccountId())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if ("DEPOSIT".equals(parts[0]) && parts.length == 3) {
+            return managedOrgs.contains(parts[2]);
+        }
+        return false;
+    }
+
+    /** 银行 key：资金桶自带，或审批时按本人管理的行；两者都不成立即拒绝。 */
+    private static String resolveBankKey(BankActionCommand command, BankChart chart,
+                                         Set<String> myParties, List<String> managedBanks) {
+        String token = command.sourceToken() == null ? "" : command.sourceToken();
+        if (token.startsWith("DEPOSIT|")) {
+            String[] parts = token.split("\\|", -1);
+            if (parts.length == 3 && chart.banks().contains(parts[1])) {
+                return parts[1];
+            }
+        }
+        String explicit = command.organizationPartyId() == null ? "" : command.organizationPartyId();
+        if (command.loanId() != null && !command.loanId().isBlank()
+                && !managedBanks.isEmpty() && !myParties.contains(explicit)) {
+            return managedBanks.get(0);
+        }
+        if (chart.banks().size() == 1) {
+            return chart.banks().get(0);
+        }
+        if (!managedBanks.isEmpty()) {
+            return managedBanks.get(0);
+        }
+        return chart.banks().get(0);
+    }
+
+    /** 业务金额文本（两位小数，正数）；解析失败直接拒绝。 */
+    private static java.math.BigDecimal parseMoney(String text) {
+        if (text == null || text.isBlank()) {
+            throw new IllegalArgumentException("金额不能为空");
+        }
+        try {
+            java.math.BigDecimal value = new java.math.BigDecimal(text.trim());
+            if (value.signum() <= 0) {
+                throw new IllegalArgumentException("金额必须为正");
+            }
+            return value.setScale(2, java.math.RoundingMode.UNNECESSARY);
+        } catch (NumberFormatException | ArithmeticException invalid) {
+            throw new IllegalArgumentException("金额必须是两位小数以内的正数：" + text);
+        }
+    }
+
+    /** 客户存款负债明细：主体 key、真实财产主体、科目与余额（同一快照）。 */
+    private static List<Map<String, Object>> customerDeposits(BankConfig config, BankState state,
+                                                             String bankKey) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map.Entry<String, BankingProfile.PartyRef> entry
+                : new java.util.TreeMap<>(config.profile().parties()).entrySet()) {
+            BankingProfile.PartyRef party = entry.getValue();
+            if (party.depositGl() == null) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("partyKey", entry.getKey());
+            row.put("ownerId", party.ownerId());
+            row.put("depositGl", party.depositGl());
+            row.put("amount", money(state.depositOf(bankKey, entry.getKey())));
+            BankState.DepositAccount account = state.depositAccount(bankKey, entry.getKey());
+            row.put("nonAccrual", account != null && account.nonAccrual());
+            row.put("interestPayable", account == null ? "0.00"
+                    : money(account.interestPayable()));
+            row.put("interestPaid", account == null ? "0.00" : money(account.interestPaid()));
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /**
+     * 本银行已过滤贷款行的账面值合计（BigDecimal，绝不经 double / ECMAScript Number）。
+     *
+     * <p>只累加传入的行，因此调用方必须先按银行过滤；不会跨银行串加。
+     * 返回规范十进制字符串，浏览器直接显示，不在前端重新汇总。</p>
+     *
+     * @param rows 同一银行的贷款行（含 {@code onbook} 字符串）
+     * @return 合计的十进制字符串（两位小数）
+     */
+    static String sumOnbookColumn(List<Map<String, Object>> rows) {
+        BigDecimal total = Money.zero();
+        for (Map<String, Object> row : rows) {
+            Object value = row.get("onbook");
+            total = total.add(value == null ? Money.zero() : new BigDecimal(value.toString()));
+        }
+        return Money.scale2(total).toPlainString();
+    }
+
+    /** 贷款台账行：条款是冻结事实，金额与状态由真实期次派生（不另存余额）。 */
+    private static List<Map<String, Object>> loanRows(BankConfig config, BankState state,
+                                                      BankActions.Book book, String bankKey) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (BankActions.Loan loan : new java.util.TreeMap<>(book.loans()).values()) {
+            if (!loan.bankKey().equals(bankKey)) {
+                continue;
+            }
+            BankState.Loan derived = state.loan(bankKey, loan.borrowerKey());
+            BankState.Tranche tranche = loan.trancheId() == null ? null
+                    : derived.tranche(loan.trancheId());
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("loanId", loan.loanId());
+            row.put("borrowerKey", loan.borrowerKey());
+            row.put("contract", tranche == null ? "0.00" : money(tranche.contract()));
+            row.put("onbook", tranche == null ? "0.00" : money(tranche.onbook()));
+            row.put("writtenOff", tranche == null ? "0.00" : money(tranche.writtenOff()));
+            row.put("interestReceivable", tranche == null ? "0.00"
+                    : money(tranche.interestReceivable()));
+            row.put("interestPaid", money(derived.interestPaid()));
+            row.put("accruedInterest", money(derived.accruedInterest()));
+            row.put("overdue", derived.overdue());
+            row.put("status", loan.status().name());
+            row.put("statusLabel", loanStatusLabel(loan.status().name()));
+            row.put("rateText", rateText(loan.rateU()));
+            row.put("tenorText", tenorText(loan.tenorMs()));
+            row.put("trancheId", loan.trancheId() == null ? "" : loan.trancheId());
+            Map<String, Object> terms = new LinkedHashMap<>();
+            terms.put("amount", money(loan.amount()));
+            terms.put("rateU", Long.toString(loan.rateU()));
+            terms.put("tenorMs", Long.toString(loan.tenorMs()));
+            terms.put("purpose", loan.purpose());
+            terms.put("accepted", loan.accepted());
+            terms.put("approvedBy", loan.approvedBy() == null ? "" : loan.approvedBy());
+            terms.put("drawn", money(loan.drawn()));
+            terms.put("status", loan.status().name());
+            row.put("terms", terms);
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /** 门槛行：状态、触发动作、十项指标与缺项（缺项不补零、不默认通过）。 */
+    private static Map<String, Object> gateRow(BankMetrics.Gate gate) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("status", gate.status());
+        row.put("actions", gate.actions());
+        List<Map<String, Object>> metrics = new ArrayList<>();
+        List<String> missing = new ArrayList<>();
+        for (BankMetrics.Metric metric : gate.metrics().values()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("name", metric.name());
+            item.put("num", money(metric.num()));
+            item.put("den", money(metric.den()));
+            item.put("value", metric.value() == null ? null : metric.value().toPlainString());
+            item.put("state", metric.state());
+            if (!"COMPUTED".equals(metric.state())) {
+                missing.add(metric.name() + ":" + metric.state());
+            }
+            metrics.add(item);
+        }
+        row.put("metrics", metrics);
+        row.put("missing", missing);
+        return row;
+    }
+
+    /**
+     * 真实银行动作回执行（BEGIN 取消/完成帧都保留原码，并按真实阶段标注）。
+     *
+     * @param audits          日志派生的动作报告
+     * @param includePosition 是否带全局批次位置；本人视图必须为 {@code false}
+     */
+    private static List<Map<String, Object>> actionRows(
+            List<WorldRuntime.BankActionAudit> audits, boolean includePosition) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (WorldRuntime.BankActionAudit audit : audits) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("taskId", audit.taskId());
+            row.put("commandId", audit.commandId());
+            row.put("personPartyId", audit.personPartyId());
+            row.put("kind", audit.kind());
+            row.put("kindLabel", actionKindLabel(audit.kind()));
+            row.put("bankKey", audit.bankKey());
+            row.put("customerKey", audit.customerKey() == null ? "" : audit.customerKey());
+            row.put("accepted", audit.accepted());
+            row.put("reason", audit.reason());
+            String stage = actionStage(audit.kind(), audit.accepted(), audit.reason());
+            row.put("stage", stage);
+            row.put("stageLabel", actionStageLabel(stage));
+            row.put("completed", "DONE".equals(stage) || "DRAWN".equals(stage));
+            row.put("receipt", audit.receipt());
+            row.put("atMillis", num(audit.atMillis()));
+            if (includePosition) {
+                row.put("position", num(audit.position()));
+            }
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /**
+     * 真实动作阶段：BEGIN 屏障的 {@code STARTED} 只是"已开始、待完成"，不能当完成；
+     * 贷款按提案 / 借款人接受 / 银行批准 / 放款分开，批准不等于放款。拒绝单独成阶段。
+     *
+     * <p>贷款生命周期里出现未登记的成功原因码时，归为 {@code UNMAPPED}：保留原码、不推断
+     * 放款或完成。非贷款普通成立动作（存入/取出/支付/还本/计息/付息）按核心回执记为完成。</p>
+     *
+     * @param kind     动作种类原码
+     * @param accepted 该帧是否成立
+     * @param reason   该帧真实结果码
+     * @return 阶段原码
+     */
+    static String actionStage(String kind, boolean accepted, String reason) {
+        if (!accepted) {
+            return "REJECTED";
+        }
+        if ("STARTED".equals(reason)) {
+            return "STARTED";
+        }
+        return switch (kind == null ? "" : kind) {
+            case "LOAN_REQUEST" -> "LOAN_PROPOSED".equals(reason) ? "PROPOSED" : "UNMAPPED";
+            case "LOAN_ACCEPT" -> "LOAN_ACCEPTED".equals(reason) ? "ACCEPTED" : "UNMAPPED";
+            case "LOAN_APPROVE" -> "LOAN_APPROVED".equals(reason) ? "APPROVED" : "UNMAPPED";
+            case "LOAN_DRAW" -> "LOAN_DRAWN".equals(reason) ? "DRAWN" : "UNMAPPED";
+            default -> "DONE";
+        };
+    }
+
+    /** 阶段中文说明（原码另列，不覆盖）。 */
+    static String actionStageLabel(String stage) {
+        return switch (stage) {
+            case "REJECTED" -> "拒绝";
+            case "STARTED" -> "已开始，待完成";
+            case "PROPOSED" -> "已提案（待借款人接受）";
+            case "ACCEPTED" -> "借款人已接受（待银行批准）";
+            case "APPROVED" -> "银行已批准（未放款）";
+            case "DRAWN" -> "已放款";
+            case "UNMAPPED" -> "该帧成立（阶段未映射，按原码核对）";
+            default -> "已完成";
+        };
+    }
+
+    /** 动作种类中文说明（原码另列）。 */
+    static String actionKindLabel(String kind) {
+        return switch (kind) {
+            case "DEPOSIT" -> "存入";
+            case "WITHDRAW" -> "取出";
+            case "PAY" -> "支付";
+            case "LOAN_REQUEST" -> "贷款申请";
+            case "LOAN_ACCEPT" -> "借款人接受条款";
+            case "LOAN_APPROVE" -> "银行批准";
+            case "LOAN_DRAW" -> "提款放款";
+            case "LOAN_REPAY" -> "还本";
+            case "LOAN_ACCRUE" -> "计息";
+            case "LOAN_PAY_INTEREST" -> "付息";
+            default -> kind == null ? "" : kind;
+        };
+    }
+
+    /**
+     * 总账（借正贷负）→ 正常显示方向：负债/权益/收入取反，资产/费用原样。
+     *
+     * <p><b>不做绝对值</b>：负债出现借方余额、收入出现借方余额（冲回）、权益为负时，
+     * 结果必须是负数，让异常和亏损仍然可见。</p>
+     *
+     * @param section 科目性质（ASSET/LIABILITY/EQUITY/INCOME/EXPENSE）
+     * @param gl      原始总账余额（借正贷负）
+     * @return 正常方向的金额（保持两位小数）
+     */
+    static BigDecimal normalAmount(String section, BigDecimal gl) {
+        BigDecimal value = gl == null ? Money.zero() : gl;
+        return switch (section) {
+            case "LIABILITY", "EQUITY", "INCOME" -> Money.scale2(value.negate());
+            default -> Money.scale2(value);
+        };
+    }
+
+    /** 贷款状态中文说明（原码另列）。 */
+    static String loanStatusLabel(String status) {
+        return switch (status) {
+            case "PROPOSED" -> "已提案";
+            case "ACCEPTED" -> "借款人已接受";
+            case "APPROVED" -> "银行已批准";
+            case "DRAWN" -> "已放款";
+            case "CLOSED" -> "已结清";
+            default -> status == null ? "" : status;
+        };
+    }
+
+    /** 分节合计（空表为零）。 */
+    private static BigDecimal sumValues(Map<String, BigDecimal> values) {
+        BigDecimal total = Money.zero();
+        for (BigDecimal value : values.values()) {
+            total = total.add(value == null ? Money.zero() : value);
+        }
+        return Money.scale2(total);
+    }
+
+    /** 利率（定标 1e6）→ 百分比文本；原值另列可审计。 */
+    static String rateText(long rateU) {
+        return BigDecimal.valueOf(rateU).movePointLeft(6)
+                .multiply(BigDecimal.valueOf(100)).stripTrailingZeros().toPlainString() + "%";
+    }
+
+    /** 期限（毫秒）→ 天/小时文本；原值另列可审计。 */
+    static String tenorText(long tenorMs) {
+        if (tenorMs <= 0) {
+            return "—";
+        }
+        if (tenorMs % 86_400_000L == 0) {
+            return (tenorMs / 86_400_000L) + "天";
+        }
+        if (tenorMs % 3_600_000L == 0) {
+            return (tenorMs / 3_600_000L) + "小时";
+        }
+        return tenorMs + "毫秒";
+    }
+
+    /** 金额 → 精确十进制字符串（保持来源小数位，不做前端格式化）。 */
+    private static String money(BigDecimal value) {
+        return value == null ? "0.00" : value.toPlainString();
+    }
+
+    /** 稳定的 key 顺序（避免 Map 迭代顺序影响表格与测试）。 */
+    private static List<String> codePointSorted(Set<String> keys) {
+        List<String> sorted = new ArrayList<>(keys);
+        sorted.sort(String::compareTo);
+        return sorted;
     }
 
     /**

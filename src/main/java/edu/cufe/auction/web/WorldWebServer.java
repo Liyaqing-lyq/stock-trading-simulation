@@ -112,6 +112,10 @@ public final class WorldWebServer implements AutoCloseable {
     private static final Set<String> GROUP_FIELDS = Set.of("expectedPosition", "commandId",
             "taskId", "dueTimeMillis", "action", "groupId", "inviteePartyId", "inviteId",
             "accept", "docId", "basedOnVersion", "title", "body", "cites");
+    /** 银行人物动作：业务字段全部显式，身份/主体由会话与真实任职决定。 */
+    private static final Set<String> BANK_ACTION_FIELDS = Set.of("commandId", "taskId", "kind",
+            "organizationPartyId", "amount", "rateU", "tenorMs", "purpose", "sourceToken",
+            "payeeToken", "loanId", "workMillis");
     /** 金额只接受最多两位小数的规范十进制。 */
     private static final java.util.regex.Pattern MONEY_TEXT =
             java.util.regex.Pattern.compile("-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?");
@@ -479,6 +483,19 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> groupsAudit(exchange));
                 return;
             }
+            if ("/api/admin/bank".equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> bankAudit(exchange));
+                return;
+            }
+            if ("/api/me/bank".equals(path) && "GET".equals(method)) {
+                requirePerson(exchange, session.get(), () -> bankMe(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/bank/action".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(),
+                        () -> bankAction(exchange, session.get()));
+                return;
+            }
             send(exchange, 404, error("NOT_FOUND", "没有这个接口"));
         } catch (StopHandling stop) {
             return;
@@ -533,6 +550,13 @@ public final class WorldWebServer implements AutoCloseable {
         if (("/api/me/groups".equals(path) && "GET".equals(method))
                 || ("/api/me/groups/action".equals(path) && "POST".equals(method))
                 || ("/api/admin/groups".equals(path) && "GET".equals(method))) {
+            return true;
+        }
+        if (("/api/admin/bank".equals(path) && "GET".equals(method))
+                || ("/api/me/bank".equals(path) && "GET".equals(method))) {
+            return true;
+        }
+        if ("/api/me/bank/action".equals(path) && "POST".equals(method)) {
             return true;
         }
         if ("/api/admin/social".equals(path) && "GET".equals(method)) {
@@ -1993,6 +2017,110 @@ public final class WorldWebServer implements AutoCloseable {
             throw new WorldIoFailure();
         }
         send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /**
+     * 上帝银行审计：与本人视图同一写者线程、同一快照派生，只读。
+     *
+     * <p>不接收任何请求体或查询参数，因此没有可改的 owner/金额；银行未启用时返回
+     * {@code available=false} 与原因，不返回伪造零余额。</p>
+     */
+    private void bankAudit(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        Object view;
+        try {
+            view = host.bankAuditView();
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /** 本人银行视图：人物只取自服务端会话，body/查询参数一律不接受。 */
+    private void bankMe(HttpExchange exchange, WebSessions.Session session) throws IOException,
+            WorldWebHost.BusyException {
+        String personId = session.personId();
+        if (personId == null || personId.isBlank()) {
+            send(exchange, 403, error("FORBIDDEN", "当前会话没有绑定人物"));
+            return;
+        }
+        Object view;
+        try {
+            view = host.bankPersonView(personId);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException | IllegalStateException invalid) {
+            send(exchange, 404, error("PERSON_NOT_VISIBLE", "该人物在当前世界不可见"));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    /**
+     * 本人银行动作：只接受业务字段，人物取会话；排程后由世界在到期时真实执行。
+     */
+    private void bankAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        String personId = session.personId();
+        if (personId == null || personId.isBlank()) {
+            send(exchange, 403, error("FORBIDDEN", "当前会话没有绑定人物"));
+            return;
+        }
+        WorldWebHost.BankActionCommand command;
+        try {
+            JsonNode body = jsonBody(exchange, BANK_ACTION_FIELDS);
+            Long rateU = strictLong(body.get("rateU"));
+            Long tenor = strictLong(body.get("tenorMs"));
+            Long work = strictLong(body.get("workMillis"));
+            command = new WorldWebHost.BankActionCommand(
+                    requiredText(body, "commandId"), requiredText(body, "taskId"),
+                    requiredText(body, "kind"),
+                    optionalText(body, "organizationPartyId"),
+                    optionalText(body, "amount"),
+                    rateU == null ? 0L : rateU,
+                    tenor == null ? 0L : tenor,
+                    optionalText(body, "purpose"),
+                    optionalText(body, "sourceToken"),
+                    optionalText(body, "payeeToken"),
+                    optionalText(body, "loanId"),
+                    work == null ? 0L : work);
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage() == null
+                    ? "请求参数不合法" : invalid.getMessage()));
+            return;
+        }
+        WorldWebHost.BankActionReceipt receipt;
+        try {
+            receipt = host.bankPersonAction(personId, command);
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("REJECTED", invalid.getMessage() == null
+                    ? "动作不成立" : invalid.getMessage()));
+            return;
+        } catch (IllegalStateException conflict) {
+            send(exchange, 409, error("CONFLICT", conflict.getMessage() == null
+                    ? "当前世界状态不允许该动作" : conflict.getMessage()));
+            return;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+        send(exchange, 200, mapper.writeValueAsString(receipt));
+    }
+
+    /** 可选文本字段：缺失或 null 视为空串，非文本直接拒绝。 */
+    private static String optionalText(JsonNode body, String name) {
+        JsonNode node = body.get(name);
+        if (node == null || node.isNull()) {
+            return "";
+        }
+        if (!node.isTextual()) {
+            throw new IllegalArgumentException(name + " 必须是文本");
+        }
+        return node.textValue();
     }
 
     /** 上帝群组审计：含成员段、邀请、帖子版本、呈现帧与报告细分原因。 */
