@@ -59,6 +59,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
     public static final String TOOL_CONTRACT_VERSION_V2 = "role-decision-tools-v2";
     /** schema15：逐轮访谈工具参数的完整合同。 */
     public static final String TOOL_CONTRACT_VERSION_V3 = "role-decision-tools-v3";
+    /** schema16：匿名私有证据 + 身份共享工具参数的完整合同。 */
+    public static final String TOOL_CONTRACT_VERSION_V4 = "role-decision-tools-v4";
 
     /** 决定动作内部命令前缀。 */
     private static final String PREFIX_COMMAND = "dec";
@@ -328,7 +330,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         Objects.requireNonNull(toolContractVersion, "工具合同版本");
         ObjectNode root = MAPPER.createObjectNode();
         root.put("toolContractVersion", toolContractVersion);
-        if (TOOL_CONTRACT_VERSION_V3.equals(toolContractVersion) && interview != null) {
+        if ((TOOL_CONTRACT_VERSION_V3.equals(toolContractVersion)
+                || TOOL_CONTRACT_VERSION_V4.equals(toolContractVersion)) && interview != null) {
             root.set("interview", interview);
         }
         root.put("person", view.personPartyId());
@@ -558,6 +561,29 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("timeMillis", notice.timeMillis());
         }
 
+        if (TOOL_CONTRACT_VERSION_V4.equals(toolContractVersion) && view.media() != null
+                && !view.media().isEmpty()) {
+            // schema16 最小稿件投影：只用于让模型拿到本人可见的 storyId/版次/状态与实际可读标识，
+            // 不含真实根、私证、策略、其他机构或隐藏字段；旧 v1–v3 输入逐字不变。
+            ArrayNode stories = root.putArray("media");
+            for (RoleTradingView.MediaStory story : sorted(view.media(),
+                    item -> item.storyId())) {
+                ObjectNode node = stories.addObject();
+                node.put("storyId", story.storyId());
+                node.put("template", story.template());
+                node.put("status", story.status());
+                node.put("revisionNo", story.revisionNo());
+                node.put("topic", story.topic());
+                node.put("own", story.own());
+                node.put("canReview", story.canReview());
+                node.put("canPublish", story.canPublish());
+                node.put("draftDocId", story.draftDocId());
+                node.put("draftVersion", story.draftVersion());
+                node.put("publicDocId", story.publicDocId());
+                node.put("publicVersion", story.publicVersion());
+            }
+        }
+
         ArrayNode pendingActions = root.putArray("pendingActions");
         List<PendingAction> ordered = new ArrayList<>(pending == null ? List.of() : pending);
         ordered.sort((left, right) -> {
@@ -698,7 +724,27 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         if (tool == null) {
             return List.of();
         }
-        if (TOOL_CONTRACT_VERSION_V3.equals(version)) {
+        if (TOOL_CONTRACT_VERSION_V4.equals(version)) {
+            switch (tool) {
+                case RoleTradingView.TOOL_MEDIA_EVIDENCE_SHARE -> {
+                    return List.of(new String[]{"rootDocId", "string"},
+                            new String[]{"rootVersion", "long"},
+                            new String[]{"recipientPartyId", "string"},
+                            new String[]{"note", "string"});
+                }
+                case RoleTradingView.TOOL_MEDIA_SUBMIT -> {
+                    // 别名只给根与标签：稿件与提交次数由真实投稿派生，模型不能指定
+                    return List.of(new String[]{"storyId", "string"},
+                            new String[]{"expectedRevision", "int"},
+                            new String[]{"title", "string"}, new String[]{"body", "string"},
+                            new String[]{"publicSourceDescription", "string"},
+                            new String[]{"evidence", "array"}, new String[]{"aliases", "array"});
+                }
+                default -> {
+                }
+            }
+        }
+        if (TOOL_CONTRACT_VERSION_V3.equals(version) || TOOL_CONTRACT_VERSION_V4.equals(version)) {
             switch (tool) {
                 case RoleTradingView.TOOL_INTERVIEW_INVITE -> {
                     return List.of(new String[]{"requestClientId", "string"},

@@ -5,6 +5,7 @@ import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.CashLedger;
 import edu.cufe.auction.world.CognitionRecall;
 import edu.cufe.auction.world.DecisionModel;
+import edu.cufe.auction.world.EvidenceRun;
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.InformationRun;
 import edu.cufe.auction.world.InterviewModel;
@@ -452,6 +453,94 @@ public final class WorldWebScenario {
                 InformationModel.Audience.publicAudience(),
                 "模拟公开联系说明（实验）", "公开模拟联系说明：工作时段可预约采访。",
                 "实验模拟，不是现实联系方式", 5_000L, List.of());
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
+    /** schema16 私有证据档的运行标识（独立日志，不迁移旧档）。 */
+    public static final String EVIDENCE_RUN_ID = "web-evidence";
+    /** 新档里唯一一份模拟私证：由投资者向记者定向发布，开局不代读。 */
+    public static final String EVIDENCE_PRIVATE_DOC = "evidence:investor-note";
+    /** 共享冻结工时（实验参数，未按现实校准）。 */
+    public static final long EVIDENCE_SHARE_MILLIS = 1_000L;
+
+    /** @return schema16 匿名私有证据档；与 schema13–15 并存，不隐式迁移 */
+    public static RunManifest evidenceManifest() {
+        Map<String, Integer> modules = new TreeMap<>(dialogueManifest().moduleVersions());
+        modules.put("evidence", 1);
+        return new RunManifest(EVIDENCE_RUN_ID, 11L,
+                RunManifest.RULES_MEDIA_EVIDENCE_EXPERIMENT_V1, modules,
+                Map.of("profile", "web-media-evidence-v1"), RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    /** @return 证据档冻结配置：只有一次共享的机构工时（正数，实验参数） */
+    public static EvidenceRun.Config evidenceConfig() {
+        return new EvidenceRun.Config(EVIDENCE_SHARE_MILLIS);
+    }
+
+    /** @return 证据档决定配置：在逐轮访谈工具之上补身份共享动作时长 */
+    public static DecisionModel.Config evidenceDecisionConfig() {
+        DecisionModel.Config base = dialogueDecisionConfig();
+        Map<String, Long> actions = new TreeMap<>(base.actionMillisByTool());
+        actions.put(RoleTradingView.TOOL_MEDIA_EVIDENCE_SHARE, EVIDENCE_SHARE_MILLIS);
+        return new DecisionModel.Config(base.providerKind(), base.providerId(),
+                base.pricingVersion(), base.thinkMillisByWake(), actions, base.limits(),
+                base.budget(), base.profile());
+    }
+
+    /**
+     * 打开 schema16 匿名私有证据档：同一经济开局与两社人物，开局只发布一份<b>定向私证</b>，
+     * 不代读、不成稿、不共享——一切都必须由真实会话动作发生。
+     *
+     * @param journal 独立日志文件
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldWebHost.Opened openEvidence(Path journal) throws Exception {
+        OpeningRegistry base = registry();
+        List<OpeningRegistry.Party> parties = new ArrayList<>(base.parties());
+        List<OpeningRegistry.PropertyOwner> owners = new ArrayList<>(base.owners());
+        for (String organization : List.of("wire", "investigative")) {
+            parties.add(new OpeningRegistry.Party(organization,
+                    OpeningRegistry.PartyKind.ORGANIZATION,
+                    organization.equals("wire") ? "快讯社（实验）" : "调查社（实验）"));
+            owners.add(new OpeningRegistry.PropertyOwner(organization,
+                    OpeningRegistry.OwnerKind.ORGANIZATION, organization));
+        }
+        Map<String, String> names = Map.of("rita", "快讯记者", "ed", "快讯编辑",
+                "sam", "调查记者", "bea", "调查编辑");
+        for (String person : MEDIA_PERSONS) {
+            parties.add(new OpeningRegistry.Party(person, OpeningRegistry.PartyKind.PERSON,
+                    names.get(person)));
+            owners.add(new OpeningRegistry.PropertyOwner(person,
+                    OpeningRegistry.OwnerKind.PERSON, person));
+        }
+        OpeningRegistry registry = new OpeningRegistry(parties, owners, base.securities(),
+                base.allocations());
+        List<RoleAccess.Appointment> appointments = new ArrayList<>(roles().appointments());
+        long end = 30L * 86_400_000L;
+        for (int i = 0; i < MEDIA_PERSONS.size(); i++) {
+            appointments.add(new RoleAccess.Appointment("MEDIA-" + i, MEDIA_PERSONS.get(i),
+                    i < 2 ? "wire" : "investigative",
+                    i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
+                    0L, end, null));
+        }
+        List<String> readers = new ArrayList<>(information().readers());
+        readers.addAll(MEDIA_PERSONS);
+        InformationRun.Config info = new InformationRun.Config(readers, COGNITION_POLICY,
+                new BeliefModel.Policy(200, 8, end, 20, 200, 3, end));
+        RunManifest manifest = evidenceManifest();
+        WorldRuntime runtime = new WorldRuntime(journal, manifest, openings(), registry,
+                new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
+                        "SUP", "CUS", "OPS"), SYMBOL), charter(),
+                new RoleRun.Config(roles().mandates(), appointments), info,
+                evidenceDecisionConfig(), null, mediaConfig(), interviewConfig(),
+                dialogueConfig(), evidenceConfig());
+        runtime.schedulePublishDocument("evidence-private-publish", "evidence-private-task",
+                1_000L, EVIDENCE_PRIVATE_DOC, INVESTOR,
+                InformationModel.Audience.direct("rita"),
+                "模拟投资者手记（仅记者可见）",
+                "模拟定向材料：本次采访前的私人说明，未对外发表。",
+                "实验模拟，不是现实人物或真实信息", 5_000L, List.of());
         return new WorldWebHost.Opened(runtime, manifest.runId());
     }
 

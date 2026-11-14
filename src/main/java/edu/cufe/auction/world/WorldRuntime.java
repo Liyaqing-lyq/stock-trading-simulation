@@ -86,6 +86,8 @@ public final class WorldRuntime implements AutoCloseable {
     private static final int STATE_SCHEMA_INTERVIEW = 14;
     /** schema15：在采访预约之上启用逐轮访谈与真实阅读。 */
     private static final int STATE_SCHEMA_INTERVIEW_DIALOGUE = 15;
+    /** schema16：在对话之上接入匿名私有证据与身份共享。 */
+    private static final int STATE_SCHEMA_EVIDENCE = 16;
     /** 未实施有效预算时拒绝采购/投产。 */
     public static final String REASON_BUDGET_NOT_SET = BoardModel.REASON_BUDGET_NOT_SET;
     /** 预算可用额不足，候选业务整体丢弃。 */
@@ -134,6 +136,8 @@ public final class WorldRuntime implements AutoCloseable {
     private final InterviewRun.Config interviewConfig;
     /** schema15 逐轮访谈配置；旧档为 null。 */
     private final InterviewDialogue.Config dialogueConfig;
+    /** schema16 证据配置；旧档为 null。 */
+    private final EvidenceRun.Config evidenceConfig;
     /** live 完成槽：构造时自动建立，scripted 为 null；不公开。 */
     private final LiveCompletionInbox liveInbox;
     /** 有界回调队列：异步线程只 offer，不读写世界状态。 */
@@ -211,7 +215,27 @@ public final class WorldRuntime implements AutoCloseable {
                            List<PendingTask> pending, List<Notice> delivered,
                            Set<String> usedTaskIds,
                            Optional<DividendModel.State> dividends,
-                           Optional<MediaRun> media) {
+                           Optional<MediaRun> media,
+                           Optional<EvidenceRun> evidence) {
+        /** 兼容构造：证据子集为空（schema ≤15）。 */
+        public Snapshot(long position, long timeMillis, String lastPhase,
+                        Map<String, CashLedger.CashAccount> accounts,
+                        Optional<SecuritiesLedger.State> securities,
+                        Optional<WorldExchange.State> exchange,
+                        Optional<ManufacturingRun> manufacturing,
+                        Optional<BoardRun> governance,
+                        Optional<RoleRun> roles,
+                        Optional<InformationRun> information,
+                        Optional<RoleTradingRun> trading,
+                        Optional<DecisionRun> decisions,
+                        List<PendingTask> pending, List<Notice> delivered,
+                        Set<String> usedTaskIds,
+                        Optional<DividendModel.State> dividends,
+                        Optional<MediaRun> media) {
+            this(position, timeMillis, lastPhase, accounts, securities, exchange, manufacturing,
+                    governance, roles, information, trading, decisions, pending, delivered,
+                    usedTaskIds, dividends, media, Optional.empty());
+        }
         /** 旧 16 参构造：保持源码兼容，媒体子集为空。 */
         public Snapshot(long position, long timeMillis, String lastPhase,
                         Map<String, CashLedger.CashAccount> accounts,
@@ -430,7 +454,9 @@ public final class WorldRuntime implements AutoCloseable {
                               @JsonInclude(JsonInclude.Include.NON_NULL)
                               MediaRun media,
                               @JsonInclude(JsonInclude.Include.NON_NULL)
-                              InterviewRun interviews) {
+                              InterviewRun interviews,
+                              @JsonInclude(JsonInclude.Include.NON_NULL)
+                              EvidenceRun evidence) {
 
         WorldState {
             accounts = Collections.unmodifiableMap(new TreeMap<>(accounts));
@@ -649,6 +675,25 @@ public final class WorldRuntime implements AutoCloseable {
                  LiveCompletionInbox injectedInbox, MediaRun.Config media,
                  InterviewRun.Config interview, InterviewDialogue.Config dialogue)
             throws IOException {
+        this(file, manifest, openings, registry, manufacturing, charter, roles, information,
+                decisions, injectedInbox, media, interview, dialogue, null);
+    }
+
+    /**
+     * 完整构造（schema16 档案）：在对话之上接受匿名私有证据配置。
+     *
+     * @param evidence schema16 证据配置；旧档案必须为 null
+     * @throws IOException 打开日志失败
+     */
+    public WorldRuntime(Path file, RunManifest manifest, List<OpeningAccount> openings,
+                 OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                 BoardModel.Charter charter, RoleRun.Config roles,
+                 InformationRun.Config information, DecisionModel.Config decisions,
+                 LiveCompletionInbox injectedInbox, MediaRun.Config media,
+                 InterviewRun.Config interview, InterviewDialogue.Config dialogue,
+                 EvidenceRun.Config evidence)
+            throws IOException {
+        this.evidenceConfig = evidence;
         this.manifest = Objects.requireNonNull(manifest, "manifest");
         boolean liveProfile = decisions != null && decisions.profile() != null;
         if (liveProfile && !manifest.hasLiveDecisions()) {
@@ -807,6 +852,19 @@ public final class WorldRuntime implements AutoCloseable {
             }
         } else if (dialogue != null) {
             throw new IllegalArgumentException("未启用逐轮访谈的运行不接受对话配置："
+                    + manifest.rulesVersion());
+        }
+        if (manifest.hasEvidence()) {
+            if (!manifest.hasDialogue() || !manifest.hasMedia()) {
+                throw new IllegalArgumentException("证据档案必须建立在媒体与逐轮访谈档案之上："
+                        + manifest.rulesVersion());
+            }
+            if (evidence == null) {
+                throw new IllegalArgumentException("规则档案 " + manifest.rulesVersion()
+                        + " 必须提供证据开局配置");
+            }
+        } else if (evidence != null) {
+            throw new IllegalArgumentException("未启用证据模块的运行不接受证据配置："
                     + manifest.rulesVersion());
         }
         if (manifest.hasDecisions() && (!manifest.hasTrading() || !manifest.hasRoles()
@@ -2280,7 +2338,8 @@ public final class WorldRuntime implements AutoCloseable {
                          PendingTask.MEDIA_STORY_REVIEW_V1,
                          PendingTask.MEDIA_STORY_PUBLISH_V1,
                          PendingTask.MEDIA_STORY_CORRECTION_V1,
-                         PendingTask.MEDIA_WORK_CANCEL_V1 -> completeMediaTask(next);
+                         PendingTask.MEDIA_WORK_CANCEL_V1,
+                         PendingTask.MEDIA_EVIDENCE_SHARE_V1 -> completeMediaTask(next);
                     case PendingTask.INTERVIEW_INVITE_V1,
                          PendingTask.INTERVIEW_RESPOND_V1,
                          PendingTask.INTERVIEW_CANCEL_V1,
@@ -2415,7 +2474,8 @@ public final class WorldRuntime implements AutoCloseable {
                 Optional.ofNullable(state.information()), Optional.ofNullable(state.trading()),
                 Optional.ofNullable(state.decisions()),
                 state.pending(), state.delivered(), state.usedTaskIds(),
-                Optional.ofNullable(state.dividends()), Optional.ofNullable(state.media()));
+                Optional.ofNullable(state.dividends()), Optional.ofNullable(state.media()),
+                Optional.ofNullable(state.evidence()));
     }
 
     /**
@@ -4689,11 +4749,29 @@ public final class WorldRuntime implements AutoCloseable {
                 kind = PendingTask.MEDIA_STORY_SUBMIT_V1;
                 WorldRoleSession.MediaSubmitDraft draft =
                         strict(WorldRoleSession.MediaSubmitDraft.class, args);
+                if (!manifest.hasEvidence() && !draft.aliases().isEmpty()) {
+                    throw new IOException("旧档案不接受展示别名");
+                }
                 String organization = originalMedia == null
                         ? resolveMediaOrganization(base, binding.personPartyId(), kind,
                                 draft, base.timeMillis())
                         : originalMedia.organizationPartyId();
                 body = new MediaTaskBody(organization, recorded.cutoffTimeMillis(), recorded.cutoffPosition(), recorded.barrierAtMillis(), false,
+                        mapper.writeValueAsString(draft));
+            }
+            case RoleTradingView.TOOL_MEDIA_EVIDENCE_SHARE -> {
+                if (!manifest.hasEvidence()) {
+                    throw new IOException("未知业务工具：" + tool);
+                }
+                kind = PendingTask.MEDIA_EVIDENCE_SHARE_V1;
+                WorldRoleSession.MediaShareDraft draft =
+                        strict(WorldRoleSession.MediaShareDraft.class, args);
+                String organization = originalMedia == null
+                        ? resolveMediaOrganization(base, binding.personPartyId(), kind,
+                                draft, base.timeMillis())
+                        : originalMedia.organizationPartyId();
+                body = new MediaTaskBody(organization, recorded.cutoffTimeMillis(),
+                        recorded.cutoffPosition(), recorded.barrierAtMillis(), false,
                         mapper.writeValueAsString(draft));
             }
             case RoleTradingView.TOOL_MEDIA_REVIEW -> {
@@ -4838,7 +4916,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (MediaRun.KINDS.contains(kind)) {
             MediaTaskBody mediaTask = (MediaTaskBody) body;
-            long duration = MediaRun.durationOf(base.media().config(), kind,
+            long duration = mediaDuration(base.media().config(), kind,
                     mediaTask.organizationPartyId());
             if (dueMillis != recorded.barrierAtMillis() + duration) {
                 throw new IOException("媒体动作耗时必须等于冻结时长：" + kind + " -> " + duration);
@@ -7559,7 +7637,7 @@ public final class WorldRuntime implements AutoCloseable {
                 previous.commandContents(), previous.commandOutcomes(), previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
-                previous.dividends(), previous.beliefs(), media, run);
+                previous.dividends(), previous.beliefs(), media, run, previous.evidence());
     }
 
     /** 决定来源：按任务标识在已接收决定动作引用里查找同一任务。 */
@@ -7816,7 +7894,14 @@ public final class WorldRuntime implements AutoCloseable {
             if (!mediaTasks(candidate.pending()).isEmpty()) {
                 throw new IOException("新开局不得包含媒体待办");
             }
+            validateEvidenceOpening(candidate, true);
             return;
+        }
+        if (manifest.hasEvidence() && candidate.evidence() == null) {
+            throw new IOException("证据档案缺少证据子集状态");
+        }
+        if (!manifest.hasEvidence() && candidate.evidence() != null) {
+            throw new IOException("旧档案不得包含证据子集状态");
         }
 
         // 1）本帧完成的媒体任务 = 上一帧有、本帧没有
@@ -7842,12 +7927,14 @@ public final class WorldRuntime implements AutoCloseable {
         MediaRun expectedRun = before;
         InformationRun expectedInformation = previous.information();
         List<PendingTask> expectedPending = new ArrayList<>(previous.pending());
+        EvidenceRun expectedEvidence = previous.evidence();
         Set<String> handled = new LinkedHashSet<>();
         for (PendingTask task : completed) {
             if (handled.contains(task.taskId())) {
                 continue;
             }
-            WorldState step = mediaStep(previous, expectedRun, expectedInformation, expectedPending);
+            WorldState step = mediaStep(previous, expectedRun, expectedInformation, expectedPending,
+                    expectedEvidence);
             if (InterviewRun.KINDS.contains(task.kind())) {
                 InterviewFrame frame;
                 try {
@@ -7873,9 +7960,15 @@ public final class WorldRuntime implements AutoCloseable {
             expectedRun = frame.run();
             expectedInformation = frame.information();
             expectedPending = frame.pending();
+            expectedEvidence = frame.evidence();
         }
         if (!expectedRun.equals(after)) {
             throw new IOException("媒体子集与逐帧重算不一致：状态/预算/工作/报告被改动");
+        }
+        if (manifest.hasEvidence() && !java.util.Objects.equals(expectedEvidence,
+                candidate.evidence())) {
+            // 证据只能由真实完成帧按原命令、观察帧与冻结工时重算产生
+            throw new IOException("证据子集与逐帧重算不一致：别名或共享绑定被改动");
         }
         if (!completed.isEmpty()
                 && (expectedInformation == null
@@ -8036,7 +8129,12 @@ public final class WorldRuntime implements AutoCloseable {
         if (mediaConfig.policyOf(organization) == null) {
             throw new IOException("媒体待办指向未配置的组织：" + task.taskId());
         }
-        long duration = MediaRun.durationOf(mediaConfig, task.kind(), organization);
+        long duration;
+        try {
+            duration = mediaDuration(mediaConfig, task.kind(), organization);
+        } catch (IllegalStateException legacySchema) {
+            throw new IOException("旧档案不得排程证据共享任务：" + task.taskId(), legacySchema);
+        }
         if (body.startedAtMillis() < 0 || task.dueTimeMillis() != body.startedAtMillis() + duration) {
             throw new IOException("媒体待办时长与冻结策略不一致：" + task.taskId());
         }
@@ -8086,13 +8184,60 @@ public final class WorldRuntime implements AutoCloseable {
     /** 逐帧重算的工作副本：只替换媒体相关分量，位置与时间保持上一确认状态。 */
     private static WorldState mediaStep(WorldState previous, MediaRun run,
                                         InformationRun information, List<PendingTask> pending) {
+        return mediaStep(previous, run, information, pending, previous.evidence());
+    }
+
+    /** 带证据分量的工作副本：同一批内连续重算时证据必须逐帧接续。 */
+    private static WorldState mediaStep(WorldState previous, MediaRun run,
+                                        InformationRun information, List<PendingTask> pending,
+                                        EvidenceRun evidence) {
         return new WorldState(previous.schemaVersion(), previous.runId(), previous.position(),
                 previous.timeMillis(), previous.lastPhase(), previous.accounts(),
                 List.copyOf(pending), previous.delivered(), previous.usedTaskIds(),
                 previous.commandContents(), previous.commandOutcomes(), previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(),
                 previous.roles(), information, previous.trading(), previous.decisions(),
-                previous.dividends(), previous.beliefs(), run, previous.interviews());
+                previous.dividends(), previous.beliefs(), run, previous.interviews(), evidence);
+    }
+
+    /**
+     * 开局证据子集核验：必须由冻结配置重建得出，开局时不得已有别名或共享。
+     *
+     * @param candidate 待核状态
+     * @param opening   是否为开局帧
+     * @throws IOException 与冻结配置不一致或开局带业务状态
+     */
+    private void validateEvidenceOpening(WorldState candidate, boolean opening) throws IOException {
+        if (!manifest.hasEvidence()) {
+            if (candidate.evidence() != null) {
+                throw new IOException("旧档案不得包含证据子集状态");
+            }
+            return;
+        }
+        EvidenceRun actual = candidate.evidence();
+        if (actual == null) {
+            throw new IOException("证据档案缺少证据子集状态");
+        }
+        if (evidenceConfig == null) {
+            throw new IOException("证据档案缺少冻结证据配置");
+        }
+        if (!evidenceConfig.equals(actual.config())) {
+            throw new IOException("证据配置与冻结开局不一致");
+        }
+        EvidenceRun expected;
+        try {
+            expected = EvidenceRun.open(evidenceConfig,
+                    mediaConfig == null ? List.of() : mediaConfig.policies().stream()
+                            .map(MediaModel.Policy::mediaOrganizationPartyId).distinct().toList());
+        } catch (RuntimeException invalid) {
+            throw new IOException("证据开局配置无法重建", invalid);
+        }
+        if (opening && !expected.equals(actual)) {
+            throw new IOException("证据开局子集与冻结配置不一致");
+        }
+        if (!opening && !expected.states().keySet().equals(actual.states().keySet())) {
+            throw new IOException("证据子集机构集合被改动");
+        }
     }
 
     // ------------------------------------------------------------------
@@ -8127,6 +8272,43 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized InterviewRun interviewRun() throws IOException {
         requireOpen();
         return state.interviews();
+    }
+
+    /**
+     * 当前证据子集（只读）：供管理员审计别名与共享绑定；不含正文与阅读账。
+     *
+     * @return 证据子集；未启用时为 null
+     * @throws IOException 读取失败
+     */
+    public synchronized EvidenceRun evidenceRun() throws IOException {
+        requireOpen();
+        return state.evidence();
+    }
+
+    /**
+     * 某稿某版可公开显示的别名标签：只给标签，不泄露真实根、资料标识或分享者。
+     *
+     * @param storyId    稿件
+     * @param revisionNo 提交次数
+     * @return 标签列表（按稿件内顺序）
+     * @throws IOException 读取失败
+     */
+    public synchronized List<String> publicAliasLabels(String storyId, int revisionNo)
+            throws IOException {
+        requireOpen();
+        EvidenceRun evidence = state.evidence();
+        List<String> labels = new ArrayList<>();
+        if (evidence == null || storyId == null) {
+            return labels;
+        }
+        for (MediaEvidence.State evidenceState : evidence.states().values()) {
+            for (MediaEvidence.AliasBinding alias : evidenceState.aliases()) {
+                if (alias.storyId().equals(storyId) && alias.revisionNo() == revisionNo) {
+                    labels.add(alias.publicLabel());
+                }
+            }
+        }
+        return List.copyOf(labels);
     }
 
     /**
@@ -11121,7 +11303,7 @@ public final class WorldRuntime implements AutoCloseable {
                 used, previous.commandContents(), previous.commandOutcomes(), previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 information, previous.trading(), previous.decisions(), previous.dividends(),
-                previous.beliefs(), previous.media(), previous.interviews());
+                previous.beliefs(), previous.media(), previous.interviews(), previous.evidence());
         List<WorldEvent> events = List.of(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()), new WorldEvent("information-report:" + task.taskId(), "INFORMATION_REPORT_V1",
                 mapper.writeValueAsString(report)));
@@ -11246,7 +11428,7 @@ public final class WorldRuntime implements AutoCloseable {
                 used, contents, outcomes, previous.securities(), previous.exchange(), previous.manufacturing(),
                 previous.governance(), previous.roles(), previous.information(), previous.trading(),
                 previous.decisions(), previous.dividends(), previous.beliefs(),
-                previous.media(), previous.interviews());
+                previous.media(), previous.interviews(), previous.evidence());
         List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + added.taskId(), "TASK_SCHEDULED_V1",
                 mapper.writeValueAsString(added)));
         List<WorldEvent> actual = commit.events().stream()
@@ -12064,7 +12246,11 @@ public final class WorldRuntime implements AutoCloseable {
                 manifest.hasDividend() ? DividendModel.empty() : null,
                 manifest.hasBelief() ? BeliefRun.empty() : null,
                 manifest.hasMedia() ? MediaRun.open(mediaConfig, registry) : null,
-                manifest.hasInterviews() ? InterviewRun.open(interviewConfig, registry) : null);
+                manifest.hasInterviews() ? InterviewRun.open(interviewConfig, registry) : null,
+                manifest.hasEvidence() ? EvidenceRun.open(evidenceConfig,
+                        mediaConfig == null ? List.of() : mediaConfig.policies().stream()
+                                .map(MediaModel.Policy::mediaOrganizationPartyId).distinct().toList())
+                        : null);
     }
 
     /**
@@ -12084,8 +12270,11 @@ public final class WorldRuntime implements AutoCloseable {
         return access;
     }
 
-    /** 工具合同版本：信念档案使用 v2，旧档案保持 v1 逐字不变。 */
+    /** 工具合同版本：证据档案 v4、对话档案 v3、信念档案 v2，旧档案保持 v1 逐字不变。 */
     private String toolContractVersion() {
+        if (manifest.hasEvidence()) {
+            return DecisionRun.TOOL_CONTRACT_VERSION_V4;
+        }
         if (manifest.hasDialogue()) {
             return DecisionRun.TOOL_CONTRACT_VERSION_V3;
         }
@@ -12163,6 +12352,9 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** @return 当前规则档案对应的世界状态版本 */
     private int expectedSchema() {
+        if (manifest.hasEvidence()) {
+            return STATE_SCHEMA_EVIDENCE;
+        }
         if (manifest.hasDialogue()) {
             return STATE_SCHEMA_INTERVIEW_DIALOGUE;
         }
@@ -12356,7 +12548,7 @@ public final class WorldRuntime implements AutoCloseable {
         return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
                 roles, information, trading, decisions, dividends, beliefs, media,
-                state.interviews());
+                state.interviews(), state.evidence());
     }
 
     private WorldState next(long timeMillis, String lastPhase,
@@ -12376,10 +12568,34 @@ public final class WorldRuntime implements AutoCloseable {
                             BeliefRun beliefs,
                             MediaRun media,
                             InterviewRun interviews) {
+        return next(timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
+                commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
+                roles, information, trading, decisions, dividends, beliefs, media, interviews,
+                state.evidence());
+    }
+
+    private WorldState next(long timeMillis, String lastPhase,
+                            Map<String, CashLedger.CashAccount> accounts,
+                            List<PendingTask> pending, List<Notice> delivered,
+                            Set<String> usedTaskIds, Map<String, String> commandContents,
+                            Map<String, String> commandOutcomes,
+                            SecuritiesLedger.State securities,
+                            WorldExchange.State exchange,
+                            ManufacturingRun manufacturing,
+                            BoardRun governance,
+                            RoleRun roles,
+                            InformationRun information,
+                            RoleTradingRun trading,
+                            DecisionRun decisions,
+                            DividendModel.State dividends,
+                            BeliefRun beliefs,
+                            MediaRun media,
+                            InterviewRun interviews,
+                            EvidenceRun evidence) {
         return new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
                 timeMillis, lastPhase, accounts, pending, delivered, usedTaskIds,
                 commandContents, commandOutcomes, securities, exchange, manufacturing, governance,
-                roles, information, trading, decisions, dividends, beliefs, media, interviews);
+                roles, information, trading, decisions, dividends, beliefs, media, interviews, evidence);
     }
 
     // ==================================================================
@@ -12807,7 +13023,7 @@ public final class WorldRuntime implements AutoCloseable {
                 accounts, pending, delivered, used, contents, outcomes, previous.securities(),
                 previous.exchange(), previous.manufacturing(), previous.governance(), previous.roles(),
                 previous.information(), previous.trading(), previous.decisions(),
-                previous.dividends(), previous.beliefs(), previous.media(), previous.interviews());
+                previous.dividends(), previous.beliefs(), previous.media(), previous.interviews(), previous.evidence());
     }
 
     private void requireCashBatch(WorldCommit commit, WorldState candidate, WorldState expected,
@@ -14004,12 +14220,14 @@ public final class WorldRuntime implements AutoCloseable {
                             view.authorPartyId().equals(person),
                             canReview && view.status() == MediaModel.Status.SUBMITTED,
                             canPublish && view.status() == MediaModel.Status.APPROVED,
-                            view.sourceGroups(), view.updatedAtMillis()));
+                            view.sourceGroups(), view.updatedAtMillis(),
+                            view.draftDocId(), view.draftVersion(), view.publicDocId(),
+                            view.publicVersion()));
                 }
             }
         }
         List<String> tools = new ArrayList<>(roleTools(appointments, manifest.hasBelief(),
-                manifest.hasMedia(), manifest.hasInterviews()));
+                manifest.hasMedia(), manifest.hasInterviews(), manifest.hasEvidence()));
         if (manifest.hasDialogue() && isDialogueParticipant(snap, person)) {
             tools.add(RoleTradingView.TOOL_INTERVIEW_SPEAK);
         }
@@ -14181,7 +14399,7 @@ public final class WorldRuntime implements AutoCloseable {
 
     private static List<String> roleTools(List<RoleTradingView.Appointment> appointments,
                                           boolean beliefEnabled, boolean mediaEnabled,
-                                          boolean interviewEnabled) {
+                                          boolean interviewEnabled, boolean evidenceEnabled) {
         boolean researcher = false;
         boolean manager = false;
         boolean risk = false;
@@ -14230,6 +14448,10 @@ public final class WorldRuntime implements AutoCloseable {
                 tools.add(RoleTradingView.TOOL_MEDIA_PROPOSE);
                 tools.add(RoleTradingView.TOOL_MEDIA_SUBMIT);
                 tools.add(RoleTradingView.TOOL_MEDIA_CORRECTION);
+                if (evidenceEnabled) {
+                    // 身份共享要求真实执笔岗位（WRITE_STORY），编辑不具备
+                    tools.add(RoleTradingView.TOOL_MEDIA_EVIDENCE_SHARE);
+                }
             }
             if (editor) {
                 tools.add(RoleTradingView.TOOL_MEDIA_REVIEW);
@@ -14434,7 +14656,7 @@ public final class WorldRuntime implements AutoCloseable {
             return state.commandOutcomes().get(internalCommand);
         }
         String organization = resolveMediaOrganization(state, person, kind, draft, now);
-        long duration = MediaRun.durationOf(run.config(), kind, organization);
+        long duration = mediaDuration(run.config(), kind, organization);
         if (dueMillis != now + duration) {
             throw new IllegalArgumentException("媒体动作到期必须等于当前时点加冻结时长："
                     + kind + " -> " + duration);
@@ -14530,7 +14752,8 @@ public final class WorldRuntime implements AutoCloseable {
                                            Object draft, long now) {
         RoleAccess.Action action = switch (kind) {
             case PendingTask.MEDIA_STORY_PROPOSE_V1, PendingTask.MEDIA_STORY_SUBMIT_V1,
-                 PendingTask.MEDIA_STORY_CORRECTION_V1 -> RoleAccess.Action.WRITE_STORY;
+                 PendingTask.MEDIA_STORY_CORRECTION_V1,
+                 PendingTask.MEDIA_EVIDENCE_SHARE_V1 -> RoleAccess.Action.WRITE_STORY;
             case PendingTask.MEDIA_STORY_REVIEW_V1 -> RoleAccess.Action.REVIEW_STORY;
             case PendingTask.MEDIA_STORY_PUBLISH_V1 -> RoleAccess.Action.PUBLISH_STORY;
             default -> throw new IllegalArgumentException("未登记的媒体动作：" + kind);
@@ -14785,7 +15008,7 @@ public final class WorldRuntime implements AutoCloseable {
     /** 一帧媒体完成的完整结果：纯计算，不提交。 */
     private record MediaFrame(boolean accepted, String reason, String storyId, MediaRun run,
                               InformationRun information, List<PendingTask> pending,
-                              List<PendingTask> removed) {
+                              List<PendingTask> removed, EvidenceRun evidence) {
     }
 
     /**
@@ -14798,12 +15021,32 @@ public final class WorldRuntime implements AutoCloseable {
                 task.payload()));
         events.add(new WorldEvent("media-task:" + task.taskId(), "MEDIA_TASK_V1",
                 mapper.writeValueAsString(task)));
+        // 媒体、资料、证据三态同一次候选提交：失败不部分发布
         WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
                 frame.pending(), state.delivered(), state.usedTaskIds(), state.commandContents(),
                 state.commandOutcomes(), state.securities(), state.exchange(),
                 state.manufacturing(), state.governance(), state.roles(), frame.information(),
-                state.trading(), state.decisions(), state.dividends(), state.beliefs(), frame.run());
+                state.trading(), state.decisions(), state.dividends(), state.beliefs(),
+                frame.run(), state.interviews(), frame.evidence());
         commitAndApply("task:" + task.taskId(), task.payload(), frame.reason(), events, candidate);
+    }
+
+    /**
+     * 媒体动作的冻结时长：证据共享取 EvidenceRun.Config，其余仍走 MediaRun 原查表。
+     *
+     * @param config       媒体配置
+     * @param kind         任务种类
+     * @param organization 媒体组织
+     * @return 冻结时长（毫秒）
+     */
+    private long mediaDuration(MediaRun.Config config, String kind, String organization) {
+        if (MediaRun.KIND_EVIDENCE_SHARE.equals(kind)) {
+            if (evidenceConfig == null) {
+                throw new IllegalStateException("旧 schema 不得排程证据共享任务");
+            }
+            return evidenceConfig.shareMillis();
+        }
+        return MediaRun.durationOf(config, kind, organization);
     }
 
     /** 从给定基准状态重算一次媒体任务完成；不做任何 I/O 提交。 */
@@ -14813,7 +15056,7 @@ public final class WorldRuntime implements AutoCloseable {
         MediaTaskBody wrapper = mediaBody(task);
         String person = payload.personPartyId();
         String organization = wrapper.organizationPartyId();
-        long duration = MediaRun.durationOf(run.config(), task.kind(), organization);
+        long duration = mediaDuration(run.config(), task.kind(), organization);
         long completedAt = task.dueTimeMillis();
         long startedAt = wrapper.startedAtMillis();
         List<PendingTask> removed = new ArrayList<>();
@@ -14829,7 +15072,7 @@ public final class WorldRuntime implements AutoCloseable {
             List<PendingTask> trim = new ArrayList<>(base.pending());
             trim.remove(task);
             return new MediaFrame(false, MediaModel.REASON_TIME, "", broken, base.information(),
-                    List.copyOf(trim), List.copyOf(removed));
+                    List.copyOf(trim), List.copyOf(removed), base.evidence());
         }
         if (wrapper.budgetRejected()) {
             // 工时不足：业务拒绝 + 持久报告，不计费、不改业务状态
@@ -14841,7 +15084,7 @@ public final class WorldRuntime implements AutoCloseable {
             List<PendingTask> trim = new ArrayList<>(base.pending());
             trim.remove(task);
             return new MediaFrame(false, "BUDGET", "", rejected, base.information(),
-                    List.copyOf(trim), List.copyOf(removed));
+                    List.copyOf(trim), List.copyOf(removed), base.evidence());
         }
         MediaModel.State mediaBefore = run.stateOf(organization);
         MediaModel.Policy policy = run.config().policyOf(organization);
@@ -14850,6 +15093,7 @@ public final class WorldRuntime implements AutoCloseable {
         InformationModel.State informationAfter = informationBefore;
         MediaModel.State mediaAfter = mediaBefore;
         MediaRun runAfter = run;
+        EvidenceRun evidenceAfter = base.evidence();
         boolean accepted = false;
         String reason = MediaModel.REASON_NOT_AUTHORIZED;
         String storyId = "";
@@ -14866,7 +15110,7 @@ public final class WorldRuntime implements AutoCloseable {
             List<PendingTask> trim = new ArrayList<>(base.pending());
             trim.remove(task);
             return new MediaFrame(false, "OBSERVATION_FRAME", "", rejected, base.information(),
-                    List.copyOf(trim), List.copyOf(removed));
+                    List.copyOf(trim), List.copyOf(removed), base.evidence());
         }
         long cut = wrapper.observedAtMillis();
 
@@ -14901,26 +15145,94 @@ public final class WorldRuntime implements AutoCloseable {
                 WorldRoleSession.MediaSubmitDraft draft = mapper.readValue(wrapper.body(),
                         WorldRoleSession.MediaSubmitDraft.class);
                 storyId = draft.storyId();
+                boolean evidenceSchema = base.evidence() != null;
                 List<RoleView.ReadingRef> refs = new ArrayList<>();
                 for (WorldRoleSession.MediaCitation citation : draft.evidence()) {
                     refs.add(new RoleView.ReadingRef(person, citation.docId(), citation.version(),
                             citation.index()));
                 }
-                String cutProblem = mediaEvidenceAtCut(observedInfo, policy, person, refs, cut);
+                // schema16 允许本人真实读过的非公开材料；公开路径的拒绝次序与旧档一致
+                String cutProblem = mediaEvidenceAtCut(observedInfo, policy, person, refs, cut,
+                        evidenceSchema);
                 if (cutProblem != null) {
                     reason = cutProblem;
                     break;
                 }
-                MediaModel.BridgeOutcome result = MediaModel.submit(mediaBefore, policy, access,
-                        informationBefore, person, new MediaModel.SubmitRequest(draft.storyId(),
-                                draft.expectedRevision(), draft.title(), draft.body(),
-                                draft.publicSourceDescription(), refs, startedAt, completedAt),
-                        mediaContext(run, organization));
+                MediaModel.SubmitRequest request = new MediaModel.SubmitRequest(draft.storyId(),
+                        draft.expectedRevision(), draft.title(), draft.body(),
+                        draft.publicSourceDescription(), refs, startedAt, completedAt);
+                if (!evidenceSchema) {
+                    MediaModel.BridgeOutcome result = MediaModel.submit(mediaBefore, policy, access,
+                            informationBefore, person, request, mediaContext(run, organization));
+                    accepted = result.accepted();
+                    reason = result.reason();
+                    if (accepted) {
+                        mediaAfter = result.state();
+                        informationAfter = result.information();
+                    }
+                    break;
+                }
+                List<RoleView.ReadingRef> publicRefs = new ArrayList<>();
+                List<RoleView.ReadingRef> privateRefs = new ArrayList<>();
+                for (RoleView.ReadingRef ref : refs) {
+                    InformationModel.Document document = informationDocument(observedInfo,
+                            ref.docId());
+                    if (document != null
+                            && document.audience().kind() == InformationModel.AudienceKind.PUBLIC) {
+                        publicRefs.add(ref);
+                    } else {
+                        privateRefs.add(ref);
+                    }
+                }
+                MediaModel.SubmitRequest privateRequest = new MediaModel.SubmitRequest(
+                        draft.storyId(), draft.expectedRevision(), draft.title(), draft.body(),
+                        draft.publicSourceDescription(), publicRefs, startedAt, completedAt);
+                MediaEvidence.State organizationEvidence = base.evidence().stateOf(organization);
+                MediaModel.EvidenceBridgeOutcome result = MediaModel.submitWithEvidence(
+                        mediaBefore, policy, access, informationBefore, person, privateRequest,
+                        mediaContext(run, organization), new MediaModel.EvidenceContext(privateRefs,
+                                organizationEvidence, derivedAliases(mediaBefore, draft),
+                                bindingLedger(base.evidence())));
                 accepted = result.accepted();
                 reason = result.reason();
                 if (accepted) {
                     mediaAfter = result.state();
                     informationAfter = result.information();
+                    evidenceAfter = evidenceAfter.withState(organization, result.evidence());
+                }
+            }
+            case PendingTask.MEDIA_EVIDENCE_SHARE_V1 -> {
+                WorldRoleSession.MediaShareDraft draft = mapper.readValue(wrapper.body(),
+                        WorldRoleSession.MediaShareDraft.class);
+                if (base.evidence() == null) {
+                    reason = MediaModel.REASON_STATE;
+                    break;
+                }
+                MediaModel.Ref root = new MediaModel.Ref(draft.rootDocId(), draft.rootVersion());
+                // 观察帧：本人当时已真实读完该根且仍可回忆（非公开材料同样按真实阅读判定）
+                String cutProblem = mediaEvidenceAtCut(observedInfo, policy, person,
+                        List.of(new RoleView.ReadingRef(person, root.docId(), root.version(), 1)),
+                        cut, true);
+                if (cutProblem != null) {
+                    reason = cutProblem;
+                    break;
+                }
+                if (!mediaAuthorized(base, person, RoleAccess.Action.WRITE_STORY, organization, cut)
+                        || !mediaAuthorized(base, person, RoleAccess.Action.WRITE_STORY,
+                        organization, completedAt)) {
+                    reason = MediaModel.REASON_NOT_AUTHORIZED;
+                    break;
+                }
+                MediaEvidence.ShareOutcome share = MediaEvidence.share(
+                        base.evidence().stateOf(organization), bindingLedger(base.evidence()),
+                        mediaBefore, policy, access, informationBefore, person,
+                        new MediaEvidence.ShareRequest(payload.clientCommandId(), root,
+                                draft.recipientPartyId(), draft.note(), completedAt));
+                accepted = share.accepted();
+                reason = share.reason();
+                if (accepted) {
+                    evidenceAfter = evidenceAfter.withState(organization, share.evidence());
+                    informationAfter = share.information();
                 }
             }
             case PendingTask.MEDIA_STORY_REVIEW_V1 -> {
@@ -14993,7 +15305,7 @@ public final class WorldRuntime implements AutoCloseable {
                 }
                 MediaTaskBody targetBody = mediaBody(target);
                 String targetOrganization = targetBody.organizationPartyId();
-                long targetDuration = MediaRun.durationOf(run.config(), target.kind(),
+                long targetDuration = mediaDuration(run.config(), target.kind(),
                         targetOrganization);
                 long targetStart = target.dueTimeMillis() - targetDuration;
                 // 预算拒绝的工作从未预留，取消它只结束任务，不得计费
@@ -15028,7 +15340,7 @@ public final class WorldRuntime implements AutoCloseable {
             informationRun = informationRun.withInformation(informationAfter);
         }
         return new MediaFrame(accepted, reason, storyId, runAfter, informationRun,
-                List.copyOf(pending), List.copyOf(removed));
+                List.copyOf(pending), List.copyOf(removed), evidenceAfter);
     }
 
     /** 按真实观察位置取历史信息子集；没有位置或帧不可读时返回 null。 */
@@ -15067,6 +15379,19 @@ public final class WorldRuntime implements AutoCloseable {
     /** 观察帧证据核验：按会话观察时点判公开性、真实读完与当前可回忆。 */
     private String mediaEvidenceAtCut(InformationModel.State information, MediaModel.Policy policy,
                                       String person, List<RoleView.ReadingRef> refs, long cut) {
+        return mediaEvidenceAtCut(information, policy, person, refs, cut, false);
+    }
+
+    /**
+     * 观察帧证据核验（schema16 可含本人真实读过的非公开材料）。
+     *
+     * <p>旧档案 {@code allowPrivate=false}：非公开材料仍按旧次序先报 {@code EVIDENCE_NOT_PUBLIC}，
+     * 行为与字节不变。新档案只把「是否公开」换成「本人是否真实读完且仍可回忆」，不额外要求
+     * 收件人是 DIRECT 受众——组织范围内合法阅读同样成立。</p>
+     */
+    private String mediaEvidenceAtCut(InformationModel.State information, MediaModel.Policy policy,
+                                      String person, List<RoleView.ReadingRef> refs, long cut,
+                                      boolean allowPrivate) {
         if (cut < 0) {
             return MediaModel.REASON_TIME;
         }
@@ -15080,7 +15405,7 @@ public final class WorldRuntime implements AutoCloseable {
             if (document == null) {
                 return MediaModel.REASON_EVIDENCE_NOT_READ;
             }
-            if (document.audience().kind() != InformationModel.AudienceKind.PUBLIC) {
+            if (document.audience().kind() != InformationModel.AudienceKind.PUBLIC && !allowPrivate) {
                 return MediaModel.REASON_EVIDENCE_NOT_PUBLIC;
             }
             if (!InformationModel.canCite(information, person, ref.docId(), ref.version(), cut)) {
@@ -15091,6 +15416,47 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         return null;
+    }
+
+    /**
+     * 全部机构的共享绑定：只用于跨机构回溯真实根，不写回任何机构状态、不复制账本。
+     */
+    private static MediaEvidence.State bindingLedger(EvidenceRun run) {
+        List<MediaEvidence.IdentityShare> shares = new ArrayList<>();
+        if (run != null) {
+            for (MediaEvidence.State state : run.states().values()) {
+                shares.addAll(state.shares());
+            }
+        }
+        return new MediaEvidence.State(List.of(), shares);
+    }
+
+    /**
+     * 把模型给的别名绑定到本次真实投稿：稿件与提交次数从媒体状态派生，模型不能指定。
+     *
+     * <p>版本或归属不符时返回空表，交由纯核按原次序拒绝（不构造错版别名）。</p>
+     */
+    private static List<MediaEvidence.AliasBinding> derivedAliases(MediaModel.State media,
+                                                                  WorldRoleSession.MediaSubmitDraft draft) {
+        if (draft.aliases().isEmpty()) {
+            return List.of();
+        }
+        MediaModel.Story story = null;
+        for (MediaModel.Story candidate : media.stories()) {
+            if (candidate.storyId().equals(draft.storyId())) {
+                story = candidate;
+                break;
+            }
+        }
+        if (story == null || story.revisionNo() != draft.expectedRevision()) {
+            return List.of();
+        }
+        List<MediaEvidence.AliasBinding> bindings = new ArrayList<>();
+        for (WorldRoleSession.AliasDraft alias : draft.aliases()) {
+            bindings.add(new MediaEvidence.AliasBinding(story.storyId(), story.revisionNo() + 1,
+                    new MediaModel.Ref(alias.rootDocId(), alias.rootVersion()), alias.label()));
+        }
+        return List.copyOf(bindings);
     }
 
     /** 观察帧草稿核验：编辑必须在观察时点已读完该草稿版本且仍可回忆。 */
