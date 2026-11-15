@@ -177,6 +177,18 @@ public final class ComposedIndustryScenario {
                 edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION, true);
     }
 
+    /** 相对复查与实际时延规划新档，显式使用增量存储。 */
+    public static WorldRuntime openPlanningAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION, false, true);
+    }
+
+    /** 规划合同加有限外部需求，显式使用增量存储。 */
+    public static WorldRuntime openPlanningOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION, true, true);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven) throws Exception {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, null);
     }
@@ -323,7 +335,9 @@ public final class ComposedIndustryScenario {
         }
         if (compact) {
             var data = new TreeMap<>(runManifest.dataVersions()); data.put("state-storage", "delta-v1");
-            runManifest = new RunManifest(operating ? "web-compact-operating-v1" : "web-compact-accountable-v1",
+            runManifest = new RunManifest(edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION.equals(roleContext)
+                    ? (operating ? "web-planning-operating-v4" : "web-planning-autonomous-v4")
+                    : (operating ? "web-compact-operating-v1" : "web-compact-accountable-v1"),
                     runManifest.seed(), runManifest.rulesVersion(), runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,

@@ -85,6 +85,16 @@ class LiveDecisionProviderTest {
     }
 
     @Test
+    void planningPromptUsesOnlyTrustedRootAndHasOnlyRelativeSchema() throws Exception {
+        var select=LiveDecisionProvider.class.getDeclaredMethod("systemText",DecisionRun.Call.class);
+        select.setAccessible(true);
+        assertEquals(LiveDecisionProvider.PLANNING_SYSTEM_TEXT,select.invoke(null,call("{\"engineering\":{\"roleContextVersion\":\"deliberation-v4\"}}",route("key-1","deepseek-flash",640))));
+        assertEquals(LiveDecisionProvider.SYSTEM_TEXT,select.invoke(null,call("{\"profile\":{\"document\":{\"engineering\":{\"roleContextVersion\":\"deliberation-v4\"}}}}",route("key-1","deepseek-flash",640))));
+        assertTrue(LiveDecisionProvider.PLANNING_SYSTEM_TEXT.contains("reviewAfterMillis"));
+        assertFalse(LiveDecisionProvider.PLANNING_SYSTEM_TEXT.contains("nextReviewAt"));
+    }
+
+    @Test
     void bothDeliberationVersionsUseStrictStatementPromptOnlyAtRootContext() throws Exception {
         for (String version : List.of("deliberation-v2", "deliberation-v3")) {
             server.enqueue(200, successBody("{\"tool\":\"role.wait\"}", 11, 5, 16));

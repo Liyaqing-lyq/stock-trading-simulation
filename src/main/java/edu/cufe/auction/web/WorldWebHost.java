@@ -316,7 +316,7 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     private boolean accountableAutonomy() {
-        return edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION.equals(runtime.profile().manifest().dataVersions().get("role-context"));
+        return edu.cufe.auction.world.RoleDeliberation.isAccountable(runtime.profile().manifest().dataVersions().get("role-context"));
     }
 
     // 比较本人可见的具体事实；世界时间或观察时点自身变化不触发全体付费调用。
@@ -325,9 +325,16 @@ public final class WorldWebHost implements AutoCloseable {
         facts.remove(List.of("time", "observedAt", "wakeReason", "pendingActions"));
         if (facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
             delib.remove(List.of("reviewBounds", "recentDecisions"));
-        if (edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION.equals(input.path("engineering").path("roleContextVersion").asText())
+        if (edu.cufe.auction.world.RoleDeliberation.isAccountable(input.path("engineering").path("roleContextVersion").asText())
                 && facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
             delib.remove("lastActionResult");
+        if (edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION.equals(input.path("engineering").path("roleContextVersion").asText())
+                && facts.path("engineering") instanceof com.fasterxml.jackson.databind.node.ObjectNode eng) {
+            eng.remove("planning");
+            for (var director : eng.path("directorships"))
+                for (var meeting : director.path("meetings"))
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) meeting).remove("planningPrerequisites");
+        }
         return facts;
     }
 

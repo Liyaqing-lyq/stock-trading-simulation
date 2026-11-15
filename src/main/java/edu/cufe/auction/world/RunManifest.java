@@ -998,18 +998,18 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("composed-governance-intent", "v2");
                 if ("role-events-v2".equals(data.get("autonomy-driver")) && data.containsKey("role-context")) {
                     String context = data.get("role-context");
-                    if (!List.of("authority-v1", "evidence-v1", RoleDeliberation.VERSION, RoleDeliberation.ACCOUNTABLE_VERSION).contains(context)) {
+                    if (!List.of("authority-v1", "evidence-v1", RoleDeliberation.VERSION, RoleDeliberation.ACCOUNTABLE_VERSION, RoleDeliberation.PLANNING_VERSION).contains(context)) {
                         throw new IllegalArgumentException("未知角色依据版本：" + context);
                     }
                     expectedData.put("role-context", context);
                     if (data.containsKey("state-storage")) {
-                        if (!RoleDeliberation.ACCOUNTABLE_VERSION.equals(context) || !StateDeltaCodec.VERSION.equals(data.get("state-storage")))
-                            throw new IllegalArgumentException("增量状态必须显式使用 accountable v3 / delta-v1");
+                        if (!RoleDeliberation.isAccountable(context) || !StateDeltaCodec.VERSION.equals(data.get("state-storage")))
+                            throw new IllegalArgumentException("增量状态必须显式使用 accountable v3/v4 / delta-v1");
                         expectedData.put("state-storage", StateDeltaCodec.VERSION);
                     }
                     if (data.containsKey("external-demand")) {
                         if (!RoleDeliberation.isDeliberative(context) || !"v1".equals(data.get("external-demand")))
-                            throw new IllegalArgumentException("外部需求必须显式使用 deliberation-v2或v3 / external-demand=v1");
+                            throw new IllegalArgumentException("外部需求必须显式使用 deliberation-v2/v3/v4 / external-demand=v1");
                         expectedData.put("external-demand", "v1");
                     }
                 }

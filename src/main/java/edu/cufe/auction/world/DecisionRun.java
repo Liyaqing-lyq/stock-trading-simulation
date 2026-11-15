@@ -746,6 +746,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 node.put("decision", permission.decision().name());
             }
         }
+        RolePlanningContext.append(root, wakeReason, config);
         try {
             return MAPPER.writeValueAsString(root);
         } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {

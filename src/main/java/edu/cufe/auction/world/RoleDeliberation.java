@@ -15,7 +15,11 @@ public final class RoleDeliberation {
     /** 权威执行反馈与单人故障隔离的新档标识；v2保持冻结。 */
     public static final String ACCOUNTABLE_VERSION = "deliberation-v3";
     /** @param version 角色合同版本 @return 是否使用显式决定声明合同 */
-    public static boolean isDeliberative(String version) { return VERSION.equals(version) || ACCOUNTABLE_VERSION.equals(version); }
+    public static boolean isDeliberative(String version) { return VERSION.equals(version) || isAccountable(version); }
+    /** 相对复查与实际耗时规划合同。 */
+    public static final String PLANNING_VERSION = "deliberation-v4";
+    /** @param version 冻结版本 @return 是否保留权威反馈和单人故障隔离 */
+    public static boolean isAccountable(String version) { return ACCOUNTABLE_VERSION.equals(version) || PLANNING_VERSION.equals(version); }
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long MONTH = ManufacturingTemplateModel.PERIOD_MILLIS;
     private RoleDeliberation() { }
@@ -88,7 +92,17 @@ public final class RoleDeliberation {
                     ? "PENDING" : row.has("businessReject") ? "REJECTED" : "FINISHED_SEE_CURRENT_STATE");
             try { var reply = JSON.readTree(attempt.replyBody()); if (reply != null) {
                 row.put("tool", reply.path("tool").asText());
-                if (reply.has("decision")) row.set("ownStatement", reply.get("decision"));
+                if (reply.has("decision")) {
+                    row.set("ownStatement", reply.get("decision"));
+                    var frozen = JSON.readTree(d.inputText());
+                    if (PLANNING_VERSION.equals(frozen.path("engineering").path("roleContextVersion").asText())) {
+                        try {
+                            validatedAction(d.inputText(), reply);
+                            long duration = reply.path("decision").path("reviewAfterMillis").longValue();
+                            row.put("reviewAfterMillis", duration).put("derivedReviewAt", Math.addExact(frozen.path("time").longValue(), duration));
+                        } catch (IllegalArgumentException | ArithmeticException invalid) { row.put("invalidStatement", true); }
+                    }
+                }
             }} catch (java.io.IOException ignored) { row.put("invalidReply", true); }
             if (recent.size() < 3) recent.add(row);
             if (!actionResult && d.outcome() != DecisionModel.Outcome.WAIT && d.outcome() != DecisionModel.Outcome.NONE) {
@@ -111,17 +125,22 @@ public final class RoleDeliberation {
         if (input == null || !isDeliberative(input.path("engineering").path("roleContextVersion").asText())) return reply;
         if (reply == null || !reply.isObject()) throw new IllegalArgumentException("BAD_DELIBERATION");
         var statement = reply.path("decision");
+        boolean planning = PLANNING_VERSION.equals(input.path("engineering").path("roleContextVersion").asText());
+        String reviewField = planning ? "reviewAfterMillis" : "nextReviewAt";
         Set<String> fields = new java.util.HashSet<>(); statement.fieldNames().forEachRemaining(fields::add);
-        if (!statement.isObject() || !fields.equals(Set.of("objective", "basis", "nextReviewAt"))
+        if (!statement.isObject() || !fields.equals(Set.of("objective", "basis", reviewField))
                 || !statement.path("objective").isTextual() || !statement.path("basis").isTextual()
                 || statement.path("basis").asText().isBlank() || statement.path("basis").asText().length() > 600
-                || !statement.path("nextReviewAt").isIntegralNumber() || !statement.path("nextReviewAt").canConvertToLong())
+                || !statement.path(reviewField).isIntegralNumber() || !statement.path(reviewField).canConvertToLong())
             throw new IllegalArgumentException("BAD_DELIBERATION");
         boolean own = false;
         for (var goal : input.path("engineering").path("deliberation").path("objectives"))
             if (goal.path("id").asText().equals(statement.path("objective").asText())) own = true;
-        long now = input.path("time").asLong(), review = statement.path("nextReviewAt").asLong();
-        if (!own || review <= now || review - now > MONTH) throw new IllegalArgumentException("BAD_DELIBERATION");
+        long now = input.path("time").asLong(), review = statement.path(reviewField).asLong();
+        if (planning) {
+            if (!own || review <= 0 || review > MONTH) throw new IllegalArgumentException("BAD_DELIBERATION");
+            try { Math.addExact(now, review); } catch (ArithmeticException overflow) { throw new IllegalArgumentException("BAD_DELIBERATION", overflow); }
+        } else if (!own || review <= now || review - now > MONTH) throw new IllegalArgumentException("BAD_DELIBERATION");
         var action = (ObjectNode) reply.deepCopy(); action.remove("decision"); return action;
     }
 
@@ -134,8 +153,13 @@ public final class RoleDeliberation {
             if (!d.personPartyId().equals(person) || d.attempts().isEmpty()) continue;
             if (d.outcome() != DecisionModel.Outcome.WAIT && d.outcome() != DecisionModel.Outcome.INTENT) return fallback;
             try { var body = JSON.readTree(d.attempts().get(d.attempts().size()-1).replyBody());
+                var frozen = JSON.readTree(d.inputText());
+                if (PLANNING_VERSION.equals(frozen.path("engineering").path("roleContextVersion").asText())) {
+                    validatedAction(d.inputText(), body);
+                    return Math.addExact(frozen.path("time").asLong(), body.path("decision").path("reviewAfterMillis").asLong());
+                }
                 return body.path("decision").path("nextReviewAt").asLong(fallback);
-            } catch (java.io.IOException bad) { return fallback; }
+            } catch (java.io.IOException | IllegalArgumentException | ArithmeticException bad) { return fallback; }
         }
         return fallback;
     }

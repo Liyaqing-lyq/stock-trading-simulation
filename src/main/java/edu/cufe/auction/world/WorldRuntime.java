@@ -28897,7 +28897,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (RoleDeliberation.isDeliberative(roleContext))
             RoleDeliberation.append(root, person, now, snap.decisions(), snap.pending());
-        if (RoleDeliberation.ACCOUNTABLE_VERSION.equals(roleContext))
+        if (RoleDeliberation.isAccountable(roleContext))
             RoleActionFeedback.append(root, person, snap.decisions(), snap.pending(),
                     snap.engineering(), snap.companyOperations(), snap.information(), snap.trading());
         return root;
