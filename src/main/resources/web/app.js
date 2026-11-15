@@ -8,6 +8,7 @@
 
 const state = {
   mode: "none",
+  localAccess: false,
   generation: 0,
   position: null,
   revealTimer: null,
@@ -161,6 +162,7 @@ function clearSecrets() {
 }
 
 function clearAdminDom() {
+  globalThis.WorldHome?.clear();
   state.capabilities = null;
   $("live-persons").replaceChildren();
   clearLiveDom();
@@ -224,7 +226,7 @@ function showMode(mode) {
   show("login", mode === "login");
   show("admin", mode === "admin");
   show("person", mode === "person");
-  $("logout").hidden = mode === "login";
+  $("logout").hidden = mode === "login" || state.localAccess;
   placeGroupsPanel();
   placeResearchPanel();
   placeManufacturingPanel();
@@ -236,6 +238,11 @@ function sessionLost() {
   clearOperationsDom();
   clearManufacturingDom();
   showMode("login");
+  if (state.localAccess) {
+    setStatus("正在重新连接本机世界…");
+    guard(boot());
+    return;
+  }
   setStatus("会话已失效，请重新登录");
   setMessage("login-error", "会话已失效，请使用新的引导凭据重新登录。");
 }
@@ -286,6 +293,12 @@ async function refreshAdmin() {
   }
   setMessage("admin-error", "");
   renderAdmin(result.payload);
+  if (globalThis.WorldHome) {
+    const overview = await request("GET", "/api/admin/world");
+    if (!current()) return;
+    if (overview.status === 200) globalThis.WorldHome.render(overview.payload);
+    else setMessage("admin-error", "首页与报表读取失败（" + overview.status + "），请刷新重试。");
+  }
   await refreshKeys(generation, current);
   if (!current()) return;
   await refreshRoutes(generation, current);
@@ -524,7 +537,7 @@ async function advance() {
 
 async function enterPerson(personId) {
   showMode("person");
-  $("person-name").textContent = personId;
+  $("person-name").textContent = "正在读取人物…";
   setStatus("个人视角");
   await refreshPerson();
 }
@@ -568,7 +581,7 @@ async function refreshPerson() {
   await renderPersonalInterview((view.media && view.media.tools) || view.tools, generation);
   if (!isCurrent(generation) || state.mode !== "person") return;
   $("context-time").textContent = "人物观察 · " + view.timeMillis + " 毫秒";
-  $("person-name").textContent = view.personPartyId;
+  $("person-name").textContent = view.displayName || view.personPartyId;
   await loadPersonalBank(generation);
   if (!isCurrent(generation) || state.mode !== "person") return;
 
@@ -660,23 +673,30 @@ async function logout() {
   }
   showMode("login");
   setStatus("已退出登录");
-  setMessage("login-error", "已退出，请使用新的引导凭据重新登录。");
+  setMessage("login-error", state.localAccess ? "已退出，刷新网页即可重新进入本机世界。" : "已退出，请使用新的引导凭据重新登录。");
 }
 
 async function backToAdmin() {
   await logout();
-  setStatus("已退出个人视角");
+  await boot();
 }
 
 async function boot() {
   try {
     const session = await request("GET", "/api/session");
     if (session.status === 200 && session.payload && session.payload.role === "ADMIN") {
+      state.localAccess = session.payload.localAccess === true;
       await enterAdmin();
       return;
     }
     if (session.status === 200 && session.payload && session.payload.role === "PERSON") {
       await enterPerson(session.payload.personId);
+      return;
+    }
+    const local = await request("POST", "/api/session/local", {});
+    if (local.status === 200 && local.payload?.role === "ADMIN") {
+      state.localAccess = true;
+      await enterAdmin();
       return;
     }
     showMode("login");
@@ -690,7 +710,10 @@ async function boot() {
 
 // ---------------------------------------------------------------- 页面与非秘密场景配置
 const pages = {
-  overview: ["世界总览", "同一个确认时点，查看世界状态与待办。"],
+  overview: ["世界首页", "从公司经营、股票行情和人物开始观察世界。"],
+  "world-market": ["股票行情", "查看整个季度的实际成交价格与成交量。"],
+  "world-companies": ["公司报表", "十家公司的资产、负债、利润与现金变化。"],
+  "world-people": ["世界人物", "认识世界里的董事、经理、投资者与媒体人。"],
   accounts: ["账户资产", "钱归谁、持有什么，估值是否完整。"],
   market: ["成交与分红", "价格来自真实订单，分红来自已确认公司行为。"],
   company: ["公司经营与治理", "经营如何兑现，现金为什么变化，董事会怎样行动。"],
@@ -3501,6 +3524,10 @@ async function refreshCapabilities(generation, current) {
 $("media-story-select").addEventListener("change", () => guard(loadMediaStory()));
 
 
+if (globalThis.WorldHome) {
+  globalThis.WorldHome.onPage = selectPage;
+  globalThis.WorldHome.onPerson = personId => guard(switchPerson(personId));
+}
 guard(boot());
 
 
