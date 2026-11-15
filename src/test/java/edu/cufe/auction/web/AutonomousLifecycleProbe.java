@@ -29,27 +29,18 @@ public final class AutonomousLifecycleProbe {
         if (args.length != 3) throw new IllegalArgumentException("需要输出目录、凭据文件和参数文件");
         Path out = Path.of(args[0]);
         Config config = JSON.readValue(Files.readAllBytes(Path.of(args[2])), Config.class);
+        Path seed = config.seed() == null ? null : validateSeed(config);
         Files.createDirectory(out);
         JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("config.json").toFile(), config);
         Files.writeString(out.resolve("system-prompt.txt"), LiveDecisionProvider.DELIBERATION_SYSTEM_TEXT);
-        if (config.seed() != null) {
-            Path seed = Path.of(config.seed());
-            if (!Files.exists(seed.resolve("result.json"))) throw new IllegalArgumentException("种子运行尚未完整结束");
-            try (var paths = Files.list(seed)) {
-                for (Path p : paths.filter(p -> p.getFileName().toString().matches("call-[0-9]+[.]json")).toList())
-                    if (!Files.exists(seed.resolve(p.getFileName().toString().replace("call-", "reply-"))))
-                        throw new IllegalArgumentException("种子存在结果未知的请求");
-            }
-            var result = JSON.readTree(Files.readString(seed.resolve("result.json")));
-            if (result.path("live").path("physicalInFlight").asInt(-1) != 0)
-                throw new IllegalArgumentException("种子尚有未结算的物理请求");
+        if (seed != null) {
             Files.copy(seed.resolve("world.journal"), out.resolve("world.journal"));
             Files.copy(seed.resolve(SceneRoutes.FILE_NAME), out.resolve(SceneRoutes.FILE_NAME));
         }
         var provider = new LiveDecisionProvider(KeySlots.load(Path.of(args[1])));
         var issued = new AtomicInteger();
         try (var routes = SceneRoutes.open(out)) {
-            if (routes.view().revision() == 0) routes.replace(0, routes.view().routes().stream().map(r ->
+            if (seed == null && routes.view().revision() == 0) routes.replace(0, routes.view().routes().stream().map(r ->
                     new SceneRoutes.Route(r.scene(), r.slotId(), "deepseek-flash", true,
                             2500, 35_000_000, 2048, 4, "lifecycle-v1")).toList());
             try (var host = new WorldWebHost(() -> {
@@ -98,4 +89,38 @@ public final class AutonomousLifecycleProbe {
             }
         }
     }
+
+    private static Path validateSeed(Config requested) {
+        Path seed = Path.of(requested.seed());
+        try {
+            for (String name : new String[]{"config.json", "result.json", "system-prompt.txt",
+                    "world.journal", SceneRoutes.FILE_NAME}) {
+                if (!Files.isRegularFile(seed.resolve(name)))
+                    throw new IllegalArgumentException("种子缺少完整冻结文件：" + name);
+            }
+            var seedConfig = JSON.readTree(Files.readString(seed.resolve("config.json")));
+            var result = JSON.readTree(Files.readString(seed.resolve("result.json")));
+            if (seedConfig == null || !seedConfig.isObject() || result == null || !result.isObject())
+                throw new IllegalArgumentException("种子冻结配置不合法");
+            Config frozen = JSON.treeToValue(seedConfig, Config.class);
+            if (!seedConfig.equals(JSON.readTree(JSON.writeValueAsBytes(frozen))) || !seedConfig.equals(result.path("config")))
+                throw new IllegalArgumentException("种子 config.json 与 result.config 必须完整且一致");
+            if (!requested.mode().equals(frozen.mode()) || !requested.sourceCommit().equals(frozen.sourceCommit())
+                    || !LiveDecisionProvider.DELIBERATION_SYSTEM_TEXT.equals(
+                            Files.readString(seed.resolve("system-prompt.txt"))))
+                throw new IllegalArgumentException("种子的模式、源码和系统提示词必须与当前试跑完全相同");
+            var inFlight = result.path("live").path("physicalInFlight");
+            if (!inFlight.isIntegralNumber() || !inFlight.canConvertToInt() || inFlight.intValue() != 0)
+                throw new IllegalArgumentException("种子尚有未结算的物理请求");
+            try (var paths = Files.list(seed)) {
+                for (Path call : paths.filter(p -> p.getFileName().toString().matches("call-[0-9]+[.]json")).toList())
+                    if (!Files.isRegularFile(seed.resolve(call.getFileName().toString().replace("call-", "reply-"))))
+                        throw new IllegalArgumentException("种子存在结果未知的请求");
+            }
+            return seed;
+        } catch (java.io.IOException invalid) {
+            throw new IllegalArgumentException("种子冻结文件不可读或格式不合法", invalid);
+        }
+    }
+
 }

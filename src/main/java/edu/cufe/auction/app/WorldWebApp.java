@@ -115,8 +115,9 @@ public final class WorldWebApp {
             throw new IOException("Web 启动失败：无法加载本机凭据");
         }
 
+        boolean routesAbsent = !Files.exists(workDir.resolve(SceneRoutes.FILE_NAME));
         SceneRoutes routes = SceneRoutes.open(workDir);
-        if ((operatingMode || accountableMode) && routes.view().revision() == 0) {
+        if ((operatingMode || accountableMode) && routesAbsent) {
             routes.replace(0, routes.view().routes().stream().map(r -> new SceneRoutes.Route(
                     r.scene(), r.slotId(), r.model(), false, 2500, 35_000_000, 2048, 4, "lifecycle-v1")).toList());
         }
