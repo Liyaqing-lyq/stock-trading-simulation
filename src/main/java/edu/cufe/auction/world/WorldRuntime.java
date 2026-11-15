@@ -1471,7 +1471,7 @@ public final class WorldRuntime implements AutoCloseable {
                     "切点状态无法解码：" + position, invalid);
         }
         requireSameConfirmedFrame(parentState, position);
-        List<WorldCommit> own = journal.commits();
+        List<WorldCommit> own = journal.commitView();
         if (!own.isEmpty() && BRANCH_COMMAND.equals(own.get(0).commandId())) {
             throw new BranchRejectedException(BRANCH_PARENT_IS_BRANCH,
                     "父运行本身是分支，分支深度固定为 1：" + manifest.runId());
@@ -1659,7 +1659,7 @@ public final class WorldRuntime implements AutoCloseable {
             reasons.add(BRANCH_PARENT_SCAN_UNREADABLE);
             return new BranchSupport(position, cut, false, reasons);
         }
-        List<WorldCommit> own = journal.commits();
+        List<WorldCommit> own = journal.commitView();
         if (!own.isEmpty() && BRANCH_COMMAND.equals(own.get(0).commandId())) {
             reasons.add(BRANCH_PARENT_IS_BRANCH);
             return new BranchSupport(position, cut, false, reasons);
@@ -4072,7 +4072,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (spec == null) {
             throw new IllegalArgumentException("未知工程公司：" + companyPartyId);
         }
-        if (companyPartyId.equals(charter.companyPartyId())) {
+        if (charter != null && companyPartyId.equals(charter.companyPartyId())) {
             throw new IllegalArgumentException("本接口不接受制造业公司作为工程经营公司");
         }
         return spec;
@@ -5590,7 +5590,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public synchronized List<BankActionAudit> bankActionAudits() throws IOException {
         List<BankActionAudit> audits = new ArrayList<>();
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : journal.nonSnapshotCommits()) {
             for (WorldEvent event : commit.events()) {
                 if (!"BANK_ACTION_V1".equals(event.type())
                         && !"BANK_ACTION_BEGIN_V1".equals(event.type())) {
@@ -5699,7 +5699,7 @@ public final class WorldRuntime implements AutoCloseable {
         BigDecimal declared = BigDecimal.ZERO.setScale(2);
         BigDecimal unpaid = BigDecimal.ZERO.setScale(2);
         try {
-            for (WorldCommit commit : commitSource.commits()) {
+            for (WorldCommit commit : commitSource.nonSnapshotCommits()) {
                 if (commit.position() > base.position()) {
                     continue; // 历史报表只使用基准帧已经确认的资本事件。
                 }
@@ -5766,7 +5766,7 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized String taskCommitResult(String taskId) {
         String key = "task:" + taskId;
         String found = null;
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : journal.nonSnapshotCommits()) {
             if (commit.commandId().equals(key)) {
                 found = commit.result();
             }
@@ -6884,7 +6884,7 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized List<DecisionAudit> decisionAudits() {
         requireOpen();
         List<DecisionAudit> audits = new ArrayList<>();
-        for (WorldCommit commit : commitSource.commits()) {
+        for (WorldCommit commit : commitSource.nonSnapshotCommits()) {
             for (WorldEvent event : commit.events()) {
                 if (DECISION_AUDIT_V1.equals(event.type())) {
                     audits.add(readAudit(event.payload()));
@@ -13236,11 +13236,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (position <= 0) {
             throw new IllegalArgumentException("观察位置不存在：" + position);
         }
-        for (WorldCommit commit : commitSource.commits()) {
-            if (commit.position() == position) {
-                return decodeSnapshot(commit);
-            }
-        }
+        var confirmed = commitSource.commitAt(position);
+        if (confirmed.isPresent()) return decodeSnapshot(confirmed.orElseThrow());
         throw new IllegalArgumentException("观察位置不存在：" + position);
     }
 
@@ -19530,7 +19527,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (position <= 0) {
             return null;
         }
-        for (WorldCommit commit : commitSource.commits()) {
+        for (WorldCommit commit : commitSource.commitAt(position).stream().toList()) {
             if (commit.position() != position) {
                 continue;
             }
@@ -21575,11 +21572,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (position <= 0 || position > maxPosition) {
             return null;
         }
-        for (WorldCommit commit : commitSource.commits()) {
-            if (commit.position() == position) {
-                return decodeSnapshot(commit);
-            }
-        }
+        var confirmed = commitSource.commitAt(position);
+        if (confirmed.isPresent()) return decodeSnapshot(confirmed.orElseThrow());
         return null;
     }
 
@@ -22741,7 +22735,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (run == null) {
             throw new IOException("工程档案缺少工程子集状态");
         }
-        if (engineeringConfig == null || (charter == null && !"industry-baseline-v1".equals(manifest.dataVersions().get("profile")))) {
+        if (engineeringConfig == null || (charter == null && !List.of("industry-baseline-v1", "industry-prototype-v1").contains(manifest.dataVersions().get("profile")))) {
             throw new IOException("工程档案缺少制造业章程或冻结工程配置");
         }
         try {
@@ -23876,7 +23870,7 @@ public final class WorldRuntime implements AutoCloseable {
 
     private WorldState restore(List<OpeningAccount> ordered, WorldState expectedInitial,
                                OpenMode mode) throws IOException {
-        List<WorldCommit> commits = journal.commits();
+        List<WorldCommit> commits = journal.commitView();
         if (!commits.isEmpty() && BRANCH_COMMAND.equals(commits.get(0).commandId())) {
             if (mode == null || mode.origin() == null) {
                 // 分支子档必须由 openBranch 打开：没有父前缀验证就无法证明派生来源
@@ -25520,7 +25514,7 @@ public final class WorldRuntime implements AutoCloseable {
      * 每个工程公司 owner 只能有一个经营账户（含零余额）。</p>
      */
     private void validateEngineeringOpening(List<OpeningAccount> ordered) {
-        if (registry == null || (!"industry-baseline-v1".equals(manifest.dataVersions().get("profile")) && (manufacturingConfig == null || charter == null))) {
+        if (registry == null || (!List.of("industry-baseline-v1", "industry-prototype-v1").contains(manifest.dataVersions().get("profile")) && (manufacturingConfig == null || charter == null))) {
             throw new IllegalArgumentException("工程档案必须同时提供登记、制造配置与制造业章程");
         }
         Map<String, CashLedger.CashAccount> accounts = new LinkedHashMap<>();
@@ -25815,7 +25809,7 @@ public final class WorldRuntime implements AutoCloseable {
     /** 从已确认历史里取某命令首次排程的完整待办；没有对应提交返回 null。 */
     private PendingTask originalSchedule(String commandId) throws IOException {
         String target = "cmd:" + commandId;
-        for (WorldCommit commit : commitSource.commits()) {
+        for (WorldCommit commit : commitSource.nonSnapshotCommits()) {
             if (!target.equals(commit.commandId())) {
                 continue;
             }
@@ -26054,7 +26048,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (position <= 0 || position > state.position()) {
             throw new IllegalArgumentException("观察位置不存在或尚未确认：" + position);
         }
-        for (WorldCommit commit : commitSource.commits()) {
+        for (WorldCommit commit : commitSource.commitAt(position).stream().toList()) {
             if (commit.position() != position) {
                 continue;
             }
@@ -26582,7 +26576,7 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未知财产主体：" + ownerId);
         }
         List<CapitalFlowReport> flows = new ArrayList<>();
-        for (WorldCommit commit : commitSource.commits()) {
+        for (WorldCommit commit : commitSource.nonSnapshotCommits()) {
             for (WorldEvent event : commit.events()) {
                 if (!"CAPITAL_FLOW_V1".equals(event.type())) {
                     continue;
@@ -26665,34 +26659,27 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("表现区间必须落在已确认位置内："
                     + startPosition + "-" + endPosition);
         }
-        List<CapitalFrame> frames = new ArrayList<>();
-        for (WorldCommit commit : commitSource.commits()) {
-            if (commit.position() < startPosition || commit.position() > endPosition) {
-                continue;
-            }
-            frames.add(capitalFrame(commit));
-        }
-        if (frames.size() != endPosition - startPosition + 1) {
-            throw new IllegalStateException("确认历史缺少完整帧");
-        }
         Map<Long, List<CapitalFlowReport>> flowsByPosition = new TreeMap<>();
         for (CapitalFlowReport flow : capitalFlows(ownerId)) {
             flowsByPosition.computeIfAbsent(flow.position(), ignored -> new ArrayList<>()).add(flow);
         }
         List<PerformanceModel.Point> points = new ArrayList<>();
-        CapitalFrame start = frames.get(0);
+        CapitalFrame start = capitalFrame(commitSource.commitAt(startPosition)
+                .orElseThrow(() -> new IllegalStateException("确认历史缺少起始帧")));
         ValuationModel.Value startValue = navOf(start, ownerId, start.timeMillis());
         points.add(new PerformanceModel.Point(ownerId, startPosition, start.timeMillis(),
                 startValue.status(), startValue.netWorth(), startValue.netWorth(), List.of()));
-        for (int index = 1; index < frames.size(); index++) {
-            CapitalFrame frame = frames.get(index);
-            CapitalFrame previous = frames.get(index - 1);
+        CapitalFrame previous = start;
+        for (long position = startPosition + 1; position <= endPosition; position++) {
+            CapitalFrame frame = capitalFrame(commitSource.commitAt(position)
+                    .orElseThrow(() -> new IllegalStateException("确认历史缺少完整帧")));
             List<CapitalFlowReport> flows = flowsByPosition.getOrDefault(frame.position(), List.of());
             long due = frame.timeMillis();
             if (flows.isEmpty()) {
                 ValuationModel.Value value = navOf(frame, ownerId, due);
                 points.add(new PerformanceModel.Point(ownerId, frame.position(), due,
                         value.status(), value.netWorth(), value.netWorth(), List.of()));
+                previous = frame;
                 continue;
             }
             ValuationModel.Value before = navOf(previous, ownerId, due);
@@ -26723,6 +26710,7 @@ public final class WorldRuntime implements AutoCloseable {
                                 ? before.status() : after.status(),
                         null, null, pointFlows));
             }
+            previous = frame;
         }
         return points;
     }
@@ -27305,7 +27293,7 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized List<DividendReport> dividendReports() {
         requireDividend();
         List<DividendReport> reports = new ArrayList<>();
-        for (WorldCommit commit : commitSource.commits()) {
+        for (WorldCommit commit : commitSource.nonSnapshotCommits()) {
             for (WorldEvent event : commit.events()) {
                 if ("DIVIDEND_REPORT_V1".equals(event.type())) {
                     reports.add(readDividendReport(event.payload()));
@@ -28430,6 +28418,9 @@ public final class WorldRuntime implements AutoCloseable {
                     BoardModel.Ballot ballot = meeting.ballots().get(
                             charter.seatOf(person));
                     item.put("ownBallot", ballot == null ? "" : ballot.vote().name());
+                    if ("v1".equals(manifest.dataVersions().get("role-decision-guide")) && meeting.appointmentProposal() != null) {
+                        item.set("appointmentRequest", mapper.valueToTree(meeting.appointmentProposal().request()));
+                    }
                     var materials = item.putArray("materials");
                     for (BoardModel.MaterialRef material : meeting.materials()) {
                         var entry = materials.addObject();
@@ -28661,6 +28652,18 @@ public final class WorldRuntime implements AutoCloseable {
                 }
             }
             root.set("manufacturing", manufacturing);
+        }
+        if ("v1".equals(manifest.dataVersions().get("role-decision-guide"))) {
+            edu.cufe.auction.world.composed.PrototypeDecisionGuide.append(root);
+            var products = root.putArray("authorizedProducts");
+            if (snap.roles() != null) {
+                var organizations = snap.roles().access().appointments().stream()
+                        .filter(a -> a.personPartyId().equals(person) && a.activeAt(now))
+                        .map(RoleAccess.Appointment::organizationPartyId).collect(java.util.stream.Collectors.toSet());
+                for (var mandate : snap.roles().access().mandates()) {
+                    if (organizations.contains(mandate.organizationPartyId())) products.add(mapper.valueToTree(mandate));
+                }
+            }
         }
         return root;
     }
@@ -30318,7 +30321,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (!wrapper.hasObservedPosition()) {
             return null;
         }
-        for (WorldCommit commit : commitSource.commits()) {
+        for (WorldCommit commit : commitSource.commitAt(wrapper.observedPosition()).stream().toList()) {
             if (commit.position() != wrapper.observedPosition()) {
                 continue;
             }
@@ -33890,7 +33893,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public String taskResultForTest(String taskIdPrefix) {
         String result = "";
-        for (WorldCommit commit : journal.commits()) {
+        for (WorldCommit commit : journal.nonSnapshotCommits()) {
             if (commit.commandId().startsWith("task:" + taskIdPrefix)) {
                 result = commit.result();
             }
@@ -36716,13 +36719,14 @@ public final class WorldRuntime implements AutoCloseable {
         if (mode == null && file != null) {
             requireNotBranchFile(file);
         }
-        WorldJournal opened = new WorldJournal(file, manifest.runId(), base);
+        WorldJournal opened = new WorldJournal(file, manifest.runId(), base,
+                "gzip-frame-v1".equals(manifest.dataVersions().get("journal-codec")));
         this.journal = opened;
         this.branchOrigin = mode == null ? null : mode.origin();
         this.commitSource = base == 0L ? new JournalCommitSource(opened)
                 : new BranchCommitSource(mode.prefixCommits(), opened);
         try {
-            if (opened.commits().isEmpty()) {
+            if (opened.commitView().isEmpty()) {
                 if (mode == null) {
                     writeOpening(ordered, initial);
                 } else {

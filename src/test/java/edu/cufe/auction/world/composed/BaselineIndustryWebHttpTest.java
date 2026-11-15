@@ -44,10 +44,18 @@ class BaselineIndustryWebHttpTest {
         Path keys=dir.resolve("dummy-keys.txt");Files.writeString(keys,String.join("\n",List.of("sk-research-test-000001","sk-research-test-000002","sk-research-test-000003","sk-research-test-000004","sk-research-test-000005")));
         try(var host=new WorldWebHost(()->{var world=ComposedIndustryScenario.openBaseline(journal);return new WorldWebHost.Opened(world,world.profile().manifest().runId());});
             var server=new WorldWebServer(host,KeySlots.load(keys),SceneRoutes.open(dir),0,"research-bootstrap",null,console::add)) {
-            server.start();base=server.baseUrl();admin();
+            host.peopleView();
+            var report=JSON.createObjectNode().put("schema","world-cycle-run-v1").put("runId",host.runId()).put("summary","测试报告标记");
+            report.putArray("days");report.putArray("companies");
+            server.attachExperimentReport(report);report.put("summary","外部修改不应穿透");
+            server.start();base=server.baseUrl();
+            assertEquals(401,request("GET","/api/admin/people",null).statusCode());
+            admin();
+            assertEquals("测试报告标记",JSON.readTree(request("GET","/api/admin/people",null).body()).path("experimentReport").path("summary").asText());
+            assertThrows(IllegalStateException.class,()->server.attachExperimentReport(report));
             var god=JSON.readTree(request("GET","/api/admin/operations",null).body());assertEquals(7,god.path("companies").size());assertTrue(god.toString().contains("scenarioTruth"));
             assertEquals(403,request("POST","/api/me/digital/action","{}").statusCode());
-            person("frank");assertEquals(0,JSON.readTree(request("GET","/api/me/operations",null).body()).path("companies").size());
+            person("frank");assertEquals(403,request("GET","/api/admin/people",null).statusCode());assertEquals(0,JSON.readTree(request("GET","/api/me/operations",null).body()).path("companies").size());
             for(String kind:List.of("digital","aged")) {
                 String company=kind+"-company",manager=kind+"-manager",route="/api/me/"+kind+"/action";
                 admin();person(manager);var view=JSON.readTree(request("GET","/api/me/operations",null).body());

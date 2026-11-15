@@ -52,6 +52,10 @@ public final class CompanyOpeningDocuments {
             if (board == null) continue;
             BoardModel.Charter charter = board.board().charter();
             StringBuilder body = new StringBuilder("实验开局公开资料 EXP；不是真实公司披露。\n");
+            if (PrototypeCompanies.PROFILE.equals(world.profile().manifest().dataVersions().get("profile"))) {
+                var identity = PrototypeCompanies.find(company);
+                if (identity != null) body.append(identity.publicDescription()).append('\n');
+            }
             body.append("公司=").append(company).append("（").append(parties.get(company).name()).append("）\n");
             TreeSet<String> candidates = new TreeSet<>(extraCandidates.getOrDefault(company, List.of()));
             body.append("章程席位：\n");
@@ -75,6 +79,20 @@ public final class CompanyOpeningDocuments {
                     InformationModel.Audience.publicAudience(),
                     parties.get(company).name() + "：开局章程与候选人（EXP）", body.toString(),
                     "来自实验开局登记和章程；发布不等于本人读过", READ_MILLIS, List.of());
+        }
+        if (PrototypeCompanies.PROFILE.equals(world.profile().manifest().dataVersions().get("profile"))) {
+            for (var spec : world.snapshot().engineering().orElseThrow().config().companies()) {
+                for (var plan : spec.contracts()) {
+                    String doc = "engineering-opportunity:" + plan.contractId();
+                    String body = "EXP虚构工程机会：" + plan.contractId() + "；每单位价格=" + plan.unitPrice()
+                            + "；单位成本=" + plan.unitCost() + "；分段工作量=" + plan.trancheUnits()
+                            + "；作业单位毫秒=" + spec.unitMillis() + "；验收后账期天数=" + plan.netDays()
+                            + "。机会不是合同；经理须实际阅读与签约，客户验收、开票与回款分别执行。";
+                    world.schedulePublishDocument("opening-" + doc, "opening-task-" + doc, 1L, doc,
+                            WorldWebScenario.INVESTOR, InformationModel.Audience.publicAudience(),
+                            "栖构工程：" + plan.contractId() + "机会（EXP）", body, "冻结合同机会，未签约", READ_MILLIS, List.of());
+                }
+            }
         }
         world.advanceTo(1L);
     }

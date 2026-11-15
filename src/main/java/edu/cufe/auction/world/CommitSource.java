@@ -17,6 +17,11 @@ interface CommitSource {
     /** @return 合并后的不可变批次列表，按位置升序 */
     List<WorldCommit> commits();
 
+    /** 非快照事件列表，只用于审计与排程来源查找，不参与状态恢复。 */
+    default List<WorldCommit> nonSnapshotCommits() {
+        return commits().stream().map(WorldJournal::withoutSnapshot).toList();
+    }
+
     /** @param position 确认位置 @return 该位置批次；不存在时为空 */
     Optional<WorldCommit> commitAt(long position);
 
@@ -44,8 +49,11 @@ final class JournalCommitSource implements CommitSource {
 
     @Override
     public List<WorldCommit> commits() {
-        return journal.commits();
+        return journal.commitView();
     }
+
+    @Override
+    public List<WorldCommit> nonSnapshotCommits() { return journal.nonSnapshotCommits(); }
 
     @Override
     public Optional<WorldCommit> commitAt(long position) {
@@ -132,7 +140,7 @@ final class BranchCommitSource implements CommitSource {
     BranchCommitSource(List<WorldCommit> prefix, WorldJournal journal) {
         this.prefix = List.copyOf(prefix);
         this.journal = journal;
-        List<WorldCommit> own = journal.commits();
+        List<WorldCommit> own = journal.commitView();
         long base = journal.base();
         if (this.prefix.isEmpty()) {
             throw new IllegalArgumentException("分支父前缀不能为空");
@@ -158,11 +166,21 @@ final class BranchCommitSource implements CommitSource {
 
     @Override
     public List<WorldCommit> commits() {
-        List<WorldCommit> own = journal.commits();
-        List<WorldCommit> merged = new ArrayList<>(prefix.size() + own.size());
-        merged.addAll(prefix);
-        merged.addAll(own);
-        return List.copyOf(merged);
+        List<WorldCommit> own = journal.commitView();
+        return java.util.Collections.unmodifiableList(new java.util.AbstractList<>() {
+            @Override public int size() { return prefix.size() + own.size(); }
+            @Override public WorldCommit get(int index) {
+                java.util.Objects.checkIndex(index, size());
+                return index < prefix.size() ? prefix.get(index) : own.get(index - prefix.size());
+            }
+        });
+    }
+
+    @Override
+    public List<WorldCommit> nonSnapshotCommits() {
+        List<WorldCommit> result = new ArrayList<>(prefix.stream().map(WorldJournal::withoutSnapshot).toList());
+        result.addAll(journal.nonSnapshotCommits());
+        return List.copyOf(result);
     }
 
     @Override

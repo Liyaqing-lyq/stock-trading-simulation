@@ -1,0 +1,821 @@
+{
+  "schema": "world-cycle-run-v1",
+  "runId": "web-industry-prototype-v1",
+  "endPosition": 6705,
+  "endTimeMillis": 7776000000,
+  "summary": "90 个实验日 · 3 次结账 · 108 笔成交 · 十家公司",
+  "note": "这是冻结在第 90 日的历史报告。经营与交易采用可审计规则，非全自主模型绩效。另一个试跑中的 3 次真实模型调用均为观望，不计入本季度。连续实验日不对应现实交易日历；参数未作现实收益校准。",
+  "checks": [
+    "90 个每日时点连续，三次 30 日结账及治理快照完整",
+    "逐日现金合计 357,500.00；无负现金、无新增外部注资",
+    "逐日按初始分配与真实成交复算全部持股；10 个标的总股数守恒",
+    "买卖双方现金、成交数量和被动方价格独立复算一致；每日收盘无活动订单与证券冻结",
+    "十家公司逐日报表平衡；收入减费用与累计损益一致",
+    "季度末关闭并重新打开完整日志，恢复状态与每日最终导出完全一致",
+    "首两期数字应收实际到账；第三期未到期；药研与陈酿保留真实在途"
+  ],
+  "companies": [
+    {
+      "name": "澄曜光联",
+      "cash": "12630.00",
+      "income": "1200.00",
+      "expense": "570.00",
+      "profit": "630.00",
+      "stage": "三期采购、生产、交付与回款"
+    },
+    {
+      "name": "岚醴酒业",
+      "cash": "19000.00",
+      "income": "0.00",
+      "expense": "300.00",
+      "profit": "-300.00",
+      "stage": "首批季末成熟；终端需求到来时无寄售库存，拒绝零量售出，本季零销售"
+    },
+    {
+      "name": "衡储能源",
+      "cash": "9066.00",
+      "income": "720.00",
+      "expense": "654.00",
+      "profit": "66.00",
+      "stage": "三期采购、生产、交付与回款"
+    },
+    {
+      "name": "栖构工程",
+      "cash": "4760.00",
+      "income": "1000.00",
+      "expense": "400.00",
+      "profit": "600.00",
+      "stage": "工程完成并开票，应收尚未支付"
+    },
+    {
+      "name": "澜衡银行",
+      "cash": "3100.00",
+      "income": "0.00",
+      "expense": "0.00",
+      "profit": "0.00",
+      "stage": "存款与准备金可核对；本季未新增贷款"
+    },
+    {
+      "name": "朔川资源",
+      "cash": "14200.00",
+      "income": "6600.00",
+      "expense": "2550.00",
+      "profit": "4050.00",
+      "stage": "有限开采、煤外售与发电，三期回款"
+    },
+    {
+      "name": "云岫数智",
+      "cash": "18800.00",
+      "income": "6000.00",
+      "expense": "3850.00",
+      "profit": "2150.00",
+      "stage": "服务准入、三期交付、两期收款，第三期尚未到期"
+    },
+    {
+      "name": "砺晶新材",
+      "cash": "7486.00",
+      "income": "900.00",
+      "expense": "414.00",
+      "profit": "486.00",
+      "stage": "三期采购、生产、交付与回款"
+    },
+    {
+      "name": "清峦水电",
+      "cash": "47340.00",
+      "income": "46826.00",
+      "expense": "2899.73",
+      "profit": "43926.27",
+      "stage": "真实来水、发电、应收与有限电网付款"
+    },
+    {
+      "name": "循证医药",
+      "cash": "1500.00",
+      "income": "0.00",
+      "expense": "200.00",
+      "profit": "-200.00",
+      "stage": "研究完成、开发在途、注册未开始"
+    }
+  ],
+  "days": [
+    {
+      "day": 1,
+      "trades": 9,
+      "volume": 9,
+      "turnover": "94.05",
+      "totalCash": "357500.00",
+      "position": 1476
+    },
+    {
+      "day": 2,
+      "trades": 8,
+      "volume": 8,
+      "turnover": "84.15",
+      "totalCash": "357500.00",
+      "position": 1548
+    },
+    {
+      "day": 3,
+      "trades": 5,
+      "volume": 5,
+      "turnover": "49.50",
+      "totalCash": "357500.00",
+      "position": 1619
+    },
+    {
+      "day": 4,
+      "trades": 4,
+      "volume": 4,
+      "turnover": "39.60",
+      "totalCash": "357500.00",
+      "position": 1679
+    },
+    {
+      "day": 5,
+      "trades": 4,
+      "volume": 4,
+      "turnover": "39.60",
+      "totalCash": "357500.00",
+      "position": 1740
+    },
+    {
+      "day": 6,
+      "trades": 4,
+      "volume": 4,
+      "turnover": "39.60",
+      "totalCash": "357500.00",
+      "position": 1802
+    },
+    {
+      "day": 7,
+      "trades": 3,
+      "volume": 3,
+      "turnover": "29.70",
+      "totalCash": "357500.00",
+      "position": 1873
+    },
+    {
+      "day": 8,
+      "trades": 3,
+      "volume": 3,
+      "turnover": "29.70",
+      "totalCash": "357500.00",
+      "position": 1950
+    },
+    {
+      "day": 9,
+      "trades": 3,
+      "volume": 3,
+      "turnover": "29.70",
+      "totalCash": "357500.00",
+      "position": 2008
+    },
+    {
+      "day": 10,
+      "trades": 3,
+      "volume": 3,
+      "turnover": "29.70",
+      "totalCash": "357500.00",
+      "position": 2066
+    },
+    {
+      "day": 11,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2120
+    },
+    {
+      "day": 12,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2172
+    },
+    {
+      "day": 13,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2224
+    },
+    {
+      "day": 14,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2276
+    },
+    {
+      "day": 15,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2328
+    },
+    {
+      "day": 16,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2380
+    },
+    {
+      "day": 17,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2433
+    },
+    {
+      "day": 18,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2488
+    },
+    {
+      "day": 19,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2546
+    },
+    {
+      "day": 20,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2598
+    },
+    {
+      "day": 21,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2650
+    },
+    {
+      "day": 22,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2702
+    },
+    {
+      "day": 23,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2754
+    },
+    {
+      "day": 24,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2812
+    },
+    {
+      "day": 25,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2864
+    },
+    {
+      "day": 26,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2925
+    },
+    {
+      "day": 27,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 2977
+    },
+    {
+      "day": 28,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 3029
+    },
+    {
+      "day": 29,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 3084
+    },
+    {
+      "day": 30,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 3171
+    },
+    {
+      "day": 31,
+      "trades": 8,
+      "volume": 8,
+      "turnover": "89.37",
+      "totalCash": "357500.00",
+      "position": 3489
+    },
+    {
+      "day": 32,
+      "trades": 7,
+      "volume": 7,
+      "turnover": "79.24",
+      "totalCash": "357500.00",
+      "position": 3556
+    },
+    {
+      "day": 33,
+      "trades": 5,
+      "volume": 5,
+      "turnover": "54.47",
+      "totalCash": "357500.00",
+      "position": 3617
+    },
+    {
+      "day": 34,
+      "trades": 4,
+      "volume": 4,
+      "turnover": "44.39",
+      "totalCash": "357500.00",
+      "position": 3665
+    },
+    {
+      "day": 35,
+      "trades": 4,
+      "volume": 4,
+      "turnover": "44.39",
+      "totalCash": "357500.00",
+      "position": 3714
+    },
+    {
+      "day": 36,
+      "trades": 4,
+      "volume": 4,
+      "turnover": "44.39",
+      "totalCash": "357500.00",
+      "position": 3766
+    },
+    {
+      "day": 37,
+      "trades": 3,
+      "volume": 3,
+      "turnover": "34.49",
+      "totalCash": "357500.00",
+      "position": 3822
+    },
+    {
+      "day": 38,
+      "trades": 3,
+      "volume": 3,
+      "turnover": "34.49",
+      "totalCash": "357500.00",
+      "position": 3887
+    },
+    {
+      "day": 39,
+      "trades": 3,
+      "volume": 3,
+      "turnover": "34.49",
+      "totalCash": "357500.00",
+      "position": 3933
+    },
+    {
+      "day": 40,
+      "trades": 3,
+      "volume": 3,
+      "turnover": "34.49",
+      "totalCash": "357500.00",
+      "position": 3975
+    },
+    {
+      "day": 41,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4025
+    },
+    {
+      "day": 42,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4065
+    },
+    {
+      "day": 43,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4105
+    },
+    {
+      "day": 44,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4145
+    },
+    {
+      "day": 45,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4195
+    },
+    {
+      "day": 46,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4236
+    },
+    {
+      "day": 47,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4276
+    },
+    {
+      "day": 48,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4319
+    },
+    {
+      "day": 49,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4365
+    },
+    {
+      "day": 50,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4405
+    },
+    {
+      "day": 51,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4445
+    },
+    {
+      "day": 52,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4485
+    },
+    {
+      "day": 53,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4525
+    },
+    {
+      "day": 54,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4571
+    },
+    {
+      "day": 55,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4611
+    },
+    {
+      "day": 56,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4660
+    },
+    {
+      "day": 57,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4700
+    },
+    {
+      "day": 58,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4740
+    },
+    {
+      "day": 59,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4780
+    },
+    {
+      "day": 60,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 4853
+    },
+    {
+      "day": 61,
+      "trades": 3,
+      "volume": 3,
+      "turnover": "38.58",
+      "totalCash": "357500.00",
+      "position": 5158
+    },
+    {
+      "day": 62,
+      "trades": 2,
+      "volume": 2,
+      "turnover": "28.22",
+      "totalCash": "357500.00",
+      "position": 5215
+    },
+    {
+      "day": 63,
+      "trades": 2,
+      "volume": 2,
+      "turnover": "28.22",
+      "totalCash": "357500.00",
+      "position": 5276
+    },
+    {
+      "day": 64,
+      "trades": 2,
+      "volume": 2,
+      "turnover": "28.22",
+      "totalCash": "357500.00",
+      "position": 5328
+    },
+    {
+      "day": 65,
+      "trades": 2,
+      "volume": 2,
+      "turnover": "28.22",
+      "totalCash": "357500.00",
+      "position": 5381
+    },
+    {
+      "day": 66,
+      "trades": 2,
+      "volume": 2,
+      "turnover": "28.22",
+      "totalCash": "357500.00",
+      "position": 5437
+    },
+    {
+      "day": 67,
+      "trades": 2,
+      "volume": 2,
+      "turnover": "28.22",
+      "totalCash": "357500.00",
+      "position": 5499
+    },
+    {
+      "day": 68,
+      "trades": 1,
+      "volume": 1,
+      "turnover": "18.32",
+      "totalCash": "357500.00",
+      "position": 5568
+    },
+    {
+      "day": 69,
+      "trades": 1,
+      "volume": 1,
+      "turnover": "18.32",
+      "totalCash": "357500.00",
+      "position": 5618
+    },
+    {
+      "day": 70,
+      "trades": 1,
+      "volume": 1,
+      "turnover": "18.32",
+      "totalCash": "357500.00",
+      "position": 5666
+    },
+    {
+      "day": 71,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 5724
+    },
+    {
+      "day": 72,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 5772
+    },
+    {
+      "day": 73,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 5820
+    },
+    {
+      "day": 74,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 5868
+    },
+    {
+      "day": 75,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 5926
+    },
+    {
+      "day": 76,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 5974
+    },
+    {
+      "day": 77,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6022
+    },
+    {
+      "day": 78,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6070
+    },
+    {
+      "day": 79,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6124
+    },
+    {
+      "day": 80,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6173
+    },
+    {
+      "day": 81,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6224
+    },
+    {
+      "day": 82,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6272
+    },
+    {
+      "day": 83,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6320
+    },
+    {
+      "day": 84,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6374
+    },
+    {
+      "day": 85,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6422
+    },
+    {
+      "day": 86,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6479
+    },
+    {
+      "day": 87,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6527
+    },
+    {
+      "day": 88,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6575
+    },
+    {
+      "day": 89,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6623
+    },
+    {
+      "day": 90,
+      "trades": 0,
+      "volume": 0,
+      "turnover": "0.00",
+      "totalCash": "357500.00",
+      "position": 6705
+    }
+  ]
+}

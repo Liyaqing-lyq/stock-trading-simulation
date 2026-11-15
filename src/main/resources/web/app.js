@@ -58,7 +58,7 @@ const DETAIL_TABLES = ["company-report", "company-inventory", "company-orders",
   "company-seats", "company-meetings", "company-budgets", "company-commitments",
   "company-reviews", "company-evidence", "company-reports", "performance-accounts",
   "performance-owners", "performance-holdings", "performance-flows",
-  "performance-points", "performance-history-flows", "org-parties",
+  "performance-points", "performance-history-flows", "org-parties", "org-prototypes", "org-experiment-companies", "org-experiment-days",
   "org-owners", "org-appointments", "org-mandates", "org-reports",
   "information-documents", "information-active", "information-closed",
   "information-observations", "information-readers", "information-reports",
@@ -1824,6 +1824,10 @@ function label(group, value) {
 }
 
 function clearDetailDom() {
+  if ($("org-experiment-card")) $("org-experiment-card").hidden = true;
+  for (const id of ["org-experiment-summary", "org-experiment-note", "org-experiment-checks"]) {
+    if ($(id)) $(id).replaceChildren();
+  }
   clearMediaDom();
   clearInterviewDom();
   clearEvidenceDom();
@@ -3018,6 +3022,20 @@ function renderPerformanceCharts(view) {
 }
 
 function renderPeopleAdmin(view) {
+  const report = view.experimentReport;
+  $("org-experiment-card").hidden = !report;
+  $("org-experiment-summary").textContent = report ? report.summary : "";
+  $("org-experiment-note").textContent = report ? report.note : "";
+  $("org-experiment-checks").replaceChildren();
+  for (const check of (report && report.checks) || []) {
+    const li = document.createElement("li"); li.textContent = check; $("org-experiment-checks").append(li);
+  }
+  fillTable("org-experiment-companies", (report && report.companies) || [], (tr, row) => {
+    for (const key of ["name", "cash", "income", "expense", "profit", "stage"]) cell(tr, row[key]);
+  });
+  fillTable("org-experiment-days", (report && report.days) || [], (tr, row) => {
+    for (const key of ["day", "trades", "volume", "turnover", "totalCash", "position"]) cell(tr, row[key]);
+  });
   $("org-cut").textContent = cutText(view, "登记表与任职记录");
   fillTable("org-parties", (view.parties || {}).rows, (tr, row) => {
     cell(tr, row.partyId);
@@ -3026,6 +3044,18 @@ function renderPeopleAdmin(view) {
     cell(tr, row.ownerIds);
   });
   fillSection("org-parties-empty", null, view.parties);
+  const prototypes = ((view.parties || {}).rows || []).filter(row => row.prototypeName);
+  if ($("org-prototype-card")) $("org-prototype-card").hidden = prototypes.length === 0;
+  fillTable("org-prototypes", prototypes, (tr, row) => {
+    cell(tr, row.name); cell(tr, row.business);
+    cell(tr, row.prototypeName + "（" + row.prototypeCode + "）");
+    cell(tr, row.mechanism); cell(tr, row.boundary);
+    const td = document.createElement("td");
+    const link = document.createElement("a");
+    link.textContent = row.prototypeSourceLabel || "参考披露"; link.href = row.prototypeSource;
+    link.target = "_blank"; link.rel = "noopener noreferrer";
+    td.append(link); tr.append(td);
+  });
   fillTable("org-owners", (view.owners || {}).rows, (tr, row) => {
     cell(tr, row.ownerId);
     cell(tr, label("ownerKind", row.kind));

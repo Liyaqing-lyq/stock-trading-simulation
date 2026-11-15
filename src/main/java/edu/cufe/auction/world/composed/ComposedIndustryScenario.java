@@ -108,7 +108,16 @@ public final class ComposedIndustryScenario {
     /** 最终十公司世界：三个制造、工程、银行、研发、资源、数字、陈酿与水电，共享唯一日志。 */
     public static WorldRuntime openBaseline(Path journal) throws Exception { return open(journal,true,true,true); }
 
+    /** 以A股经营机制为参考的虚构十公司新档；旧档不改名。 */
+    public static WorldRuntime openPrototype(Path journal) throws Exception {
+        return open(journal, true, true, true, true);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline) throws Exception {
+        return open(journal, expansion, hydro, baseline, false);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype) throws Exception {
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -165,18 +174,30 @@ public final class ComposedIndustryScenario {
         var decisions = ResourceDecisionTools.config(CompanyOperationsDecisionTools.config(ComposedPharmaScenario.debugDecisions(), readers));
         if (hydro) decisions = HydroDecisionTools.config(decisions);
         if(baseline) decisions=AgedDecisionTools.config(DigitalDecisionTools.config(decisions));
+        if(prototype) decisions=PrototypeCompanies.decisions(decisions);
         var openingAccounts = new ArrayList<>(openings());
         if (hydro) openingAccounts.addAll(HydroIndustryConfig.ACCOUNTS);
         var openingRegistry = hydro ? hydroRegistry(registry()) : registry();
         if(baseline) { openingAccounts=new ArrayList<>(BaselineIndustryConfig.openings(openingAccounts));openingRegistry=BaselineIndustryConfig.registry(openingRegistry,openingAccounts); }
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
-        WorldRuntime world = ComposedWorldScenario.open(journal, manifest(expansion, hydro, baseline), openingAccounts, openingRegistry, banking, decisions,
+        var runManifest = manifest(expansion, hydro, baseline);
+        if (prototype) {
+            openingRegistry = PrototypeCompanies.rename(openingRegistry);
+            var data = new TreeMap<>(runManifest.dataVersions());
+            data.put("profile", PrototypeCompanies.PROFILE);
+            data.put("company-identities", "prototype-v1");
+            data.put("journal-codec", "gzip-frame-v1");
+            data.put("role-decision-guide", "v1");
+            runManifest = new RunManifest("web-industry-prototype-v1", runManifest.seed(), runManifest.rulesVersion(),
+                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,
                 new ComposedWorldScenario.Extras(charters, List.of(), readers));
         try {
             if (fresh) {
                 world.initializeResearch("bootstrap", ComposedPharmaScenario.PHARMA,
                         new ResearchModel.Config(ComposedPharmaScenario.PHARMA_OWNER, ComposedPharmaScenario.PHARMA_CASH, BigDecimal.ZERO),
-                        WorldWebScenario.researchProjects(), 1);
+                        prototype ? PrototypeCompanies.researchProjects() : WorldWebScenario.researchProjects(), 1);
                 world.initializeCompanyOperations("bootstrap", ComposedManufacturingThreeScenario.companies(), resourceConfig(expansion), baseline ? BaselineIndustryConfig.hydro() : hydro ? HydroIndustryConfig.config() : null, baseline ? BaselineIndustryConfig.digital():null, baseline ? BaselineIndustryConfig.aged():null);
                 Map<String,List<String>> candidates = new TreeMap<>(Map.of(RESOURCE, List.of(MANAGER), ComposedManufacturingThreeScenario.TECH,
                         List.of(ComposedManufacturingThreeScenario.TECH_MANAGER), ComposedManufacturingThreeScenario.STRUCT,

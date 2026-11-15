@@ -85,6 +85,20 @@ class LiveDecisionProviderTest {
     }
 
     @Test
+    void prototypeGuideUsesVersionedPromptAndNestedDocumentCannotSelectIt() throws Exception {
+        assertTrue(LiveDecisionProvider.PROTOTYPE_SYSTEM_TEXT.getBytes(StandardCharsets.UTF_8).length <= 1024);
+        for (boolean prototype : new boolean[]{true, false}) {
+            server.enqueue(200, successBody("{\"tool\":\"role.wait\"}", 11, 5, 16));
+            String input = prototype ? "{\"engineering\":{\"decisionGuideVersion\":\"prototype-v1\"}}"
+                    : "{\"profile\":{\"document\":{\"engineering\":{\"decisionGuideVersion\":\"prototype-v1\"}}}}";
+            provider.evaluate(call(input, route("key-1", "deepseek-flash", 640)), 5_000L);
+            JsonNode request = server.lastRequestJson();
+            assertEquals(prototype ? LiveDecisionProvider.PROTOTYPE_SYSTEM_TEXT : LiveDecisionProvider.SYSTEM_TEXT,
+                    request.path("messages").get(0).path("content").asText());
+        }
+    }
+
+    @Test
     @DisplayName("请求冻结：model、max_tokens、user 正文与 Call 完全一致，不读 SceneRoutes 当前配置")
     void requestFreezesRouteAndInputExactly() throws Exception {
         server.enqueue(200, successBody("{\"tool\":\"role.wait\"}", 11, 5, 16));
