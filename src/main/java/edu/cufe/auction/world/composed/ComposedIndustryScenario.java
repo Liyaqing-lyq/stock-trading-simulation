@@ -118,6 +118,11 @@ public final class ComposedIndustryScenario {
         return open(journal, true, true, true, true, true);
     }
 
+    /** 显式互通新档，所有人物与经营在同一世界推进；原实验文件不迁移。 */
+    public static WorldRuntime openConnected(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, true);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline) throws Exception {
         return open(journal, expansion, hydro, baseline, false);
     }
@@ -127,6 +132,10 @@ public final class ComposedIndustryScenario {
     }
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, false);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected) throws Exception {
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -159,6 +168,10 @@ public final class ComposedIndustryScenario {
             buckets.keySet().retainAll(parties.keySet());
             deposits.removeIf(d->parties.values().stream().noneMatch(ref->d.equals(ref.depositGl())) && original.custodians().values().stream().noneMatch(ref->d.equals(ref.liabilityId())));
         }
+        if(connected) {
+            parties.put("nina",new BankingProfile.PartyRef("nina","nina","HOUSE-NINA",null));
+            parties.put("omar",new BankingProfile.PartyRef("omar","omar","HOUSE-OMAR",null));
+        }
         var profile = new BankingProfile(original.banks(), parties, original.custodians(), buckets, original.groups(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::loanGl).distinct().sorted().toList() : original.loanAccounts(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
@@ -188,6 +201,7 @@ public final class ComposedIndustryScenario {
         if (hydro) openingAccounts.addAll(HydroIndustryConfig.ACCOUNTS);
         var openingRegistry = hydro ? hydroRegistry(registry()) : registry();
         if(baseline) { openingAccounts=new ArrayList<>(BaselineIndustryConfig.openings(openingAccounts));openingRegistry=BaselineIndustryConfig.registry(openingRegistry,openingAccounts); }
+        if(connected) { openingAccounts=new ArrayList<>(ConnectedWorldOpening.accounts(openingAccounts));openingRegistry=ConnectedWorldOpening.registry(openingRegistry); }
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -205,6 +219,10 @@ public final class ComposedIndustryScenario {
             data.put("behavior-policy", ManufacturingBehaviorPolicy.VERSION);
             runManifest = new RunManifest("web-industry-behavior-v1", runManifest.seed(), runManifest.rulesVersion(),
                     runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (connected) {
+            var data=new TreeMap<>(runManifest.dataVersions());data.put("behavior-policy",ConnectedWorldLoop.VERSION);
+            runManifest=new RunManifest("web-connected-world-v1",runManifest.seed(),runManifest.rulesVersion(),runManifest.moduleVersions(),data,runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,
                 new ComposedWorldScenario.Extras(charters, List.of(), readers));

@@ -19,6 +19,7 @@ final class WorldOverviewView {
         var registry=world.openingRegistry().orElseThrow();
         var names=new TreeMap<String,String>();
         registry.parties().forEach(p->names.put(p.partyId(),NAMES.getOrDefault(p.partyId(),p.name())));
+        snapshot.accounts().forEach((id,a)->names.put(id,a.ownerId().equals("fund-a")?"机构投资账户":names.getOrDefault(a.ownerId(),a.ownerId())+"的账户"));
         var roles=new TreeMap<String,List<String>>();
         for(var a:snapshot.roles().orElseThrow().access().appointments()) if(a.activeAt(snapshot.timeMillis())) {
             String role=switch(a.role().name()) {
@@ -63,10 +64,12 @@ final class WorldOverviewView {
             row.put("roles",roles.getOrDefault(party.partyId(),List.of()));row.put("system",party.partyId().equals("research-system"));
             people.add(row);
         }
-        return Map.of("available",true,"runId",world.profile().manifest().runId(),"position",Long.toString(snapshot.position()),
+        var result = new LinkedHashMap<String,Object>(Map.of("available",true,"runId",world.profile().manifest().runId(),"position",Long.toString(snapshot.position()),
                 "timeMillis",Long.toString(snapshot.timeMillis()),"companies",companies,"people",people,"names",names,
                 "behavior", Map.of("enabled", ManufacturingBehaviorLoop.enabled(world), "decisions",
-                        ManufacturingBehaviorLoop.enabled(world) ? ManufacturingBehaviorLoop.audit(world) : List.of()));
+                        ManufacturingBehaviorLoop.enabled(world) ? ManufacturingBehaviorLoop.audit(world) : List.of())));
+        ConnectedWorldView.append(result,world,companies);
+        return result;
     }
 
     private static Map<String,Object> statement(Map<String,BigDecimal> assets,Map<String,BigDecimal> contra,

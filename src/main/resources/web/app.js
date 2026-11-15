@@ -334,6 +334,7 @@ async function refreshAdmin() {
     await loadHistoryIndex();
     await loadBranchRuns();
   }
+  return current();
 }
 
 function renderAdminCut(view) {
@@ -521,8 +522,7 @@ async function advance() {
   }
   if (result.status === 200) {
     setMessage("advance-result", "已推进到记录 " + result.payload.position + "。");
-    await refreshAdmin();
-    return;
+    return await refreshAdmin();
   }
   if (result.status === 409) {
     setMessage("advance-result", "记录已变化（当前 " + result.payload.position + "），已刷新。");
@@ -711,7 +711,7 @@ async function boot() {
 // ---------------------------------------------------------------- 页面与非秘密场景配置
 const pages = {
   overview: ["世界首页", "从公司经营、股票行情和人物开始观察世界。"],
-  "world-market": ["股票行情", "查看整个季度的实际成交价格与成交量。"],
+  "world-market": ["股票行情", "查看当前世界的实际成交价格、成交量与委托。"],
   "world-companies": ["公司报表", "十家公司的资产、负债、利润与现金变化。"],
   "world-people": ["世界人物", "认识世界里的董事、经理、投资者与媒体人。"],
   accounts: ["账户资产", "钱归谁、持有什么，估值是否完整。"],
@@ -3527,6 +3527,13 @@ $("media-story-select").addEventListener("change", () => guard(loadMediaStory())
 if (globalThis.WorldHome) {
   globalThis.WorldHome.onPage = selectPage;
   globalThis.WorldHome.onPerson = personId => guard(switchPerson(personId));
+  globalThis.WorldHome.onAdvance = async targetMillis => {
+    const generation = state.generation;
+    if (state.mode !== "admin") throw new Error("请返回上帝视角运行世界");
+    $("advance-target").value = targetMillis;
+    if (await advance() !== true || !isCurrent(generation) || state.mode !== "admin")
+      throw new Error("本次推进或刷新未完成，已暂停连续运行；请查看页面提示");
+  };
 }
 guard(boot());
 
