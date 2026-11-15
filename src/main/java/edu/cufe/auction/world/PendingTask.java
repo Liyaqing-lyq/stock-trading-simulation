@@ -82,6 +82,47 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 系统强制关期：期末确认费用/部分付款/应付/折旧，并自动排下一期间。 */
     public static final String MANUFACTURING_PERIOD_CLOSE_V1 = "MANUFACTURING_PERIOD_CLOSE_V1";
 
+    /**
+     * 显式资金制造动作的 BEGIN 屏障（{@code composed-v4}）：到期复核任职/焦点后才排完成帧。
+     *
+     * <p>参数是携带真实完成时点与原始动作正文的包装；屏障本身不动钱、不写业务状态。</p>
+     */
+    public static final String MANUFACTURING_FUND_BEGIN_V1 = "MANUFACTURING_FUND_BEGIN_V1";
+
+    /**
+     * 显式资金制造外部动作（{@code composed-v4}）：下单、投产、交付、回款、付费用账单之一。
+     *
+     * <p>与旧的 {@link #MANUFACTURING_PURCHASE_ORDER_V1} 等并列而不合并：旧种类一个字段都不动，
+     * 旧 JSON 与旧回放逐字不变；本种类只出现在启用 {@code manufacturing-funding} 的档案里。</p>
+     */
+    public static final String MANUFACTURING_FUND_V1 = "MANUFACTURING_FUND_V1";
+
+    /**
+     * 显式资金制造系统子任务（{@code composed-v4}）：到货付款、完工、到期回款、期末关期。
+     *
+     * <p>这类任务没有外部人物入口，资金路由由父业务事实或开局冻结配置确定性继承。</p>
+     */
+    public static final String MANUFACTURING_FUND_CHILD_V1 = "MANUFACTURING_FUND_CHILD_V1";
+
+    /**
+     * 三类制造公司的一次经营动作（{@code composed-manufacturing-three-v1}）：经理排程、到期生效。
+     *
+     * <p>动作在 RULES 阶段执行：到期时复核"发起人此刻仍是该公司经理"，再按当前唯一现金权威与
+     * 最新资金三态同批结算。开始动作与到期完工分开：采购到货/批次完工/认证完成/扩产建成由
+     * {@link #COMPANY_OPERATIONS_CHILD_V1} 系统子任务完成，本种类不得下发完成类动作。</p>
+     */
+    public static final String COMPANY_OPERATIONS_V1 = "COMPANY_OPERATIONS_V1";
+
+    /**
+     * 三类制造公司的系统自动完工子任务：只处理已经开始的采购/批次/认证/建设。
+     *
+     * <p>没有外部人物入口，业务标识由父动作确定性派生，不替经理签约、下单或付任意费用。</p>
+     */
+    public static final String COMPANY_OPERATIONS_CHILD_V1 = "COMPANY_OPERATIONS_CHILD_V1";
+
+    /** 差异制造公司的自动关期；必须先于同日周期采样。 */
+    public static final String COMPANY_OPERATIONS_CLOSE_V1 = "COMPANY_OPERATIONS_CLOSE_V1";
+
     /** 外部治理夹具：召集一次预算会议；只接受 BUDGET，复盘会议由系统关期产生。 */
     public static final String GOVERNANCE_MEETING_V1 = "GOVERNANCE_MEETING_V1";
 
@@ -125,6 +166,15 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     public static final String PERIOD_DISCLOSURE_DEADLINE_V1 = "PERIOD_DISCLOSURE_DEADLINE_V1";
     /** schema18c：人物周期动作（准备/评分/批准/授权/发布）的完成帧。 */
     public static final String ENGINEERING_PERIODIC_V1 = "ENGINEERING_PERIODIC_V1";
+
+    /** schema22 研发立项完成帧。 */
+    public static final String RESEARCH_REGISTER_V1 = "RESEARCH_REGISTER_V1";
+    /** schema22 研发阶段开工完成帧。 */
+    public static final String RESEARCH_BEGIN_V1 = "RESEARCH_BEGIN_V1";
+    /** schema22 研发阶段结果/受限证据系统帧。 */
+    public static final String RESEARCH_RESULT_V1 = "RESEARCH_RESULT_V1";
+    /** schema23 商业化批准执行帧：经理在真实会话中把董事会授权落成可摊销事实。 */
+    public static final String RESEARCH_APPROVE_V1 = "RESEARCH_APPROVE_V1";
 
     /** schema18b：公司经理经营动作（签约/开工/开票/终止/付款等）。 */
     public static final String ENGINEERING_ACTION_V1 = "ENGINEERING_ACTION_V1";
@@ -381,6 +431,21 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                             + phase);
                 }
             }
+            case MANUFACTURING_FUND_BEGIN_V1, MANUFACTURING_FUND_V1 -> {
+                // BEGIN 屏障与屏障排出的完成帧都落在 RULES 阶段（与工程显式资金入口同一口径）。
+                if (phase != WorldScheduler.Phase.RULES) {
+                    throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
+                }
+            }
+            case MANUFACTURING_FUND_CHILD_V1 -> {
+                // 到货/完工/自动回款沿用旧子任务的 COMPLETION；期末关期沿用 RULES 或周期边界关期。
+                if (phase != WorldScheduler.Phase.COMPLETION
+                        && phase != WorldScheduler.Phase.RULES
+                        && phase != WorldScheduler.Phase.PERIOD_BOUNDARY_CLOSE) {
+                    throw new IllegalArgumentException(kind
+                            + " 必须落在 COMPLETION、RULES 或周期边界关期阶段，收到 " + phase);
+                }
+            }
             case TRANSFER_NOTICE_V1, INFORMATION_BELIEF_PUBLISH_FACT_V1 -> {
                 if (phase != WorldScheduler.Phase.DELIVERY) {
                     throw new IllegalArgumentException(kind + " 必须落在 DELIVERY 阶段，收到 " + phase);
@@ -399,10 +464,25 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
             }
             case ENGINEERING_BEGIN_V1, ENGINEERING_BOARD_V1, BOARD_ATTEND_V1,
                  ENGINEERING_ACTION_V1, ENGINEERING_FUND_V1, ENGINEERING_PERIODIC_V1,
+                 RESEARCH_REGISTER_V1, RESEARCH_BEGIN_V1, RESEARCH_RESULT_V1,
+                 RESEARCH_APPROVE_V1,
+                 COMPANY_OPERATIONS_V1,
                  PERIOD_CLOSE_V1,
                  PERIOD_DISCLOSURE_DEADLINE_V1, BANK_ACTION_BEGIN_V1 -> {
                 if (phase != WorldScheduler.Phase.RULES) {
                     throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
+                }
+            }
+            case COMPANY_OPERATIONS_CLOSE_V1 -> {
+                if (phase != WorldScheduler.Phase.PERIOD_BOUNDARY_CLOSE) {
+                    throw new IllegalArgumentException(kind + " 必须落在周期边界关期阶段");
+                }
+            }
+            case COMPANY_OPERATIONS_CHILD_V1 -> {
+                // 到货/完工/认证完成/扩产建成落在 COMPLETION；与旧制造子任务同一口径。
+                if (phase != WorldScheduler.Phase.COMPLETION) {
+                    throw new IllegalArgumentException(kind + " 必须落在 COMPLETION 阶段，收到 "
+                            + phase);
                 }
             }
             case PERIOD_CAPTURE_V1 -> {

@@ -176,6 +176,10 @@ function clearAdminDom() {
   }
   clearDetailDom();
   $("snapshot").replaceChildren();
+  fillTable("startup-companies", [], () => undefined);
+  $("startup-status").textContent = "";
+  $("startup-notes").textContent = "";
+  $("startup-next").textContent = "";
   setMessage("admin-error", "");
   setMessage("advance-result", "");
   setMessage("login-error", "");
@@ -201,6 +205,9 @@ function clearPersonDom() {
 
 function showMode(mode) {
   clearGroupsDom();
+  clearResearchDom();
+  clearOperationsDom();
+  clearManufacturingDom();
   state.mode = mode;
   document.body.dataset.mode = mode;
   $("navigation").hidden = mode !== "admin";
@@ -219,10 +226,15 @@ function showMode(mode) {
   show("person", mode === "person");
   $("logout").hidden = mode === "login";
   placeGroupsPanel();
+  placeResearchPanel();
+  placeManufacturingPanel();
 }
 
 function sessionLost() {
   clearGroupsDom();
+  clearResearchDom();
+  clearOperationsDom();
+  clearManufacturingDom();
   showMode("login");
   setStatus("会话已失效，请重新登录");
   setMessage("login-error", "会话已失效，请使用新的引导凭据重新登录。");
@@ -292,6 +304,13 @@ async function refreshAdmin() {
   if (state.page === "social" && current()) {
     await loadSocial(generation, pageVersion);
   }
+  if (state.page === "manufacturing" && current()) {
+    await loadManufacturing(generation, pageVersion);
+  }
+  if (state.page === "operations" && current()) await loadOperations(generation, pageVersion);
+  if (state.page === "research" && current()) {
+    await loadResearch(generation, pageVersion);
+  }
   if (state.page === "groups" && current()) {
     await loadGroups(generation, pageVersion);
   }
@@ -338,6 +357,23 @@ function renderAdmin(view) {
     dd.textContent = text(value);
     snapshot.append(dt, dd);
   }
+
+  const startup = view.startup || {};
+  const companies = startup.companies || [];
+  $("startup-status").textContent = "当前登记 " + companies.length + " 家发行人 · 确认记录 "
+    + text(startup.position) + " · 进行中阅读 " + text(startup.activeReadings);
+  fillTable("startup-companies", companies, (tr, row) => {
+    cell(tr, text(row.name) + " / " + text(row.symbol));
+    cell(tr, row.cash, "num");
+    cell(tr, (row.managers || []).join("、") || "空缺");
+    cell(tr, row.hasCharter ? row.boardSeats : "未建立");
+    cell(tr, row.budgetLines);
+    cell(tr, row.openingDocument === "PUBLISHED" ? "已发布" : "未发布");
+    cell(tr, row.directorsRead);
+  });
+  $("startup-notes").textContent = startup.note || "本档案暂未提供开局检查。";
+  $("startup-next").textContent = startup.nextDueTimeMillis == null ? "当前没有待办任务。"
+    : "下一项待办 " + text(startup.nextTaskId) + " · 世界时间 " + startup.nextDueTimeMillis + " 毫秒到期。";
 
   fillTable("accounts", view.accounts, (tr, row) => {
     cell(tr, row.accountId);
@@ -523,6 +559,12 @@ async function refreshPerson() {
   renderPersonalMedia(view.media);
   await loadGroups(generation, null);
   if (!isCurrent(generation) || state.mode !== "person") return;
+  await loadOperations(generation, null);
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  await loadResearch(generation, null);
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  await loadManufacturing(generation, null);
+  if (!isCurrent(generation) || state.mode !== "person") return;
   await renderPersonalInterview((view.media && view.media.tools) || view.tools, generation);
   if (!isCurrent(generation) || state.mode !== "person") return;
   $("context-time").textContent = "人物观察 · " + view.timeMillis + " 毫秒";
@@ -655,7 +697,10 @@ const pages = {
   performance: ["账户表现与历史", "净资产、期间表现与真实资本流，口径唯一。"],
   org: ["人物与任职", "谁能做什么，任职何时生效或结束。"],
   information: ["信息与阅读", "谁发布了什么版本，谁实际读到什么。"],
-  engineering: ["公司经营与回款", "制造与两家工程公司各自真实的合同、工单、预算、客户请求与回款。"],
+  engineering: ["公司经营与回款", "按公司查看真实任职、董事会、预算与周期披露；经营明细按业务分别展示。"],
+  manufacturing: ["制造经营", "真实采购、生产、交付、回款与费用支付。"],
+  operations: ["产品经营与扩产", "供应、生产、认证、客户合同与资金约束在同一世界执行。"],
+  research: ["研发与商业化", "阶段投入、真实结果证据、商业化批准与摊销。"],
   bank: ["银行审计", "准备金、存款负债、贷款、利息与权益、门槛缺项与托管，取自同一确认快照。"],
   media: ["媒体采编", "选题、审阅、发布与更正，都有实际工时和原始版本。"],
   people: ["人物视角", "以各自的权限观察世界，保留信息边界。"],
@@ -676,6 +721,9 @@ function selectPage(page, refresh = true) {
   if (state.page === "interview" && page !== "interview") clearInterviewDom();
   if (state.page === "evidence" && page !== "evidence") clearEvidenceDom();
   if (state.page === "social" && page !== "social") clearSocialDom();
+  if (state.page === "manufacturing" && page !== "manufacturing") clearManufacturingDom();
+  if (state.page === "research" && page !== "research") clearResearchDom();
+  if (state.page === "operations" && page !== "operations") clearOperationsDom();
   if (state.page === "groups" && page !== "groups") clearGroupsDom();
   if (state.page === "engineering" && page !== "engineering") clearEngineeringDom();
   if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
@@ -686,6 +734,8 @@ function selectPage(page, refresh = true) {
   $("page-description").textContent = pages[page][1];
   document.querySelectorAll("[data-panel]").forEach(node => { node.hidden = node.dataset.panel !== page; });
   placeGroupsPanel();
+  placeResearchPanel();
+  placeManufacturingPanel();
   document.querySelectorAll("[data-page]").forEach(node => {
     if (node.dataset.page === page) node.setAttribute("aria-current", "page");
     else node.removeAttribute("aria-current");
@@ -1755,7 +1805,7 @@ const LABELS = {
     NO_PERIOD: "不足两期", UNAVAILABLE: "不可用", NOT_COMPUTED: "未计算" },
   appointment: { ACTIVE: "在任", REVOKED: "已撤销", EXPIRED: "已到期", SCHEDULED: "未开始" },
   reading: { READING: "进行中", COMPLETED: "已完成", CANCELLED: "已取消", DENIED: "复核拒绝" },
-  audience: { PUBLIC: "公开", ORGANIZATION: "组织档案", DIRECT: "直投" },
+  audience: { PUBLIC: "公开", ORGANIZATION: "组织档案", DIRECT: "直投", GROUP: "群组", BOARD: "董事会", COMPANY_OPERATING: "公司经营资料" },
   role: { RESEARCHER: "研究员", PORTFOLIO_MANAGER: "基金经理", RISK_OFFICER: "风控", EXECUTION_TRADER: "执行交易员" },
   ownerKind: { PERSON: "个人", ORGANIZATION: "组织", PRODUCT: "产品", AGGREGATE: "聚合外部" },
   partyKind: { PERSON: "人物", ORGANIZATION: "组织" },
@@ -3526,14 +3576,17 @@ function renderLivePersons(defaultId) {
 }
 /**
  * 重建“本轮场景”选项：只列当前档案已接入、且所选人物都能用的场景；默认按人物原路由。
- * 一个人都不选时只保留默认项，避免把“未选人物”误显示成场景不可用。
+ * 暂时清空人物时保留已接入的治理入口，允许继续选择只具有董事席位的人物。
  */
 function renderLiveSceneChoices(persons) {
   const select = $("live-scene");
   if (!select) return [];
   const people = persons !== undefined ? persons : liveCheckedPersons();
   const supported = (state.capabilities && state.capabilities.supportedScenes) || [];
-  const usable = people.length === 0 ? [] : supported.filter(scene => people.every(id => {
+  const usable = people.length === 0
+    ? supported.filter(scene => scene === "governance"
+      && ((state.capabilities && state.capabilities.governancePersons) || []).length > 0)
+    : supported.filter(scene => people.every(id => {
     const person = liveSelected(id);
     return person !== null && livePersonScenes(person).includes(scene);
   }));
@@ -3560,10 +3613,10 @@ function renderLiveCompanyChoices(persons) {
   const people = persons !== undefined ? persons : liveCheckedPersons();
   let companies = [];
   if (people.length) {
-    for (const id of people) {
+    for (const [index, id] of people.entries()) {
       const person = liveSelected(id);
       const own = (person && person.governanceCompanies) || [];
-      companies = companies.length === 0 ? own.slice() : companies.filter(c => own.includes(c));
+      companies = index === 0 ? own.slice() : companies.filter(c => own.includes(c));
     }
   }
   const previous = select.value;
@@ -4511,6 +4564,8 @@ const ENGINEERING_REPORT_LABELS = [
   ["recoveryIncome", "回收收益"],
   ["terminationLoss", "终止损失"],
   ["waiverLoss", "豁免损失"],
+  ["assets", "资产合计"],
+  ["liabilities", "负债合计"],
   ["equity", "账面权益"],
   ["balanced", "账目是否对平"],
   ["contractCount", "合同数"],
@@ -4786,11 +4841,15 @@ const ENGINEERING_SOURCE_LABELS = {
   time: "时间口径"
 };
 
+function engineeringTemplateLabel(template) {
+  return ({ ENGINEERING: "工程", MANUFACTURING: "制造", RESEARCH: "研发", GOVERNANCE: "公司治理", RESOURCE: "资源", HYDRO: "水电", DIGITAL: "数字服务", AGED: "陈酿" })[template] || template;
+}
+
 function setEngineeringEmptyTexts(template) {
   const manufacturing = template === "MANUFACTURING";
   for (const [id, texts] of Object.entries(ENGINEERING_EMPTY_TEXT)) {
     const node = $(id);
-    if (node) node.textContent = manufacturing ? texts.manufacturing : texts.engineering;
+    if (node) node.textContent = manufacturing ? texts.manufacturing : template === "ENGINEERING" ? texts.engineering : "本公司不使用工程合同台账；请查看对应经营页面。";
   }
 }
 
@@ -4802,7 +4861,7 @@ function fillEngineeringCompanies(companies, selected) {
     const option = document.createElement("option");
     option.value = company.companyId;
     option.textContent = (company.name || company.companyId) + "（"
-      + (company.template === "ENGINEERING" ? "工程" : "制造") + "）";
+      + engineeringTemplateLabel(company.template) + "）";
     select.appendChild(option);
   }
   select.value = selected || "";
@@ -5141,11 +5200,16 @@ function renderPeriodicBlock(container, periodic, options) {
 
 function renderEngineering(view) {
   $("engineering-cut").textContent = cutText(view, (view.companyName || view.companyId || "")
-    + " · " + (view.template === "ENGINEERING" ? "工程模板" : "制造模板"));
+    + " · " + engineeringTemplateLabel(view.template));
   $("engineering-captured").textContent = "读取于 " + wallClock(view.capturedAtMillis);
-  $("engineering-template").textContent = view.template === "ENGINEERING" ? "工程模板" : "制造模板";
+  $("engineering-template").textContent = engineeringTemplateLabel(view.template);
   setMessage("engineering-note", view.note || "");
   setEngineeringEmptyTexts(view.template);
+  const sharedGovernance = ["RESEARCH","GOVERNANCE","RESOURCE","HYDRO","DIGITAL","AGED"].includes(view.template);
+  for (const id of ["engineering-contracts", "engineering-works", "engineering-requests",
+    "engineering-responses", "engineering-payments", "engineering-waivers"]) {
+    $(id).closest("section").hidden = sharedGovernance;
+  }
   fillEngineeringCompanies(view.companies, view.companyId);
   renderPeriodicBlock($("engineering-periodic"), view.periodic, { showReadState: false });
 
@@ -5506,14 +5570,14 @@ function fillPersonalEngineeringCompanies(companies) {
     const facts = document.createElement("dl");
     facts.className = "grid";
     const factPairs = [];
-    if (company.template !== "MANUFACTURING") {
+    if (company.template === "ENGINEERING") {
       factPairs.push(["公司现金", company.companyCash], ["应收当期", company.arCurrent],
         ["应付供应商（汇总）", company.payable],
         ["已签合同", (company.contracts || []).join("、") || "—"]);
     } else {
       const note = document.createElement("p");
       note.className = "hint";
-      note.textContent = "制造经营明细与金额在公司经营与治理页；此卡只列本人岗位与周期治理。";
+      note.textContent = "经营明细请查看相应业务页面；此卡只列本人岗位与周期治理。";
       card.appendChild(note);
     }
     factPairs.push(["本岗位工具", (company.tools || []).map(engineeringToolLabel).join("、") || "—"],
@@ -5633,7 +5697,7 @@ function engineeringToolsOf(company) {
   const tools = (company && company.tools) || [];
   const list = tools.slice();
   // 豁免召集只存在于工程公司（有工程合同）；制造章程公司由后端不再下发该工具。
-  if (company && company.template !== "MANUFACTURING" && company.chair
+  if (company && company.template === "ENGINEERING" && company.chair
       && list.includes("board.convene")
       && !list.includes("board.conveneWaiver")) {
     list.push("board.conveneWaiver");

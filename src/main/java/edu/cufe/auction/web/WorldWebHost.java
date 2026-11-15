@@ -563,13 +563,15 @@ public final class WorldWebHost implements AutoCloseable {
      * @param barrierPending   是否存在未决决定屏障
      * @param pendingCount     待办数量
      * @param deliveredCount   已投递通知数量
+     * @param startup          同一确认位置的开局条件与下一到期任务；不代表整体验收结论
      */
     public record AdminView(String runId, String position, String timeMillis, String phase,
                             boolean paused, String status, String providerKind,
                             List<ViewAccount> accounts, List<ViewPending> pending,
                             List<ViewTrade> trades, List<ViewDividendReport> dividendReports,
                             List<ViewOwner> owners, boolean valuationsAvailable,
-                            boolean barrierPending, int pendingCount, int deliveredCount) {
+                            boolean barrierPending, int pendingCount, int deliveredCount,
+                            Map<String, Object> startup) {
     }
 
     /**
@@ -636,8 +638,68 @@ public final class WorldWebHost implements AutoCloseable {
                     paused ? "PAUSED" : "READY", providerKind, accounts, pending, trades,
                     reports, owners, valuationsAvailable,
                     snapshot.decisions().isPresent() && current.pendingBarrier().isPresent(), pending.size(),
-                    snapshot.delivered().size());
+                    snapshot.delivered().size(), startupOf(current, snapshot));
         });
+    }
+
+    /** 上帝只读开局检查；所有公司、任职、预算、阅读与待办均从同一确认帧派生。 */
+    private static Map<String, Object> startupOf(WorldRuntime world, WorldRuntime.Snapshot snapshot)
+            throws IOException {
+        List<Map<String, Object>> companies = new ArrayList<>();
+        OpeningRegistry registry = world.openingRegistry().orElse(null);
+        InformationModel.State information = snapshot.information()
+                .map(run -> run.information()).orElse(null);
+        if (registry != null) {
+            Map<String, String> names = new java.util.TreeMap<>();
+            registry.parties().forEach(p -> names.put(p.partyId(), p.name()));
+            for (OpeningRegistry.Security security : registry.securities().stream()
+                    .sorted(Comparator.comparing(OpeningRegistry.Security::symbol)).toList()) {
+                String company = security.issuerOrganizationId();
+                BoardRun board = world.boardOfCompany(company).orElse(null);
+                InformationModel.DocumentVersion note = governanceNoteOf(information, company,
+                        snapshot.timeMillis());
+                List<String> managers = snapshot.roles().map(roles -> roles.access().appointments().stream()
+                        .filter(a -> a.organizationPartyId().equals(company)
+                                && a.role() == RoleAccess.Role.COMPANY_MANAGER
+                                && a.activeAt(snapshot.timeMillis()))
+                        .map(RoleAccess.Appointment::personPartyId).distinct().sorted().toList())
+                        .orElse(List.of());
+                Set<String> owners = new HashSet<>();
+                registry.owners().stream().filter(owner -> company.equals(owner.partyId()))
+                        .forEach(owner -> owners.add(owner.ownerId()));
+                BigDecimal cash = snapshot.accounts().values().stream()
+                        .filter(a -> owners.contains(a.ownerId())).map(a -> a.cash())
+                        .reduce(new BigDecimal("0.00"), BigDecimal::add);
+                int readers = 0;
+                if (board != null && note != null) {
+                    for (BoardModel.Seat seat : board.board().charter().seats()) {
+                        if (world.periodicAccess().hasRead(seat.partyId(),
+                                "company-governance:" + company + ":1", note.version(),
+                                snapshot.timeMillis())) readers++;
+                    }
+                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("companyId", company); row.put("name", names.get(company));
+                row.put("symbol", security.symbol()); row.put("cash", dec(cash));
+                row.put("managers", managers); row.put("hasCharter", board != null);
+                row.put("boardSeats", board == null ? null : Integer.toString(board.board().charter().seats().size()));
+                row.put("budgetLines", board == null ? null : Integer.toString(board.board().budgets().size()));
+                row.put("openingDocument", note == null ? "UNPUBLISHED" : "PUBLISHED");
+                row.put("directorsRead", note == null || board == null ? null : Integer.toString(readers));
+                companies.add(row);
+            }
+        }
+        PendingTask next = snapshot.pending().stream()
+                .min(Comparator.comparingLong(PendingTask::dueTimeMillis)
+                        .thenComparing(PendingTask::taskId)).orElse(null);
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("position", num(snapshot.position()));
+        view.put("companies", companies);
+        view.put("nextTaskId", next == null ? null : next.taskId());
+        view.put("nextDueTimeMillis", next == null ? null : num(next.dueTimeMillis()));
+        view.put("activeReadings", information == null ? "0" : Integer.toString(information.active().size()));
+        view.put("note", "经理空缺和未批准预算是当前状态；请通过真实治理流程建立。现金不含银行存款，预算条目数不代表剩余额度。资料发布不等于已读，已读也不等于仍可回忆。此表不是总体基线完成证明。");
+        return view;
     }
 
     /**
@@ -3677,14 +3739,15 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     /** 本档案真正具备执行器的场景（顺序固定）；评估场景没有执行器，永不在此出现。 */
-    private static List<String> wiredScenes(WorldRuntime.Snapshot snapshot) {
+    private List<String> wiredScenes(WorldRuntime.Snapshot snapshot) {
         List<String> wired = new ArrayList<>();
         wired.add("research");
         wired.add("trading");
         if (snapshot.media().isPresent()) {
             wired.add("media");
         }
-        if (snapshot.engineering().isPresent() && snapshot.governance().isPresent()) {
+        if ((snapshot.engineering().isPresent() && snapshot.governance().isPresent())
+                || runtime.companyGovernance().map(run -> !run.boards().isEmpty()).orElse(false)) {
             wired.add(SCENE_GOVERNANCE);
         }
         return List.copyOf(wired);
@@ -5803,6 +5866,101 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     /**
+     * 制造经营投影；管理员结果与本人动作严格分开。
+     * @param person 已认证人物，管理员为null
+     * @return 同帧投影
+     * @throws Exception 世界不可用
+     */
+    public Map<String, Object> manufacturingView(String person) throws Exception {
+        return call(() -> ManufacturingWeb.view(readyNow(), person));
+    }
+
+    /** 本人制造操作与位置复核在同一世界队列中完成。 */
+    Map<String, Object> scheduleManufacturing(String person, ManufacturingWeb.Command command) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            String receipt = ManufacturingWeb.schedule(world, person, command);
+            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+        });
+    }
+
+    /**
+     * 研发页面在同一确认帧生成；null 人物仅由管理员路由使用。
+     * @param person 已认证人物，管理员为 null
+     * @return 同帧研发投影
+     * @throws Exception 运行不可用
+     */
+    public Map<String, Object> researchView(String person) throws Exception {
+        return call(() -> ResearchWeb.view(readyNow(), person));
+    }
+
+    /** 本人研发动作与位置检查在同一世界队列中完成。 */
+    Map<String, Object> scheduleResearch(String person, ResearchWeb.Command command) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            String receipt = ResearchWeb.schedule(world, person, command);
+            return Map.of("position", num(world.snapshot().position()),
+                    "timeMillis", num(world.snapshot().timeMillis()), "receipt", receipt,
+                    "action", command.action(), "companyId", command.companyId());
+        });
+    }
+
+    /**
+     * 读取三制造公司的同帧经营视图。
+     * @param person 已认证人物，管理员为null
+     * @return 本人可见范围或管理员审计范围
+     * @throws Exception 世界不可用
+     */
+    public Map<String, Object> operationsView(String person) throws Exception {
+        return call(() -> OperationsWeb.view(readyNow(), person));
+    }
+
+    /** 本人资源命令在同一世界队列核对身份、位置和真实任职。 */
+    Map<String, Object> scheduleResource(String person, OperationsWeb.ResourceCommand command) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            String receipt = OperationsWeb.scheduleResource(world, person, command);
+            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+        });
+    }
+
+    /** 本人水电命令在同一世界队列核对身份、位置和真实任职。 */
+    Map<String, Object> scheduleHydro(String person, OperationsWeb.HydroCommand command) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            String receipt = OperationsWeb.scheduleHydro(world, person, command);
+            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+        });
+    }
+
+    /** 本人数字服务命令在同一世界队列核对身份、位置和真实任职。 */
+    Map<String, Object> scheduleDigital(String person, OperationsWeb.DigitalCommand command) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            String receipt = OperationsWeb.scheduleDigital(world, person, command);
+            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+        });
+    }
+
+    /** 本人陈酿命令在同一世界队列核对身份、位置和真实任职。 */
+    Map<String, Object> scheduleAged(String person, OperationsWeb.AgedCommand command) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            String receipt = OperationsWeb.scheduleAged(world, person, command);
+            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+        });
+    }
+
+    /** 本人经营命令的位置与身份检查在同一世界队列中完成。 */
+    Map<String, Object> scheduleOperations(String person, OperationsWeb.Command command) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            String receipt = OperationsWeb.schedule(world, person, command);
+            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+        });
+    }
+
+    /**
      * 一条由可信会话提交的工程命令；actor 不在字段里，只由会话身份决定。
      *
      * @param expectedPosition  客户端看到的位置
@@ -5930,6 +6088,12 @@ public final class WorldWebHost implements AutoCloseable {
                         "ENGINEERING", managerOf(snapshot, companyId)));
             }
         }
+        current.companyGovernance().filter(extra -> companyUiEnabled(current)).ifPresent(extra -> {
+            for (String company : extra.companies()) {
+                options.add(new EngineeringOption(company, partyName(registry, company),
+                        companyTemplate(current, company), managerOf(snapshot, company)));
+            }
+        });
         String selected = requested;
         if (selected.isEmpty() && !options.isEmpty()) {
             selected = options.get(0).companyId();
@@ -6224,7 +6388,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (unattributed[0]) {
                 notes.add("另有 " + unattributed[0] + " 条工程待办没有可归属的公司字段，未在本页显示。");
             }
-        } else {
+        } else if ("MANUFACTURING".equals(option.template())) {
             // 制造模板：经营明细沿用制造台账，工程专属区块明确标注未实现。
             ManufacturingRun manufacturing = snapshot.manufacturing().orElse(null);
             if (manufacturing != null) {
@@ -6293,6 +6457,40 @@ public final class WorldWebHost implements AutoCloseable {
             notes.add("制造经营明细（采购/生产/费用）请看「公司经营与治理」页，本页只做同公司并排对照。");
         }
 
+        if (!"MANUFACTURING".equals(option.template()) && !"ENGINEERING".equals(option.template())) {
+            notes.clear();
+            notes.add("本页显示所选公司的真实董事会、任职和周期披露；经营明细请到对应业务页面。");
+            taskRows.addAll(pendingTaskRows(snapshot, selected,
+                    Set.of(PendingTask.ENGINEERING_BOARD_V1, PendingTask.BOARD_ATTEND_V1,
+                            PendingTask.ENGINEERING_PERIODIC_V1), new boolean[] {false}));
+            if ("RESEARCH".equals(option.template())) {
+                var value = edu.cufe.auction.world.composed.ComposedCompanyReport.of(current, selected);
+                report.put("companyCash", dec(value.assets().get("经营现金")));
+                report.put("assets", dec(value.totalAssets()));
+                report.put("liabilities", dec(value.totalLiabilities()));
+                report.put("equity", dec(value.totalEquity()));
+                report.put("balanced", value.balanced());
+                notes.add("研发费用、资本化资产与摊销见「研发与商业化」。批准不等于商业收入。");
+            } else {
+                notes.add("银行完整资产负债与资金流水见「银行审计」。");
+            }
+            if (run != null) {
+                for (EngineeringRun.Report entry : run.reports().values()) {
+                    if (!entry.companyPartyId().equals(selected)) continue;
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("source", "GOVERNANCE");
+                    row.put("taskId", entry.taskId());
+                    row.put("commandId", entry.commandId());
+                    row.put("kind", entry.kind());
+                    row.put("accepted", entry.accepted());
+                    row.put("reason", entry.reason());
+                    row.put("subjectId", entry.companyPartyId());
+                    row.put("timeMillis", num(entry.timeMillis()));
+                    row.put("position", num(entry.position()));
+                    reportRows.add(row);
+                }
+            }
+        }
         sortReportsNewestFirst(reportRows);
         Section seats = bounded(seatRows);
         Section appointments = bounded(appointmentRows);
@@ -7106,7 +7304,7 @@ public final class WorldWebHost implements AutoCloseable {
         String manufacturingCompany = snapshot.governance()
                 .map(board -> board.board().charter().companyPartyId()).orElse(null);
         if (manufacturingCompany != null) {
-            Map<String, Object> card = manufacturingPersonCard(current, snapshot, registry,
+            Map<String, Object> card = governancePersonCard(current, snapshot, registry,
                     manufacturingCompany, personPartyId);
             if (card != null) {
                 companies.add(card);
@@ -7266,6 +7464,13 @@ public final class WorldWebHost implements AutoCloseable {
                     personPartyId, false));
             companies.add(card);
         }
+        current.companyGovernance().filter(extra -> companyUiEnabled(current)).ifPresent(extra -> {
+            for (String company : extra.companies()) {
+                Map<String, Object> card = governancePersonCard(current, snapshot, registry,
+                        company, personPartyId);
+                if (card != null) companies.add(card);
+            }
+        });
         notes.add("只列出本人在任经理或占董事席位的公司；未任/未占席的公司不返回，也不提示是否存在。");
         notes.add("章程公司（制造）与工程公司一样有独立周期；制造只在本人任经理或占董事席位时出现。");
         notes.add("经理只看本公司的合同请求、客户回应与本公司实际到账；客户内部期间预算/闭期、"
@@ -7280,10 +7485,10 @@ public final class WorldWebHost implements AutoCloseable {
      * 制造（章程公司）的人物卡片：只给本人真实董事席位/经理任职与周期投影，
      * 不复制制造账或工程合同；金额与经营明细仍在既有公司页面查看。
      */
-    private Map<String, Object> manufacturingPersonCard(WorldRuntime current,
+    private Map<String, Object> governancePersonCard(WorldRuntime current,
             WorldRuntime.Snapshot snapshot, OpeningRegistry registry, String companyPartyId,
             String personPartyId) {
-        BoardRun board = snapshot.governance().orElse(null);
+        BoardRun board = current.boardOfCompany(companyPartyId).orElse(null);
         if (board == null) {
             return null;
         }
@@ -7297,7 +7502,7 @@ public final class WorldWebHost implements AutoCloseable {
         Map<String, Object> card = new LinkedHashMap<>();
         card.put("companyId", companyPartyId);
         card.put("companyName", partyName(registry, companyPartyId));
-        card.put("template", "MANUFACTURING");
+        card.put("template", companyTemplate(current, companyPartyId));
         card.put("manager", manager);
         if (seat != null) {
             card.put("seatId", seat);
@@ -7331,8 +7536,51 @@ public final class WorldWebHost implements AutoCloseable {
             }
         }
         card.put("tools", List.copyOf(tools));
+        if (seat != null) {
+        List<Map<String, Object>> meetings = new ArrayList<>();
+        List<BoardModel.Meeting> all = new ArrayList<>(board.board().meetings().values());
+        all.sort(Comparator.comparingLong(BoardModel.Meeting::createdAt)
+                .thenComparing(BoardModel.Meeting::meetingId).reversed());
+        for (BoardModel.Meeting meeting : all) {
+            boolean involved = meeting.convenerSeatId().equals(seat)
+                    || meeting.attendeeSeatIds().contains(seat)
+                    || meeting.recusedSeatIds().contains(seat);
+            if (!involved) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("meetingId", meeting.meetingId());
+            row.put("topic", meeting.topic().name());
+            row.put("status", meeting.status().name());
+            row.put("opensAt", num(meeting.opensAt()));
+            row.put("closesAt", num(meeting.closesAt()));
+            row.put("materialDeadline", num(meeting.materialDeadline()));
+            row.put("role", meeting.convenerSeatId().equals(seat) ? "CONVENER"
+                    : meeting.recusedSeatIds().contains(seat) ? "RECUSED"
+                    : "ATTENDEE");
+            BoardModel.Ballot ballot = meeting.ballots().get(seat);
+            row.put("myVote", ballot == null ? null : ballot.vote().name());
+            row.put("myVoteAt", ballot == null ? null : num(ballot.castAt()));
+            int yes = 0;
+            int no = 0;
+            int abstain = 0;
+            for (BoardModel.Ballot each : meeting.ballots().values()) {
+                switch (each.vote()) {
+                    case YES -> yes++;
+                    case NO -> no++;
+                    default -> abstain++;
+                }
+            }
+            row.put("tally", "yes=" + yes + ",no=" + no + ",abstain=" + abstain);
+            row.put("materials", Integer.toString(meeting.materials().size()));
+            row.put("proposedLines", proposedLines(meeting.proposedLines()));
+            row.put("failureReason", meeting.failureReason());
+            meetings.add(row);
+        }
+        card.put("meetings", meetings);
+        }
         // 没有在任经理是真实状态，不是缺数据：页面要明确说明需要董事会任命。
-        boolean managerVacant = !manager;
+        boolean managerVacant = managerOf(snapshot, companyPartyId) == null;
         card.put("managerVacant", managerVacant);
         // 本公司开局治理说明是公开模拟说明：真实发布后所有读者都能从自己的目录取用。
         InformationModel.State noteInformation = snapshot.information()
@@ -7440,9 +7688,10 @@ public final class WorldWebHost implements AutoCloseable {
             String company = command.companyId();
             EngineeringRun.CompanySpec spec = snapshot.engineering().orElseThrow()
                     .config().specOf(company);
-            String charterCompany = snapshot.governance()
-                    .map(board -> board.board().charter().companyPartyId()).orElse(null);
-            boolean charterTarget = company.equals(charterCompany);
+            boolean charterTarget = snapshot.governance().filter(board ->
+                    board.board().charter().companyPartyId().equals(company)).isPresent()
+                    || (companyUiEnabled(current) && current.companyGovernance()
+                            .filter(extra -> extra.has(company)).isPresent());
             if (spec == null && !charterTarget) {
                 throw new IllegalArgumentException("没有这家公司，或当前运行未登记它");
             }
@@ -7461,7 +7710,7 @@ public final class WorldWebHost implements AutoCloseable {
                 }
                 allowedTools = List.copyOf(tools);
             } else {
-                allowedTools = manufacturingTools(snapshot, company, personPartyId);
+                allowedTools = governanceTools(current, snapshot, company, personPartyId);
                 if (allowedTools.isEmpty()) {
                     throw new IllegalArgumentException("本人在该公司没有现任经理任职，也没有董事席位");
                 }
@@ -7491,9 +7740,9 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     /** 章程公司的人物工具表：与人物卡片同源，只给真实席位/经理岗位。 */
-    private List<String> manufacturingTools(WorldRuntime.Snapshot snapshot, String companyPartyId,
-            String personPartyId) {
-        BoardRun board = snapshot.governance().orElse(null);
+    private List<String> governanceTools(WorldRuntime current, WorldRuntime.Snapshot snapshot,
+            String companyPartyId, String personPartyId) {
+        BoardRun board = current.boardOfCompany(companyPartyId).orElse(null);
         if (board == null) {
             return List.of();
         }
@@ -7795,6 +8044,28 @@ public final class WorldWebHost implements AutoCloseable {
         } catch (ArithmeticException | NumberFormatException invalid) {
             throw new IllegalArgumentException("金额必须是最多两位小数的十进制：" + value);
         }
+    }
+
+    private static boolean companyUiEnabled(WorldRuntime current) {
+        return "v1".equals(current.profile().manifest().dataVersions().get("company-decision"));
+    }
+
+    private static String companyTemplate(WorldRuntime current, String companyId) {
+        if (current.operationsRun().filter(run -> run.resource() != null && companyId.equals(run.resource().companyPartyId())).isPresent()) return "RESOURCE";
+        if (current.operationsRun().filter(run -> run.hydro() != null && companyId.equals(run.hydro().companyPartyId())).isPresent()) return "HYDRO";
+        if (current.operationsRun().filter(run -> run.aged() != null && companyId.equals(run.aged().companyPartyId())).isPresent()) return "AGED";
+        if (current.operationsRun().filter(run -> run.digital() != null && companyId.equals(run.digital().companyPartyId())).isPresent()) return "DIGITAL";
+        if (current.operationsRun().filter(run -> run.company(companyId) != null).isPresent()) {
+            return "MANUFACTURING";
+        }
+        if (current.researchRun().filter(run -> run.companyPartyId().equals(companyId)).isPresent()
+                && current.companyGovernance().filter(extra -> extra.has(companyId)).isPresent()) {
+            return "RESEARCH";
+        }
+        if (current.companyGovernance().filter(extra -> extra.has(companyId)).isPresent()) {
+            return "GOVERNANCE";
+        }
+        return "MANUFACTURING";
     }
 
     private static String managerOf(WorldRuntime.Snapshot snapshot, String companyId) {

@@ -142,7 +142,7 @@ public final class ComposedWorldSelfTest {
      *
      * @return 推进后的世界时点
      */
-    static long appoint(WorldRuntime runtime, long start, String company, String manager,
+    public static long appoint(WorldRuntime runtime, long start, String company, String manager,
             String tag, String docId) throws Exception {
         BoardModel.Charter charter = charterOf(runtime, company);
         List<String> attendees = new ArrayList<>();

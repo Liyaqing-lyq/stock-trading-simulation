@@ -933,6 +933,27 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                     return List.of(new String[]{"companyPartyId", "string"},
                             new String[]{"contractId", "string"});
                 }
+                case ResourceDecisionTools.ACT, HydroDecisionTools.ACT, DigitalDecisionTools.ACT, AgedDecisionTools.ACT -> {
+                    return List.of(new String[]{"action", "string"}, new String[]{"arguments", "object"});
+                }
+                case CompanyOperationsDecisionTools.ACT -> {
+                    return List.of(new String[]{"companyId", "string"}, new String[]{"action", "string"}, new String[]{"fields", "object"});
+                }
+                case ResearchDecisionTools.ACT -> {
+                    return List.of(new String[]{"action", "string"}, new String[]{"projectId", "string"},
+                            new String[]{"stage", "string"}, new String[]{"meetingId", "string"});
+                }
+                case ResearchDecisionTools.BOARD -> {
+                    return List.of(new String[]{"companyPartyId", "string"},
+                            new String[]{"meetingId", "string"}, new String[]{"action", "string"},
+                            new String[]{"projectId", "string"}, new String[]{"evidence", "array"});
+                }
+                case ManufacturingDecisionTools.ACT -> {
+                    return List.of(new String[]{"action", "string"}, new String[]{"businessId", "string"},
+                            new String[]{"resultId", "string"}, new String[]{"quantity", "long"},
+                            new String[]{"unitPrice", "decimal"}, new String[]{"promisedDeliveryAt", "long"},
+                            new String[]{"period", "long"}, new String[]{"fundSource", "string"});
+                }
                 case RoleTradingView.TOOL_ENGINEERING_START_WORK -> {
                     return List.of(new String[]{"companyPartyId", "string"},
                             new String[]{"contractId", "string"},

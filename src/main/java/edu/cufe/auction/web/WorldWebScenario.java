@@ -10,6 +10,7 @@ import edu.cufe.auction.world.EvidenceRun;
 import edu.cufe.auction.world.GroupModel;
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.InformationRun;
+import edu.cufe.auction.world.ResearchModel;
 import edu.cufe.auction.world.InterviewModel;
 import edu.cufe.auction.world.InterviewRun;
 import edu.cufe.auction.world.InterviewDialogue;
@@ -1078,6 +1079,193 @@ public final class WorldWebScenario {
         WorldRuntime runtime = engineeringRuntime(journal, engineeringConfig(),
                 engineeringOpenings());
         if (freshArchive) {
+            publishOpeningDocuments(runtime);
+        }
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
+    /** schema22 研发档运行标识（与工程/群组档分开，旧档字节不变）。 */
+    public static final String RESEARCH_RUN_ID = "web-research";
+    /** 研发档承包方账户。 */
+    public static final String RESEARCH_CONTRACTOR = "RESEARCH-CONTRACTOR";
+    /** 研发档受限证据的系统发布身份（不是经理/董事）。 */
+    public static final String RESEARCH_SYSTEM_PUBLISHER = "research-system";
+
+    /**
+     * schema22 研发档：在工程全链模块之上显式加 research=1；不推断银行(19)/水电(21)。
+     *
+     * @return 研发档清单
+     */
+    public static RunManifest researchManifest() {
+        Map<String, Integer> modules = new TreeMap<>(engineeringManifest().moduleVersions());
+        modules.put("research", 1);
+        return new RunManifest(RESEARCH_RUN_ID, 11L,
+                RunManifest.RULES_RESEARCH_WORLD_EXPERIMENT_V1, modules,
+                Map.of("profile", ENGINEERING_PROFILE), RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    /**
+     * 研发档账户：工程档账户 + 真实有限承包方收款账户；不造水/银行账户。
+     *
+     * @return 开局现金清单
+     */
+    public static List<CashLedger.OpeningAccount> researchOpenings() {
+        List<CashLedger.OpeningAccount> list = new ArrayList<>(engineeringOpenings());
+        list.add(new CashLedger.OpeningAccount(RESEARCH_CONTRACTOR, "research-contractor",
+                money("500.00"), "研发承包方有限资金"));
+        return list;
+    }
+
+    /**
+     * 研发档登记：工程档登记 + 真实承包方组织（唯一收款主体，不冒称公司）。
+     *
+     * @return 开局登记
+     */
+    public static OpeningRegistry researchRegistry() {
+        OpeningRegistry base = engineeringRegistry();
+        List<OpeningRegistry.Party> parties = new ArrayList<>(base.parties());
+        parties.add(new OpeningRegistry.Party("research-contractor",
+                OpeningRegistry.PartyKind.ORGANIZATION, "研发承包方"));
+        parties.add(new OpeningRegistry.Party(RESEARCH_SYSTEM_PUBLISHER,
+                OpeningRegistry.PartyKind.PERSON, "研发系统"));
+        List<OpeningRegistry.PropertyOwner> owners = new ArrayList<>(base.owners());
+        owners.add(new OpeningRegistry.PropertyOwner("research-contractor",
+                OpeningRegistry.OwnerKind.ORGANIZATION, "research-contractor"));
+        owners.add(new OpeningRegistry.PropertyOwner(RESEARCH_SYSTEM_PUBLISHER,
+                OpeningRegistry.OwnerKind.PERSON, RESEARCH_SYSTEM_PUBLISHER));
+        return new OpeningRegistry(parties, owners, base.securities(), base.allocations());
+    }
+
+    /**
+     * 冻结研发项目表：单公司 eng-a 的少量固定项目（预算/阶段/证据要求固定）。
+     *
+     * @return 项目表
+     */
+    public static List<ResearchModel.ProjectSpec> researchProjects() {
+        long day = 86_400_000L;
+        List<ResearchModel.StagePlan> full = List.of(
+                new ResearchModel.StagePlan(ResearchModel.Stage.RESEARCH, money("200.00"), day,
+                        "实验室报告/RESEARCH"),
+                new ResearchModel.StagePlan(ResearchModel.Stage.DEVELOPMENT, money("300.00"), day,
+                        "中试报告/DEVELOPMENT"),
+                new ResearchModel.StagePlan(ResearchModel.Stage.REGISTRATION, money("400.00"), day,
+                        "注册回执/REGISTRATION"));
+        List<ResearchModel.StagePlan> small = List.of(
+                new ResearchModel.StagePlan(ResearchModel.Stage.RESEARCH, money("100.00"), day,
+                        "实验室报告/RESEARCH"),
+                new ResearchModel.StagePlan(ResearchModel.Stage.DEVELOPMENT, money("200.00"), day,
+                        "中试报告/DEVELOPMENT"),
+                new ResearchModel.StagePlan(ResearchModel.Stage.REGISTRATION, money("300.00"), day,
+                        "注册回执/REGISTRATION"));
+        // p1 三阶段全成功；p7 第三阶段失败；p2 第二阶段失败；p10 第一阶段失败（只用于测试覆盖，均为冻结配置）。
+        return List.of(
+                new ResearchModel.ProjectSpec("p1", money("900.00"), RESEARCH_CONTRACTOR, 365, full),
+                new ResearchModel.ProjectSpec("p7", money("900.00"), RESEARCH_CONTRACTOR, 365, full),
+                new ResearchModel.ProjectSpec("p2", money("600.00"), RESEARCH_CONTRACTOR, 365, small),
+                new ResearchModel.ProjectSpec("p10", money("600.00"), RESEARCH_CONTRACTOR, 365, small));
+    }
+
+    private static WorldRuntime researchRuntime(Path journal, EngineeringRun.Config engineering,
+            List<CashLedger.OpeningAccount> openings) throws Exception {
+        return researchRuntime(journal, engineering, openings, engineeringDecisionConfig(),
+                List.of());
+    }
+
+    private static WorldRuntime researchRuntime(Path journal, EngineeringRun.Config engineering,
+            List<CashLedger.OpeningAccount> openings, DecisionModel.Config decision,
+            List<RoleAccess.Appointment> extra) throws Exception {
+        return researchRuntime(journal, researchManifest(), engineering, openings, decision, extra);
+    }
+
+    private static WorldRuntime researchRuntime(Path journal, RunManifest manifest,
+            EngineeringRun.Config engineering, List<CashLedger.OpeningAccount> openings,
+            DecisionModel.Config decision, List<RoleAccess.Appointment> extra) throws Exception {
+        OpeningRegistry registry = researchRegistry();
+        List<RoleAccess.Appointment> appointments = new ArrayList<>(roles().appointments());
+        appointments.addAll(extra);
+        long end = 30L * 86_400_000L;
+        for (int i = 0; i < MEDIA_PERSONS.size(); i++) {
+            appointments.add(new RoleAccess.Appointment("MEDIA-" + i, MEDIA_PERSONS.get(i),
+                    i < 2 ? "wire" : "investigative",
+                    i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
+                    0L, end, null));
+        }
+        List<String> readers = new ArrayList<>(information().readers());
+        readers.addAll(MEDIA_PERSONS);
+        readers.addAll(SOCIAL_PERSONS);
+        readers.add(RESEARCH_SYSTEM_PUBLISHER);
+        InformationRun.Config info = new InformationRun.Config(readers, COGNITION_POLICY,
+                new BeliefModel.Policy(200, 8, end, 20, 200, 3, end));
+        List<InterviewRun.ContactEntry> contacts = new ArrayList<>(interviewConfig().contacts());
+        for (String person : SOCIAL_PERSONS) {
+            contacts.add(new InterviewRun.ContactEntry("私信", person,
+                    "公开联系说明：可一对一私人消息", SOCIAL_CONTACT_DOC, 1L));
+        }
+        return new WorldRuntime(journal, manifest, openings, registry,
+                new ManufacturingRun.Config(new ManufacturingModel.Opening("company", "CO",
+                        "SUP", "CUS", "OPS"), SYMBOL), charter(),
+                new RoleRun.Config(roles().mandates(), appointments), info,
+                decision, null, mediaConfig(), interviewConfig(),
+                dialogueConfig(), evidenceConfig(), socialConfig(), SOCIAL_BLOCK_MILLIS,
+                contacts, engineering);
+    }
+
+    /**
+     * 打开 schema22 研发档：同工程全链 + 单公司研发；开局不动现金、不预塞预算/经理。
+     *
+     * @param journal 独立日志文件
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldWebHost.Opened openResearch(Path journal) throws Exception {
+        boolean freshArchive = !java.nio.file.Files.exists(journal)
+                || java.nio.file.Files.size(journal) == 0L;
+        RunManifest manifest = researchManifest();
+        WorldRuntime runtime = researchRuntime(journal, engineeringConfig(), researchOpenings());
+        if (freshArchive) {
+            runtime.initializeResearch("bootstrap", ENGINE_A,
+                    new ResearchModel.Config(ENGINE_A, "ENG-A", java.math.BigDecimal.ZERO),
+                    researchProjects(), 1);
+            publishOpeningDocuments(runtime);
+        }
+        return new WorldWebHost.Opened(runtime, manifest.runId());
+    }
+
+    /** schema23 商业化授权实验档运行标识（与 v1 研发档、工程/群组档分开）。 */
+    public static final String COMMERCIAL_RUN_ID = "web-research-commercial";
+
+    /**
+     * schema23 商业化实验档清单：在 v1 研发模块之上显式加 commercialization=1。
+     *
+     * <p>不迁移旧 v1 档：同一实现仍按 {@link #researchManifest()} 打开并续写 schema22 档。</p>
+     *
+     * @return 商业化实验档清单
+     */
+    public static RunManifest commercialManifest() {
+        Map<String, Integer> modules = new TreeMap<>(researchManifest().moduleVersions());
+        modules.put("commercialization", 1);
+        return new RunManifest(COMMERCIAL_RUN_ID, 11L,
+                RunManifest.RULES_RESEARCH_COMMERCIAL_WORLD_V1, modules,
+                Map.of("profile", ENGINEERING_PROFILE), RunManifest.LIVE_DECISIONS_V1);
+    }
+
+    /**
+     * 打开 schema23 商业化实验档：同 v1 研发档的公司/项目/账户，只多出商业化授权与摊销能力。
+     *
+     * @param journal 独立日志文件
+     * @return 已打开的世界
+     * @throws Exception 打开失败
+     */
+    public static WorldWebHost.Opened openResearchCommercial(Path journal) throws Exception {
+        boolean freshArchive = !java.nio.file.Files.exists(journal)
+                || java.nio.file.Files.size(journal) == 0L;
+        RunManifest manifest = commercialManifest();
+        WorldRuntime runtime = researchRuntime(journal, manifest, engineeringConfig(),
+                researchOpenings(), engineeringDecisionConfig(), List.of());
+        if (freshArchive) {
+            runtime.initializeResearch("bootstrap", ENGINE_A,
+                    new ResearchModel.Config(ENGINE_A, "ENG-A", java.math.BigDecimal.ZERO),
+                    researchProjects(), 1);
             publishOpeningDocuments(runtime);
         }
         return new WorldWebHost.Opened(runtime, manifest.runId());

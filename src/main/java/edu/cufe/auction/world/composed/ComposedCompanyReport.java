@@ -73,6 +73,7 @@ public record ComposedCompanyReport(String companyPartyId, String basis,
         List<String> unsupported = new ArrayList<>();
         String basis;
         String cashAccountId;
+        boolean researchCompanyBranch = false;
         ManufacturingModel.Report manufacturing = null;
         EngineeringModel.Report engineering = null;
         if (snap.manufacturing().isPresent()
@@ -128,10 +129,121 @@ public record ComposedCompanyReport(String companyPartyId, String basis,
             liabilities.put("未付分红", context.unpaidDividends());
             sources.add("EngineeringModel.ReportContext：净注资/已宣告/未付分红（真实资本与分红事件）");
             unsupported.add("工程子账本未含：租赁、融资租赁与所得税");
+        } else if (runtime.operationsRun().isPresent()
+                && runtime.operationsRun().orElseThrow().company(companyPartyId) != null) {
+            var company = runtime.operationsRun().orElseThrow().company(companyPartyId);
+            var report = runtime.operationsStatement(companyPartyId).orElseThrow();
+            basis = "差异制造：同一帧物料/生产/合同/设备台账 + 唯一现金 + 真实金融权利";
+            cashAccountId = company.cashAccountId();
+            assets.put("经营现金", report.companyCash());
+            assets.put("原材料", report.materials());
+            assets.put("在制", report.wip());
+            assets.put("成品", report.products());
+            assets.put("应收", report.receivables());
+            assets.put("设备净值", report.equipmentNet());
+            assets.put("在建工程", report.cip());
+            assets.put("残余资产", report.residual());
+            liabilities.put("经营应付", report.payables());
+            income.put("营业收入（累计）", report.revenue());
+            income.put("处置损益（累计）", report.disposalResult());
+            expense.put("销售成本（累计）", report.cogs());
+            expense.put("期间费用（累计）", report.expense());
+            expense.put("认证费用（累计）", report.certificationExpense());
+            expense.put("折旧（累计）", report.depreciation());
+            expense.put("坏账（累计）", report.badDebtLoss());
+            equity.put("资本（EXP 历史资本）", company.ledger().initialEquity());
+            sources.add("ManufacturingTemplateModel：实际经营台账，金融资产另按权利合并一次");
+            unsupported.add("本模板未接所得税、租赁与重估；参数是EXP，不是现实校准");
+        } else if (runtime.operationsRun().isPresent() && runtime.operationsRun().orElseThrow().resource() != null
+                && companyPartyId.equals(runtime.operationsRun().orElseThrow().resource().companyPartyId())) {
+            var resource = runtime.operationsRun().orElseThrow().resource();
+            var report = runtime.resourceStatement().orElseThrow();
+            cashAccountId = resource.ledger().config().companyAccountId();
+            basis = "资源一体化：真实外部销售、内部转移抵销、库存/在制/设备与唯一资金账";
+            assets.put("经营现金", report.companyCash()); assets.put("矿端库存煤", report.mineCoal());
+            assets.put("厂内燃料", report.plantFuel()); assets.put("在制品", report.wip());
+            assets.put("应收", report.receivables()); assets.put("设备净值", report.equipmentNet());
+            assets.put("在建工程", report.cip()); assets.put("残余资产", report.residual());
+            liabilities.put("经营应付", report.payables());
+            income.put("外部营业收入（累计）", report.revenue()); income.put("处置损益（累计）", report.disposalResult());
+            expense.put("销售成本（累计）", report.cogs()); expense.put("期间费用（累计）", report.fixedExpense());
+            expense.put("折旧（累计）", report.depreciation()); expense.put("退出损失（累计）", report.exitLoss());
+            expense.put("作业损失（累计）", report.jobLoss()); expense.put("坏账（累计）", report.badDebtLoss());
+            equity.put("资本（EXP历史资本及真实注资）", resource.ledger().initialEquity().add(resource.ledger().capitalContributions()));
+            sources.add("IntegratedResourcesModel：有限煤炭/运输/发电及真实外部回款；内部结算不重复形成收入");
+            unsupported.add("资源参数为EXP，未作现实校准；所得税与环境治理费用尚未建模");
+        } else if (runtime.operationsRun().isPresent() && runtime.operationsRun().orElseThrow().hydro() != null
+                && companyPartyId.equals(runtime.operationsRun().orElseThrow().hydro().companyPartyId())) {
+            var hydro=runtime.operationsRun().orElseThrow().hydro();
+            var report=edu.cufe.auction.world.HydroModel.report(hydro.ledger(),snap.accounts());
+            cashAccountId=hydro.config().model().companyAccountId();
+            basis="水电：实际水量守恒、受约束发电与交付、应收和真实回款";
+            assets.put("经营现金",report.companyCash()); assets.put("设备净值",report.equipmentNet()); assets.put("应收电费",report.receivable());
+            liabilities.put("应付运维",report.payable()); income.put("售电收入（累计）",report.revenue());
+            expense.put("运维费用（累计）",report.operatingCost()); expense.put("检修费用（累计）",report.maintenanceCost()); expense.put("折旧（累计）",report.depreciation());
+            equity.put("资本（EXP历史禀赋）",hydro.ledger().initialEquity());
+            sources.add("HydroModel：有限来水、生态/指定下泄、真实发电交付与有限购电方；银行/证券同帧合并");
+            unsupported.add("物理与价格参数为EXP；未模拟多站梯级、税务与完整电网；有限来水结束即暂停要求新情景");
+        } else if (runtime.operationsRun().isPresent() && runtime.operationsRun().orElseThrow().digital()!=null && companyPartyId.equals(runtime.operationsRun().orElseThrow().digital().companyPartyId())) {
+            var company=runtime.operationsRun().orElseThrow().digital();var bank=runtime.bankOf().orElseThrow().decode(snap.accounts());
+            var report=edu.cufe.auction.world.DigitalServiceModel.report(company.ledger(),new edu.cufe.auction.world.bank.FundState(snap.accounts(),bank.state(),bank.book()));
+            cashAccountId=company.config().model().companyAccountId();basis="数字服务：阶段试验、有限需求和真实服务交付；预收不是收入";
+            assets.put("经营现金",report.companyCash());assets.put("应收服务款",report.receivables());assets.put("平台净值",report.platformNet());assets.put("在研",report.wip());
+            liabilities.put("应付费用",report.payables());liabilities.put("未赚预收及退款义务",report.refundObligation());
+            income.put("服务收入（累计）",report.revenue());expense.put("服务成本（累计）",report.serviceCogs());expense.put("试点费用（累计）",report.pilotExpense());expense.put("摊销（累计）",report.amortization());expense.put("减值（累计）",report.impairment());expense.put("坏账（累计）",report.badDebtLoss());expense.put("固定费用（累计）",report.fixedExpense());
+            equity.put("资本（EXP历史禀赋）",company.ledger().initialEquity().add(report.capitalContributions()));
+            sources.add("DigitalServiceModel真实阶段、预收、交付与回款；完整金融头寸同帧合并");
+            unsupported.add("技术准入属于EXP客户许可，不是董事会决议；世界不开放无真实决议的新注资");
+        } else if (runtime.operationsRun().isPresent() && runtime.operationsRun().orElseThrow().aged()!=null && companyPartyId.equals(runtime.operationsRun().orElseThrow().aged().companyPartyId())) {
+            var company=runtime.operationsRun().orElseThrow().aged();var report=edu.cufe.auction.world.AgedInventoryModel.books(company.ledger(),snap.accounts());
+            cashAccountId=company.config().model().companyAccountId();basis="陈酿：原料、成熟库存、寄售和终端售出分开；发货不确认收入";
+            assets.put("经营现金",report.companyCash());assets.put("存货成本",report.inventoryCost());assets.put("应收渠道款",report.receivable());
+            liabilities.put("未抵预收",report.contractLiability());liabilities.put("应付退款",report.refundPayable());liabilities.put("应付固定费",report.fixedPayable());
+            income.put("终端售出收入（累计）",report.revenue());expense.put("销售成本（累计）",report.cogs());expense.put("损耗过期（累计）",report.spoilageLoss());expense.put("固定费用（累计）",report.fixedAccrued());
+            equity.put("资本（EXP历史禀赋）",company.ledger().openingEquity());
+            sources.add("AgedInventoryModel逐批数量/成本/预收闭合；世界资金端口与完整金融头寸");
+            unsupported.add("无实际品牌/需求校准；未付款原料在到货期末失效并记录，已存在义务不会因缺预算抹去");
+        } else if (runtime.researchRun().isPresent()
+                && companyPartyId.equals(runtime.researchRun().orElseThrow().companyPartyId())) {
+            /*
+             * 独立研发公司：没有制造/工程子账本，只有唯一现金账户、研发资产与自己的 EXP 历史资本。
+             * 这里不借用工程或制造的开局权益，也不把银行报表套过来；资本与损益全部由真实
+             * ResearchModel.Report 给出，收入侧为空（本切片没有产品销售/许可）。
+             */
+            var research = runtime.researchRun().orElseThrow();
+            var report = edu.cufe.auction.world.ResearchModel.report(research.state(),
+                    snap.accounts());
+            basis = "独立研发公司：唯一现金账户 + 研发资产 + 组合派生金融资产 + EXP 历史资本";
+            cashAccountId = research.state().config().companyAccountId();
+            assets.put("经营现金", report.companyCash());
+            assets.put("既有非研发资产", report.otherAssets());
+            assets.put("研发在研资产", report.workInProgress());
+            assets.put("研发可用资产净额", report.availableNet());
+            expense.put("研发费用（累计）", report.expense());
+            expense.put("研发摊销（累计）", report.accumulatedAmortization());
+            expense.put("研发减值（累计）", report.impairment());
+            equity.put("资本（EXP 历史资本）", research.state().initialEquity());
+            sources.add("ResearchModel.Report（现金/在研/可用净额/费用/摊销/减值/权益）");
+            sources.add("OpeningRegistry：PH1 发行与持股 + pharma-owner 历史资本（EXP）");
+            unsupported.add("研发公司尚无产品销售或许可收入：商业化批准不等于已取得收入");
+            unsupported.add("研发公司未接分红、递延税、租赁与金融资产公允价值变动");
+            researchCompanyBranch = true;
         } else {
             throw new IllegalArgumentException("该公司没有经营子账本：" + companyPartyId);
         }
 
+        var research = runtime.researchRun().orElse(null);
+        if (!researchCompanyBranch && research != null
+                && companyPartyId.equals(research.companyPartyId())) {
+            var report = edu.cufe.auction.world.ResearchModel.report(research.state(), snap.accounts());
+            assets.put("研发在研资产", report.workInProgress());
+            assets.put("研发可用资产净额", report.availableNet());
+            expense.put("研发费用（累计）", report.expense());
+            expense.put("研发减值（累计）", report.impairment());
+            expense.put("研发摊销（累计）", report.accumulatedAmortization());
+            sources.add("ResearchModel：原始阶段付款、失败、批准与摊销；不叠加研发模型期初权益或现金");
+            unsupported.add("研发批准不等于商业收入；尚未产生产品销售或许可收益");
+        }
         WorldRuntime.ComposedFinancialPosition position =
                 runtime.composedFinancialPosition(cashAccountId);
         assets.put("银行存款", position.bankDeposits());

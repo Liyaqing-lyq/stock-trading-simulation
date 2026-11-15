@@ -38,6 +38,7 @@ import java.util.Map;
  * @param readMillis       群/平台帖阅读耗时；旧档为 0
  * @param bankOpening      银行开局申请（冻结档案 + 历史禀赋 + 托管明细）；非银行档为 null
  * @param companyCharters  额外公司治理冻结章程（按公司标识排序）；无该模块为空表
+ * @param manufacturingFunding 制造五段显式资金腿的冻结路由；未启用该模块为 null
  */
 public record BranchProfile(RunManifest manifest, List<CashLedger.OpeningAccount> openings,
                             OpeningRegistry registry, ManufacturingRun.Config manufacturing,
@@ -50,7 +51,8 @@ public record BranchProfile(RunManifest manifest, List<CashLedger.OpeningAccount
                             EngineeringRun.Config engineering, GroupModel.Config groups,
                             PlatformPostModel.Config platform, int feedLimit, long readMillis,
                             BankOpeningRequest bankOpening,
-                            Map<String, BoardModel.Charter> companyCharters) {
+                            Map<String, BoardModel.Charter> companyCharters,
+                            ManufacturingFunding manufacturingFunding) {
 
     /** 画像摘要口径版本 v2：原来那 20 个字段，摘要键集与字节不变。 */
     public static final String VERSION = "branch-profile-v2";
@@ -61,6 +63,14 @@ public record BranchProfile(RunManifest manifest, List<CashLedger.OpeningAccount
      * <p>只有清单显式启用银行或额外公司治理时才使用；旧实验条件一律用 v2，互不冒用。</p>
      */
     public static final String V3_VERSION = "branch-profile-v3";
+
+    /**
+     * 画像摘要口径版本 v4：在 v3 的 22 个键之后追加 {@code manufacturingFunding}。
+     *
+     * <p>只有清单显式启用 {@code manufacturing-funding} 时才使用；旧实验条件一律 v2/v3，
+     * 摘要键集与字节保持不变，不会被新口径冒充。</p>
+     */
+    public static final String V4_VERSION = "branch-profile-v4";
 
     private static final com.fasterxml.jackson.databind.ObjectMapper CANONICAL =
             new com.fasterxml.jackson.databind.ObjectMapper()
@@ -103,7 +113,51 @@ public record BranchProfile(RunManifest manifest, List<CashLedger.OpeningAccount
                          PlatformPostModel.Config platform, int feedLimit, long readMillis) {
         this(manifest, openings, registry, manufacturing, charter, roles, information, decisions,
                 media, interview, dialogue, evidence, social, socialBlockMillis, contacts,
-                engineering, groups, platform, feedLimit, readMillis, null, Map.of());
+                engineering, groups, platform, feedLimit, readMillis, null, Map.of(), null);
+    }
+
+    /**
+     * v3 兼容构造：不冻结制造资金路由，等价于原 22 参构造。
+     *
+     * @param manifest         父运行清单
+     * @param openings         开局现金清单
+     * @param registry         开局登记
+     * @param manufacturing    制造经营配置
+     * @param charter          董事会章程
+     * @param roles            任职配置
+     * @param information      资料阅读配置
+     * @param decisions        冻结决定配置
+     * @param media            媒体配置
+     * @param interview        采访配置
+     * @param dialogue         逐轮访谈配置
+     * @param evidence         证据配置
+     * @param social           社交配置
+     * @param socialBlockMillis 社交屏蔽工时
+     * @param contacts         社交联系入口
+     * @param engineering      工程配置
+     * @param groups           群组配置
+     * @param platform         平台写帖配置
+     * @param feedLimit        平台目录上限
+     * @param readMillis       阅读耗时
+     * @param bankOpening      银行开局申请
+     * @param companyCharters  额外公司治理章程
+     */
+    public BranchProfile(RunManifest manifest, List<CashLedger.OpeningAccount> openings,
+                         OpeningRegistry registry, ManufacturingRun.Config manufacturing,
+                         BoardModel.Charter charter, RoleRun.Config roles,
+                         InformationRun.Config information, DecisionModel.Config decisions,
+                         MediaRun.Config media, InterviewRun.Config interview,
+                         InterviewDialogue.Config dialogue, EvidenceRun.Config evidence,
+                         SocialMessageModel.Config social, long socialBlockMillis,
+                         List<InterviewRun.ContactEntry> contacts,
+                         EngineeringRun.Config engineering, GroupModel.Config groups,
+                         PlatformPostModel.Config platform, int feedLimit, long readMillis,
+                         BankOpeningRequest bankOpening,
+                         Map<String, BoardModel.Charter> companyCharters) {
+        this(manifest, openings, registry, manufacturing, charter, roles, information, decisions,
+                media, interview, dialogue, evidence, social, socialBlockMillis, contacts,
+                engineering, groups, platform, feedLimit, readMillis, bankOpening,
+                companyCharters, null);
     }
 
     /** 冻结开局清单与两份组合配置，并校验"配置与清单能力成对"。 */
@@ -140,6 +194,16 @@ public record BranchProfile(RunManifest manifest, List<CashLedger.OpeningAccount
             throw new IllegalArgumentException("运行画像的额外公司治理模块与章程必须成对："
                     + manifest.rulesVersion());
         }
+        if (manifest.hasManufacturingFunding() != (manufacturingFunding != null)) {
+            throw new IllegalArgumentException("运行画像的制造资金模块与冻结路由必须成对："
+                    + manifest.rulesVersion());
+        }
+        if (manufacturingFunding != null) {
+            if (manufacturing == null) {
+                throw new IllegalArgumentException("制造资金路由必须与制造经营配置同档");
+            }
+            manufacturingFunding.requireMatches(manufacturing.accounting());
+        }
     }
 
     /**
@@ -151,6 +215,9 @@ public record BranchProfile(RunManifest manifest, List<CashLedger.OpeningAccount
      * @return {@link #VERSION} 或 {@link #V3_VERSION}
      */
     public String version() {
+        if (manufacturingFunding != null) {
+            return V4_VERSION;
+        }
         return bankOpening != null || !companyCharters.isEmpty() ? V3_VERSION : VERSION;
     }
 
@@ -164,7 +231,8 @@ public record BranchProfile(RunManifest manifest, List<CashLedger.OpeningAccount
      * @return 已知版本返回 true
      */
     public static boolean knownVersion(String version) {
-        return VERSION.equals(version) || V3_VERSION.equals(version);
+        return VERSION.equals(version) || V3_VERSION.equals(version)
+                || V4_VERSION.equals(version);
     }
 
     /**
@@ -212,9 +280,12 @@ public record BranchProfile(RunManifest manifest, List<CashLedger.OpeningAccount
         content.put("platform", profile.platform());
         content.put("feedLimit", profile.feedLimit());
         content.put("readMillis", profile.readMillis());
-        if (V3_VERSION.equals(profile.version())) {
+        if (!VERSION.equals(profile.version())) {
             content.put("bankOpening", profile.bankOpening());
             content.put("companyCharters", profile.companyCharters());
+        }
+        if (V4_VERSION.equals(profile.version())) {
+            content.put("manufacturingFunding", profile.manufacturingFunding());
         }
         try {
             String json = CANONICAL.writeValueAsString(content);

@@ -227,25 +227,19 @@ class WorldBranchRunHttpTest {
 
     @Test
     void occupiedPortRangeIsReportedWithoutKillingAnything() throws Exception {
-        startParent();
-        login();
-        assertEquals(200, post("/api/admin/branches", JSON.writeValueAsString(Map.of(
-                "position", "1", "childRunId", CHILD_A, "kind", "operator", "note", "")))
-                .statusCode());
-        List<ServerSocket> squatters = new ArrayList<>();
-        try {
-            for (int port = 18100; port <= 18109; port++) {
-                squatters.add(new ServerSocket(port, 1));
-            }
+        // 用测试自己持有的端口占满整个配置区间；本机真实世界可同时使用生产端口。
+        try (ServerSocket squatter = new ServerSocket(0, 1)) {
+            startParent(squatter.getLocalPort(), squatter.getLocalPort());
+            login();
+            assertEquals(200, post("/api/admin/branches", JSON.writeValueAsString(Map.of(
+                    "position", "1", "childRunId", CHILD_A, "kind", "operator", "note", "")))
+                    .statusCode());
             HttpResponse<String> rejected = post("/api/admin/runs/" + CHILD_A + "/start", "");
             assertEquals(409, rejected.statusCode());
             assertEquals("PORT_TAKEN", JSON.readTree(rejected.body()).path("code").asText());
             assertEquals("CREATED", json(get("/api/admin/runs")).path("runs").get(0)
                     .path("status").asText());
-        } finally {
-            for (ServerSocket socket : squatters) {
-                socket.close();
-            }
+            assertFalse(squatter.isClosed(), "拒绝启动不得关闭已有监听者");
         }
     }
 
@@ -652,13 +646,17 @@ class WorldBranchRunHttpTest {
     }
 
     private void startParent() throws Exception {
+        startParent(18100, 18109);
+    }
+
+    private void startParent(int portFrom, int portTo) throws Exception {
         startParentWorkOnly();
         KeySlots slots = KeySlots.load(keyFile);
         routes = SceneRoutes.open(work);
         host = new WorldWebHost(() -> WorldWebScenario.openGroups(journal));
         server = new WorldWebServer(host, slots, routes, 0, BOOTSTRAP);
         launcher = new RunLauncher(new RunLauncher.Config(work.toAbsolutePath(),
-                work.resolve("runs").toAbsolutePath(), keyFile.toAbsolutePath(), 18100, 18109, 2,
+                work.resolve("runs").toAbsolutePath(), keyFile.toAbsolutePath(), portFrom, portTo, 2,
                 30_000L, System.getProperty("surefire.test.class.path",
                         System.getProperty("java.class.path"))), host::branchProfile);
         server.attachLauncher(launcher);

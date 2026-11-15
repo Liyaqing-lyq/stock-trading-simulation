@@ -1,0 +1,60 @@
+package edu.cufe.auction.world;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+
+/** 研发经理的有限动作与方案观察；不向模型输出随机结果或未读证据。 */
+public final class ResearchDecisionTools {
+    private ResearchDecisionTools() { }
+    /** 研发经理工具名。 */
+    public static final String ACT = "research.act";
+    /** 董事商业化提案与执行；仅新独立公司调试档配置。 */
+    public static final String BOARD = "board.research";
+    /** 实验动作工时；阶段研发时间另计。 */
+    public static final long ACTION_MILLIS = 1_000;
+
+    /** @param action REGISTER/BEGIN/APPROVE @param projectId 冻结项目 @param stage BEGIN 阶段，其余留空 @param meetingId APPROVE 的真实决议会议，其余留空 */
+    public record Draft(String action, String projectId, String stage, String meetingId) {
+        /** 核对动作及必要字段；人物、公司与任职不由模型自报。 */
+        public Draft {
+            if (action == null || !Set.of("REGISTER", "BEGIN", "APPROVE").contains(action)
+                    || projectId == null || projectId.isBlank() || stage == null || meetingId == null) {
+                throw new IllegalArgumentException("研发工具参数非法");
+            }
+            if ("BEGIN".equals(action)) ResearchModel.Stage.valueOf(stage);
+            if ("APPROVE".equals(action) && meetingId.isBlank()) throw new IllegalArgumentException("必须引用商业化决议会议");
+        }
+    }
+
+    /** @param base 原冻结配置 @return 显式增加研发经理工具的配置 */
+    public static DecisionModel.Config config(DecisionModel.Config base) {
+        Map<String, Long> actions = new TreeMap<>(base.actionMillisByTool());
+        actions.put(ACT, ACTION_MILLIS);
+        return new DecisionModel.Config(base.providerKind(), base.providerId(), base.pricingVersion(),
+                base.thinkMillisByWake(), actions, base.limits(), base.budget(), base.profile());
+    }
+
+    /** @param run 研发运行 @param board 本公司董事会 @param now 世界时点 @return 方案与已批准预算；结果沿真实阅读输入 */
+    static Map<String, Object> observation(ResearchRun run, BoardRun board, long now) {
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("companyId", run.companyPartyId());
+        view.put("actions", List.of("REGISTER", "BEGIN", "APPROVE"));
+        view.put("projects", new TreeMap<>(run.projects()).values().stream().map(spec -> new TreeMap<String, Object>(Map.of(
+                "projectId", spec.projectId(), "budget", spec.budget().toPlainString(),
+                "stages", spec.stages().stream().map(plan -> new TreeMap<>(Map.of("stage", plan.stage().name(),
+                        "cost", plan.cost().toPlainString(), "durationMillis", Long.toString(plan.durationMillis())))).toList()))).toList());
+        var category = BoardModel.BudgetCategory.PROCUREMENT;
+        long period = now / PeriodicModel.PERIOD_MILLIS;
+        var budget = board.board().budget(period, category);
+        if (budget != null) {
+            view.put("approvedBudgetCap", budget.cap().toPlainString());
+            view.put("remainingBudget", BoardModel.availableBudget(board.board(), period, category).toPlainString());
+        }
+        view.put("rules", "这里只列可选方案；不代表已立项或已通过。立项需真实预算，阶段支出和工时必须实际发生。"
+                + "阶段结果证据必须通过资料工具阅读，不能猜测成功。商业化必须引用本公司真实决议；批准不产生销售收入。未用字段留空，可观望。");
+        return view;
+    }
+}

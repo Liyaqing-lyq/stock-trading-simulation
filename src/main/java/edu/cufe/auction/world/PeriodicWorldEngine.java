@@ -474,7 +474,7 @@ final class PeriodicWorldEngine {
      * <p>长期投入机制在本政策里明确为 {@code none}，因此该维永远缺项；披露质量只接受截止前
      * 已成熟的真实发布/错过事实。普通合同、工单、账户与私有材料来源都不能冒充这两维。</p>
      */
-    private static String dimensionProblem(BoardModel.Dimension dimension, String ref, long asOf,
+    static String dimensionProblem(BoardModel.Dimension dimension, String ref, long asOf,
                                            PeriodicModel.Snapshot snapshot,
                                            PeriodicModel.CompanyPeriods periods) {
         if (!snapshot.evidenceRefs().contains(ref) || ref.startsWith("periodic-source:")) {
@@ -976,7 +976,7 @@ final class PeriodicWorldEngine {
         return null;
     }
 
-    private static String lastCompletedReadId(InformationModel.State info, String person,
+    static String lastCompletedReadId(InformationModel.State info, String person,
                                               String docId, long version, long at) {
         String found = "";
         long latest = -1L;
