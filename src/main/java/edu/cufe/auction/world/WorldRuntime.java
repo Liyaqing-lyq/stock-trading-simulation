@@ -17997,6 +17997,7 @@ public final class WorldRuntime implements AutoCloseable {
             case PendingTask.RESEARCH_BEGIN_V1 -> completeResearchBegin(task);
             case PendingTask.RESEARCH_RESULT_V1 -> completeResearchResult(task);
             case PendingTask.RESEARCH_APPROVE_V1 -> completeResearchApprove(task);
+            case PendingTask.EXTERNAL_DEMAND_SETTLE_V1 -> completeExternalDemand(task);
             case PendingTask.COMPANY_OPERATIONS_V1 -> completeOperationsTask(task);
             case PendingTask.COMPANY_OPERATIONS_CHILD_V1, PendingTask.COMPANY_OPERATIONS_CLOSE_V1
                     -> completeOperationsChild(task);
@@ -34531,6 +34532,12 @@ public final class WorldRuntime implements AutoCloseable {
             var bank = state.bank().decode(state.accounts());
             run = run.withAged(AgedCompanyRun.open(aged, new edu.cufe.auction.world.bank.FundState(state.accounts(), bank.state(), bank.book())));
         } else if (manifest.dataVersions().containsKey("aged-operations")) throw new IllegalArgumentException("缺少陈酿开局");
+        if (ExternalDemandOpening.enabled(manifest)) {
+            if (state.timeMillis() >= ManufacturingTemplateModel.DAY_MILLIS + 1)
+                throw new IllegalArgumentException("外部需求必须在首日日结前完成开局");
+            run = run.withExternalDemand(ExternalDemandOpening.open(run, orderedOpenings, registry,
+                    state.bank().decode(state.accounts()).config().profile(), state.accounts()));
+        }
         Map<String, String> contents = new TreeMap<>(state.commandContents());
         contents.put(cid, content);
         Map<String, String> outcomes = new TreeMap<>(state.commandOutcomes());
@@ -34539,6 +34546,12 @@ public final class WorldRuntime implements AutoCloseable {
         Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
         List<WorldEvent> events = new ArrayList<>();
         events.add(new WorldEvent("company-operations-opened", "COMPANY_OPERATIONS_OPENED_V1", content));
+        if (run.externalDemand() != null) {
+            PendingTask first = externalDemandTask(1);
+            if (!used.add(first.taskId())) throw new IOException("外部需求日结任务重复");
+            pending.add(first);
+            events.add(new WorldEvent("task-scheduled:" + first.taskId(), "TASK_SCHEDULED_V1", mapper.writeValueAsString(first)));
+        }
         List<String> operatingCompanies = new ArrayList<>(run.companyIds());
         if (run.resource() != null) operatingCompanies.add(run.resource().companyPartyId());
         if (run.digital() != null) operatingCompanies.add(run.digital().companyPartyId());
@@ -35300,6 +35313,47 @@ public final class WorldRuntime implements AutoCloseable {
         return new ResolvedBucket(null, null, "FUND_PAYER_UNKNOWN:" + accountId);
     }
 
+    private record ExternalDemandPayload(long day) { }
+
+    private PendingTask externalDemandTask(long day) throws IOException {
+        if (day < 1) throw new IOException("外部需求日序号必须为正");
+        long due = Math.addExact(Math.multiplyExact(day, ManufacturingTemplateModel.DAY_MILLIS), 1L);
+        return new PendingTask("external-demand:day:" + day, due, WorldScheduler.Phase.COMPLETION,
+                PendingTask.EXTERNAL_DEMAND_SETTLE_V1, mapper.writeValueAsString(new ExternalDemandPayload(day)));
+    }
+
+    /** 只由冻结日历派生的系统任务执行，现金与消费进度在同一帧提交。 */
+    private void completeExternalDemand(PendingTask task) throws IOException {
+        CompanyOperationsRun operations = state.companyOperations();
+        if (!ExternalDemandOpening.enabled(manifest) || operations == null || operations.externalDemand() == null)
+            throw new IOException("当前档案未启用外部最终需求");
+        ExternalDemandPayload payload = mapper.readValue(task.payload(), ExternalDemandPayload.class);
+        if (!task.equals(externalDemandTask(payload.day())) || !state.pending().contains(task))
+            throw new IOException("外部需求任务标识、时点或参数不规范");
+        ExternalDemandRun.Result result = operations.externalDemand().settle(operations, state.accounts(), task.dueTimeMillis());
+        // 外部现金只在 CashLedger 中搬移；银行总账、存款和托管三态保持逐字不变。
+        state.bank().validate(result.accounts());
+        List<PendingTask> pending = new ArrayList<>(state.pending());
+        pending.remove(task);
+        PendingTask next = externalDemandTask(Math.addExact(payload.day(), 1L));
+        Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
+        if (!used.add(next.taskId())) throw new IOException("外部需求下一日日结重复");
+        pending.add(next);
+        List<WorldEvent> events = new ArrayList<>();
+        events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1", task.payload()));
+        for (var receipt : result.sales()) events.add(new WorldEvent(receipt.outputId(), "EXTERNAL_DEMAND_SALE_V1", mapper.writeValueAsString(receipt)));
+        for (var receipt : result.incomeDistributions()) events.add(new WorldEvent(receipt.outputId(), "EXTERNAL_DEMAND_INCOME_V1", mapper.writeValueAsString(receipt)));
+        events.add(new WorldEvent("task-scheduled:" + next.taskId(), "TASK_SCHEDULED_V1", mapper.writeValueAsString(next)));
+        WorldState candidate = new WorldState(state.schemaVersion(), state.runId(), state.position() + 1,
+                task.dueTimeMillis(), task.phase().name(), result.accounts(), pending, state.delivered(), used,
+                state.commandContents(), state.commandOutcomes(), state.securities(), state.exchange(),
+                state.manufacturing(), state.governance(), state.roles(), state.information(), state.trading(),
+                state.decisions(), state.dividends(), state.beliefs(), state.media(), state.interviews(), state.evidence(),
+                state.social(), state.engineering(), state.bank(), state.bankActions(), state.companyGovernance(),
+                state.groups(), state.research(), operations.withExternalDemand(result.run()));
+        commitAndApply("task:" + task.taskId(), task.payload(), "EXTERNAL_DEMAND_SETTLED", events, candidate);
+    }
+
     /** 经营帧提交：回报、子任务、账户、董事会与经营子集同一批落盘。 */
     private void commitOperations(PendingTask task, String commandId, String companyPartyId,
             String action, OperationsApplied applied, long now) throws IOException {
@@ -35916,6 +35970,13 @@ public final class WorldRuntime implements AutoCloseable {
         }
         CompanyOperationsRun run = candidate.companyOperations();
         CompanyOperationsRun before = previous == null ? null : previous.companyOperations();
+        if (run != null) {
+            if (ExternalDemandOpening.enabled(manifest) != (run.externalDemand() != null))
+                throw new IOException("外部需求子账与清单声明不符");
+            if (run.externalDemand() != null && (!ExternalDemandOpening.config().equals(run.externalDemand().config())
+                    || run.externalDemand().watermark() > candidate.timeMillis()))
+                throw new IOException("外部需求冻结配置或时钟被改写");
+        }
         if (run == null) {
             if (before != null) {
                 throw new IOException("经营子集不得被删除：" + commit.commandId());

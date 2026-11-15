@@ -1000,6 +1000,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                         throw new IllegalArgumentException("未知角色依据版本：" + context);
                     }
                     expectedData.put("role-context", context);
+                    if (data.containsKey("external-demand")) {
+                        if (!RoleDeliberation.VERSION.equals(context) || !"v1".equals(data.get("external-demand")))
+                            throw new IllegalArgumentException("外部需求必须显式使用 deliberation-v2 / external-demand=v1");
+                        expectedData.put("external-demand", "v1");
+                    }
                 }
             }
             if (!expectedData.equals(data)) {

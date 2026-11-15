@@ -165,11 +165,21 @@ public final class ComposedIndustryScenario {
                 edu.cufe.auction.world.RoleDeliberation.VERSION);
     }
 
+    /** 有限外部需求的新自主经营档案。 */
+    public static WorldRuntime openOperatingAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.VERSION, true);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven) throws Exception {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, null);
     }
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, roleContext, false);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating) throws Exception {
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -206,6 +216,8 @@ public final class ComposedIndustryScenario {
             parties.put("nina",new BankingProfile.PartyRef("nina","nina","HOUSE-NINA",null));
             parties.put("omar",new BankingProfile.PartyRef("omar","omar","HOUSE-OMAR",null));
         }
+        if (operating) parties.put(ExternalDemandOpening.OWNER_ID, new BankingProfile.PartyRef(
+                ExternalDemandOpening.OWNER_ID, ExternalDemandOpening.OWNER_ID, ExternalDemandOpening.ACCOUNT_ID, null));
         var profile = new BankingProfile(original.banks(), parties, original.custodians(), buckets, original.groups(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::loanGl).distinct().sorted().toList() : original.loanAccounts(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
@@ -238,6 +250,14 @@ public final class ComposedIndustryScenario {
         var openingRegistry = hydro ? hydroRegistry(registry()) : registry();
         if(baseline) { openingAccounts=new ArrayList<>(BaselineIndustryConfig.openings(openingAccounts));openingRegistry=BaselineIndustryConfig.registry(openingRegistry,openingAccounts); }
         if(connected) { openingAccounts=new ArrayList<>(ConnectedWorldOpening.accounts(openingAccounts));openingRegistry=ConnectedWorldOpening.registry(openingRegistry); }
+        if (operating) {
+            openingAccounts.add(ExternalDemandOpening.account());
+            var externalParties = new ArrayList<>(openingRegistry.parties());
+            externalParties.add(new OpeningRegistry.Party(ExternalDemandOpening.OWNER_ID, OpeningRegistry.PartyKind.ORGANIZATION, "EXP 外部最终需求聚合主体"));
+            var externalOwners = new ArrayList<>(openingRegistry.owners());
+            externalOwners.add(new OpeningRegistry.PropertyOwner(ExternalDemandOpening.OWNER_ID, OpeningRegistry.OwnerKind.ORGANIZATION, ExternalDemandOpening.OWNER_ID));
+            openingRegistry = new OpeningRegistry(externalParties, externalOwners, openingRegistry.securities(), openingRegistry.allocations());
+        }
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -271,6 +291,12 @@ public final class ComposedIndustryScenario {
             var data = new TreeMap<>(runManifest.dataVersions());
             data.put("role-context", roleContext);
             runManifest = new RunManifest("web-autonomous-" + roleContext, runManifest.seed(), runManifest.rulesVersion(),
+                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (operating) {
+            var data = new TreeMap<>(runManifest.dataVersions());
+            data.put("external-demand", "v1");
+            runManifest = new RunManifest("web-operating-autonomous-v1", runManifest.seed(), runManifest.rulesVersion(),
                     runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,

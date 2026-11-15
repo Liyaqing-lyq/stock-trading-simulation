@@ -123,6 +123,9 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 差异制造公司的自动关期；必须先于同日周期采样。 */
     public static final String COMPANY_OPERATIONS_CLOSE_V1 = "COMPANY_OPERATIONS_CLOSE_V1";
 
+    /** 系统外部需求日结：只消费已交付商品并转移真实外部现金。 */
+    public static final String EXTERNAL_DEMAND_SETTLE_V1 = "EXTERNAL_DEMAND_SETTLE_V1";
+
     /** 外部治理夹具：召集一次预算会议；只接受 BUDGET，复盘会议由系统关期产生。 */
     public static final String GOVERNANCE_MEETING_V1 = "GOVERNANCE_MEETING_V1";
 
@@ -387,7 +390,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
             throw new IllegalArgumentException("任务阶段、种类与参数不能为空");
         }
         switch (kind) {
-            case CASH_TRANSFER_V1, SELL_RESERVE_V1, SELL_CANCEL_V1, FILL_SETTLE_V1,
+            case EXTERNAL_DEMAND_SETTLE_V1, CASH_TRANSFER_V1, SELL_RESERVE_V1, SELL_CANCEL_V1, FILL_SETTLE_V1,
                  EXCHANGE_ORDER_V1, EXCHANGE_CANCEL_V1, EXCHANGE_CLOSE_V1,
                  MANUFACTURING_PURCHASE_ORDER_V1, MANUFACTURING_GOODS_RECEIPT_V1,
                  MANUFACTURING_PRODUCTION_V1, MANUFACTURING_BATCH_COMPLETION_V1,
