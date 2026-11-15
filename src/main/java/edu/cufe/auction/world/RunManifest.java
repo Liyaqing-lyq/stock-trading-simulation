@@ -949,6 +949,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 data.put(name, version);
             });
         }
+        if (data.containsKey("state-storage") && !RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion))
+            throw new IllegalArgumentException("旧规则不支持增量状态存储");
         dataVersions = Collections.unmodifiableMap(data);
 
         if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion)) {
@@ -1000,6 +1002,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                         throw new IllegalArgumentException("未知角色依据版本：" + context);
                     }
                     expectedData.put("role-context", context);
+                    if (data.containsKey("state-storage")) {
+                        if (!RoleDeliberation.ACCOUNTABLE_VERSION.equals(context) || !StateDeltaCodec.VERSION.equals(data.get("state-storage")))
+                            throw new IllegalArgumentException("增量状态必须显式使用 accountable v3 / delta-v1");
+                        expectedData.put("state-storage", StateDeltaCodec.VERSION);
+                    }
                     if (data.containsKey("external-demand")) {
                         if (!RoleDeliberation.isDeliberative(context) || !"v1".equals(data.get("external-demand")))
                             throw new IllegalArgumentException("外部需求必须显式使用 deliberation-v2或v3 / external-demand=v1");

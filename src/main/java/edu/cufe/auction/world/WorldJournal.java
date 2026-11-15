@@ -29,6 +29,13 @@ import java.util.Set;
  */
 public final class WorldJournal implements AutoCloseable {
     private static final int MAX_BYTES = 16 * 1024 * 1024;
+    /** 超过冻结帧上限；只公开安全大小，不携带业务正文。 */
+    public static final class FrameTooLargeException extends IllegalArgumentException {
+        private final int actualBytes;
+        FrameTooLargeException(int actualBytes) { super("世界提交批次超过 16 MiB (COMMIT_FRAME_TOO_LARGE)"); this.actualBytes = actualBytes; }
+        /** @return 未压缩批次实际字节数 */
+        public int actualBytes() { return actualBytes; }
+    }
     private static final int DIGEST_BYTES = 32;
     private final ObjectMapper mapper = new ObjectMapper();
     private final String runId;
@@ -144,7 +151,7 @@ public final class WorldJournal implements AutoCloseable {
         validateNewEvents(batch);
         byte[] payload = mapper.writeValueAsBytes(batch);
         if (payload.length > MAX_BYTES) {
-            throw new IllegalArgumentException("世界提交批次超过 16 MiB");
+            throw new FrameTooLargeException(payload.length);
         }
         boolean compressed = false;
         if (compress) {
@@ -344,7 +351,7 @@ public final class WorldJournal implements AutoCloseable {
     static WorldCommit withoutSnapshot(WorldCommit batch) {
         return new WorldCommit(batch.schemaVersion(), batch.position(), batch.runId(), batch.commandId(),
                 batch.commandContent(), batch.result(), batch.events().stream()
-                        .filter(e -> !"STATE_SNAPSHOT_V1".equals(e.type())).toList());
+                        .filter(e -> !"STATE_SNAPSHOT_V1".equals(e.type()) && !StateDeltaCodec.TYPE.equals(e.type())).toList());
     }
 
     private void cache(int index, WorldCommit batch) {

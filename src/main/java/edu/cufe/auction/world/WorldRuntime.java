@@ -345,6 +345,15 @@ public final class WorldRuntime implements AutoCloseable {
     private int capturedCount;
 
     private volatile boolean paused;
+    private volatile String commitFailureCode;
+    private WorldState deltaReadCursor;
+
+    /** @return 最近提交失败的安全错误码；没有失败时为空。 */
+    public String commitFailureCode() { return commitFailureCode; }
+
+    private boolean compactState() { return StateDeltaCodec.VERSION.equals(manifest.dataVersions().get("state-storage")); }
+    private static boolean stateEvent(String type) { return SNAPSHOT_TYPE.equals(type) || StateDeltaCodec.TYPE.equals(type); }
+
     private boolean closed;
 
     /**
@@ -1456,6 +1465,7 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         requireOpen();
         requireWriter();
+        if (compactState()) throw new BranchRejectedException("COMPACT_BRANCH_UNSUPPORTED", "增量状态档暂不支持创建分支");
         if (position < 1 || position > state.position()) {
             throw new BranchRejectedException(BRANCH_POSITION_UNCONFIRMED,
                     "切点未确认：" + position + "（当前确认到 " + state.position() + "）");
@@ -1643,6 +1653,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireOpen();
         long cut = state.position();
         List<String> reasons = new ArrayList<>();
+        if (compactState()) return new BranchSupport(position, cut, false, List.of("COMPACT_BRANCH_UNSUPPORTED"));
         if (position < 1 || position > cut) {
             reasons.add(BRANCH_POSITION_UNCONFIRMED);
             return new BranchSupport(position, cut, false, reasons);
@@ -4724,7 +4735,7 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
-     * 固定确认位置的历史帧：解码该批次自带的 STATE_SNAPSHOT_V1。
+     * 固定确认位置的历史帧：旧档解码快照，增量档按完整确认前缀重建状态。
      *
      * <p>只读：不改当前状态、不推进时钟、不追加日志、不写审计、不产生阅读/回忆/预算消耗。
      * 未确认位置明确拒绝，不夹取到最近位置。</p>
@@ -4961,6 +4972,8 @@ public final class WorldRuntime implements AutoCloseable {
         WorldState decoded = decodeSnapshot(commit);
         requireSameConfirmedFrame(decoded, position);
         String stateJson = stateCanonical().writeValueAsString(decoded);
+        if (compactState() && stateJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 16 * 1024 * 1024)
+            throw new IOException("COMPACT_CHECKPOINT_TOO_LARGE");
         String commitJson = stateCanonical().writeValueAsString(commit);
         Map<String, Object> claims = new LinkedHashMap<>();
         claims.put("independentResume", Boolean.FALSE);
@@ -4968,12 +4981,15 @@ public final class WorldRuntime implements AutoCloseable {
         claims.put("journalPrefixSha256", Boolean.FALSE);
         claims.put("digestIsFileFrameSha256", Boolean.FALSE);
         claims.put("note", CHECKPOINT_CLAIMS_NOTE);
-        return new Checkpoint(CHECKPOINT_VERSION, manifest.runId(), position, cut,
+        Checkpoint checkpoint = new Checkpoint(CHECKPOINT_VERSION, manifest.runId(), position, cut,
                 decoded.timeMillis(), decoded.lastPhase(), manifest,
                 openingContentMap(orderedOpenings), stateJson, sha256Hex(stateJson),
                 STATE_DIGEST_KIND, commit.commandId(), commit.result(),
                 commit.events().size(), sha256Hex(commitJson),
                 COMMIT_DIGEST_KIND, System.currentTimeMillis(), claims);
+        if (compactState() && stateCanonical().writeValueAsBytes(checkpoint).length > 16 * 1024 * 1024)
+            throw new IOException("COMPACT_CHECKPOINT_TOO_LARGE");
+        return checkpoint;
     }
 
     /**
@@ -15605,11 +15621,12 @@ public final class WorldRuntime implements AutoCloseable {
                     content, result, domainEvents), state);
         } catch (IOException invalid) {
             paused = true;
+            commitFailureCode = "COMMIT_VALIDATION_FAILURE";
             throw invalid;
         }
         List<WorldEvent> events = new ArrayList<>(domainEvents);
-        events.add(snapshotEvent(candidate));
         try {
+            events.add(snapshotEvent(candidate));
             validateAudits(new WorldCommit(1, candidate.position(), manifest.runId(), commandId,
                     content, result, events), candidate, state);
             WorldCommit committed = journal.commit(commandId, content, result, events);
@@ -15619,9 +15636,12 @@ public final class WorldRuntime implements AutoCloseable {
         } catch (IOException | RuntimeException failure) {
             // 提交期任何失败（含重复事件 ID、超大帧）都暂停并保留旧快照
             paused = true;
+            commitFailureCode = failure instanceof WorldJournal.FrameTooLargeException
+                    ? "COMMIT_FRAME_TOO_LARGE" : failure instanceof IOException ? "COMMIT_IO_FAILURE" : "COMMIT_VALIDATION_FAILURE";
             throw failure;
         }
         state = candidate;
+        if (compactState()) deltaReadCursor = candidate;
     }
 
     private PendingTask peek(long inclusiveMillis) {
@@ -18380,7 +18400,7 @@ public final class WorldRuntime implements AutoCloseable {
     private static List<WorldEvent> frameDomainEvents(WorldCommit commit) {
         List<WorldEvent> events = new ArrayList<>();
         for (WorldEvent event : commit.events()) {
-            if (!SNAPSHOT_TYPE.equals(event.type())) {
+            if (!stateEvent(event.type())) {
                 events.add(event);
             }
         }
@@ -18579,7 +18599,7 @@ public final class WorldRuntime implements AutoCloseable {
                                       List<WorldEvent> events, String commandId, String content,
                                       String result) throws IOException {
         List<WorldEvent> actual = commit.events().stream()
-                .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
+                .filter(event -> !stateEvent(event.type())).toList();
         if (!sameStateEconomy(candidate, expected) || !events.equals(actual)
                 || !commit.commandId().equals(commandId)
                 || !commit.commandContent().equals(content)
@@ -21766,7 +21786,7 @@ public final class WorldRuntime implements AutoCloseable {
                 .equals(mapper.readTree(mapper.writeValueAsString(candidate)))
                 || !expected.result().equals(commit.result())
                 || !expected.events().equals(commit.events().stream()
-                        .filter(event -> !SNAPSHOT_TYPE.equals(event.type())).toList())) {
+                        .filter(event -> !stateEvent(event.type())).toList())) {
             throw new IOException("任职完成帧与原任务派生的完整状态或事件不一致");
         }
     }
@@ -24040,7 +24060,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         WorldState previous = null;
         for (WorldCommit commit : commits) {
-            WorldState snapshot = decodeSnapshot(commit);
+            WorldState snapshot = decodeSnapshot(commit, previous);
             validate(snapshot, commit, previous);
             validateAudits(commit, snapshot, previous);
             if (previous == null && !expectedInitial.equals(snapshot)) {
@@ -24397,7 +24417,7 @@ public final class WorldRuntime implements AutoCloseable {
             if (authorizes) expectedResult = "AUTHORIZED";
         }
         List<WorldEvent> actualEvents = commit.events().stream()
-                .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
+                .filter(event -> !stateEvent(event.type())).toList();
         if (!expectedEvents.equals(actualEvents) || !expectedCommand.equals(commit.commandId())
                 || !expectedResult.equals(commit.result())) {
             throw new IOException("分红批次的完整事件、身份或回报与重算不一致：" + consumed.taskId());
@@ -24833,7 +24853,7 @@ public final class WorldRuntime implements AutoCloseable {
                 task.payload()), new WorldEvent("information-report:" + task.taskId(), "INFORMATION_REPORT_V1",
                 mapper.writeValueAsString(report)));
         List<WorldEvent> actual = commit.events().stream()
-                .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
+                .filter(event -> !stateEvent(event.type())).toList();
         if (!expected.equals(candidate) || !events.equals(actual)
                 || !commit.commandId().equals("task:" + task.taskId())
                 || !commit.commandContent().equals(task.payload()) || !"OK".equals(commit.result())) {
@@ -24960,7 +24980,7 @@ public final class WorldRuntime implements AutoCloseable {
         List<WorldEvent> events = List.of(new WorldEvent("task-scheduled:" + added.taskId(), "TASK_SCHEDULED_V1",
                 mapper.writeValueAsString(added)));
         List<WorldEvent> actual = commit.events().stream()
-                .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
+                .filter(event -> !stateEvent(event.type())).toList();
         if (!expected.equals(candidate) || !events.equals(actual) || !commit.commandId().equals("cmd:" + commandId)
                 || !commit.commandContent().equals(content) || !commit.result().equals(result)) {
             throw new IOException("分红外部排程与原任务、命令和快照不一致：" + added.taskId());
@@ -25254,6 +25274,21 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private WorldState decodeSnapshot(WorldCommit commit) throws IOException {
+        if (!compactState()) return decodeSnapshot(commit, null);
+        if (deltaReadCursor != null && deltaReadCursor.position() == commit.position()
+                && deltaReadCursor.runId().equals(commit.runId())) return deltaReadCursor;
+        WorldState previous = deltaReadCursor != null && deltaReadCursor.position() < commit.position() ? deltaReadCursor : null;
+        long start = previous == null ? 1 : previous.position() + 1;
+        for (long position = start; position <= commit.position(); position++) {
+            WorldCommit next = position == commit.position() ? commit : commitSource.commitAt(position)
+                    .orElseThrow(() -> new IOException("状态差量基准帧缺失"));
+            previous = decodeSnapshot(next, previous);
+        }
+        deltaReadCursor = previous;
+        return previous;
+    }
+
+    private WorldState decodeSnapshot(WorldCommit commit, WorldState previous) throws IOException {
         WorldState found = null;
         List<ActionReport> reported = new ArrayList<>();
         List<OrderReport> exchangeReports = new ArrayList<>();
@@ -25264,12 +25299,20 @@ public final class WorldRuntime implements AutoCloseable {
         List<InformationRun.Report> informationReports = new ArrayList<>();
         List<InformationModel.ReadObservation> informationObservations = new ArrayList<>();
         for (WorldEvent event : commit.events()) {
-            if (SNAPSHOT_TYPE.equals(event.type())) {
+            if (stateEvent(event.type())) {
                 if (found != null) {
                     throw new IOException("批次 " + commit.position() + " 含多个状态快照");
                 }
                 ObjectMapper snapshotMapper = manifest.hasDecisions() ? decisionMapper : mapper;
-                found = snapshotMapper.readValue(event.payload(), WorldState.class);
+                if (compactState() != StateDeltaCodec.TYPE.equals(event.type())) throw new IOException("状态存储版本与清单不符");
+                String payload = event.payload();
+                if (compactState()) {
+                    if (previous != null && (previous.position() != commit.position() - 1 || !previous.runId().equals(commit.runId())))
+                        throw new IOException("状态差量基准位置或运行不符");
+                    payload = StateDeltaCodec.apply(manifest.runId(), commit.position(),
+                            previous == null ? null : stateCanonical().writeValueAsString(previous), payload);
+                }
+                found = snapshotMapper.readValue(payload, WorldState.class);
             } else if ("SECURITIES_REPORT_V1".equals(event.type())) {
                 reported.add(mapper.readValue(event.payload(), ActionReport.class));
             } else if ("EXCHANGE_ORDER_REPORT_V1".equals(event.type())) {
@@ -25363,6 +25406,10 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private WorldEvent snapshotEvent(WorldState snapshot) throws IOException {
+        if (compactState()) return new WorldEvent("state:" + snapshot.position(), StateDeltaCodec.TYPE,
+                StateDeltaCodec.encode(manifest.runId(), snapshot.position(),
+                        state == null ? null : stateCanonical().writeValueAsString(state),
+                        stateCanonical().writeValueAsString(snapshot)));
         // 旧规则：保持原持久 writer（含其原有的集合/键序行为），不改旧档案序列化契约。
         // 新组合规则（composed-v2）：用显式规范 writer（map 键排序 + Set 排序数组），
         // 使同一份真实状态在不同 JVM 写出同一段字节，恢复期才能把真实篡改与表示差异分开。
@@ -26849,8 +26896,15 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private CapitalFrame capitalFrame(WorldCommit commit) {
+        if (compactState()) {
+            try {
+                WorldState frame = decodeSnapshot(commit);
+                return new CapitalFrame(frame.position(), frame.timeMillis(), frame.accounts(),
+                        frame.securities(), frame.exchange(), frame.dividends() == null ? DividendModel.empty() : frame.dividends());
+            } catch (IOException invalid) { throw new IllegalStateException("确认帧状态差量无法解析", invalid); }
+        }
         for (WorldEvent event : commit.events()) {
-            if (!"STATE_SNAPSHOT_V1".equals(event.type())) {
+            if (!stateEvent(event.type())) {
                 continue;
             }
             try {
@@ -27069,7 +27123,7 @@ public final class WorldRuntime implements AutoCloseable {
                                   String command, String content, String result,
                                   List<WorldEvent> events) throws IOException {
         List<WorldEvent> actual = commit.events().stream()
-                .filter(event -> !"STATE_SNAPSHOT_V1".equals(event.type())).toList();
+                .filter(event -> !stateEvent(event.type())).toList();
         if (!candidate.equals(expected) || !actual.equals(events)
                 || !commit.commandId().equals(command) || !commit.commandContent().equals(content)
                 || !commit.result().equals(result)) {

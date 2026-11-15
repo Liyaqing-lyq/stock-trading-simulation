@@ -185,7 +185,23 @@ public final class ComposedIndustryScenario {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, roleContext, false);
     }
 
+    /** v3 自主世界增量档；每笔提交只保留状态变化，旧工厂与档案不迁移。 */
+    public static WorldRuntime openCompactAccountableAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION, false, true);
+    }
+
+    /** v3 外部需求世界增量档；与普通增量档使用独立运行身份。 */
+    public static WorldRuntime openCompactOperatingAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION, true, true);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, roleContext, operating, false);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact) throws Exception {
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -304,6 +320,11 @@ public final class ComposedIndustryScenario {
             data.put("external-demand", "v1");
             runManifest = new RunManifest("web-operating-autonomous-v1", runManifest.seed(), runManifest.rulesVersion(),
                     runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (compact) {
+            var data = new TreeMap<>(runManifest.dataVersions()); data.put("state-storage", "delta-v1");
+            runManifest = new RunManifest(operating ? "web-compact-operating-v1" : "web-compact-accountable-v1",
+                    runManifest.seed(), runManifest.rulesVersion(), runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,
                 new ComposedWorldScenario.Extras(charters, List.of(), readers));

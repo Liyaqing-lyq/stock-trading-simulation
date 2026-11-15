@@ -6013,7 +6013,7 @@ public final class WorldWebHost implements AutoCloseable {
             }
         }
         return new LiveStatus(runId, Long.toString(snapshot.position()),
-                Long.toString(snapshot.timeMillis()), phase, livePaused, liveFault,
+                Long.toString(snapshot.timeMillis()), phase, livePaused, current.commitFailureCode() == null ? liveFault : current.commitFailureCode(),
                 pending, physicalInFlight.size(), current.liveCompletionSlots(), runBudget,
                 personBudgets, scenes, skips, decisions,
                 lastRoundScene, lastRoundPersons, lastRoundCompany);
