@@ -55,7 +55,7 @@ public final class WorldWebApp {
     /**
      * 启动并阻塞，直至进程结束或启动失败。
      *
-     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline或world-prototype，均可省略
+     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype或world-behavior，均可省略
      * @throws Exception 启动失败（凭据、目录、端口、世界）
      */
     public static void main(String[] args) throws Exception {
@@ -72,10 +72,10 @@ public final class WorldWebApp {
                 && !mode.equals("dialogue") && !mode.equals("evidence")
                 && !mode.equals("social") && !mode.equals("engineering")
                 && !mode.equals("groups") && !mode.equals("intent")
-                && !mode.equals("composed") && !mode.equals("custody") && !mode.equals("research") && !mode.equals("world") && !mode.equals("world-manager") && !mode.equals("world-debug") && !mode.equals("world-ready") && !mode.equals("world-manufacturing") && !mode.equals("world-industry") && !mode.equals("world-hydro") && !mode.equals("world-baseline") && !mode.equals("world-prototype")) {
+                && !mode.equals("composed") && !mode.equals("custody") && !mode.equals("research") && !mode.equals("world") && !mode.equals("world-manager") && !mode.equals("world-debug") && !mode.equals("world-ready") && !mode.equals("world-manufacturing") && !mode.equals("world-industry") && !mode.equals("world-hydro") && !mode.equals("world-baseline") && !(mode.equals("world-prototype") || mode.equals("world-behavior")) && !mode.equals("world-behavior")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline或world-prototype");
+                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype或world-behavior");
         }
         boolean worldMode = mode.equals("world");
         boolean managerMode = mode.equals("world-manager");
@@ -112,9 +112,9 @@ public final class WorldWebApp {
         }
 
         SceneRoutes routes = SceneRoutes.open(workDir);
-        WorldWebHost host = mode.equals("world-prototype")
+        WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior"))
                 ? new WorldWebHost(() -> {
-                    var runtime=edu.cufe.auction.world.composed.ComposedIndustryScenario.openPrototype(workDir.resolve("world-industry-prototype-v1.journal"));
+                    var runtime=mode.equals("world-behavior") ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openBehavior(workDir.resolve("world-industry-behavior-v1.journal")) : edu.cufe.auction.world.composed.ComposedIndustryScenario.openPrototype(workDir.resolve("world-industry-prototype-v1.journal"));
                     return new WorldWebHost.Opened(runtime,runtime.profile().manifest().runId());
                 },routes,new LiveDecisionProvider(keys))
                 : baselineMode
@@ -250,7 +250,7 @@ public final class WorldWebApp {
             server.attachExperimentReport(new com.fasterxml.jackson.databind.ObjectMapper()
                     .readTree(Files.readString(experimentReport)));
         }
-        if (mode.equals("world-prototype")) server.enableLocalAccess();
+        if ((mode.equals("world-prototype") || mode.equals("world-behavior"))) server.enableLocalAccess();
         try {
             server.start();
         } catch (IOException failure) {
@@ -267,11 +267,11 @@ public final class WorldWebApp {
         System.out.println("工作目录：" + workDir.toAbsolutePath().normalize());
         System.out.println("场景配置：" + workDir.resolve(SceneRoutes.FILE_NAME).toAbsolutePath()
                 .normalize());
-        if (mode.equals("world-prototype")) System.out.println("本机直达：打开上方网址即可使用，无需登录码。");
+        if ((mode.equals("world-prototype") || mode.equals("world-behavior"))) System.out.println("本机直达：打开上方网址即可使用，无需登录码。");
         else System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
         System.out.println("分支运行管理：本机端口 " + BRANCH_PORT_FROM + "-" + BRANCH_PORT_TO
                 + "，最多 " + MAX_BRANCH_RUNS + " 个；创建不等于启动，页面按真实状态显示。");
-        System.out.println(mode.equals("world-prototype") ? "模式：十个虚构公司及A股机制原型；季度实验档，模型场景默认关闭。" : baselineMode ? "模式：最终十公司基线实验档；经理和预算须真实决议，模型默认关闭。参数未作现实校准。" : hydroMode ? "模式：水电/资源/三制造同世界增量调试；不是最终十公司基线，模型默认关闭。" : industryMode
+        System.out.println(mode.equals("world-behavior") ? "模式：制造持续经营整改实验；规则不调用模型，不补资金或成交；尚未完成整体行为验收。" : mode.equals("world-prototype") ? "模式：十个虚构公司及A股机制原型；季度实验档，模型场景默认关闭。" : baselineMode ? "模式：最终十公司基线实验档；经理和预算须真实决议，模型默认关闭。参数未作现实校准。" : hydroMode ? "模式：水电/资源/三制造同世界增量调试；不是最终十公司基线，模型默认关闭。" : industryMode
                 ? "模式：资源及三制造同世界经营调试（world-industry-v1.journal）；真实任职、预算、作业与资金，模型默认关闭。"
                 : manufacturingMode
                 ? "模式：三制造产品经营与扩产（world-manufacturing-v1.journal）；开局资料、任职、预算和经营均按真实过程，模型默认关闭。"

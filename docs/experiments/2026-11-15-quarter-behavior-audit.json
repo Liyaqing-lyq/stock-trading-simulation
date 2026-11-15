@@ -1,0 +1,517 @@
+{
+  "sourceSha256": {
+    "opening.json": "dc513da47177b990e2a88f511f0f6dcf2e204ff7b728b19c4c6a5a8d6fb2bc41",
+    "final.json": "4e034cac3313c4a31c4793a09f2de39533002eb67cfe46d3ae3f4f219706224b",
+    "policy.json": "4fc7b4cc88715e044c3e73a4b5652d5a2a7c801300a4a898edd9c835b28cab00"
+  },
+  "actualTrades": 108,
+  "allThirtyCompanyPeriodsExplainedByCaps": true,
+  "quantityHistogram": {
+    "1": 108
+  },
+  "tradingAccounts": [
+    "ACC-FUND",
+    "INV"
+  ],
+  "buyerAccounts": [
+    "ACC-FUND"
+  ],
+  "sellerAccounts": [
+    "INV"
+  ],
+  "sellerPlacedFirst": 108,
+  "sameFormulaPriceMatches": 108,
+  "buyLimitMinusActualTotal": "12.30",
+  "tradingDays": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70
+  ],
+  "stocks": [
+    {
+      "symbol": "AGED",
+      "company": "aged-company",
+      "issued": 1000,
+      "openingFund": 100,
+      "openingSeller": 100,
+      "periods": [
+        {
+          "period": 1,
+          "startFund": 100,
+          "startSeller": 100,
+          "sellerFloor": 80,
+          "target": 110,
+          "predictedFromCaps": 10,
+          "actual": 10,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 2,
+          "startFund": 110,
+          "startSeller": 90,
+          "sellerFloor": 80,
+          "target": null,
+          "predictedFromCaps": 0,
+          "actual": 0,
+          "binding": "no-buy-target"
+        },
+        {
+          "period": 3,
+          "startFund": 110,
+          "startSeller": 90,
+          "sellerFloor": 80,
+          "target": null,
+          "predictedFromCaps": 0,
+          "actual": 0,
+          "binding": "no-buy-target"
+        }
+      ],
+      "trades": 10,
+      "prices": [
+        "9.9"
+      ],
+      "lastTradeDay": 10
+    },
+    {
+      "symbol": "BNK1",
+      "company": "north",
+      "issued": 200,
+      "openingFund": 20,
+      "openingSeller": 20,
+      "periods": [
+        {
+          "period": 1,
+          "startFund": 20,
+          "startSeller": 20,
+          "sellerFloor": 16,
+          "target": 22,
+          "predictedFromCaps": 2,
+          "actual": 2,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 2,
+          "startFund": 22,
+          "startSeller": 18,
+          "sellerFloor": 16,
+          "target": 24,
+          "predictedFromCaps": 2,
+          "actual": 2,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 3,
+          "startFund": 24,
+          "startSeller": 16,
+          "sellerFloor": 16,
+          "target": 26,
+          "predictedFromCaps": 0,
+          "actual": 0,
+          "binding": "seller-floor"
+        }
+      ],
+      "trades": 4,
+      "prices": [
+        "14.85"
+      ],
+      "lastTradeDay": 32
+    },
+    {
+      "symbol": "CUFE-A",
+      "company": "eng-a",
+      "issued": 1000,
+      "openingFund": 60,
+      "openingSeller": 540,
+      "periods": [
+        {
+          "period": 1,
+          "startFund": 60,
+          "startSeller": 540,
+          "sellerFloor": 432,
+          "target": 66,
+          "predictedFromCaps": 6,
+          "actual": 6,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 2,
+          "startFund": 66,
+          "startSeller": 534,
+          "sellerFloor": 432,
+          "target": 72,
+          "predictedFromCaps": 6,
+          "actual": 6,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 3,
+          "startFund": 72,
+          "startSeller": 528,
+          "sellerFloor": 432,
+          "target": 79,
+          "predictedFromCaps": 7,
+          "actual": 7,
+          "binding": "buyer-target"
+        }
+      ],
+      "trades": 19,
+      "prices": [
+        "9.9"
+      ],
+      "lastTradeDay": 67
+    },
+    {
+      "symbol": "DIGITAL",
+      "company": "digital-company",
+      "issued": 1000,
+      "openingFund": 100,
+      "openingSeller": 100,
+      "periods": [
+        {
+          "period": 1,
+          "startFund": 100,
+          "startSeller": 100,
+          "sellerFloor": 80,
+          "target": 110,
+          "predictedFromCaps": 10,
+          "actual": 10,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 2,
+          "startFund": 110,
+          "startSeller": 90,
+          "sellerFloor": 80,
+          "target": 121,
+          "predictedFromCaps": 10,
+          "actual": 10,
+          "binding": "seller-floor"
+        },
+        {
+          "period": 3,
+          "startFund": 120,
+          "startSeller": 80,
+          "sellerFloor": 80,
+          "target": 132,
+          "predictedFromCaps": 0,
+          "actual": 0,
+          "binding": "seller-floor"
+        }
+      ],
+      "trades": 20,
+      "prices": [
+        "9.9",
+        "9.93"
+      ],
+      "lastTradeDay": 40
+    },
+    {
+      "symbol": "HY1",
+      "company": "hydro",
+      "issued": 1000,
+      "openingFund": 100,
+      "openingSeller": 100,
+      "periods": [
+        {
+          "period": 1,
+          "startFund": 100,
+          "startSeller": 100,
+          "sellerFloor": 80,
+          "target": null,
+          "predictedFromCaps": 0,
+          "actual": 0,
+          "binding": "no-buy-target"
+        },
+        {
+          "period": 2,
+          "startFund": 100,
+          "startSeller": 100,
+          "sellerFloor": 80,
+          "target": 110,
+          "predictedFromCaps": 10,
+          "actual": 10,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 3,
+          "startFund": 110,
+          "startSeller": 90,
+          "sellerFloor": 80,
+          "target": 121,
+          "predictedFromCaps": 10,
+          "actual": 10,
+          "binding": "seller-floor"
+        }
+      ],
+      "trades": 20,
+      "prices": [
+        "14.21",
+        "18.32"
+      ],
+      "lastTradeDay": 70
+    },
+    {
+      "symbol": "MS1",
+      "company": "mfg-struct",
+      "issued": 200,
+      "openingFund": 20,
+      "openingSeller": 20,
+      "periods": [
+        {
+          "period": 1,
+          "startFund": 20,
+          "startSeller": 20,
+          "sellerFloor": 16,
+          "target": 22,
+          "predictedFromCaps": 2,
+          "actual": 2,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 2,
+          "startFund": 22,
+          "startSeller": 18,
+          "sellerFloor": 16,
+          "target": 24,
+          "predictedFromCaps": 2,
+          "actual": 2,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 3,
+          "startFund": 24,
+          "startSeller": 16,
+          "sellerFloor": 16,
+          "target": 26,
+          "predictedFromCaps": 0,
+          "actual": 0,
+          "binding": "seller-floor"
+        }
+      ],
+      "trades": 4,
+      "prices": [
+        "9.9",
+        "9.92"
+      ],
+      "lastTradeDay": 32
+    },
+    {
+      "symbol": "MT1",
+      "company": "mfg-tech",
+      "issued": 300,
+      "openingFund": 30,
+      "openingSeller": 30,
+      "periods": [
+        {
+          "period": 1,
+          "startFund": 30,
+          "startSeller": 30,
+          "sellerFloor": 24,
+          "target": 33,
+          "predictedFromCaps": 3,
+          "actual": 3,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 2,
+          "startFund": 33,
+          "startSeller": 27,
+          "sellerFloor": 24,
+          "target": 36,
+          "predictedFromCaps": 3,
+          "actual": 3,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 3,
+          "startFund": 36,
+          "startSeller": 24,
+          "sellerFloor": 24,
+          "target": 39,
+          "predictedFromCaps": 0,
+          "actual": 0,
+          "binding": "seller-floor"
+        }
+      ],
+      "trades": 6,
+      "prices": [
+        "9.9",
+        "10.08"
+      ],
+      "lastTradeDay": 33
+    },
+    {
+      "symbol": "MV1",
+      "company": "mfg-versa",
+      "issued": 150,
+      "openingFund": 15,
+      "openingSeller": 15,
+      "periods": [
+        {
+          "period": 1,
+          "startFund": 15,
+          "startSeller": 15,
+          "sellerFloor": 12,
+          "target": 16,
+          "predictedFromCaps": 1,
+          "actual": 1,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 2,
+          "startFund": 16,
+          "startSeller": 14,
+          "sellerFloor": 12,
+          "target": 17,
+          "predictedFromCaps": 1,
+          "actual": 1,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 3,
+          "startFund": 17,
+          "startSeller": 13,
+          "sellerFloor": 12,
+          "target": 18,
+          "predictedFromCaps": 1,
+          "actual": 1,
+          "binding": "buyer-target"
+        }
+      ],
+      "trades": 3,
+      "prices": [
+        "9.9",
+        "10.13",
+        "10.36"
+      ],
+      "lastTradeDay": 61
+    },
+    {
+      "symbol": "PH1",
+      "company": "pharma",
+      "issued": 200,
+      "openingFund": 20,
+      "openingSeller": 20,
+      "periods": [
+        {
+          "period": 1,
+          "startFund": 20,
+          "startSeller": 20,
+          "sellerFloor": 16,
+          "target": 22,
+          "predictedFromCaps": 2,
+          "actual": 2,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 2,
+          "startFund": 22,
+          "startSeller": 18,
+          "sellerFloor": 16,
+          "target": null,
+          "predictedFromCaps": 0,
+          "actual": 0,
+          "binding": "no-buy-target"
+        },
+        {
+          "period": 3,
+          "startFund": 22,
+          "startSeller": 18,
+          "sellerFloor": 16,
+          "target": null,
+          "predictedFromCaps": 0,
+          "actual": 0,
+          "binding": "no-buy-target"
+        }
+      ],
+      "trades": 2,
+      "prices": [
+        "9.9"
+      ],
+      "lastTradeDay": 2
+    },
+    {
+      "symbol": "RESOURCE",
+      "company": "resources",
+      "issued": 1000,
+      "openingFund": 100,
+      "openingSeller": 100,
+      "periods": [
+        {
+          "period": 1,
+          "startFund": 100,
+          "startSeller": 100,
+          "sellerFloor": 80,
+          "target": 110,
+          "predictedFromCaps": 10,
+          "actual": 10,
+          "binding": "buyer-target"
+        },
+        {
+          "period": 2,
+          "startFund": 110,
+          "startSeller": 90,
+          "sellerFloor": 80,
+          "target": 121,
+          "predictedFromCaps": 10,
+          "actual": 10,
+          "binding": "seller-floor"
+        },
+        {
+          "period": 3,
+          "startFund": 120,
+          "startSeller": 80,
+          "sellerFloor": 80,
+          "target": 132,
+          "predictedFromCaps": 0,
+          "actual": 0,
+          "binding": "seller-floor"
+        }
+      ],
+      "trades": 20,
+      "prices": [
+        "9.9",
+        "10.35"
+      ],
+      "lastTradeDay": 40
+    }
+  ],
+  "hydro": {
+    "revenue": "46826",
+    "expenses": "2899.73",
+    "profit": "43926.27",
+    "profitMargin": "0.9380743603980694485969333276",
+    "openingEquity": "34998.57",
+    "quarterProfitOnOpeningEquity": "1.255087565006227397290803596",
+    "openingGridCash": "5E+4",
+    "closingGridCash": "5.5E+3",
+    "receivable": 2326
+  }
+}

@@ -113,11 +113,20 @@ public final class ComposedIndustryScenario {
         return open(journal, true, true, true, true);
     }
 
+    /** 独立行为整改实验档；显式冻结规则，不改变旧季度或自动授予经理权限。 */
+    public static WorldRuntime openBehavior(Path journal) throws Exception {
+        return open(journal, true, true, true, true, true);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline) throws Exception {
         return open(journal, expansion, hydro, baseline, false);
     }
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, false);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior) throws Exception {
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -189,6 +198,12 @@ public final class ComposedIndustryScenario {
             data.put("journal-codec", "gzip-frame-v1");
             data.put("role-decision-guide", "v1");
             runManifest = new RunManifest("web-industry-prototype-v1", runManifest.seed(), runManifest.rulesVersion(),
+                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (behavior) {
+            var data = new TreeMap<>(runManifest.dataVersions());
+            data.put("behavior-policy", ManufacturingBehaviorPolicy.VERSION);
+            runManifest = new RunManifest("web-industry-behavior-v1", runManifest.seed(), runManifest.rulesVersion(),
                     runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,

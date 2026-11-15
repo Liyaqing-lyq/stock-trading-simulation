@@ -64,7 +64,9 @@ final class WorldOverviewView {
             people.add(row);
         }
         return Map.of("available",true,"runId",world.profile().manifest().runId(),"position",Long.toString(snapshot.position()),
-                "timeMillis",Long.toString(snapshot.timeMillis()),"companies",companies,"people",people,"names",names);
+                "timeMillis",Long.toString(snapshot.timeMillis()),"companies",companies,"people",people,"names",names,
+                "behavior", Map.of("enabled", ManufacturingBehaviorLoop.enabled(world), "decisions",
+                        ManufacturingBehaviorLoop.enabled(world) ? ManufacturingBehaviorLoop.audit(world) : List.of()));
     }
 
     private static Map<String,Object> statement(Map<String,BigDecimal> assets,Map<String,BigDecimal> contra,

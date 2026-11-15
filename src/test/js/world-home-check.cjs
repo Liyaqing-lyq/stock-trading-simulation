@@ -4,7 +4,8 @@ class Element {
   append(...values){this.children.push(...values);}
   replaceChildren(...values){this.children=values;this.textContent='';}
   setAttribute(k,v){this.attributes[k]=v;}
-  addEventListener(){}
+  addEventListener(name,handler){(this.handlers??={})[name]=handler;}
+  requestSubmit(){this.submitted=(this.submitted||0)+1;}
 }
 const nodes=new Map(),nav=new Map();
 const html=fs.readFileSync('src/main/resources/web/index.html','utf8');
@@ -29,6 +30,11 @@ nodes.get('world-report-period').value='1';
 context.window.WorldHome.render({available:true,timeMillis:'0',companies:[company],people:[],names:{}});
 assert.equal(nodes.get('world-cash-chart').children.length,0);
 assert.equal(nodes.get('world-cash-summary').textContent,'');
+context.window.WorldHome.render({available:true,timeMillis:'172800000',companies:[company],people:[],names:{},behavior:{enabled:true,decisions:[{timeMillis:86400000,action:'WAIT',reason:'等待实际回款',results:[]}]}});
+assert.equal(nodes.get('world-behavior').hidden,false);
+nodes.get('world-behavior-day').handlers.click();
+assert.equal(nodes.get('advance-target').value,'259200000');
+assert.equal(nodes.get('advance-form').submitted,1,'advance uses the existing guarded form');
 context.window.WorldHome.clear();
 for(const [id,node] of nodes)if(id.startsWith('world-')&&!['world-report-period','world-person-filter','world-open-controls'].includes(id)){
   assert.equal(node.children.length,0,id+' retains hidden data');assert.equal(node.textContent,'',id+' retains hidden text');

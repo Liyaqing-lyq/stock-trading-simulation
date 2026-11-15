@@ -1,0 +1,28 @@
+{
+  "experimentDays": 23,
+  "webDays": 24,
+  "operatingDecisions": 92,
+  "actualBusinessActions": 5,
+  "quantity": "20",
+  "receipt": "3200.00",
+  "materialCost": "480.00",
+  "laborCost": "80.00",
+  "openingCash": "12000.00",
+  "endingCash": "14640.00",
+  "customerCash": "6800.00",
+  "cashConservationFourCounterparties": "22000.00",
+  "minimumCollectionDays": 15,
+  "prePeriodCloseProfit": "2640.00",
+  "profitIsUncalibrated": true,
+  "trades": 0,
+  "beforeAfterWebRestartSame": true,
+  "runtimeSourceFiles": 1455,
+  "sourceHashes": {
+    "world-v1\\behavior-audit.json": "b198e41a83660ac9cd2eb7f6ef3e464ef749d1905b9e72962af89a5cb727e7d3",
+    "world-v1\\final-accounts.json": "e1511b6927f8c08ed23c3d61a5f45fa4b03868d423966a90f45f0641f6d216d9",
+    "world-v1\\final-report.json": "d2e6b146d311deedbf2411035dcc380c5e412019a950ac0776e3c1b8d7a156d3",
+    "world-v1\\opening-report.json": "ee4cfb28156caed087d75d18359e1b0fdb77e0017708b967083c3c2802888eaa",
+    "world-v1\\recovered.json": "1a7a8486f939705322380a3facc5d2122e6afbce0e18f5a267a6c17c43eeeabf",
+    "world-v1\\scene-routes.json": "b436acb8f0cb8550b5799b4b19a6ccc484cdb4955289c2712e550a87b6ce8449"
+  }
+}
