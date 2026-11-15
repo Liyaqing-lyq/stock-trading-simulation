@@ -55,7 +55,7 @@ public final class WorldWebApp {
     /**
      * 启动并阻塞，直至进程结束或启动失败。
      *
-     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable或world-operating，均可省略
+     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning或world-planning-operating，均可省略
      * @throws Exception 启动失败（凭据、目录、端口、世界）
      */
     public static void main(String[] args) throws Exception {
@@ -67,10 +67,12 @@ public final class WorldWebApp {
         }
 
         String mode = args.length > 3 ? args[3] : "live";
+        boolean planningMode = mode.equals("world-planning");
+        boolean planningOperatingMode = mode.equals("world-planning-operating");
         boolean operatingMode = mode.equals("world-operating");
         boolean accountableMode = mode.equals("world-accountable");
         boolean autonomousMode = mode.equals("world-autonomous") || mode.equals("world-events")
-                || operatingMode || accountableMode;
+                || operatingMode || accountableMode || planningMode || planningOperatingMode;
         if (!mode.equals("live") && !mode.equals("scripted") && !mode.equals("cognition")
                 && !mode.equals("belief") && !mode.equals("media") && !mode.equals("interview")
                 && !mode.equals("dialogue") && !mode.equals("evidence")
@@ -79,7 +81,7 @@ public final class WorldWebApp {
                 && !mode.equals("composed") && !mode.equals("custody") && !mode.equals("research") && !mode.equals("world") && !mode.equals("world-manager") && !mode.equals("world-debug") && !mode.equals("world-ready") && !mode.equals("world-manufacturing") && !mode.equals("world-industry") && !mode.equals("world-hydro") && !mode.equals("world-baseline") && !(mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode)) && !mode.equals("world-behavior")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable或world-operating");
+                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning或world-planning-operating");
         }
         boolean worldMode = mode.equals("world");
         boolean managerMode = mode.equals("world-manager");
@@ -117,13 +119,15 @@ public final class WorldWebApp {
 
         boolean routesAbsent = !Files.exists(workDir.resolve(SceneRoutes.FILE_NAME));
         SceneRoutes routes = SceneRoutes.open(workDir);
-        if ((operatingMode || accountableMode) && routesAbsent) {
+        if ((operatingMode || accountableMode || planningMode || planningOperatingMode) && routesAbsent) {
             routes.replace(0, routes.view().routes().stream().map(r -> new SceneRoutes.Route(
                     r.scene(), r.slotId(), r.model(), false, 2500, 35_000_000, 2048, 4, "lifecycle-v1")).toList());
         }
         WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode))
                 ? new WorldWebHost(() -> {
-                    var runtime=operatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openOperatingAutonomous(workDir.resolve("world-operating-v1.journal"))
+                    var runtime=planningOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openPlanningOperating(workDir.resolve("world-planning-operating-v4.journal"))
+                            : planningMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openPlanningAutonomous(workDir.resolve("world-planning-v4.journal"))
+                            : operatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openOperatingAutonomous(workDir.resolve("world-operating-v1.journal"))
                             : accountableMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openAccountableAutonomous(workDir.resolve("world-accountable-v3.journal"))
                             : autonomousMode ? (mode.equals("world-events") ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openEventAutonomous(workDir.resolve("world-autonomous-v2.journal")) : edu.cufe.auction.world.composed.ComposedIndustryScenario.openAutonomous(workDir.resolve("world-autonomous-v1.journal"))) : mode.equals("world-connected") ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openConnected(workDir.resolve("world-connected-v1.journal")) : mode.equals("world-behavior") ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openBehavior(workDir.resolve("world-industry-behavior-v1.journal")) : edu.cufe.auction.world.composed.ComposedIndustryScenario.openPrototype(workDir.resolve("world-industry-prototype-v1.journal"));
                     return new WorldWebHost.Opened(runtime,runtime.profile().manifest().runId());

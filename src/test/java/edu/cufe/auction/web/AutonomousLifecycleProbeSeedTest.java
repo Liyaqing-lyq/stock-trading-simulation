@@ -70,6 +70,29 @@ class AutonomousLifecycleProbeSeedTest {
         assertArrayEquals(Files.readAllBytes(seed.resolve(SceneRoutes.FILE_NAME)), Files.readAllBytes(out.resolve(SceneRoutes.FILE_NAME)));
     }
 
+    @Test void planningModesFreezeTheirRelativePromptBeforeLoadingKeys() throws Exception {
+        for (String mode : new String[]{"PLANNING", "PLANNING_OPERATING"}) {
+            Path config = root.resolve(mode + ".json"), out = root.resolve(mode);
+            JSON.writeValue(config.toFile(), new AutonomousLifecycleProbe.Config(mode, 20, 1, 86400000, 3600000, null, "same-source"));
+            assertThrows(java.io.IOException.class, () -> AutonomousLifecycleProbe.main(new String[]{out.toString(), root.resolve("absent-keys").toString(), config.toString()}));
+            assertEquals(LiveDecisionProvider.PLANNING_SYSTEM_TEXT, Files.readString(out.resolve("system-prompt.txt")));
+        }
+    }
+
+    @Test void planningSeedRequiresRelativePromptAndPreservesPersistentBytes() throws Exception {
+        Path seed = seed();
+        var frozen = (ObjectNode) JSON.readTree(Files.readString(seed.resolve("config.json")));
+        frozen.put("mode", "PLANNING_OPERATING"); writeIdentity(seed, frozen);
+        Path config = root.resolve("planning-request.json"), out = root.resolve("planning-resume");
+        JSON.writeValue(config.toFile(), new AutonomousLifecycleProbe.Config("PLANNING_OPERATING", 20, 1, 86400000, 3600000, seed.toString(), "same-source"));
+        assertThrows(IllegalArgumentException.class, () -> AutonomousLifecycleProbe.main(new String[]{out.toString(), root.resolve("absent-keys").toString(), config.toString()}));
+        assertFalse(Files.exists(out));
+        Files.writeString(seed.resolve("system-prompt.txt"), LiveDecisionProvider.PLANNING_SYSTEM_TEXT);
+        assertThrows(java.io.IOException.class, () -> AutonomousLifecycleProbe.main(new String[]{out.toString(), root.resolve("absent-keys").toString(), config.toString()}));
+        assertArrayEquals(Files.readAllBytes(seed.resolve("world.journal")), Files.readAllBytes(out.resolve("world.journal")));
+        assertArrayEquals(Files.readAllBytes(seed.resolve(SceneRoutes.FILE_NAME)), Files.readAllBytes(out.resolve(SceneRoutes.FILE_NAME)));
+    }
+
     private void reject(Path seed) throws Exception {
         Path out = root.resolve("rejected-" + seed.getFileName());
         Path config = config(seed);

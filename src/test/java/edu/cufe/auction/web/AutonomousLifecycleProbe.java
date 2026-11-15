@@ -12,12 +12,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 /** 冻结参数的真实跨期探针：没有预读、经营脚本或规则替代，保存全部原输入与回执。 */
 public final class AutonomousLifecycleProbe {
     private static final ObjectMapper JSON = new ObjectMapper();
-    /** @param mode ACCOUNTABLE为治理控制，OPERATING为有来源需求实验；seed只接续已完整结束的同版本档。 */
+    /** @param mode ACCOUNTABLE/OPERATING保留v3；PLANNING/PLANNING_OPERATING为v4治理/有来源需求实验；seed只接续已完整结束的同版本档。 */
     public record Config(String mode, int maxHttpCalls, int wallMinutes, long targetMillis,
                          long stepMillis, String seed, String sourceCommit) {
         /** 约束试跑边界，额度是上限，不是调用承诺或经营验收。 */
         public Config {
-            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING").contains(mode)
+            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING").contains(mode)
                     || maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
                     || stepMillis != 3_600_000
@@ -32,7 +32,7 @@ public final class AutonomousLifecycleProbe {
         Path seed = config.seed() == null ? null : validateSeed(config);
         Files.createDirectory(out);
         JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("config.json").toFile(), config);
-        Files.writeString(out.resolve("system-prompt.txt"), LiveDecisionProvider.DELIBERATION_SYSTEM_TEXT);
+        Files.writeString(out.resolve("system-prompt.txt"), systemPrompt(config));
         if (seed != null) {
             Files.copy(seed.resolve("world.journal"), out.resolve("world.journal"));
             Files.copy(seed.resolve(SceneRoutes.FILE_NAME), out.resolve(SceneRoutes.FILE_NAME));
@@ -44,9 +44,12 @@ public final class AutonomousLifecycleProbe {
                     new SceneRoutes.Route(r.scene(), r.slotId(), "deepseek-flash", true,
                             2500, 35_000_000, 2048, 4, "lifecycle-v1")).toList());
             try (var host = new WorldWebHost(() -> {
-                var world = config.mode().equals("OPERATING")
-                        ? ComposedIndustryScenario.openOperatingAutonomous(out.resolve("world.journal"))
-                        : ComposedIndustryScenario.openAccountableAutonomous(out.resolve("world.journal"));
+                var world = switch (config.mode()) {
+                    case "PLANNING_OPERATING" -> ComposedIndustryScenario.openPlanningOperating(out.resolve("world.journal"));
+                    case "PLANNING" -> ComposedIndustryScenario.openPlanningAutonomous(out.resolve("world.journal"));
+                    case "OPERATING" -> ComposedIndustryScenario.openOperatingAutonomous(out.resolve("world.journal"));
+                    default -> ComposedIndustryScenario.openAccountableAutonomous(out.resolve("world.journal"));
+                };
                 return new WorldWebHost.Opened(world, world.profile().manifest().runId());
             }, routes, (call, timeout) -> {
                 int index = issued.incrementAndGet();
@@ -84,10 +87,20 @@ public final class AutonomousLifecycleProbe {
                 for (String company : host.liveCapabilities().governancePersons().stream()
                         .flatMap(p -> p.governanceCompanies().stream()).distinct().sorted().toList())
                     companies.set(company, JSON.valueToTree(host.engineeringView(company)));
+                if (config.mode().startsWith("PLANNING")) {
+                    // End-of-run auditor output only; never fed into role observations or model requests.
+                    result.set("operations", JSON.valueToTree(host.operationsView(null)));
+                    result.set("admin", JSON.valueToTree(host.adminView()));
+                }
                 JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("result.json").toFile(), result);
                 System.out.println("finished=" + host.autonomyStatus().reason() + " http=" + Math.min(issued.get(), config.maxHttpCalls()));
             }
         }
+    }
+
+    private static String systemPrompt(Config config) {
+        return config.mode().startsWith("PLANNING") ? LiveDecisionProvider.PLANNING_SYSTEM_TEXT
+                : LiveDecisionProvider.DELIBERATION_SYSTEM_TEXT;
     }
 
     private static Path validateSeed(Config requested) {
@@ -106,7 +119,7 @@ public final class AutonomousLifecycleProbe {
             if (!seedConfig.equals(JSON.readTree(JSON.writeValueAsBytes(frozen))) || !seedConfig.equals(result.path("config")))
                 throw new IllegalArgumentException("种子 config.json 与 result.config 必须完整且一致");
             if (!requested.mode().equals(frozen.mode()) || !requested.sourceCommit().equals(frozen.sourceCommit())
-                    || !LiveDecisionProvider.DELIBERATION_SYSTEM_TEXT.equals(
+                    || !systemPrompt(requested).equals(
                             Files.readString(seed.resolve("system-prompt.txt"))))
                 throw new IllegalArgumentException("种子的模式、源码和系统提示词必须与当前试跑完全相同");
             var inFlight = result.path("live").path("physicalInFlight");

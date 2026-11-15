@@ -3810,8 +3810,11 @@ function renderLive(v) {
           const grounds = document.createElement("p");
           grounds.textContent = "角色陈述的依据：" + statement.basis;
           const review = document.createElement("p"); review.className = "hint";
-          review.textContent = "目标 " + text(statement.objective) + " · 下次复查（模拟毫秒） "
-            + text(statement.nextReviewAt) + " · 意图和理由不等于动作已执行。";
+          const relative = Object.prototype.hasOwnProperty.call(statement, "reviewAfterMillis");
+          review.textContent = "目标 " + text(statement.objective)
+            + (relative ? " · 从本次观察起复查间隔（模拟毫秒） " + text(statement.reviewAfterMillis)
+              : " · 下次复查（模拟毫秒） " + text(statement.nextReviewAt))
+            + " · 意图和理由不等于动作已执行。";
           detail.append(grounds, review);
         }
       } catch (_) { /* 截断或不合法回执仍保留原文和协议拒绝原因。 */ }

@@ -14,7 +14,7 @@ class WorldWebAppRouteDefaultsTest {
     @TempDir Path root;
 
     @Test void existingRevisionZeroLegacyFileRemainsByteForByteUnchangedInBothNewModes() throws Exception {
-        for (String mode : new String[]{"world-accountable", "world-operating"}) {
+        for (String mode : new String[]{"world-accountable", "world-operating", "world-planning", "world-planning-operating"}) {
             Path work = Files.createDirectory(root.resolve(mode));
             try (var routes = SceneRoutes.open(work)) { assertEquals(0, routes.view().revision()); }
             byte[] before = Files.readAllBytes(work.resolve(SceneRoutes.FILE_NAME));
@@ -28,7 +28,7 @@ class WorldWebAppRouteDefaultsTest {
     }
 
     @Test void freshExplicitModesReceiveFiniteDisabledLifecycleDefaults() throws Exception {
-        for (String mode : new String[]{"world-accountable", "world-operating"}) {
+        for (String mode : new String[]{"world-accountable", "world-operating", "world-planning", "world-planning-operating"}) {
             Path work = Files.createDirectory(root.resolve(mode));
             initialize(work, mode);
             try (var routes = SceneRoutes.open(work)) {
