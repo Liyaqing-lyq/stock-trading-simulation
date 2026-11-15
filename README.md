@@ -5,7 +5,7 @@ Java 程序设计课程项目（中央财经大学）：用多智能体模拟真
 
 ## 快速开始
 
-设计扩展请先读[总体设计基线](docs/design/总体设计基线.md)与[本轮复审及争议处置](docs/research/2026-11-05-设计复审与争议处置.md)。目标与已实现子集分开记录；下述主界面仍是课程系统，HTML 草图不代表新世界已实现。
+十公司世界已提供 [Web 实验工作台](#web-实验工作台)，可启动、推进时间、审计账目和恢复调试分支；本机已运行入口与验收状态见[当前实施](docs/CURRENT_IMPLEMENTATION.md)。设计目标见[总体设计基线](docs/design/总体设计基线.md)与[本轮复审及争议处置](docs/research/2026-11-05-设计复审与争议处置.md)。下述 JavaFX、控制台与独立夹具保留为课程演示和分层检查入口。
 
 持续施工与接续见[实施 Plan](docs/superpowers/plans/2026-11-06-world-implementation.md)。世界基础调试夹具可运行 `mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldFoundationDemo`；同一路径重跑复用原付款回报，不重复发钱。它尚未接入股票、公司、银行或模型。
 
@@ -28,7 +28,7 @@ mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldRoleTradingDemo -D
 # 原命令再跑一次不重复收付款。世界存档放logs，课程验收会清理data目录。
 ```
 
-制造夹具连接同一世界交易和现金日志，治理夹具加入五席预算表决、经营承诺和固定期间复盘。schema6人物阅读夹具保存任职、固定版本、实际阅读和本人经历。schema7四岗交易夹具通过绑定人物会话依次提交研究、经理目标、风控审核、经理确认及真实子单，prepare保留部分成交后的活动单，full恢复到绝对目标60股，第三次启动逐条重发原计划并保持成交与位置不变。以上采用model=none，真实模型、认知、媒体、银行和新世界工作台继续按实施Plan推进。具体证据见[运行记录](docs/05-运行与验证记录.md)。
+制造夹具连接同一世界交易和现金日志，治理夹具加入五席预算表决、经营承诺和固定期间复盘。schema6人物阅读夹具保存任职、固定版本、实际阅读和本人经历。schema7四岗交易夹具通过绑定人物会话依次提交研究、经理目标、风控审核、经理确认及真实子单，prepare保留部分成交后的活动单，full恢复到绝对目标60股，第三次启动逐条重发原计划并保持成交与位置不变。以上独立夹具采用model=none，其历史范围不代表最新十公司 Web 的能力；当前可用项和剩余任务见[实施 Plan](docs/superpowers/plans/2026-11-06-world-implementation.md)，实际证据见[运行记录](docs/05-运行与验证记录.md)。
 
 需要 JDK 17+（本机为 JDK 21）。仓库自带 Maven Wrapper，**无需安装 Maven**。
 
@@ -124,15 +124,17 @@ docs/       需求拆解、架构设计（类图/时序图）、接口定义、�
 
 ## Web 实验工作台
 
-在本机启动（JDK 21）：
+十公司内部调试版在本机启动（JDK 21）：
 
 ```powershell
-.\mvnw.cmd compile exec:java "-Dexec.mainClass=edu.cufe.auction.app.WorldWebApp"
+.\mvnw.cmd compile exec:java "-Dexec.mainClass=edu.cufe.auction.app.WorldWebApp" "-Dexec.args=logs/web-baseline C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt 18088 world-baseline"
 ```
 
-打开启动窗口显示的本机网址，输入一次性管理员引导凭据。默认读取用户指定的外部五Key文件，不把API Key粘贴到登录框。引导凭据每次登录后轮换，返回管理员时使用控制台新值。工作目录默认为logs/web-workbench，重启沿用同一世界。
+打开启动窗口显示的本机网址，输入一次性管理员引导凭据。上例读取用户指定的外部五Key文件，不把 API Key 粘贴到登录框。引导凭据每次登录后轮换，返回管理员时使用控制台新值。重启使用同一工作目录恢复原世界；端口占用时明确报错，不会停止其他运行。省略参数仍保留旧 `live` 模式和 `logs/web-workbench`，不会把旧档改成十公司。
 
-可观察世界、账户、成交与分红、公司经营治理、账户表现历史、人物任职和信息阅读，切换alice/bob/carol/dave/erin/investor人物视角，配置五场景的模型/Key槽位/预算。Key默认遮罩，显式查看15秒后清除。研究与交易角色已连接有界模型单轮；默认场景关闭，启动、阅读页面或保存配置不会自动调用。公司治理、媒体与评估场景的自主执行，以及完整自主世界仍在实施。业务详情与模型运行证据见docs/05第33、35节。
+新开局包含三制造、工程、银行、研发、资源、水电、数字服务和陈酿，共十家发行人。上帝可核对真实账目、治理、历史和分支，人物只能使用真实任职下的工具。经理和经营预算须经治理建立，不在开局预置。详细步骤与有限需求、实验参数和未开放能力见[十公司开局与调试边界](docs/design/十公司开局与调试边界.md)。
+
+五组 Key 默认遮罩，显式查看后 15 秒清除。当前档案支持机构研究、交易执行、媒体社交和公司治理的有界模型轮次，评估场景仍未接执行器。所有场景默认关闭，启动、阅读和保存配置不会自动调用；在“模型运行”中选择人物及公司并开始一轮。程序检查、真实模型行为与现实校准分别记录，本版不宣称总体合理性已获证明。最新运行证据见[当前实施](docs/CURRENT_IMPLEMENTATION.md)。
 
 ## 配置
 

@@ -438,6 +438,58 @@ public final class WorldWebServer implements AutoCloseable {
                 requirePerson(exchange, session.get(), () -> personView(exchange, session.get()));
                 return;
             }
+            if ("/api/admin/manufacturing".equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> manufacturingView(exchange, null));
+                return;
+            }
+            if ("/api/me/manufacturing".equals(path) && "GET".equals(method)) {
+                requirePerson(exchange, session.get(), () -> manufacturingView(exchange, session.get().personId()));
+                return;
+            }
+            if ("/api/me/manufacturing/action".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> manufacturingAction(exchange, session.get()));
+                return;
+            }
+            if ("/api/admin/operations".equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> operationsView(exchange, null));
+                return;
+            }
+            if ("/api/me/operations".equals(path) && "GET".equals(method)) {
+                requirePerson(exchange, session.get(), () -> operationsView(exchange, session.get().personId()));
+                return;
+            }
+            if ("/api/me/resources/action".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> resourceAction(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/hydro/action".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> hydroAction(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/digital/action".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> digitalAction(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/aged/action".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> agedAction(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/operations/action".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> operationsAction(exchange, session.get()));
+                return;
+            }
+            if ("/api/admin/research".equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> researchView(exchange, null));
+                return;
+            }
+            if ("/api/me/research".equals(path) && "GET".equals(method)) {
+                requirePerson(exchange, session.get(), () -> researchView(exchange, session.get().personId()));
+                return;
+            }
+            if ("/api/me/research/action".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> researchAction(exchange, session.get()));
+                return;
+            }
             if ("/api/admin/engineering".equals(path) && "POST".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> engineeringAdmin(exchange));
                 return;
@@ -619,6 +671,22 @@ public final class WorldWebServer implements AutoCloseable {
                 && "POST".equals(method)) {
             return true;
         }
+        if ((("/api/admin/manufacturing".equals(path) || "/api/me/manufacturing".equals(path))
+                && "GET".equals(method))
+                || ("/api/me/manufacturing/action".equals(path) && "POST".equals(method))) return true;
+        if ((("/api/admin/operations".equals(path) || "/api/me/operations".equals(path))
+                && "GET".equals(method))
+                || ("/api/me/operations/action".equals(path) && "POST".equals(method))
+                || ("/api/me/resources/action".equals(path) && "POST".equals(method))
+                || ("/api/me/digital/action".equals(path) && "POST".equals(method))
+                || ("/api/me/aged/action".equals(path) && "POST".equals(method))
+                || ("/api/me/hydro/action".equals(path) && "POST".equals(method))) return true;
+        if ((("/api/admin/research".equals(path) || "/api/me/research".equals(path))
+                && "GET".equals(method))
+                || ("/api/me/research/action".equals(path) && "POST".equals(method))) {
+            return true;
+        }
+
         if ("/api/admin/engineering".equals(path) && "POST".equals(method)) {
             return true;
         }
@@ -1774,6 +1842,227 @@ public final class WorldWebServer implements AutoCloseable {
     // ---------------------------------------------------------------- 工程（18c 第一切片）
 
     /** 管理端工程视图：选择一家公司，一个只读请求返回同一快照的全部区块。 */
+    private static final Set<String> MANUFACTURING_FIELDS = Set.of("expectedPosition", "commandId",
+            "taskId", "dueTimeMillis", "durationMillis", "action", "businessId", "resultId", "quantity",
+            "unitPrice", "promisedDeliveryAt", "period", "fundSource");
+
+    private void manufacturingView(HttpExchange exchange, String person) throws IOException, WorldWebHost.BusyException {
+        try {
+            send(exchange, 200, mapper.writeValueAsString(host.manufacturingView(person)));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
+    private void manufacturingAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        try {
+            JsonNode body = jsonBody(exchange, MANUFACTURING_FIELDS);
+            String price = requiredText(body, "unitPrice");
+            if (!price.matches("[0-9]{1,18}(\\.[0-9]{1,2})?")) {
+                throw new IllegalArgumentException("单价须为最多两位小数的非负金额文本");
+            }
+            ManufacturingWeb.Command command = new ManufacturingWeb.Command(
+                    researchInteger(body, "expectedPosition"), requiredText(body, "commandId"),
+                    requiredText(body, "taskId"), researchInteger(body, "dueTimeMillis"),
+                    researchInteger(body, "durationMillis"), requiredText(body, "action"),
+                    optionalText(body, "businessId"), optionalText(body, "resultId"),
+                    researchInteger(body, "quantity"), new java.math.BigDecimal(price),
+                    researchInteger(body, "promisedDeliveryAt"), researchInteger(body, "period"),
+                    optionalText(body, "fundSource"));
+            send(exchange, 200, mapper.writeValueAsString(host.scheduleManufacturing(session.personId(), command)));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对"));
+        } catch (IllegalArgumentException invalid) { send(exchange, 400, error("INVALID", invalid.getMessage())); }
+        catch (IllegalStateException invalid) { send(exchange, 409, error("CONFLICT", invalid.getMessage())); }
+        catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
+    private static final Set<String> RESEARCH_FIELDS = Set.of("expectedPosition", "commandId",
+            "taskId", "dueTimeMillis", "companyId", "action", "projectId", "stage", "meetingId",
+            "durationMillis", "materialDeadline", "opensAt", "closesAt", "relatedSeats", "materials");
+
+    private void operationsView(HttpExchange exchange, String person) throws IOException, WorldWebHost.BusyException {
+        try {
+            send(exchange, 200, mapper.writeValueAsString(host.operationsView(person)));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
+    private void operationsAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        try {
+            JsonNode body = jsonBody(exchange, Set.of("expectedPosition", "commandId", "taskId", "dueTimeMillis",
+                    "durationMillis", "companyId", "action", "fields"));
+            var action = edu.cufe.auction.world.CompanyOperationsRun.Action.valueOf(requiredText(body, "action"));
+            var fields = OperationsWeb.fields(body.get("fields"), action);
+            var command = new OperationsWeb.Command(researchInteger(body, "expectedPosition"),
+                    requiredText(body, "commandId"), requiredText(body, "taskId"), researchInteger(body, "dueTimeMillis"),
+                    researchInteger(body, "durationMillis"), requiredText(body, "companyId"), action, fields);
+            send(exchange, 200, mapper.writeValueAsString(host.scheduleOperations(session.personId(), command)));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对"));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage()));
+        } catch (IllegalStateException invalid) {
+            send(exchange, 409, error("CONFLICT", invalid.getMessage()));
+        } catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
+    private void resourceAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        try {
+            JsonNode body = jsonBody(exchange, Set.of("expectedPosition", "commandId", "taskId", "dueTimeMillis",
+                    "durationMillis", "companyId", "action", "fields"));
+            var request = edu.cufe.auction.world.ResourceDecisionTools.request(new edu.cufe.auction.world.ResourceDecisionTools.Draft(
+                    requiredText(body, "action"), body.get("fields")));
+            var command = new OperationsWeb.ResourceCommand(researchInteger(body, "expectedPosition"),
+                    requiredText(body, "commandId"), requiredText(body, "taskId"), researchInteger(body, "dueTimeMillis"),
+                    researchInteger(body, "durationMillis"), requiredText(body, "companyId"), request);
+            send(exchange, 200, mapper.writeValueAsString(host.scheduleResource(session.personId(), command)));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对"));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage()));
+        } catch (IllegalStateException invalid) {
+            send(exchange, 409, error("CONFLICT", invalid.getMessage()));
+        } catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
+    private void digitalAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        try {
+            JsonNode body = jsonBody(exchange, Set.of("expectedPosition", "commandId", "taskId", "dueTimeMillis",
+                    "durationMillis", "companyId", "action", "fields"));
+            var request = edu.cufe.auction.world.DigitalDecisionTools.request(new edu.cufe.auction.world.DigitalDecisionTools.Draft(
+                    requiredText(body, "action"), body.get("fields")));
+            var command = new OperationsWeb.DigitalCommand(researchInteger(body, "expectedPosition"),
+                    requiredText(body, "commandId"), requiredText(body, "taskId"), researchInteger(body, "dueTimeMillis"),
+                    researchInteger(body, "durationMillis"), requiredText(body, "companyId"), request);
+            send(exchange, 200, mapper.writeValueAsString(host.scheduleDigital(session.personId(), command)));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对"));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage()));
+        } catch (IllegalStateException invalid) {
+            send(exchange, 409, error("CONFLICT", invalid.getMessage()));
+        } catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
+    private void agedAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        try {
+            JsonNode body = jsonBody(exchange, Set.of("expectedPosition", "commandId", "taskId", "dueTimeMillis",
+                    "durationMillis", "companyId", "action", "fields"));
+            var request = edu.cufe.auction.world.AgedDecisionTools.request(new edu.cufe.auction.world.AgedDecisionTools.Draft(
+                    requiredText(body, "action"), body.get("fields")));
+            var command = new OperationsWeb.AgedCommand(researchInteger(body, "expectedPosition"),
+                    requiredText(body, "commandId"), requiredText(body, "taskId"), researchInteger(body, "dueTimeMillis"),
+                    researchInteger(body, "durationMillis"), requiredText(body, "companyId"), request);
+            send(exchange, 200, mapper.writeValueAsString(host.scheduleAged(session.personId(), command)));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对"));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage()));
+        } catch (IllegalStateException invalid) {
+            send(exchange, 409, error("CONFLICT", invalid.getMessage()));
+        } catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
+    private void hydroAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        try {
+            JsonNode body = jsonBody(exchange, Set.of("expectedPosition", "commandId", "taskId", "dueTimeMillis",
+                    "durationMillis", "companyId", "action", "fields"));
+            var request = edu.cufe.auction.world.HydroDecisionTools.request(new edu.cufe.auction.world.HydroDecisionTools.Draft(
+                    requiredText(body, "action"), body.get("fields")));
+            var command = new OperationsWeb.HydroCommand(researchInteger(body, "expectedPosition"),
+                    requiredText(body, "commandId"), requiredText(body, "taskId"), researchInteger(body, "dueTimeMillis"),
+                    researchInteger(body, "durationMillis"), requiredText(body, "companyId"), request);
+            send(exchange, 200, mapper.writeValueAsString(host.scheduleHydro(session.personId(), command)));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对"));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage()));
+        } catch (IllegalStateException invalid) {
+            send(exchange, 409, error("CONFLICT", invalid.getMessage()));
+        } catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
+    private void researchView(HttpExchange exchange, String person) throws IOException,
+            WorldWebHost.BusyException {
+        try {
+            send(exchange, 200, mapper.writeValueAsString(host.researchView(person)));
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+    }
+
+    private void researchAction(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        try {
+            JsonNode body = jsonBody(exchange, RESEARCH_FIELDS);
+            List<String> related = new ArrayList<>();
+            JsonNode seats = body.get("relatedSeats");
+            if (seats != null && !seats.isNull()) {
+                if (!seats.isArray() || seats.size() > 5) throw new IllegalArgumentException("关联席位必须是最多5项的列表");
+                for (JsonNode seat : seats) {
+                    if (!seat.isTextual() || seat.asText().isBlank()) throw new IllegalArgumentException("关联席位必须为非空文本");
+                    related.add(seat.asText());
+                }
+            }
+            List<edu.cufe.auction.world.BoardModel.MaterialRef> materials = new ArrayList<>();
+            JsonNode evidence = body.get("materials");
+            if (evidence != null && !evidence.isNull()) {
+                if (!evidence.isArray() || evidence.size() > 3) throw new IllegalArgumentException("阶段证据必须是最多3项的列表");
+                for (JsonNode item : evidence) {
+                    if (!item.isObject()) throw new IllegalArgumentException("阶段证据必须是对象");
+                    var fields = item.fieldNames();
+                    while (fields.hasNext()) {
+                        if (!Set.of("materialId", "sourceRef", "version", "asOf").contains(fields.next())) {
+                            throw new IllegalArgumentException("阶段证据含未知字段");
+                        }
+                    }
+                    materials.add(new edu.cufe.auction.world.BoardModel.MaterialRef(
+                            requiredText(item, "materialId"), requiredText(item, "sourceRef"),
+                            researchInteger(item, "version"), researchInteger(item, "asOf")));
+                }
+            }
+            ResearchWeb.Command command = new ResearchWeb.Command(researchInteger(body, "expectedPosition"),
+                    requiredText(body, "commandId"), requiredText(body, "taskId"),
+                    researchInteger(body, "dueTimeMillis"), requiredText(body, "companyId"),
+                    requiredText(body, "action"), optionalText(body, "projectId"), optionalText(body, "stage"),
+                    optionalText(body, "meetingId"), boundedLong(body, "durationMillis", 0L, 0L, Long.MAX_VALUE),
+                    boundedLong(body, "materialDeadline", 0L, 0L, Long.MAX_VALUE),
+                    boundedLong(body, "opensAt", 0L, 0L, Long.MAX_VALUE),
+                    boundedLong(body, "closesAt", 0L, 0L, Long.MAX_VALUE), related, materials);
+            send(exchange, 200, mapper.writeValueAsString(host.scheduleResearch(session.personId(), command)));
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对"));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage()));
+        } catch (IllegalStateException invalid) {
+            send(exchange, 409, error("CONFLICT", invalid.getMessage()));
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+    }
+
+    private static long researchInteger(JsonNode body, String field) {
+        Long value = strictLong(body.get(field));
+        if (value == null || value < 0) throw new IllegalArgumentException(field + " 必须是非负规范整数");
+        return value;
+    }
+
     private void engineeringAdmin(HttpExchange exchange) throws IOException,
             WorldWebHost.BusyException {
         JsonNode body = jsonBody(exchange, ENGINEERING_COMPANY_FIELDS);
@@ -2484,6 +2773,9 @@ public final class WorldWebServer implements AutoCloseable {
             case "/", "/index.html" -> "index.html";
             case "/app.js" -> "app.js";
             case "/groups.js" -> "groups.js";
+            case "/research.js" -> "research.js";
+            case "/operations.js" -> "operations.js";
+            case "/manufacturing.js" -> "manufacturing.js";
             case "/style.css" -> "style.css";
             default -> null;
         };

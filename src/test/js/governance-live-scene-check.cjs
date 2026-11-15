@@ -330,6 +330,20 @@ check("no-secret-text-in-live-dom", () => {
   assert.ok(!/sk-|Bearer|api[_-]?key/i.test(text), text);
 });
 
+check("clearing-selection-keeps-independent-board-pool-reachable", () => {
+  adminLive();
+  document.getElementById("live-scene").value = "governance";
+  selectPersons([]);
+  assert.ok(api.renderLiveSceneChoices([]).includes("governance"));
+  assert.equal(document.getElementById("live-scene").value, "governance");
+  assert.ok(api.livePersonPool().some(person => person.personPartyId === "erin"));
+  assert.deepEqual(Array.from(api.renderLiveCompanyChoices([])), []);
+});
+check("empty-company-intersection-does-not-reopen-for-third-person", () => {
+  adminLive();
+  assert.deepEqual(Array.from(api.renderLiveCompanyChoices(["alice", "omar", "dave"])), []);
+});
+
 const failed = cases.filter(([status]) => status === "FAIL");
 for (const [status, name] of cases) console.log(status + " " + name);
 console.log("GOVERNANCE_LIVE_SCENE_CONTRACT=" + (failed.length ? "FAIL" : "PASS")

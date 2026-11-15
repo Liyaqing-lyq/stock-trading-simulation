@@ -1682,8 +1682,9 @@ public final class ManufacturingModel {
 
     /**
      * 按账面金额和数量比例分配出库成本；最后一次出清精确结尽尾差。
+     * 包内经营模板共用此成本口径。
      */
-    private static BigDecimal allocate(Inventory inventory, long quantity) {
+    static BigDecimal allocate(Inventory inventory, long quantity) {
         if (quantity <= 0 || quantity > inventory.quantity()) {
             throw new IllegalArgumentException("出库数量必须在 0 与库存数量之间");
         }

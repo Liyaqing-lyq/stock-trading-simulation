@@ -1,6 +1,7 @@
 package edu.cufe.auction.world;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -106,7 +107,14 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String RULES_ENGINEERING_WORLD_EXPERIMENT_V1 =
             "engineering-world-experiment-v1";
     /** schema20：在工程全链之上接入群组、平台发布与呈现（不迁移旧档）。 */
+    /** schema20：在工程全链之上接入群组、平台发布与呈现（不迁移旧档）。 */
     public static final String RULES_GROUPS_PLATFORM_EXPERIMENT_V1 = "groups-platform-experiment-v1";
+    /** schema22：在工程全链之上显式启用研发；不按版本号推断银行(19)/水电(21)。 */
+    public static final String RULES_RESEARCH_WORLD_EXPERIMENT_V1 =
+            "research-world-experiment-v1";
+    /** schema23：研发世界上的商业化授权与可使用后摊销实验；不迁移旧 v1 档。 */
+    public static final String RULES_RESEARCH_COMMERCIAL_WORLD_V1 =
+            "research-commercial-world-experiment-v1";
     public static final String RULES_INTERVIEW_DIALOGUE_EXPERIMENT_V1 =
             "interview-dialogue-experiment-v1";
 
@@ -162,6 +170,89 @@ public record RunManifest(String runId, long seed, String rulesVersion,
      * 分支子世界身份）；区别只有真实托管三账可用于订单资金腿。schema 结构不变，不重编号。</p>
      */
     public static final String RULES_COMPOSED_BANK_WORLD_V3 = "composed-v3";
+
+    /** 银行、托管成交、工程与分阶段研发的显式组合；旧组合档不追加模块。 */
+    public static final String RULES_COMPOSED_RESEARCH_V1 = "composed-research-v1";
+
+    /** 研发、银行与制造显式资金同档；旧组合档不自动升级。 */
+    public static final String RULES_COMPOSED_RESEARCH_FUNDING_V1 = "composed-research-funding-v1";
+
+    /**
+     * schema24：把研发接到<b>独立研发公司</b>（pharma）的显式组合档（EXP）。
+     *
+     * <p>{@code composed-research-funding-v1} 把研发挂在工程公司 eng-a 上；本档不再借用工程公司的
+     * 现金与董事会，而是新增一家只有研发业务的真实公司：独立财产主体、唯一经营账户、发行股份与
+     * 持股、真实章程与董事会（经 {@code CompanyGovernanceRun}）、真实经理任免与预算、自己的周期
+     * 报告。模块表 = 研发+制造资金+银行组合全部模块 + 显式 {@code pharma}，二者必须成对；
+     * 旧档模块表逐字不变，不迁移、不补任务。</p>
+     */
+    public static final String RULES_COMPOSED_PHARMA_V1 = "composed-pharma-v1";
+
+    /**
+     * schema24：在 {@code composed-pharma-v1} 之上显式加入 <b>三家公司经营</b>
+     * （{@code company-operations}）的新档（EXP，不迁移旧档）。
+     *
+     * <p>模块表 = pharma 档全部模块 + 显式 {@code company-operations}，二者必须成对：缺少模块就
+     * 不得携带经营子集，旧档案（含 pharma 档本身）模块表与 JSON 逐字不变。三家公司各有独立财产
+     * 主体、唯一经营账户、发行股份与持股、五席真实章程与周期状态；开局不预置经理或预算，
+     * 所有动作都要经真实任职、焦点工时与已批预算。资料版本必须显式绑定
+     * {@code profile/company-operations/manufacturing-templates}，未知版本在构造期拒绝。</p>
+     */
+    public static final String RULES_COMPOSED_MANUFACTURING_THREE_V1 =
+            "composed-manufacturing-three-v1";
+
+    /** 本档案显式要求的资料版本键与值。 */
+    public static final String DATA_PROFILE = "profile";
+    /** 三公司经营规则版本键。 */
+    public static final String DATA_OPERATIONS = "company-operations";
+    /** 三公司经营规则版本值。 */
+    public static final String OPERATIONS_VERSION = CompanyOperationsRun.RULES;
+    /** 纯核制造模板版本键。 */
+    public static final String DATA_TEMPLATES = "manufacturing-templates";
+    /** 纯核制造模板版本值（与 candidate-3 冻结清单一致）。 */
+    public static final String TEMPLATES_VERSION = "candidate-3";
+    /** 三家公司标识键：按 companyId 升序、逗号分隔，profile 与 INIT 必须逐项一致。 */
+    public static final String DATA_COMPANIES = "companies";
+
+    /**
+     * 本档案冻结的三家公司标识（升序）。
+     *
+     * <p>只从资料版本解析；没有 {@code company-operations} 模块时返回空表。格式不符（空项、
+     * 未排序、重复）一律拒绝，不靠默认值猜。</p>
+     *
+     * @return 公司标识表
+     */
+    public java.util.List<String> companyOperationsCompanyIds() {
+        String value = dataVersions.get(DATA_COMPANIES);
+        if (value == null) {
+            return java.util.List.of();
+        }
+        java.util.List<String> ids = new java.util.ArrayList<>();
+        for (String part : value.split(",", -1)) {
+            if (part.isBlank()) {
+                throw new IllegalArgumentException("三公司标识不能有空项：" + value);
+            }
+            if (!ids.isEmpty() && ids.get(ids.size() - 1).compareTo(part) >= 0) {
+                throw new IllegalArgumentException("三公司标识必须严格升序且唯一：" + value);
+            }
+            ids.add(part);
+        }
+        return java.util.List.copyOf(ids);
+    }
+
+
+    /**
+     * schema24：组合档再加 {@code manufacturing-funding} 模块（{@code composed-v3} 原集合 + 1）。
+     *
+     * <p>制造经营五段真实资金腿（采购到货、生产人工、应收回款、期末费用、费用欠款）由<b>显式模块</b>
+     * {@code manufacturing-funding} 冻结，不由 {@code manufacturing} 模块、档案名或 schema 号反推：
+     * {@code composed-v1/v2/v3} 的模块表、旧 JSON 与“制造付款只走现金账户”的行为逐字不变，
+     * 它们的档案里可能已经有现金付款记录，因此不能把“以前没有资金腿任务”当作重演不变的依据。</p>
+     *
+     * <p>本档继承 {@code composed-v3} 的完整原意（托管成交、意图信封、默认周期治理、规范序列化与
+     * 分支子世界身份）；区别只有制造经营的真实付款走显式资金桶，并且四段系统路由在开局冻结。</p>
+     */
+    public static final String RULES_COMPOSED_BANK_WORLD_V4 = "composed-v4";
 
     /**
      * schema19：在 B7a 资金桶档之上把<b>客户托管受益权</b>接入证券成交（B7b，EXP）。
@@ -386,6 +477,28 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     }
 
     /**
+     * 是否启用 schema22 研发模块。
+     *
+     * <p>只认冻结模块表，不按版本号推断；工程与研发必须同时启用。</p>
+     *
+     * @return 模块表包含 research 时返回 true
+     */
+    public boolean hasResearch() {
+        return moduleVersions.containsKey("research");
+    }
+
+    /**
+     * 是否启用商业化授权实验模块（schema23 专用）。
+     *
+     * <p>只认冻结模块表，不从 research 推断；旧 v1 研发档不因升级而获得该能力。</p>
+     *
+     * @return 模块表包含 commercialization 时返回 true
+     */
+    public boolean hasCommercialization() {
+        return moduleVersions.containsKey("commercialization");
+    }
+
+    /**
      * 是否启用 schema20 平台发布模块。
      *
      * <p>与 {@link #hasGroups()} 严格成对；不因为档案版本更高就假设银行（19）或群组存在。</p>
@@ -420,7 +533,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 || RULES_BANKING_CUSTODY_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_COMPOSED_BANK_WORLD_V1.equals(rulesVersion)
                 || RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
-                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)
+                || (RULES_COMPOSED_RESEARCH_V1.equals(rulesVersion)
+                || RULES_COMPOSED_RESEARCH_FUNDING_V1.equals(rulesVersion))
+                || (RULES_COMPOSED_PHARMA_V1.equals(rulesVersion)
+                || RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion))
+                || RULES_COMPOSED_BANK_WORLD_V4.equals(rulesVersion);
     }
 
     /**
@@ -442,7 +560,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public boolean hasComposedBankWorld() {
         return RULES_COMPOSED_BANK_WORLD_V1.equals(rulesVersion)
                 || RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
-                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)
+                || (RULES_COMPOSED_RESEARCH_V1.equals(rulesVersion)
+                || RULES_COMPOSED_RESEARCH_FUNDING_V1.equals(rulesVersion))
+                || (RULES_COMPOSED_PHARMA_V1.equals(rulesVersion)
+                || RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion))
+                || RULES_COMPOSED_BANK_WORLD_V4.equals(rulesVersion);
     }
 
     /**
@@ -455,7 +578,36 @@ public record RunManifest(String runId, long seed, String rulesVersion,
      */
     public boolean hasDefaultPeriodicGovernance() {
         return RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
-                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)
+                || (RULES_COMPOSED_RESEARCH_V1.equals(rulesVersion)
+                || RULES_COMPOSED_RESEARCH_FUNDING_V1.equals(rulesVersion))
+                || (RULES_COMPOSED_PHARMA_V1.equals(rulesVersion)
+                || RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion))
+                || RULES_COMPOSED_BANK_WORLD_V4.equals(rulesVersion);
+    }
+
+    /**
+     * 是否启用<b>独立研发公司</b>画像（{@code pharma} 模块）。
+     *
+     * <p>只看冻结模块表，不由规则档案名或 schema 推断。启用后研发<b>唯一</b>绑定
+     * {@code CompanyGovernanceRun} 里的那家研发公司，不再借用工程公司的现金、董事会或初始权益；
+     * 旧档（含把研发挂在 eng-a 上的 {@code composed-research-v1}）一律 false，行为逐字不变。</p>
+     *
+     * @return 模块表包含 {@code pharma} 时返回 true
+     */
+    public boolean hasPharmaResearch() {
+        return moduleVersions.containsKey("pharma");
+    }
+
+    /**
+     * 是否启用<b>三类制造公司经营</b>子集（{@code company-operations}）。
+     *
+     * <p>只看冻结模块表，不由档案名或 schema 推断；旧档一律 false，状态里也不会出现该组件。</p>
+     *
+     * @return 模块表包含 {@code company-operations} 时返回 true
+     */
+    public boolean hasCompanyOperations() {
+        return moduleVersions.containsKey("company-operations");
     }
 
     /**
@@ -496,6 +648,20 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("custody-fill");
     }
 
+    /**
+     * 是否启用<b>制造经营五段显式资金腿</b>模块（{@code manufacturing-funding}）。
+     *
+     * <p>只看模块表，不由 {@link #hasManufacturing()}、规则档案名或 schema 号反推：
+     * {@code composed-v1/v2/v3} 与全部旧制造档的模块表里没有它，因此它们继续只用现金账户付款，
+     * 行为与 JSON 逐字不变。启用后制造五段付款必须走 {@link FundPayer} 显式资金腿，
+     * 四段系统路由由开局冻结的 {@link ManufacturingFunding} 给出。</p>
+     *
+     * @return 模块表包含 {@code manufacturing-funding} 时返回 true
+     */
+    public boolean hasManufacturingFunding() {
+        return moduleVersions.containsKey("manufacturing-funding");
+    }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -525,10 +691,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && !RULES_COMPOSED_BANK_WORLD_V1.equals(rulesVersion)
                 && !RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
                 && !RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)
+                && !(RULES_COMPOSED_RESEARCH_V1.equals(rulesVersion)
+                || RULES_COMPOSED_RESEARCH_FUNDING_V1.equals(rulesVersion)
+                || (RULES_COMPOSED_PHARMA_V1.equals(rulesVersion)
+                || RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion)))
+                && !RULES_COMPOSED_BANK_WORLD_V4.equals(rulesVersion)
                 && !RULES_BANKING_CUSTODY_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion)
                 && !RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion)
-                && !RULES_COMMAND_INTENT_EXPERIMENT_V1.equals(rulesVersion)) {
+                && !RULES_COMMAND_INTENT_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_RESEARCH_WORLD_EXPERIMENT_V1.equals(rulesVersion)
+                && !RULES_RESEARCH_COMMERCIAL_WORLD_V1.equals(rulesVersion)) {
             throw new IllegalArgumentException("当前只支持规则档案 " + RULES_CASH_WORLD_V1
                     + "、" + RULES_CASH_REGISTRY_WORLD_V1 + "、"
                     + RULES_SECURITIES_CLEARING_EXPERIMENT_V1 + "、"
@@ -553,21 +726,46 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         expected.put("scheduler", 1);
         boolean withIntent = RULES_COMMAND_INTENT_EXPERIMENT_V1.equals(rulesVersion)
                 || RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
-                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)
+                || (RULES_COMPOSED_RESEARCH_V1.equals(rulesVersion)
+                || RULES_COMPOSED_RESEARCH_FUNDING_V1.equals(rulesVersion))
+                || (RULES_COMPOSED_PHARMA_V1.equals(rulesVersion)
+                || RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion))
+                || RULES_COMPOSED_BANK_WORLD_V4.equals(rulesVersion);
+        // 独立研发公司画像：与研发/商业化/组合/资金腿/制造资金模块严格成对，旧档不因此默认启用。
+        boolean withPharma = (RULES_COMPOSED_PHARMA_V1.equals(rulesVersion)
+                || RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion));
         boolean withBankCustody = RULES_BANKING_CUSTODY_EXPERIMENT_V1.equals(rulesVersion);
         boolean withFunds = RULES_BANKING_FUNDS_EXPERIMENT_V1.equals(rulesVersion)
                 || withBankCustody
                 || RULES_COMPOSED_BANK_WORLD_V1.equals(rulesVersion)
                 || RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
-                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)
+                || (RULES_COMPOSED_RESEARCH_V1.equals(rulesVersion)
+                || RULES_COMPOSED_RESEARCH_FUNDING_V1.equals(rulesVersion))
+                || withPharma
+                || RULES_COMPOSED_BANK_WORLD_V4.equals(rulesVersion);
         boolean withBankWorld = RULES_BANKING_WORLD_EXPERIMENT_V1.equals(rulesVersion);
         boolean withBankRoles = RULES_BANKING_ROLES_EXPERIMENT_V1.equals(rulesVersion);
         boolean withComposed = RULES_COMPOSED_BANK_WORLD_V1.equals(rulesVersion)
                 || RULES_COMPOSED_BANK_WORLD_V2.equals(rulesVersion)
-                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion);
+                || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)
+                || (RULES_COMPOSED_RESEARCH_V1.equals(rulesVersion)
+                || RULES_COMPOSED_RESEARCH_FUNDING_V1.equals(rulesVersion))
+                || withPharma
+                || RULES_COMPOSED_BANK_WORLD_V4.equals(rulesVersion);
+        boolean withManufacturingFunding = RULES_COMPOSED_BANK_WORLD_V4.equals(rulesVersion)
+                || RULES_COMPOSED_RESEARCH_FUNDING_V1.equals(rulesVersion)
+                || withPharma;
         boolean withGroups = withComposed || withIntent
                 || RULES_GROUPS_PLATFORM_EXPERIMENT_V1.equals(rulesVersion);
-        boolean withEngineering = withGroups
+        boolean withCommercialization = RULES_RESEARCH_COMMERCIAL_WORLD_V1.equals(rulesVersion)
+                || (RULES_COMPOSED_RESEARCH_V1.equals(rulesVersion)
+                || RULES_COMPOSED_RESEARCH_FUNDING_V1.equals(rulesVersion))
+                || withPharma;
+        boolean withResearch = withCommercialization
+                || RULES_RESEARCH_WORLD_EXPERIMENT_V1.equals(rulesVersion);
+        boolean withEngineering = withGroups || withResearch
                 || RULES_ENGINEERING_WORLD_EXPERIMENT_V1.equals(rulesVersion);
         boolean withSocial = withEngineering || RULES_SOCIAL_EXPERIMENT_V1.equals(rulesVersion);
         boolean withEvidence = withSocial
@@ -618,6 +816,20 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         withSecurities = withSecurities || withFunds;
         withRegistry = withRegistry || withFunds;
         withBanking = withBanking || withFunds;
+        if (withResearch) {
+            expected.put("research", 1);
+        }
+        if (withPharma) {
+            // 独立研发公司画像由显式模块冻结；与「研发挂在工程公司」的旧档互不隐含。
+            expected.put("pharma", 1);
+        }
+        if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion)) {
+            // 三家公司经营由显式模块冻结；pharma 档与更旧档案的模块表逐字不变。
+            expected.put("company-operations", 1);
+        }
+        if (withCommercialization) {
+            expected.put("commercialization", 1);
+        }
         if (withRegistry) {
             expected.put("registry", 1);
         }
@@ -708,9 +920,19 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             }
             expected.put("funding", 1);
         }
-        if (withBankCustody || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)) {
+        if (withBankCustody || RULES_COMPOSED_BANK_WORLD_V3.equals(rulesVersion)
+                || (RULES_COMPOSED_RESEARCH_V1.equals(rulesVersion)
+                || RULES_COMPOSED_RESEARCH_FUNDING_V1.equals(rulesVersion))
+                || withManufacturingFunding) {
             // 客户托管受益权成交由显式模块冻结；v1/v2 没有该模块，继续拒绝 CUSTODY。
             expected.put("custody-fill", 1);
+        }
+        if (withManufacturingFunding) {
+            // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
+            expected.put("manufacturing-funding", 1);
+        }
+        if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion) && dataVersions!=null && "industry-baseline-v1".equals(dataVersions.get(DATA_PROFILE))) {
+            expected.keySet().removeAll(List.of("manufacturing","governance","dividend","manufacturing-funding"));
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "
@@ -728,6 +950,46 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             });
         }
         dataVersions = Collections.unmodifiableMap(data);
+
+        if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion)) {
+            // 三家公司经营：profile 与两份资料版本必须显式绑定，未知/缺省一律拒绝。
+            Map<String, String> expectedData = new TreeMap<>();
+            expectedData.put(DATA_PROFILE, RULES_COMPOSED_MANUFACTURING_THREE_V1);
+            expectedData.put(DATA_OPERATIONS, OPERATIONS_VERSION);
+            expectedData.put(DATA_TEMPLATES, TEMPLATES_VERSION);
+            expectedData.put(DATA_COMPANIES, data.get(DATA_COMPANIES) == null ? ""
+                    : data.get(DATA_COMPANIES));
+            if (List.of("manufacturing-runnable-v1", "manufacturing-runnable-v2", "industry-runnable-v1", "industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1").contains(data.get(DATA_PROFILE))) {
+                expectedData.put(DATA_PROFILE, data.get(DATA_PROFILE));
+                if (List.of("manufacturing-runnable-v2", "industry-runnable-v1", "industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1").contains(data.get(DATA_PROFILE))) expectedData.put("operations-decision", "v1");
+                if (List.of("industry-runnable-v1", "industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1").contains(data.get(DATA_PROFILE))) {
+                    if (List.of("industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1").contains(data.get(DATA_PROFILE))) expectedData.put("resource-expansion", "v1");
+                    if (List.of("industry-hydro-v1","industry-baseline-v1").contains(data.get(DATA_PROFILE))) { expectedData.put("hydro-operations","v1"); expectedData.put("hydro-decision","v1"); expectedData.put("hydro-company","hydro"); }
+                    if ("industry-baseline-v1".equals(data.get(DATA_PROFILE))) {
+                        expectedData.put("digital-operations","v1");expectedData.put("digital-decision","v1");expectedData.put("digital-company","digital-company");
+                        expectedData.put("aged-operations","v1");expectedData.put("aged-decision","v1");expectedData.put("aged-company","aged-company");
+                    }
+                    expectedData.put("resource-operations", "v1");
+                    expectedData.put("resource-decision", "v1");
+                    expectedData.put("resource-company", "resources");
+                    expectedData.put("research-company", "pharma");
+                }
+                expectedData.put("operating-observation", "v2");
+                expectedData.put("role-account-projection", "authorized-v1");
+                expectedData.put("company-decision", "v1");
+                expectedData.put("company-introduction", "v1");
+            }
+            if (!expectedData.equals(data)) {
+                throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData
+                        + "，收到 " + data);
+            }
+        } else {
+            for (String key : List.of(DATA_OPERATIONS, DATA_TEMPLATES, DATA_COMPANIES)) {
+                if (data.containsKey(key)) {
+                    throw new IllegalArgumentException("旧档案不得声明三公司经营资料版本：" + key);
+                }
+            }
+        }
 
         if (withLive) {
             if (!LIVE_DECISIONS_V1.equals(modelConfigVersion)) {

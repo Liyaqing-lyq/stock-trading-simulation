@@ -69,7 +69,7 @@ public final class InformationModel {
     private InformationModel() {
     }
 
-    /** 受众种类；本版为公开、组织、本人直投、群组与董事会五种。 */
+    /** 受众种类；经营资料另向本公司当前有查账权的经理开放，董事会专用资料仍仅限董事。 */
     public enum AudienceKind {
         /** 任何已登记人物可见。 */
         PUBLIC,
@@ -80,7 +80,9 @@ public final class InformationModel {
         /** 仅由注入的 {@link GroupAccess} 判定为有资格的读取者可见。 */
         GROUP,
         /** 仅由注入的 {@link BoardAccess} 判定为该公司当时真实章程席位的读取者可见。 */
-        BOARD
+        BOARD,
+        /** 本公司真实董事或当前获准读取本公司经营账的经理；不赋予董事资格。 */
+        COMPANY_OPERATING
     }
 
     /**
@@ -105,7 +107,7 @@ public final class InformationModel {
                     case ORGANIZATION -> "受众组织";
                     case DIRECT -> "受众人物";
                     case GROUP -> "受众群";
-                    case BOARD -> "受众公司";
+                    case BOARD, COMPANY_OPERATING -> "受众公司";
                     default -> throw new IllegalStateException("未知受众种类：" + kind);
                 };
                 requireText(partyId, label);
@@ -1135,6 +1137,10 @@ public final class InformationModel {
                 return groups.canRead(audience.partyId(), personPartyId, docVersionPublishedAt, now);
             case BOARD:
                 return boards.canRead(audience.partyId(), personPartyId, now);
+            case COMPANY_OPERATING:
+                return boards.canRead(audience.partyId(), personPartyId, now)
+                        || RoleAccess.authorize(access, personPartyId, Action.READ_COMPANY_LEDGER,
+                        Target.organization(audience.partyId()), now) == Decision.ALLOW;
             default:
                 throw new IllegalStateException("未知受众种类：" + audience.kind());
         }

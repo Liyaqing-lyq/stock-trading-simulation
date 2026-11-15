@@ -619,6 +619,17 @@ public final class AgedInventoryModel {
                         long matureWarehouseUnits, long consignmentUnits, long soldUnits,
                         long spoiledUnits, BigDecimal netReceivableMemo) { }
 
+    /** 由世界同帧金融账派生的补充头寸；不存入经营状态，不另造现金。 */
+    public record FinancialContext(BigDecimal assets, BigDecimal liabilities, BigDecimal equity) {
+        /** 资产负债须非负，权益可为负。 */
+        public FinancialContext {
+            money(assets); money(liabilities); money(equity);
+            if (assets.signum()<0 || liabilities.signum()<0) throw new IllegalArgumentException("金融头寸非法");
+        }
+        /** 独立纯核没有金融头寸。 */
+        public static FinancialContext none() { return new FinancialContext(zero(),zero(),zero()); }
+    }
+
     private AgedInventoryModel() {
     }
 
@@ -695,6 +706,12 @@ public final class AgedInventoryModel {
      */
     public static Outcome orderRaw(State state, String actor, long units, String orderId, long now,
                                    Map<String, CashLedger.CashAccount> accounts) {
+        return orderRaw(state, actor, units, orderId, now, accounts, FinancialContext.none());
+    }
+
+    /** 同帧金融头寸参与完整平衡校验。 */
+    public static Outcome orderRaw(State state, String actor, long units, String orderId, long now,
+                                   Map<String, CashLedger.CashAccount> accounts, FinancialContext context) {
         String reason = authorize(state, actor);
         if (reason != null) {
             return rejected(state, accounts, reason);
@@ -713,7 +730,7 @@ public final class AgedInventoryModel {
         orders.add(new PurchaseOrder(orderId, units, money(state.config().rawUnitCost()),
                 period, period + 1));
         State candidate = copy(state).orders(orders).report(period, "ORDER_RAW", actor, orderId);
-        return accepted(candidate, accounts, "ORDER_RAW", orderId);
+        return accepted(candidate, accounts, "ORDER_RAW", orderId, context);
     }
 
     /**
@@ -728,6 +745,12 @@ public final class AgedInventoryModel {
      */
     public static Outcome receiveOrder(State state, String actor, String orderId, long now,
                                        Map<String, CashLedger.CashAccount> accounts) {
+        return receiveOrder(state, actor, orderId, now, accounts, FinancialContext.none());
+    }
+
+    /** 同帧金融头寸参与完整平衡校验。 */
+    public static Outcome receiveOrder(State state, String actor, String orderId, long now,
+                                       Map<String, CashLedger.CashAccount> accounts, FinancialContext context) {
         String reason = authorize(state, actor);
         if (reason != null) {
             return rejected(state, accounts, reason);
@@ -756,7 +779,7 @@ public final class AgedInventoryModel {
         lots.add(new RawLot(orderId, order.units(), amount, amount, period, order.units()));
         State candidate = copy(state).orders(orders).rawLots(lots)
                 .report(period, "RECEIVE_RAW", actor, orderId);
-        return accepted(candidate, next, "RECEIVE_RAW", orderId);
+        return accepted(candidate, next, "RECEIVE_RAW", orderId, context);
     }
 
     /**
@@ -772,6 +795,12 @@ public final class AgedInventoryModel {
      */
     public static Outcome produce(State state, String actor, long units, String batchId, long now,
                                   Map<String, CashLedger.CashAccount> accounts) {
+        return produce(state, actor, units, batchId, now, accounts, FinancialContext.none());
+    }
+
+    /** 同帧金融头寸参与完整平衡校验。 */
+    public static Outcome produce(State state, String actor, long units, String batchId, long now,
+                                  Map<String, CashLedger.CashAccount> accounts, FinancialContext context) {
         String reason = authorize(state, actor);
         if (reason != null) {
             return rejected(state, accounts, reason);
@@ -835,7 +864,7 @@ public final class AgedInventoryModel {
                 money(rawCost), money(rawCost.add(conversion)), zero(), zero(), units, 0L, 0L));
         State candidate = copy(state).rawLots(lots).batches(batches)
                 .report(period, "PRODUCE", actor, batchId);
-        return accepted(candidate, next, "PRODUCE", batchId);
+        return accepted(candidate, next, "PRODUCE", batchId, context);
     }
 
     /**
@@ -850,6 +879,12 @@ public final class AgedInventoryModel {
      */
     public static Outcome setPrice(State state, String actor, String channelId, BigDecimal price,
                                    long now, Map<String, CashLedger.CashAccount> accounts) {
+        return setPrice(state, actor, channelId, price, now, accounts, FinancialContext.none());
+    }
+
+    /** 同帧金融头寸参与完整平衡校验。 */
+    public static Outcome setPrice(State state, String actor, String channelId, BigDecimal price,
+                                   long now, Map<String, CashLedger.CashAccount> accounts, FinancialContext context) {
         String reason = authorize(state, actor);
         if (reason != null) {
             return rejected(state, accounts, reason);
@@ -870,7 +905,7 @@ public final class AgedInventoryModel {
         prices.put(channelId, value);
         State candidate = copy(state).currentPrices(prices)
                 .report(period, "SET_PRICE", actor, channelId);
-        return accepted(candidate, accounts, "SET_PRICE", channelId);
+        return accepted(candidate, accounts, "SET_PRICE", channelId, context);
     }
 
     /**
@@ -888,6 +923,13 @@ public final class AgedInventoryModel {
     public static Outcome ship(State state, String actor, String channelId, long units,
                                String shipmentId, long now,
                                Map<String, CashLedger.CashAccount> accounts) {
+        return ship(state, actor, channelId, units, shipmentId, now, accounts, FinancialContext.none());
+    }
+
+    /** 同帧金融头寸参与完整平衡校验。 */
+    public static Outcome ship(State state, String actor, String channelId, long units,
+                               String shipmentId, long now,
+                               Map<String, CashLedger.CashAccount> accounts, FinancialContext context) {
         String reason = authorize(state, actor);
         if (reason != null) {
             return rejected(state, accounts, reason);
@@ -973,7 +1015,7 @@ public final class AgedInventoryModel {
                 zero(), requiredPrepay, zero(), requiredPrepay, zero(), zero());
         State candidate = copy(state).batches(batches).shipmentLots(lots)
                 .channelLedgers(ledgers).report(period, "SHIP", actor, shipmentId);
-        return accepted(candidate, next, "SHIP", shipmentId);
+        return accepted(candidate, next, "SHIP", shipmentId, context);
     }
 
     /**
@@ -989,6 +1031,12 @@ public final class AgedInventoryModel {
      */
     public static Outcome sellThrough(State state, String channelId, long units, String saleId,
                                       long now, Map<String, CashLedger.CashAccount> accounts) {
+        return sellThrough(state, channelId, units, saleId, now, accounts, FinancialContext.none());
+    }
+
+    /** 同帧金融头寸参与完整平衡校验。 */
+    public static Outcome sellThrough(State state, String channelId, long units, String saleId,
+                                      long now, Map<String, CashLedger.CashAccount> accounts, FinancialContext context) {
         ChannelSpec channel = state.config().channel(channelId);
         if (channel == null) {
             return rejected(state, accounts, UNKNOWN_CHANNEL);
@@ -1102,7 +1150,7 @@ public final class AgedInventoryModel {
         State candidate = copy(state).shipmentLots(lots).sales(sales)
                 .channelLedgers(ledgers)
                 .report(period, "SELL_THROUGH", "terminal", saleId);
-        return accepted(candidate, next, "SELL_THROUGH", saleId);
+        return accepted(candidate, next, "SELL_THROUGH", saleId, context);
     }
 
     /**
@@ -1118,6 +1166,12 @@ public final class AgedInventoryModel {
      */
     public static Outcome collect(State state, String actor, String channelId, BigDecimal amount,
                                   long now, Map<String, CashLedger.CashAccount> accounts) {
+        return collect(state, actor, channelId, amount, now, accounts, FinancialContext.none());
+    }
+
+    /** 同帧金融头寸参与完整平衡校验。 */
+    public static Outcome collect(State state, String actor, String channelId, BigDecimal amount,
+                                  long now, Map<String, CashLedger.CashAccount> accounts, FinancialContext context) {
         String reason = authorize(state, actor);
         if (reason != null) {
             return rejected(state, accounts, reason);
@@ -1152,7 +1206,7 @@ public final class AgedInventoryModel {
                 zero(), actual, zero());
         State candidate = copy(state).channelLedgers(ledgers)
                 .report(period, "COLLECT", actor, channelId);
-        return accepted(candidate, next, "COLLECT", channelId);
+        return accepted(candidate, next, "COLLECT", channelId, context);
     }
 
     /**
@@ -1168,6 +1222,12 @@ public final class AgedInventoryModel {
      */
     public static Outcome payRefund(State state, String actor, String channelId, BigDecimal amount,
                                     long now, Map<String, CashLedger.CashAccount> accounts) {
+        return payRefund(state, actor, channelId, amount, now, accounts, FinancialContext.none());
+    }
+
+    /** 同帧金融头寸参与完整平衡校验。 */
+    public static Outcome payRefund(State state, String actor, String channelId, BigDecimal amount,
+                                    long now, Map<String, CashLedger.CashAccount> accounts, FinancialContext context) {
         String reason = authorize(state, actor);
         if (reason != null) {
             return rejected(state, accounts, reason);
@@ -1200,7 +1260,7 @@ public final class AgedInventoryModel {
                 actual.negate(), zero(), zero(), zero());
         State candidate = copy(state).channelLedgers(ledgers)
                 .report(period, "PAY_REFUND", actor, channelId);
-        return accepted(candidate, next, "PAY_REFUND", channelId);
+        return accepted(candidate, next, "PAY_REFUND", channelId, context);
     }
 
     /**
@@ -1215,6 +1275,12 @@ public final class AgedInventoryModel {
      */
     public static Outcome payFixed(State state, String actor, BigDecimal amount, long now,
                                    Map<String, CashLedger.CashAccount> accounts) {
+        return payFixed(state, actor, amount, now, accounts, FinancialContext.none());
+    }
+
+    /** 同帧金融头寸参与完整平衡校验。 */
+    public static Outcome payFixed(State state, String actor, BigDecimal amount, long now,
+                                   Map<String, CashLedger.CashAccount> accounts, FinancialContext context) {
         String reason = authorize(state, actor);
         if (reason != null) {
             return rejected(state, accounts, reason);
@@ -1241,7 +1307,7 @@ public final class AgedInventoryModel {
                 .fixed(state.fixedAccrued(), state.fixedPaid().add(actual),
                         state.fixedPayable().subtract(actual))
                 .report(period, "PAY_FIXED", actor, "fixed");
-        return accepted(candidate, next, "PAY_FIXED", "fixed");
+        return accepted(candidate, next, "PAY_FIXED", "fixed", context);
     }
 
     /**
@@ -1254,19 +1320,35 @@ public final class AgedInventoryModel {
      */
     public static Outcome closePeriod(State state, long now,
                                       Map<String, CashLedger.CashAccount> accounts) {
+        return closePeriod(state, now, accounts, accounts.get(state.config().companyAccountId()).cash(), false);
+    }
+
+    /** 世界关期：受冻结现金约束；显式启用的未付款采购在到货期末失效，保留拒收记录。旧纯核入口仍严格要求处理完采购。 */
+    public static Outcome closePeriod(State state, long now, Map<String, CashLedger.CashAccount> accounts,
+                                       BigDecimal availableCash, boolean expireUnreceived) {
+        return closePeriod(state,now,accounts,availableCash,expireUnreceived,FinancialContext.none());
+    }
+
+    /** 世界期末以同帧金融头寸检查资产负债恒等式。 */
+    public static Outcome closePeriod(State state, long now, Map<String, CashLedger.CashAccount> accounts,
+                                       BigDecimal availableCash, boolean expireUnreceived, FinancialContext context) {
+        if (availableCash.signum() < 0 || availableCash.compareTo(accounts.get(state.config().companyAccountId()).cash()) > 0)
+            throw new IllegalArgumentException("陈酿可用现金越界");
         long period = state.closedPeriods();
         if (now < state.config().periodEnd(period)) {
             return rejected(state, accounts, PERIOD_NOT_ENDED);
         }
-        for (PurchaseOrder order : state.orders()) {
+        for (PurchaseOrder order : List.copyOf(state.orders())) {
             if (order.duePeriod() <= period) {
-                return rejected(state, accounts, UNSETTLED_ACTIONS);
+                if (!expireUnreceived) return rejected(state, accounts, UNSETTLED_ACTIONS);
+                var remaining = new ArrayList<>(state.orders()); remaining.remove(order);
+                state = copy(state).orders(remaining).report(period, "EXPIRED_UNRECEIVED", "WORLD", order.orderId());
             }
         }
         BigDecimal accrued = state.fixedAccrued().add(money(state.config().fixedPerPeriod()));
         BigDecimal unpaid = accrued.subtract(state.fixedPaid());
         BigDecimal cash = accounts.get(state.config().companyAccountId()).cash();
-        BigDecimal paid = unpaid.min(cash).max(zero());
+        BigDecimal paid = unpaid.min(cash).min(availableCash).max(zero());
         Map<String, CashLedger.CashAccount> next = accounts;
         if (paid.signum() > 0) {
             next = transfer(accounts, accounts.get(state.config().companyAccountId()).ownerId(),
@@ -1354,7 +1436,7 @@ public final class AgedInventoryModel {
                 .shipmentLots(lots).spoilage(spoilage).channelLedgers(ledgers)
                 .fixed(accrued, fixedPaid, payable)
                 .closes(closes).report(period, "CLOSE_PERIOD", "system", Long.toString(period));
-        return accepted(candidate, next, "CLOSE_PERIOD", Long.toString(period));
+        return accepted(candidate, next, "CLOSE_PERIOD", Long.toString(period), context);
     }
 
     // ---------------------------------------------------------------- 账面汇总与校验
@@ -1444,6 +1526,11 @@ public final class AgedInventoryModel {
      * @return 违反的编号；全部通过为 null
      */
     public static String validate(State state, Map<String, CashLedger.CashAccount> accounts) {
+        return validate(state,accounts,FinancialContext.none());
+    }
+
+    /** 包含当前银行、证券的完整平衡校验。 */
+    public static String validate(State state, Map<String, CashLedger.CashAccount> accounts, FinancialContext context) {
         Books books = books(state, accounts);
         // U2 数量守恒
         long produced = books.producedUnits();
@@ -1531,7 +1618,7 @@ public final class AgedInventoryModel {
             return "FIXED";
         }
         // 平衡表与负现金
-        if (books.assets().subtract(books.liabilities()).compareTo(books.equity()) != 0) {
+        if (books.assets().add(context.assets()).subtract(books.liabilities()).subtract(context.liabilities()).compareTo(books.equity().add(context.equity())) != 0) {
             return "BALANCE";
         }
         for (CashLedger.CashAccount account : accounts.values()) {
@@ -1586,6 +1673,7 @@ public final class AgedInventoryModel {
     }
 
     private static boolean used(State state, String id) {
+        if (state.reports().stream().anyMatch(r -> "EXPIRED_UNRECEIVED".equals(r.action()) && r.refId().equals(id))) return true;
         if (id == null || id.isBlank()) {
             return true;
         }
@@ -1703,10 +1791,15 @@ public final class AgedInventoryModel {
 
     private static Outcome accepted(State state, Map<String, CashLedger.CashAccount> accounts,
                                     String action, String refId) {
+        return accepted(state, accounts, action, refId, FinancialContext.none());
+    }
+
+    private static Outcome accepted(State state, Map<String, CashLedger.CashAccount> accounts,
+                                    String action, String refId, FinancialContext context) {
         if (accounts == null) {
             return new Outcome(true, ACCEPTED, state, null);
         }
-        String violation = validate(state, accounts);
+        String violation = validate(state, accounts, context);
         if (violation != null) {
             return new Outcome(false, IDENTITY_BROKEN + violation, state, accounts);
         }
@@ -1716,7 +1809,12 @@ public final class AgedInventoryModel {
     /** 接受拷贝器构造的候选：先落地为不可变状态，再做同一套不变量校验。 */
     private static Outcome accepted(Copy copy, Map<String, CashLedger.CashAccount> accounts,
                                     String action, String refId) {
-        return accepted(copy.build(), accounts, action, refId);
+        return accepted(copy, accounts, action, refId, FinancialContext.none());
+    }
+
+    private static Outcome accepted(Copy copy, Map<String, CashLedger.CashAccount> accounts,
+                                    String action, String refId, FinancialContext context) {
+        return accepted(copy.build(), accounts, action, refId, context);
     }
 
     /** 按累计消耗位置计算本次结转成本：C(before+take) − C(before)，末次自动取精确余额。 */

@@ -72,9 +72,14 @@ const sandbox = {
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
-// 页面里 groups.js 先于 app.js 加载；本探针只验证银行，故给这两个跨文件全局最小桩。
+// 本探针只验证银行；其它领域页面按既有隔离方式提供跨文件入口桩。
 sandbox.clearGroupsDom = () => undefined;
 sandbox.placeGroupsPanel = () => undefined;
+for (const name of ["clearResearchDom", "placeResearchPanel", "loadResearch",
+  "clearOperationsDom", "placeOperationsPanel", "loadOperations",
+  "clearManufacturingDom", "placeManufacturingPanel", "loadManufacturing"]) {
+  sandbox[name] = () => undefined;
+}
 
 const context = vm.createContext(sandbox);
 const code = fs.readFileSync(path.join(root, "app.js"), "utf8");

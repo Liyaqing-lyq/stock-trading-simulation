@@ -11,6 +11,10 @@ const only = process.argv[3] || "";
 const source = fs.readFileSync(path.join(webDir, "app.js"), "utf8");
 const groupsFile = path.join(webDir, "groups.js");
 const groupsSource = fs.existsSync(groupsFile) ? fs.readFileSync(groupsFile, "utf8") : "";
+const operationsSource = fs.readFileSync(path.join(webDir, "operations.js"), "utf8");
+const researchFile = path.join(webDir, "research.js");
+const researchSource = fs.existsSync(researchFile) ? fs.readFileSync(researchFile, "utf8") : "";
+const manufacturingSource = fs.readFileSync(path.join(webDir, "manufacturing.js"), "utf8");
 
 // ---------------------------------------------------------------- DOM 原语
 function makeElement(tag = "div") {
@@ -25,6 +29,7 @@ function makeElement(tag = "div") {
     append(...items) { this.children.push(...items); },
     replaceChildren(...items) { this.children = items; },
     addEventListener() { },
+    closest(selector) { this._closest = this._closest || makeElement(selector); return this._closest; },
     querySelectorAll() { return []; },
     querySelector(selector) {
       this._qs = this._qs || new Map();
@@ -69,6 +74,9 @@ function makeWorld(router, name) {
     const answer = await router(method, url, options || {}, context);
     return { status: answer.status, json: async () => answer.payload };
   };
+  vm.runInContext(operationsSource, context);
+  if (researchSource) vm.runInContext(researchSource, context);
+  vm.runInContext(manufacturingSource, context);
   vm.runInContext(source, context);
   if (groupsSource) vm.runInContext(groupsSource, context);
   // `state` 是脚本级 const，不在全局对象上；显式取同一对象。
@@ -1162,7 +1170,204 @@ defineCase("person-social-read-but-not-recallable", async () => {
   return "已读但不可回忆有明确文案";
 });
 
+if (researchSource) {
+  cases.push({ name: "research-god-person-late-response", body: async () => {
+    let resolve;
+    const world = makeWorld(async (method, url) => {
+      if (url === "/api/admin/research") return new Promise(done => { resolve = done; });
+      return { status: 401, payload: {} };
+    }, "research-isolation");
+    await bootSettled(world);
+    world.context.showMode("admin");
+    world.context.selectPage("research", false);
+    const secret = { position: "7", timeMillis: "100", enabled: true,
+      projects: [{ projectId: "private-project", budget: "900.00", amortizationDays: 365,
+        stages: [], status: "COMPLETED", outcomes: [] }],
+      companyReport: { assets: { exact: "9007199254740993.01" } } };
+    world.context.renderResearch(secret);
+    assert.ok(world.$("research-projects").children.length > 0);
+    const renderedValues = world.$("research-financial").children.flatMap(section =>
+      section.children.filter(node => node.tag === "dl").flatMap(rows => rows.children)
+        .filter(node => node.tag === "dd").map(node => node.textContent));
+    assert.ok(renderedValues.includes("9007199254740993.01"),
+      "金额必须保留服务端十进制文本，不转成浮点数");
+    const pending = world.context.loadResearch(world.state.generation, world.state.pageVersion);
+    await waitFor(() => !!resolve, "研发God请求已发出");
+    world.context.showMode("person");
+    assert.equal(world.$("research-projects").children.length, 0);
+    assert.equal(world.$("research-financial").children.length, 0);
+    assert.equal(world.$("research-financial-card").hidden, true);
+    resolve({ status: 200, payload: secret });
+    await pending;
+    assert.equal(world.$("research-projects").children.length, 0, "迟到God响应不得污染人物视图");
+    assert.equal(world.state.researchView, null);
+    world.$("research-due").value = "9223372036854775807";
+    assert.equal(world.context.researchInteger("research-due"), "9223372036854775807");
+    world.$("research-due").value = "9223372036854775808";
+    assert.throws(() => world.context.researchInteger("research-due"));
+    world.$("research-due").value = "1.25";
+    assert.throws(() => world.context.researchInteger("research-due"));
+    return "真实清屏与迟到响应隔离，金额及长整数不丢精度";
+  }});
+}
+
 // ---------------------------------------------------------------- 运行
+cases.push({ name: "manufacturing-god-person-late-response", body: async () => {
+  let resolve;
+  const world = makeWorld(async (method, url) => {
+    if (url === "/api/admin/manufacturing") return new Promise(done => { resolve = done; });
+    return {status:401,payload:{}};
+  }, "manufacturing-isolation");
+  await bootSettled(world);
+  world.context.showMode("admin");
+  world.context.selectPage("manufacturing", false);
+  const secret = {position:"7",timeMillis:"100",enabled:true,assets:"9007199254740993.01",
+    liabilities:"0.00",equity:"9007199254740993.01",profit:"0.00",
+    reports:[{businessId:"private-contract",accepted:true,reason:"CONTRACT_SIGNED",amount:"0.00",timeMillis:"100"}]};
+  world.context.renderManufacturing(secret);
+  assert.equal(world.$("manufacturing-reports").children.length, 1);
+  assert.equal(world.$("manufacturing-summary").children[0].children[1].textContent, "9007199254740993.01");
+  const pending = world.context.loadManufacturing(world.state.generation, world.state.pageVersion);
+  await waitFor(() => !!resolve, "制造God请求已发出");
+  world.context.showMode("person");
+  assert.equal(world.$("manufacturing-reports").children.length, 0);
+  assert.equal(world.$("manufacturing-audit").hidden, true);
+  resolve({status:200,payload:secret});
+  await pending;
+  assert.equal(world.$("manufacturing-reports").children.length, 0);
+  assert.equal(world.state.manufacturingView, null);
+  return "同帧十进制金额，God账目切身份清空，迟到响应不可回填";
+}});
+
+cases.push({ name: "operations-god-person-late-response", body: async () => {
+  let resolve;
+  const world = makeWorld(async () => new Promise(r => { resolve = r; }), "operations-role");
+  world.context.showMode("admin"); world.state.page = "operations";
+  const secret = { position:"8", timeMillis:"100", enabled:true, note:"God", companies:[{
+    companyId:"mfg-tech", name:"制造公司", actions:[], plan:{products:[],visibleQuotes:[],capacityThisPeriod:"20",approvedBudgetRemaining:{PROCUREMENT:null}},
+    financial:{assets:{"经营现金":"9007199254740993.01"},liabilities:{},equity:{}}, reports:[], scenarioTruth:{future:"private"}
+  }]};
+  world.context.renderOperations(secret);
+  assert.ok(world.$("operations-financial").children.some(c => c.textContent.includes("9007199254740993.01")));
+  assert.ok(world.$("operations-financial").children.some(c => c.textContent.includes("未批准")));
+  const pending = world.context.loadOperations(world.state.generation, world.state.pageVersion);
+  await waitFor(() => !!resolve, "三制造God请求已发出");
+  world.context.showMode("person");
+  assert.equal(world.$("operations-financial").children.length, 0);
+  resolve({status:200,payload:secret}); await pending;
+  assert.equal(world.$("operations-financial").children.length, 0);
+  assert.equal(world.state.operationsView, null);
+  return "金额保真、未批预算不填零、身份切换清空、迟到God响应丢弃";
+}});
+
+cases.push({ name: "resource-operations-submit-and-precision", body: async () => {
+  let posted;
+  const view = {position:"9", timeMillis:"1", enabled:true, companies:[{kind:"RESOURCE",companyId:"resources",name:"资源公司",
+    actions:["BEGIN_EXTRACTION","START_EXPANSION"],plan:{actionFields:{BEGIN_EXTRACTION:"jobId, seamId, quantityKg",START_EXPANSION:"projectId"},mineCapacityKg:"1000",transportCapacityKg:"1000",generatorCapacityMwh:"5",remainingBudget:null,
+      mineCoal:{quantity:"9007199254740993"},plantFuel:{quantity:"0"},seams:[{seamId:"seam-a",extractionCostPerKg:"1.00"}]},
+    financial:{assets:{"经营现金":"9007199254740993.01"},liabilities:{},equity:{}},jobs:{},receivables:{},reports:[]}]};
+  const world = makeWorld(async (method, url, body) => { if (method === "POST") {posted={url,body:JSON.parse(body.body)}; return {status:200,payload:{}};} return {status:200,payload:view}; }, "resource-form");
+  await bootSettled(world);
+  world.context.crypto = {randomUUID: () => "resource-test-uuid"};
+  world.context.showMode("person"); world.context.renderOperations(view);
+  world.$("operations-action").value="BEGIN_EXTRACTION"; world.context.operationsFields();
+  world.$("operations-field-jobId").value="job-1"; world.$("operations-field-seamId").value="seam-a";
+  world.$("operations-field-quantityKg").value="9007199254740993"; world.$("operations-duration").value="1000";
+  assert.ok(world.$("operations-financial").children.some(c=>c.textContent.includes("未批准")));
+  assert.ok(world.$("operations-records").children.some(c=>c.textContent.includes("9007199254740993")));
+  await world.context.submitOperations({preventDefault(){}});
+  assert.equal(posted.url,"/api/me/resources/action");
+  assert.equal(posted.body.fields.quantityKg,"9007199254740993");
+  assert.equal(posted.body.companyId,"resources");
+  world.$("operations-action").value="START_EXPANSION"; world.context.operationsFields();
+  assert.equal(world.$("operations-fields").children.length,1);
+  world.$("operations-field-projectId").value="mine-extension";
+  await world.context.submitOperations({preventDefault(){}});
+  assert.deepEqual(posted.body.fields,{projectId:"mine-extension"});
+  return "资源经营数量保真，扩产仅提交项目标识、不自填成本或成功";
+}});
+
+cases.push({ name: "hydro-actions-and-real-work-time", body: async () => {
+  let posted;
+  const view={position:"9",timeMillis:"1",enabled:true,companies:[{kind:"HYDRO",companyId:"hydro",name:"水电",
+    actions:["MAINTENANCE","DISPATCH_FLOW"],plan:{actionFields:{MAINTENANCE:"",DISPATCH_FLOW:"cubicMetresPerHour"},plant:{},physical:{},contract:{},maintenanceOffer:{},remainingBudget:null},
+    financial:{assets:{},liabilities:{},equity:{}},reports:[]}]};
+  const world=makeWorld(async(method,url,body)=>{if(method==="POST"){posted={url,body:JSON.parse(body.body)};return {status:200,payload:{}};}return {status:200,payload:view};},"hydro-form");
+  await bootSettled(world); world.context.crypto={randomUUID:()=>"hydro-test"};
+  world.context.showMode("person");world.context.renderOperations(view);
+  assert.equal(world.$("operations-duration").value,"900000");
+  assert.equal(world.$("operations-due").value,"902001");
+  world.$("operations-action").value="MAINTENANCE";world.context.operationsFields();
+  assert.equal(world.$("operations-fields").children.length,0);
+  await world.context.submitOperations({preventDefault(){}});
+  assert.equal(posted.url,"/api/me/hydro/action");assert.deepEqual(posted.body.fields,{});
+  world.$("operations-action").value="DISPATCH_FLOW";world.context.operationsFields();
+  world.$("operations-field-cubicMetresPerHour").value="9007199254740993";
+  await world.context.submitOperations({preventDefault(){}});
+  assert.equal(posted.body.fields.cubicMetresPerHour,"9007199254740993");
+  return "水电检修不夹带字段，工时15分钟，精确流量送达独立入口";
+}});
+
+cases.push({ name: "digital-aged-forms-and-money-precision", body: async () => {
+  let posted;
+  const digital={kind:"DIGITAL",companyId:"digital-company",name:"数字",actions:["BEGIN_PILOT","SIGN_CONTRACT"],plan:{actionFields:{BEGIN_PILOT:"",SIGN_CONTRACT:"contractId, quantityUnits, prepaidCents"},remainingBudget:null},financial:{assets:{},liabilities:{},equity:{}},reports:[]};
+  const aged={kind:"AGED",companyId:"aged-company",name:"陈酿",actions:["ORDER_RAW","SET_PRICE"],plan:{actionFields:{ORDER_RAW:"orderId, units",SET_PRICE:"channelId, priceCents"},remainingBudget:null},financial:{assets:{},liabilities:{},equity:{}},reports:[]};
+  let view={position:"7",timeMillis:"1",enabled:true,companies:[digital]};
+  const world=makeWorld(async(method,url,body)=>{if(method==="POST"){posted={url,body:JSON.parse(body.body)};return {status:200,payload:{}};}return {status:200,payload:view};},"digital-aged-form");
+  await bootSettled(world);world.context.crypto={randomUUID:()=>"industry-test"};world.context.showMode("person");world.context.renderOperations(view);
+  world.$("operations-action").value="BEGIN_PILOT";world.context.operationsFields();assert.equal(world.$("operations-fields").children.length,0);
+  await world.context.submitOperations({preventDefault(){}});assert.equal(posted.url,"/api/me/digital/action");assert.deepEqual(posted.body.fields,{});
+  world.$("operations-action").value="SIGN_CONTRACT";world.context.operationsFields();
+  world.$("operations-field-contractId").value="contract";world.$("operations-field-quantityUnits").value="100";world.$("operations-field-prepaidCents").value="90071992547409.93";
+  assert.ok(world.$("operations-fields").children.some(c=>c.textContent.includes("元")));
+  await world.context.submitOperations({preventDefault(){}});assert.deepEqual(posted.body.fields,{contractId:"contract",quantityUnits:"100",prepaidCents:"9007199254740993"});
+  view={...view,companies:[aged]};world.context.renderOperations(view);world.$("operations-action").value="SET_PRICE";world.context.operationsFields();
+  world.$("operations-field-channelId").value="channel";world.$("operations-field-priceCents").value="40.00";
+  await world.context.submitOperations({preventDefault(){}});assert.equal(posted.url,"/api/me/aged/action");assert.deepEqual(posted.body.fields,{channelId:"channel",priceCents:"4000"});
+  assert.throws(()=>world.context.operationsInputValue("priceCents","40.001"));
+  assert.throws(()=>world.context.operationsInputValue("priceCents","1e3"));
+  assert.equal(world.context.operationsInputValue("prepaidCents","0.01"),"1");
+  return "数字与陈酿使用各自入口，以元输入、精确换算整数分，大金额保真";
+}});
+
+cases.push({ name: "company-governance-template-switch", body: async () => {
+  const world = makeWorld(async () => ({status:401,payload:{}}), "company-switch");
+  await bootSettled(world);
+  world.context.showMode("admin");
+  const view = { companyId: "pharma", companyName: "研发公司", template: "RESEARCH",
+    position: "2", timeMillis: "0", capturedAtMillis: "1", enabled: true,
+    companies: [{companyId:"pharma", name:"研发公司", template:"RESEARCH"}], report: {}, notes: [] };
+  world.context.renderEngineering(view);
+  assert.equal(world.$("engineering-template").textContent, "研发");
+  assert.equal(world.$("engineering-contracts").closest("section").hidden, true);
+  assert.equal(world.$("engineering-company").children[0].textContent, "研发公司（研发）");
+  world.context.renderEngineering({...view, template: "ENGINEERING"});
+  assert.equal(world.$("engineering-contracts").closest("section").hidden, false);
+  world.context.renderResearch({...view, projects: [], actions: []});
+  assert.ok(world.$("research-cut").textContent.startsWith("研发公司 · "));
+  return "研发公司显示真实名称；不适用的工程台账隐藏，切回工程恢复";
+}});
+
+cases.push({ name: "startup-check-precision-and-role-clear", body: async () => {
+  const world = makeWorld(async () => ({status:401,payload:{}}), "startup-check");
+  await bootSettled(world);
+  world.context.showMode("admin");
+  world.context.renderAdmin({runId:"startup",position:"9",timeMillis:"1",phase:"COMPLETION",
+    accounts:[],owners:[],pending:[],trades:[],dividendReports:[],pendingCount:0,deliveredCount:0,
+    startup:{position:"9",activeReadings:"1",nextTaskId:"read-end",nextDueTimeMillis:"2001",
+      note:"actual-only",companies:[{name:"研发公司",symbol:"PH1",cash:"9007199254740993.01",
+      managers:[],hasCharter:true,boardSeats:"5",budgetLines:"0",openingDocument:"PUBLISHED",directorsRead:"0"}]}});
+  const row = world.$("startup-companies").querySelector("tbody").children[0];
+  assert.equal(row.children[1].textContent, "9007199254740993.01");
+  assert.equal(row.children[2].textContent, "空缺");
+  assert.ok(world.$("startup-next").textContent.includes("2001"));
+  world.context.showMode("person");
+  assert.equal(world.rows("startup-companies"), 0);
+  assert.equal(world.$("startup-status").textContent, "");
+  assert.equal(world.$("startup-next").textContent, "");
+  return "开局条件按原值显示，精确金额不转换，切人物清空管理员检查内容";
+}});
+
 (async () => {
   const results = [];
   for (const item of cases) {

@@ -41,7 +41,10 @@ const context = { state, console, BigInt, Number, String, Date, $: node,
 };
 for(const name of ["clearAdminDom","clearPersonDom","clearPersonalMedia","clearPersonalInterview",
  "clearHistoryDom","renderPersonalMedia","renderPersonalInterview","renderPersonalDialogue","renderPersonalEvidence",
- "renderPersonalSocial","renderPersonalEngineering","clearPersonalBank","renderPersonalBank","loadPersonalBank"]) context[name]=()=>{};
+ "renderPersonalSocial","renderPersonalEngineering","clearPersonalBank","renderPersonalBank","loadPersonalBank",
+ "clearResearchDom","placeResearchPanel","loadResearch",
+ "clearOperationsDom","placeOperationsPanel","loadOperations",
+ "clearManufacturingDom","placeManufacturingPanel","loadManufacturing"]) context[name]=()=>{};
 vm.createContext(context);
 for(const name of ["showMode","enterPerson","refreshPerson"]) vm.runInContext(sourceFunction(name),context);
 vm.runInContext(fs.readFileSync(path.join(root,"groups.js"),"utf8"),context);

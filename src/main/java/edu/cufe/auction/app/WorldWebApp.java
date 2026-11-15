@@ -22,13 +22,14 @@ import java.util.concurrent.CountDownLatch;
  * 凭据只加载到服务端内存，用于场景调用及遮罩/显式查看，控制台只打印一次性管理员引导凭据，
  * 绝不打印 API key。启动不调用模型；只有管理员显式开始后，已启用场景才可发送有界请求。</p>
  *
- * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media|engineering|composed|custody]}；默认
+ * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media|engineering|composed|custody|research|world|world-manager|world-debug|world-ready|world-manufacturing|world-industry]}；默认
  * {@code logs/web-workbench}、{@code C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt}、
  * 端口 18080（被占用则明确失败，不会杀掉已有服务）；默认live用独立world-live.journal，scripted仍用world.journal，
  * 显式cognition使用world-cognition.journal与冻结的回忆实验策略，belief使用独立world-belief.journal
  * 并启用判断、核验与来源学习实验，engineering使用独立world-engineering.journal按现有工程场景与
  * 冻结工程配置启动，composed使用独立world-composed.journal按组合档（含一家真实银行）开局
- * （全部场景默认关闭，未自动调用模型）。</p>
+ * ，research使用独立world-research.journal，在银行组合档上加入阶段研发与商业化
+ * （全部模型场景默认关闭，未自动调用模型）。</p>
  */
 public final class WorldWebApp {
 
@@ -54,7 +55,7 @@ public final class WorldWebApp {
     /**
      * 启动并阻塞，直至进程结束或启动失败。
      *
-     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups或intent，均可省略
+     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro或world-baseline，均可省略
      * @throws Exception 启动失败（凭据、目录、端口、世界）
      */
     public static void main(String[] args) throws Exception {
@@ -71,11 +72,20 @@ public final class WorldWebApp {
                 && !mode.equals("dialogue") && !mode.equals("evidence")
                 && !mode.equals("social") && !mode.equals("engineering")
                 && !mode.equals("groups") && !mode.equals("intent")
-                && !mode.equals("composed") && !mode.equals("custody")) {
+                && !mode.equals("composed") && !mode.equals("custody") && !mode.equals("research") && !mode.equals("world") && !mode.equals("world-manager") && !mode.equals("world-debug") && !mode.equals("world-ready") && !mode.equals("world-manufacturing") && !mode.equals("world-industry") && !mode.equals("world-hydro") && !mode.equals("world-baseline")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering、groups、intent、composed或custody");
+                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro或world-baseline");
         }
+        boolean worldMode = mode.equals("world");
+        boolean managerMode = mode.equals("world-manager");
+        boolean debugMode = mode.equals("world-debug");
+        boolean readyMode = mode.equals("world-ready");
+        boolean manufacturingMode = mode.equals("world-manufacturing");
+        boolean industryMode = mode.equals("world-industry");
+        boolean baselineMode = mode.equals("world-baseline");
+        boolean hydroMode = mode.equals("world-hydro");
+        boolean research = mode.equals("research");
         boolean groups = mode.equals("groups");
         boolean composed = mode.equals("composed");
         boolean custody = mode.equals("custody");
@@ -102,7 +112,60 @@ public final class WorldWebApp {
         }
 
         SceneRoutes routes = SceneRoutes.open(workDir);
-        WorldWebHost host = custody
+        WorldWebHost host = baselineMode
+                ? new WorldWebHost(() -> {
+                    var runtime=edu.cufe.auction.world.composed.ComposedIndustryScenario.openBaseline(workDir.resolve("world-industry-baseline-v1.journal"));
+                    return new WorldWebHost.Opened(runtime,runtime.profile().manifest().runId());
+                },routes,new LiveDecisionProvider(keys))
+                : hydroMode
+                ? new WorldWebHost(() -> {
+                    var runtime = edu.cufe.auction.world.composed.ComposedIndustryScenario.openWithHydro(workDir.resolve("world-industry-hydro-v1.journal"));
+                    return new WorldWebHost.Opened(runtime,runtime.profile().manifest().runId());
+                }, routes,new LiveDecisionProvider(keys))
+                : industryMode
+                ? new WorldWebHost(() -> {
+                    var runtime = edu.cufe.auction.world.composed.ComposedIndustryScenario.open(workDir.resolve("world-industry-v1.journal"));
+                    return new WorldWebHost.Opened(runtime, runtime.profile().manifest().runId());
+                }, routes, new LiveDecisionProvider(keys))
+                : manufacturingMode
+                ? new WorldWebHost(() -> {
+                    var runtime = edu.cufe.auction.world.composed.ComposedManufacturingThreeScenario.openRunnable(
+                            workDir.resolve("world-manufacturing-v1.journal"));
+                    return new WorldWebHost.Opened(runtime, runtime.profile().manifest().runId());
+                }, routes, new LiveDecisionProvider(keys))
+                : readyMode
+                ? new WorldWebHost(() -> {
+                    var runtime = edu.cufe.auction.world.composed.ComposedPharmaScenario.openRunnable(
+                            workDir.resolve("world-ready-v1.journal"));
+                    return new WorldWebHost.Opened(runtime, runtime.profile().manifest().runId());
+                }, routes, new LiveDecisionProvider(keys))
+                : debugMode
+                ? new WorldWebHost(() -> {
+                    var runtime = edu.cufe.auction.world.composed.ComposedPharmaScenario.openDebug(
+                            workDir.resolve("world-debug-v1.journal"));
+                    return new WorldWebHost.Opened(runtime, runtime.profile().manifest().runId());
+                }, routes, new LiveDecisionProvider(keys))
+                : managerMode
+                ? new WorldWebHost(() -> {
+                    var runtime = edu.cufe.auction.world.composed.ComposedResearchScenario.openDebug(
+                            workDir.resolve("world-manager-v3.journal"));
+                    return new WorldWebHost.Opened(runtime, runtime.profile().manifest().runId());
+                }, routes, new LiveDecisionProvider(keys))
+                : worldMode
+                ? new WorldWebHost(() -> {
+                    var runtime = edu.cufe.auction.world.composed.ComposedResearchScenario.openFunded(
+                            workDir.resolve("world-operating.journal"));
+                    return new WorldWebHost.Opened(runtime,
+                            edu.cufe.auction.world.composed.ComposedResearchScenario.fundedManifest().runId());
+                }, routes, new LiveDecisionProvider(keys))
+                : research
+                ? new WorldWebHost(() -> {
+                    var runtime = edu.cufe.auction.world.composed.ComposedResearchScenario.open(
+                            workDir.resolve("world-research.journal"));
+                    return new WorldWebHost.Opened(runtime,
+                            edu.cufe.auction.world.composed.ComposedResearchScenario.manifest().runId());
+                }, routes, new LiveDecisionProvider(keys))
+                : custody
                 ? new WorldWebHost(() -> {
                     var runtime = edu.cufe.auction.world.composed.ComposedCustodyScenario.open(
                             workDir.resolve("world-custody.journal"));
@@ -195,7 +258,21 @@ public final class WorldWebApp {
         System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
         System.out.println("分支运行管理：本机端口 " + BRANCH_PORT_FROM + "-" + BRANCH_PORT_TO
                 + "，最多 " + MAX_BRANCH_RUNS + " 个；创建不等于启动，页面按真实状态显示。");
-        System.out.println(custody
+        System.out.println(baselineMode ? "模式：最终十公司基线实验档；经理和预算须真实决议，模型默认关闭。参数未作现实校准。" : hydroMode ? "模式：水电/资源/三制造同世界增量调试；不是最终十公司基线，模型默认关闭。" : industryMode
+                ? "模式：资源及三制造同世界经营调试（world-industry-v1.journal）；真实任职、预算、作业与资金，模型默认关闭。"
+                : manufacturingMode
+                ? "模式：三制造产品经营与扩产（world-manufacturing-v1.journal）；开局资料、任职、预算和经营均按真实过程，模型默认关闭。"
+                : readyMode
+                ? "模式：带公开开局资料的经营调试（world-ready-v1.journal）；任职与预算须经真实决议，模型默认关闭。"
+                : debugMode
+                ? "模式：独立药企经营调试（world-debug-v1.journal）；全部模型场景默认关闭。"
+                : managerMode
+                ? "模式：经营经理工具实验（独立 world-manager-v3.journal）；有界模型动作沿真实经理权限、预算和资金执行，场景默认关闭。"
+                : worldMode
+                ? "模式：经营组合实验（独立 world-operating.journal）；研发、制造、工程与银行同账，模型默认关闭。"
+                : research
+                ? "模式：银行与研发组合实验（独立 world-research.journal）；全部模型场景默认关闭。"
+                : custody
                 ? "模式：银行托管组合实验（composed-v3；独立 world-custody.journal）；"
                         + "开局禀赋与参数均为实验假设，全部模型场景默认关闭。"
                 : composed

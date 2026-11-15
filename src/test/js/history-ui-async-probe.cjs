@@ -94,6 +94,9 @@ const context = vm.createContext({
   fetch: fakeFetch, URL, Blob,
   nextGeneration: () => 0
 });
+for (const file of ["operations.js", "research.js", "manufacturing.js"]) {
+  vm.runInContext(fs.readFileSync(path.join(webDir, file), "utf8"), context);
+}
 vm.runInContext(source, context);
 const groupsSource = fs.readFileSync(path.join(webDir, "groups.js"), "utf8");
 vm.runInContext(groupsSource, context);

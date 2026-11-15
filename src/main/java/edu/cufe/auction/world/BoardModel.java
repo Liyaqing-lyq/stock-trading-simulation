@@ -163,11 +163,19 @@ public final class BoardModel {
     public static final String REASON_WAIVER_NOT_AUTHORIZED = "WAIVER_NOT_AUTHORIZED";
     /** 该豁免授权已被执行过（只能执行一次）。 */
     public static final String REASON_WAIVER_ALREADY_CONSUMED = "WAIVER_ALREADY_CONSUMED";
+    /** 商业化证据与会议材料或真实阶段结果不一致。 */
+    public static final String REASON_COMMERCIALIZATION_EVIDENCE_MISMATCH =
+            "COMMERCIALIZATION_EVIDENCE_MISMATCH";
+    /** 商业化授权缺失、来源不可重算或公司/项目不匹配。 */
+    public static final String REASON_COMMERCIALIZATION_NOT_AUTHORIZED =
+            "COMMERCIALIZATION_NOT_AUTHORIZED";
 
     private static final BigDecimal HUNDRED = new BigDecimal("100");
     private static final String AUTHORIZATION_DOMAIN = "board-dividend-v1";
     private static final String APPOINTMENT_AUTHORIZATION_DOMAIN = "manager-appointment-v1";
     private static final String WAIVER_AUTHORIZATION_DOMAIN = "debt-waiver-v1";
+    private static final String COMMERCIALIZATION_AUTHORIZATION_DOMAIN =
+            "commercialization-approval-v1";
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
@@ -189,7 +197,9 @@ public final class BoardModel {
         /** 公司经理任免授权（只产生授权引用，不写任职表）。 */
         MANAGER_APPOINTMENT,
         /** 具体债权豁免授权（只产生授权引用，不抹账；schema18 起使用）。 */
-        DEBT_WAIVER
+        DEBT_WAIVER,
+        /** 研发出资成果商业化授权（只产生授权引用，不转资产；商业化实验档使用）。 */
+        COMMERCIALIZATION_APPROVAL
     }
 
     /** 预算类别，对应未来制造新承诺。 */
@@ -626,6 +636,102 @@ public final class BoardModel {
         }
     }
 
+    /**
+     * 商业化授权请求：绑定公司、项目与三份真实阶段结果证据。
+     *
+     * <p>不携带金额、收入或预算行：预算同意与经理自报字符串都不能冒充商业化批准。证据按
+     * RESEARCH / DEVELOPMENT / REGISTRATION 顺序固定三条，逐条绑定文档标识、版本与观察时点；
+     * 世界层还要逐条对照真实研发状态与已发布资料版本。</p>
+     *
+     * @param companyPartyId 研发公司
+     * @param projectId      冻结项目标识
+     * @param evidence       三阶段结果证据引用（顺序固定，标识唯一）
+     */
+    public record CommercializationRequest(String companyPartyId, String projectId,
+                                           List<MaterialRef> evidence) {
+
+        /** 校验公司、项目与三条唯一证据。 */
+        public CommercializationRequest {
+            requireText(companyPartyId, "商业化公司");
+            requireText(projectId, "商业化项目");
+            List<MaterialRef> copied = new ArrayList<>(
+                    Objects.requireNonNull(evidence, "商业化证据"));
+            if (copied.size() != 3) {
+                throw new IllegalArgumentException("商业化证据必须恰为三阶段三条："
+                        + copied.size());
+            }
+            Set<String> sources = new HashSet<>();
+            for (MaterialRef reference : copied) {
+                Objects.requireNonNull(reference, "商业化证据项");
+                if (!sources.add(reference.sourceRef())) {
+                    throw new IllegalArgumentException("商业化证据文档重复："
+                            + reference.sourceRef());
+                }
+                if (reference.version() < 1) {
+                    throw new IllegalArgumentException("商业化证据版本必须从 1 开始："
+                            + reference.sourceRef());
+                }
+                if (reference.asOf() < 0) {
+                    throw new IllegalArgumentException("商业化证据观察时点不能为负："
+                            + reference.sourceRef());
+                }
+            }
+            evidence = List.copyOf(copied);
+        }
+    }
+
+    /**
+     * 商业化提案：请求、提案席位、关联席位与受理时点。
+     *
+     * @param request          规范化请求
+     * @param proposerSeatId   提案席位（必须是章程席位且到会）
+     * @param relatedSeatIds   关联席位事实（按标识排序且不可变）
+     * @param proposedAtMillis 提案受理时点
+     */
+    public record CommercializationProposal(CommercializationRequest request,
+                                            String proposerSeatId,
+                                            List<String> relatedSeatIds,
+                                            long proposedAtMillis) {
+
+        /** 规范关联席位顺序并校验时点。 */
+        public CommercializationProposal {
+            Objects.requireNonNull(request, "商业化请求");
+            requireText(proposerSeatId, "提案席位");
+            if (proposedAtMillis < 0) {
+                throw new IllegalArgumentException("商业化提案时点不能为负");
+            }
+            List<String> related = new ArrayList<>(
+                    Objects.requireNonNull(relatedSeatIds, "关联席位"));
+            for (String seatId : related) {
+                requireText(seatId, "关联席位");
+            }
+            related.sort(Comparator.naturalOrder());
+            for (int index = 1; index < related.size(); index++) {
+                if (related.get(index - 1).equals(related.get(index))) {
+                    throw new IllegalArgumentException("关联席位重复：" + related.get(index));
+                }
+            }
+            relatedSeatIds = List.copyOf(related);
+        }
+    }
+
+    /**
+     * 已签发的商业化授权：只表示董事会授权，不代表资产已转可用或已产生收入。
+     *
+     * @param issuedAtMillis   授权签发时点
+     * @param authorizationRef 可由会议与章程重算的授权引用
+     */
+    public record CommercializationResolution(long issuedAtMillis, String authorizationRef) {
+
+        /** 校验时点与引用。 */
+        public CommercializationResolution {
+            if (issuedAtMillis < 0) {
+                throw new IllegalArgumentException("商业化授权时点不能为负");
+            }
+            requireText(authorizationRef, "商业化授权引用");
+        }
+    }
+
     /** 任免动作：产生任职的任命，或对既有任职的撤销。 */
     public enum AppointmentAction {
         /** 任命。 */
@@ -836,7 +942,47 @@ public final class BoardModel {
                           @JsonInclude(JsonInclude.Include.NON_NULL)
                           AppointmentProposal appointmentProposal,
                           @JsonInclude(JsonInclude.Include.NON_NULL)
-                          AppointmentResolution appointmentResolution) {
+                          AppointmentResolution appointmentResolution,
+                          @JsonInclude(JsonInclude.Include.NON_NULL)
+                          CommercializationProposal commercializationProposal,
+                          @JsonInclude(JsonInclude.Include.NON_NULL)
+                          CommercializationResolution commercializationResolution) {
+
+        /**
+         * 旧 18 参构造（schema22 及更早的规范形状）：保留源码与 JSON 兼容，商业化元数据置空。
+         *
+         * @param meetingId         会议标识
+         * @param topic             议题
+         * @param convenerSeatId    召集席位
+         * @param createdAt         召集时刻
+         * @param materialDeadline  材料截止
+         * @param opensAt           开会时刻
+         * @param closesAt          表决截止（不含）
+         * @param status            状态
+         * @param attendeeSeatIds   到会席位
+         * @param recusedSeatIds    回避席位
+         * @param materials         材料
+         * @param proposedLines     预算请求行
+         * @param ballots           选票
+         * @param failureReason     实施失败原因
+         * @param dividendProposal  分红提案
+         * @param dividendResolution 分红授权
+         * @param appointmentProposal 任免提案
+         * @param appointmentResolution 任免授权
+         */
+        public Meeting(String meetingId, Topic topic, String convenerSeatId, long createdAt,
+                       long materialDeadline, long opensAt, long closesAt, MeetingStatus status,
+                       List<String> attendeeSeatIds, List<String> recusedSeatIds,
+                       List<MaterialRef> materials, List<BudgetLine> proposedLines,
+                       Map<String, Ballot> ballots, String failureReason,
+                       DividendProposal dividendProposal, DividendResolution dividendResolution,
+                       AppointmentProposal appointmentProposal,
+                       AppointmentResolution appointmentResolution) {
+            this(meetingId, topic, convenerSeatId, createdAt, materialDeadline, opensAt, closesAt,
+                    status, attendeeSeatIds, recusedSeatIds, materials, proposedLines, ballots,
+                    failureReason, dividendProposal, dividendResolution, appointmentProposal,
+                    appointmentResolution, null, null);
+        }
 
         /**
          * 旧 16 参构造：保持源码兼容，两个任免元数据置空。
@@ -1106,6 +1252,76 @@ public final class BoardModel {
                                 + ballot.seatId());
                     }
                 }
+            } else if (topic == Topic.COMMERCIALIZATION_APPROVAL) {
+                if (createdAt > materialDeadline || materialDeadline > opensAt || opensAt >= closesAt) {
+                    throw new IllegalArgumentException("商业化会议时序不合法：" + meetingId);
+                }
+                if (status == MeetingStatus.REVIEWED || status == MeetingStatus.IMPLEMENTATION_FAILED) {
+                    throw new IllegalArgumentException("商业化议题不支持该阶段：" + meetingId);
+                }
+                if (!attendeeSeatIds.containsAll(recusedSeatIds)) {
+                    throw new IllegalArgumentException("回避席位必须到会：" + meetingId);
+                }
+                Set<String> materialIds = new HashSet<>();
+                for (MaterialRef material : materialList) {
+                    if (!materialIds.add(material.materialId()) || material.asOf() > materialDeadline) {
+                        throw new IllegalArgumentException("商业化材料重复或晚于截止：" + meetingId);
+                    }
+                }
+                if ((status == MeetingStatus.CONVENED || status == MeetingStatus.MATERIALS_FROZEN)
+                        && !ballotCopy.isEmpty()) {
+                    throw new IllegalArgumentException("表决开始前不能有选票：" + meetingId);
+                }
+                if (!lineList.isEmpty()) {
+                    throw new IllegalArgumentException("商业化议题不能携带预算行：" + meetingId);
+                }
+                if (dividendProposal != null || dividendResolution != null
+                        || appointmentProposal != null || appointmentResolution != null) {
+                    throw new IllegalArgumentException("商业化议题不能携带分红/任免元数据：" + meetingId);
+                }
+                if (commercializationProposal == null) {
+                    if (status != MeetingStatus.CONVENED && status != MeetingStatus.MATERIALS_FROZEN
+                            && status != MeetingStatus.REJECTED) {
+                        throw new IllegalArgumentException("该阶段必须有商业化提案：" + meetingId);
+                    }
+                    if (!ballotCopy.isEmpty()) {
+                        throw new IllegalArgumentException("无提案不能有选票：" + meetingId);
+                    }
+                } else {
+                    if (commercializationProposal.proposedAtMillis() < createdAt
+                            || commercializationProposal.proposedAtMillis() > materialDeadline) {
+                        throw new IllegalArgumentException("商业化提案不在会议材料窗口内：" + meetingId);
+                    }
+                    for (String related : commercializationProposal.relatedSeatIds()) {
+                        if (attendeeSeatIds.contains(related) && !recusedSeatIds.contains(related)) {
+                            throw new IllegalArgumentException("到会的关联席位未登记回避：" + related);
+                        }
+                    }
+                }
+                if (commercializationResolution != null && status != MeetingStatus.IMPLEMENTED) {
+                    throw new IllegalArgumentException("只有已实施会议才能携带商业化授权：" + meetingId);
+                }
+                if (status == MeetingStatus.IMPLEMENTED && commercializationResolution == null) {
+                    throw new IllegalArgumentException("已实施商业化会议必须有授权：" + meetingId);
+                }
+                if (commercializationResolution != null
+                        && commercializationResolution.issuedAtMillis() < closesAt) {
+                    throw new IllegalArgumentException("商业化授权生成不得早于表决截止：" + meetingId);
+                }
+                for (Ballot ballot : ballotCopy.values()) {
+                    if (!attendeeSeatIds.contains(ballot.seatId())
+                            || recusedSeatIds.contains(ballot.seatId())
+                            || ballot.castAt() < opensAt || ballot.castAt() >= closesAt) {
+                        throw new IllegalArgumentException("商业化会议出现无资格选票："
+                                + ballot.seatId());
+                    }
+                }
+                if (commercializationProposal != null && status == MeetingStatus.REJECTED
+                        && attendeeSeatIds.size() - recusedSeatIds.size() < QUORUM) {
+                    throw new IllegalArgumentException("有效到会不足时应延期：" + meetingId);
+                }
+            } else if (commercializationProposal != null || commercializationResolution != null) {
+                throw new IllegalArgumentException("非商业化议题不能携带商业化元数据：" + meetingId);
             } else if (dividendProposal != null || dividendResolution != null) {
                 throw new IllegalArgumentException("非分红议题不能携带分红元数据：" + meetingId);
             } else if (appointmentProposal != null || appointmentResolution != null) {
@@ -1499,7 +1715,8 @@ public final class BoardModel {
                 meeting.materials(), meeting.proposedLines(), meeting.ballots(),
                 meeting.failureReason(), meeting.dividendProposal(),
                 meeting.dividendResolution(), meeting.appointmentProposal(),
-                meeting.appointmentResolution());
+                meeting.appointmentResolution(), meeting.commercializationProposal(),
+                meeting.commercializationResolution());
         if (updated.equals(meeting)) {
             return accepted(state, REASON_OK);
         }
@@ -1695,7 +1912,9 @@ public final class BoardModel {
                         ? meeting.dividendProposal() != null
                         : meeting.topic() == Topic.DEBT_WAIVER
                                 ? debtWaiverOf(waivers, meetingId) != null
-                                : meeting.appointmentProposal() != null;
+                                : meeting.topic() == Topic.COMMERCIALIZATION_APPROVAL
+                                        ? meeting.commercializationProposal() != null
+                                        : meeting.appointmentProposal() != null;
         if (!hasProposal) {
             return rejected(state, REASON_EMPTY_PROPOSAL);
         }
@@ -2288,6 +2507,308 @@ public final class BoardModel {
             }
         }
         return false;
+    }
+
+    // ------------------------------------------------------------------ 商业化授权
+
+    /**
+     * 商业化提案：只接受三阶段真实结果证据绑定，不把预算或经理字符串当授权。
+     *
+     * <p>要求：议题正确、会议已召集、仍在材料窗口内、尚无提案；提案席位是章程席位且已到会；
+     * 会议材料<b>恰为三份</b>且与请求的证据文档/版本逐一对应（不额外要求摘要等第四份材料）；
+     * 关联席位不得在会（除非登记回避）；同公司同项目不得已有已签发的商业化授权。</p>
+     *
+     * @param state           当前状态
+     * @param now             当前模拟毫秒
+     * @param meetingId       会议标识
+     * @param proposerSeatId  提案席位
+     * @param relatedSeatIds  关联席位
+     * @param request         商业化请求
+     * @return 候选结果
+     */
+    public static Outcome proposeCommercializationApproval(State state, long now, String meetingId,
+            String proposerSeatId, List<String> relatedSeatIds, CommercializationRequest request) {
+        requireState(state);
+        requireTime(now);
+        Meeting meeting = meetingOf(state, meetingId);
+        if (meeting == null) {
+            return rejected(state, REASON_UNKNOWN_MEETING);
+        }
+        if (meeting.topic() != Topic.COMMERCIALIZATION_APPROVAL) {
+            return rejected(state, REASON_WRONG_TOPIC);
+        }
+        if (meeting.status() != MeetingStatus.CONVENED) {
+            return rejected(state, REASON_MATERIALS_FROZEN);
+        }
+        if (now < meeting.createdAt()) {
+            return rejected(state, REASON_INVALID_TIMELINE);
+        }
+        if (now > meeting.materialDeadline()) {
+            return rejected(state, REASON_MATERIALS_CLOSED);
+        }
+        if (meeting.commercializationProposal() != null) {
+            return rejected(state, REASON_PROPOSAL_EXISTS);
+        }
+        if (request == null) {
+            return rejected(state, REASON_INVALID_ARGUMENT);
+        }
+        if (!request.companyPartyId().equals(state.charter().companyPartyId())) {
+            return rejected(state, REASON_INVALID_ARGUMENT);
+        }
+        if (blank(proposerSeatId) || !state.charter().hasSeat(proposerSeatId)
+                || !meeting.attendeeSeatIds().contains(proposerSeatId)) {
+            return rejected(state, REASON_INVALID_ATTENDANCE);
+        }
+        List<String> related = relatedSeatIds == null ? List.of() : relatedSeatIds;
+        Set<String> seenRelated = new HashSet<>();
+        for (String seatId : related) {
+            if (blank(seatId) || !state.charter().hasSeat(seatId) || !seenRelated.add(seatId)) {
+                return rejected(state, REASON_INVALID_ATTENDANCE);
+            }
+            if (meeting.attendeeSeatIds().contains(seatId)
+                    && !meeting.recusedSeatIds().contains(seatId)) {
+                return rejected(state, REASON_INVALID_ATTENDANCE);
+            }
+        }
+        if (meeting.materials().size() != request.evidence().size()) {
+            return rejected(state, REASON_COMMERCIALIZATION_EVIDENCE_MISMATCH);
+        }
+        for (MaterialRef evidence : request.evidence()) {
+            if (evidence.asOf() > now) {
+                // asOf 只是提案观察元数据，不构成权限；但不得自报未来时点。
+                return rejected(state, REASON_INVALID_TIMELINE);
+            }
+            boolean matched = false;
+            for (MaterialRef material : meeting.materials()) {
+                if (material.sourceRef().equals(evidence.sourceRef())
+                        && material.version() == evidence.version()) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                return rejected(state, REASON_COMMERCIALIZATION_EVIDENCE_MISMATCH);
+            }
+        }
+        for (Meeting other : state.meetings().values()) {
+            if (!other.meetingId().equals(meetingId)
+                    && other.topic() == Topic.COMMERCIALIZATION_APPROVAL
+                    && other.commercializationResolution() != null
+                    && other.commercializationProposal() != null
+                    && other.commercializationProposal().request().companyPartyId()
+                    .equals(request.companyPartyId())
+                    && other.commercializationProposal().request().projectId()
+                    .equals(request.projectId())
+                    && sameCommercializationEvidence(
+                            other.commercializationProposal().request(), request)) {
+                return rejected(state, REASON_INVALID_STATE);
+            }
+        }
+        CommercializationProposal proposal = new CommercializationProposal(request,
+                proposerSeatId, related, now);
+        Draft draft = new Draft(state);
+        draft.meetings.put(meetingId, withCommercializationProposal(meeting, proposal));
+        return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 实施已通过的商业化决议：复核议题、状态、时点、法定人数与票数后签发授权引用。
+     *
+     * <p>只签发授权，不改研发资产、不动现金、不产生收入；资产转可用由世界执行动作完成。</p>
+     *
+     * @param state     当前状态
+     * @param now       当前模拟毫秒
+     * @param meetingId 会议标识
+     * @return 候选结果
+     */
+    public static Outcome executeAdoptedCommercializationApproval(State state, long now,
+            String meetingId) {
+        requireState(state);
+        requireTime(now);
+        Meeting meeting = meetingOf(state, meetingId);
+        if (meeting == null) {
+            return rejected(state, REASON_UNKNOWN_MEETING);
+        }
+        if (meeting.topic() != Topic.COMMERCIALIZATION_APPROVAL) {
+            return rejected(state, REASON_WRONG_TOPIC);
+        }
+        if (meeting.status() != MeetingStatus.ADOPTED) {
+            return rejected(state, REASON_NOT_ADOPTED);
+        }
+        if (now < meeting.closesAt()) {
+            return rejected(state, REASON_NOT_DUE);
+        }
+        CommercializationProposal proposal = meeting.commercializationProposal();
+        if (proposal == null) {
+            return rejected(state, REASON_INVALID_STATE);
+        }
+        List<String> eligible = meeting.eligibleVoters();
+        if (eligible.size() < QUORUM) {
+            return rejected(state, REASON_NO_QUORUM);
+        }
+        if (yesVotes(meeting, eligible) < ORDINARY_YES_VOTES) {
+            return rejected(state, REASON_NOT_ADOPTED);
+        }
+        for (Meeting other : state.meetings().values()) {
+            if (!other.meetingId().equals(meetingId)
+                    && other.topic() == Topic.COMMERCIALIZATION_APPROVAL
+                    && other.commercializationResolution() != null
+                    && other.commercializationProposal() != null
+                    && other.commercializationProposal().request().companyPartyId()
+                    .equals(proposal.request().companyPartyId())
+                    && other.commercializationProposal().request().projectId()
+                    .equals(proposal.request().projectId())
+                    && sameCommercializationEvidence(
+                            other.commercializationProposal().request(), proposal.request())) {
+                return rejected(state, REASON_INVALID_STATE);
+            }
+        }
+        String authorizationRef = computeCommercializationAuthorizationRef(state.charter(),
+                meeting, now);
+        CommercializationResolution resolution = new CommercializationResolution(now,
+                authorizationRef);
+        Draft draft = new Draft(state);
+        draft.meetings.put(meetingId, withCommercializationResolution(meeting, resolution));
+        return accepted(draft.build(), REASON_OK);
+    }
+
+    /**
+     * 核验商业化授权：只有真实已实施、请求逐字段相同且来源可重算时才为真。
+     *
+     * <p>预算决议、任免授权或任意字符串都不会通过：必须存在同议题、已实施、请求完全一致、
+     * 且引用能按章程/会议/材料/选票重算的会议。</p>
+     *
+     * @param charter          章程
+     * @param state            当前状态
+     * @param authorizationRef 待核验引用
+     * @param request          待核验请求
+     * @return 是否与真实来源一致
+     */
+    public static boolean verifiesCommercializationAuthorization(Charter charter, State state,
+            String authorizationRef, CommercializationRequest request) {
+        requireState(state);
+        if (charter == null || blank(authorizationRef) || request == null) {
+            return false;
+        }
+        for (Meeting meeting : state.meetings().values()) {
+            if (meeting.topic() != Topic.COMMERCIALIZATION_APPROVAL
+                    || meeting.status() != MeetingStatus.IMPLEMENTED) {
+                continue;
+            }
+            CommercializationResolution resolution = meeting.commercializationResolution();
+            if (resolution == null
+                    || !resolution.authorizationRef().equals(authorizationRef)
+                    || meeting.commercializationProposal() == null) {
+                continue;
+            }
+            if (!meeting.commercializationProposal().request().equals(request)) {
+                continue;
+            }
+            String recomputed = computeCommercializationAuthorizationRef(charter, meeting,
+                    resolution.issuedAtMillis());
+            if (recomputed.equals(authorizationRef)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String computeCommercializationAuthorizationRef(Charter charter,
+            Meeting meeting, long issuedAtMillis) {
+        CommercializationProposal proposal = meeting.commercializationProposal();
+        if (proposal == null) {
+            throw new IllegalArgumentException("缺少商业化提案：" + meeting.meetingId());
+        }
+        CommercializationRequest value = proposal.request();
+        Map<String, Object> source = new TreeMap<>();
+        Map<String, Object> request = new TreeMap<>();
+        request.put("companyPartyId", value.companyPartyId());
+        request.put("projectId", value.projectId());
+        List<Map<String, Object>> evidence = new ArrayList<>();
+        for (MaterialRef reference : value.evidence()) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("docId", reference.sourceRef());
+            row.put("version", reference.version());
+            row.put("asOf", reference.asOf());
+            evidence.add(row);
+        }
+        request.put("evidence", evidence);
+        source.put("request", request);
+
+        Map<String, Object> charterSource = new TreeMap<>();
+        charterSource.put("companyPartyId", charter.companyPartyId());
+        charterSource.put("chairSeatId", charter.chairSeatId());
+        charterSource.put("quorum", charter.quorum());
+        List<Seat> seatList = new ArrayList<>(charter.seats());
+        seatList.sort(Comparator.comparing(Seat::seatId));
+        List<Map<String, Object>> seats = new ArrayList<>();
+        for (Seat seat : seatList) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("seatId", seat.seatId());
+            row.put("partyId", seat.partyId());
+            seats.add(row);
+        }
+        charterSource.put("seats", seats);
+        source.put("charter", charterSource);
+
+        Map<String, Object> meetingSource = new TreeMap<>();
+        meetingSource.put("meetingId", meeting.meetingId());
+        meetingSource.put("topic", meeting.topic().name());
+        meetingSource.put("convenerSeatId", meeting.convenerSeatId());
+        meetingSource.put("createdAt", meeting.createdAt());
+        meetingSource.put("materialDeadline", meeting.materialDeadline());
+        meetingSource.put("opensAt", meeting.opensAt());
+        meetingSource.put("closesAt", meeting.closesAt());
+        meetingSource.put("attendees", List.copyOf(meeting.attendeeSeatIds()));
+        meetingSource.put("recused", List.copyOf(meeting.recusedSeatIds()));
+        meetingSource.put("related", List.copyOf(proposal.relatedSeatIds()));
+        meetingSource.put("proposerSeatId", proposal.proposerSeatId());
+        meetingSource.put("proposedAtMillis", proposal.proposedAtMillis());
+        List<Map<String, Object>> materials = new ArrayList<>();
+        for (MaterialRef material : meeting.materials()) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("materialId", material.materialId());
+            row.put("sourceRef", material.sourceRef());
+            row.put("version", material.version());
+            row.put("asOf", material.asOf());
+            materials.add(row);
+        }
+        meetingSource.put("materials", materials);
+        List<Ballot> ballotList = new ArrayList<>(meeting.ballots().values());
+        ballotList.sort(Comparator.comparing(Ballot::seatId));
+        List<Map<String, Object>> ballots = new ArrayList<>();
+        for (Ballot ballot : ballotList) {
+            Map<String, Object> row = new TreeMap<>();
+            row.put("seatId", ballot.seatId());
+            row.put("vote", ballot.vote().name());
+            row.put("castAt", ballot.castAt());
+            ballots.add(row);
+        }
+        meetingSource.put("ballots", ballots);
+        source.put("meeting", meetingSource);
+        source.put("issuedAtMillis", issuedAtMillis);
+        try {
+            return COMMERCIALIZATION_AUTHORIZATION_DOMAIN + ":" + sha256Hex(MAPPER.writeValueAsString(source));
+        } catch (JsonProcessingException failure) {
+            throw new IllegalStateException("商业化授权来源无法规范化", failure);
+        }
+    }
+
+    /** 同一组证据（文档+版本，忽略 asOf 元数据）：只用于阻止“同一证据重复签发授权”。 */
+    private static boolean sameCommercializationEvidence(CommercializationRequest left,
+            CommercializationRequest right) {
+        if (left == null || right == null
+                || left.evidence().size() != right.evidence().size()) {
+            return false;
+        }
+        for (int index = 0; index < left.evidence().size(); index++) {
+            MaterialRef a = left.evidence().get(index);
+            MaterialRef b = right.evidence().get(index);
+            if (!a.sourceRef().equals(b.sourceRef()) || a.version() != b.version()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------ 具体债权豁免授权
@@ -3070,7 +3591,8 @@ public final class BoardModel {
                 meeting.closesAt(), status, meeting.attendeeSeatIds(), meeting.recusedSeatIds(),
                 materials, lines, ballots, failureReason,
                 meeting.dividendProposal(), meeting.dividendResolution(),
-                meeting.appointmentProposal(), meeting.appointmentResolution());
+                meeting.appointmentProposal(), meeting.appointmentResolution(),
+                meeting.commercializationProposal(), meeting.commercializationResolution());
     }
 
     private static Meeting withProposal(Meeting meeting, DividendProposal proposal) {
@@ -3080,7 +3602,8 @@ public final class BoardModel {
                 meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
                 meeting.ballots(), meeting.failureReason(), proposal,
                 meeting.dividendResolution(), meeting.appointmentProposal(),
-                meeting.appointmentResolution());
+                meeting.appointmentResolution(), meeting.commercializationProposal(),
+                meeting.commercializationResolution());
     }
 
     private static Meeting withResolution(Meeting meeting, DividendResolution resolution) {
@@ -3089,7 +3612,8 @@ public final class BoardModel {
                 meeting.closesAt(), MeetingStatus.IMPLEMENTED, meeting.attendeeSeatIds(),
                 meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
                 meeting.ballots(), meeting.failureReason(), meeting.dividendProposal(),
-                resolution, meeting.appointmentProposal(), meeting.appointmentResolution());
+                resolution, meeting.appointmentProposal(), meeting.appointmentResolution(),
+                meeting.commercializationProposal(), meeting.commercializationResolution());
     }
 
     private static Meeting withAppointmentProposal(Meeting meeting, AppointmentProposal proposal) {
@@ -3098,7 +3622,8 @@ public final class BoardModel {
                 meeting.closesAt(), meeting.status(), meeting.attendeeSeatIds(),
                 meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
                 meeting.ballots(), meeting.failureReason(), meeting.dividendProposal(),
-                meeting.dividendResolution(), proposal, meeting.appointmentResolution());
+                meeting.dividendResolution(), proposal, meeting.appointmentResolution(),
+                meeting.commercializationProposal(), meeting.commercializationResolution());
     }
 
     private static Meeting withAppointmentResolution(Meeting meeting,
@@ -3108,7 +3633,31 @@ public final class BoardModel {
                 meeting.closesAt(), MeetingStatus.IMPLEMENTED, meeting.attendeeSeatIds(),
                 meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
                 meeting.ballots(), meeting.failureReason(), meeting.dividendProposal(),
-                meeting.dividendResolution(), meeting.appointmentProposal(), resolution);
+                meeting.dividendResolution(), meeting.appointmentProposal(), resolution,
+                meeting.commercializationProposal(), meeting.commercializationResolution());
+    }
+
+    private static Meeting withCommercializationProposal(Meeting meeting,
+                                                         CommercializationProposal proposal) {
+        return new Meeting(meeting.meetingId(), meeting.topic(), meeting.convenerSeatId(),
+                meeting.createdAt(), meeting.materialDeadline(), meeting.opensAt(),
+                meeting.closesAt(), meeting.status(), meeting.attendeeSeatIds(),
+                meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
+                meeting.ballots(), meeting.failureReason(), meeting.dividendProposal(),
+                meeting.dividendResolution(), meeting.appointmentProposal(),
+                meeting.appointmentResolution(), proposal,
+                meeting.commercializationResolution());
+    }
+
+    private static Meeting withCommercializationResolution(Meeting meeting,
+            CommercializationResolution resolution) {
+        return new Meeting(meeting.meetingId(), meeting.topic(), meeting.convenerSeatId(),
+                meeting.createdAt(), meeting.materialDeadline(), meeting.opensAt(),
+                meeting.closesAt(), MeetingStatus.IMPLEMENTED, meeting.attendeeSeatIds(),
+                meeting.recusedSeatIds(), meeting.materials(), meeting.proposedLines(),
+                meeting.ballots(), meeting.failureReason(), meeting.dividendProposal(),
+                meeting.dividendResolution(), meeting.appointmentProposal(),
+                meeting.appointmentResolution(), meeting.commercializationProposal(), resolution);
     }
 
     /**

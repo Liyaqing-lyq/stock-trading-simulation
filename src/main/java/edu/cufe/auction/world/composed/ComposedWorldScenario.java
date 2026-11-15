@@ -163,15 +163,20 @@ public final class ComposedWorldScenario {
 
     /** @return 冻结规则（EXP：2% 存款报价、ACT365、完整门槛表；不声称监管合规） */
     public static BankConfig config() {
+        return config(profile());
+    }
+
+    /** 同一冻结银行规则用于显式的新主体集合；旧入口仍取原档案。 */
+    static BankConfig config(BankingProfile profile) {
         Map<String, BankConfig.DepositOffer> offers = new LinkedHashMap<>();
         offers.put(BANK, new BankConfig.DepositOffer(BANK, "OFF-" + BANK,
                 InterestAccrual.rateU(new BigDecimal("0.02")), 365L * 86_400_000L,
                 BankRules.CREDIT_OFFER));
-        return new BankConfig.Builder(profile()).version(24).archiveId("COMPOSED-BANK-EXP")
+        return new BankConfig.Builder(profile).version(24).archiveId("COMPOSED-BANK-EXP")
                 .label(RunManifest.RULES_COMPOSED_BANK_WORLD_V2)
                 .coverageRule("DECLARED_UNIVERSE_V1")
                 .interest(BankConfig.Interest.act365()).depositOffers(offers)
-                .groupMap(Map.of("cufe", "G-CUFE", "eng-a", "G-ENGA", "eng-b", "G-ENGB"))
+                .groupMap(profile.parties().containsKey("cufe") ? Map.of("cufe", "G-CUFE", "eng-a", "G-ENGA", "eng-b", "G-ENGB") : Map.of("eng-a","G-ENGA"))
                 .thresholds(Map.of("cet1_min", money("0.01"), "cet1_buffer", money("0.01"),
                         "t1_min", money("0.01"), "tcr_min", money("0.01"),
                         "lev_min", money("0.01"), "single_name", money("9.90"),
@@ -209,7 +214,65 @@ public final class ComposedWorldScenario {
 
     /** @return 组合档完整运行（同一日志重开必须给同一申请） */
     public static WorldRuntime open(Path journal) throws Exception {
-        long end = 30L * 86_400_000L;
+        return open(journal, manifest(), openings(), registry(), bankOpening());
+    }
+
+    /**
+     * 组合档开局的显式扩展：额外公司章程、额外初始任职与额外资料读者。
+     *
+     * <p>旧工厂等价于 {@link #none()}，因此原有组合档的章程、任职、读者与产物逐字不变；
+     * 新画像（独立研发公司）只通过显式扩展增加自己的公司与董事，不改任何旧默认值。</p>
+     *
+     * @param charters     额外公司/章程（含原 north 时必须原样带上）
+     * @param appointments 额外初始任职（不得预置经理）
+     * @param readers      额外资料读者（本人须能真实读取本公司材料）
+     */
+    public record Extras(Map<String, edu.cufe.auction.world.BoardModel.Charter> charters,
+                         List<RoleAccess.Appointment> appointments, List<String> readers) {
+
+        /** 校验并冻结。 */
+        public Extras {
+            charters = charters == null ? Map.of() : Map.copyOf(new TreeMap<>(charters));
+            appointments = appointments == null ? List.of() : List.copyOf(appointments);
+            readers = readers == null ? List.of() : List.copyOf(readers);
+        }
+
+        /** @return 空扩展（旧组合档口径） */
+        public static Extras none() {
+            return new Extras(Map.of(), List.of(), List.of());
+        }
+    }
+
+    /** 同一组合运行工厂；调用方必须提供已经冻结的新档开局，不改旧档配置。 */
+    static WorldRuntime open(Path journal, RunManifest manifest,
+            List<CashLedger.OpeningAccount> openings, OpeningRegistry registry,
+            BankOpeningRequest bankOpening) throws Exception {
+        return open(journal, manifest, openings, registry, bankOpening,
+                WorldWebScenario.groupsDecisionConfig(), Extras.none());
+    }
+
+    /** 新场景明确冻结工具配置；旧工厂仍使用原配置。 */
+    static WorldRuntime open(Path journal, RunManifest manifest,
+            List<CashLedger.OpeningAccount> openings, OpeningRegistry registry,
+            BankOpeningRequest bankOpening, edu.cufe.auction.world.DecisionModel.Config decisions) throws Exception {
+        return open(journal, manifest, openings, registry, bankOpening, decisions, Extras.none());
+    }
+
+    /** 显式公司扩展保留原有工具配置。 */
+    static WorldRuntime open(Path journal, RunManifest manifest,
+            List<CashLedger.OpeningAccount> openings, OpeningRegistry registry,
+            BankOpeningRequest bankOpening, Extras extras) throws Exception {
+        return open(journal, manifest, openings, registry, bankOpening,
+                WorldWebScenario.groupsDecisionConfig(), extras);
+    }
+
+    /** 同时冻结公司扩展与人物工具；全部入口共享相同开局过程。 */
+    static WorldRuntime open(Path journal, RunManifest manifest,
+            List<CashLedger.OpeningAccount> openings, OpeningRegistry registry,
+            BankOpeningRequest bankOpening, edu.cufe.auction.world.DecisionModel.Config decisions,
+            Extras extras) throws Exception {
+        boolean baseline = BaselineIndustryConfig.PROFILE.equals(manifest.dataVersions().get("profile"));
+        long end = (baseline ? 360L : 30L) * 86_400_000L;
         List<RoleAccess.Appointment> appointments = new ArrayList<>(List.of(
                 new RoleAccess.Appointment("A-1", "alice", WorldWebScenario.COMPANY,
                         RoleAccess.Role.RESEARCHER, 0L, end, null),
@@ -230,6 +293,10 @@ public final class ComposedWorldScenario {
                 WorldWebScenario.INVESTOR));
         readers.addAll(WorldWebScenario.MEDIA_PERSONS);
         readers.addAll(WorldWebScenario.SOCIAL_PERSONS);
+        readers.addAll(extras.readers());
+        if (manifest.hasResearch()) {
+            readers.add(WorldWebScenario.RESEARCH_SYSTEM_PUBLISHER);
+        }
         InformationRun.Config info = new InformationRun.Config(readers,
                 WorldWebScenario.COGNITION_POLICY,
                 new edu.cufe.auction.world.BeliefModel.Policy(200, 8, end, 20, 200, 3, end));
@@ -239,22 +306,29 @@ public final class ComposedWorldScenario {
             contacts.add(new edu.cufe.auction.world.InterviewRun.ContactEntry("私信", person,
                     "公开联系说明：可一对一私人消息", WorldWebScenario.SOCIAL_CONTACT_DOC, 1L));
         }
-        return new WorldRuntime(journal, manifest(), openings(), registry(),
-                new edu.cufe.auction.world.ManufacturingRun.Config(
+        Map<String, edu.cufe.auction.world.BoardModel.Charter> governed =
+                extras.charters().isEmpty() ? charters()
+                        : new TreeMap<>(extras.charters());
+        appointments.addAll(extras.appointments());
+        return new WorldRuntime(journal, manifest, openings, registry,
+                baseline ? null : new edu.cufe.auction.world.ManufacturingRun.Config(
                         new edu.cufe.auction.world.ManufacturingModel.Opening("company", "CO",
                                 "SUP", "CUS", "OPS"), WorldWebScenario.SYMBOL),
-                cufeCharter(),
+                baseline ? null : cufeCharter(),
                 new RoleRun.Config(List.of(new RoleAccess.ProductMandate(
                         WorldWebScenario.COMPANY, "fund-a", List.of("ACC-FUND"))), appointments),
                 info,
-                WorldWebScenario.groupsDecisionConfig(), null,
+                decisions, null,
                 WorldWebScenario.mediaConfig(), WorldWebScenario.interviewConfig(),
                 WorldWebScenario.dialogueConfig(), WorldWebScenario.evidenceConfig(),
                 WorldWebScenario.socialConfig(), WorldWebScenario.SOCIAL_BLOCK_MILLIS,
-                contacts, engineeringConfigWithAcceptance(),
+                contacts, baseline ? baselineEngineering() : engineeringConfigWithAcceptance(),
                 WorldWebScenario.groupsConfig(), WorldWebScenario.groupsPlatformConfig(),
                 WorldWebScenario.GROUPS_FEED_LIMIT, WorldWebScenario.GROUPS_READ_MILLIS,
-                charters(), bankOpening());
+                governed, bankOpening, manifest.hasManufacturingFunding()
+                        ? edu.cufe.auction.world.ManufacturingFunding.cash(
+                                new edu.cufe.auction.world.ManufacturingModel.Opening("company", "CO",
+                                        "SUP", "CUS", "OPS")) : null);
     }
 
     /**
@@ -268,6 +342,11 @@ public final class ComposedWorldScenario {
      *
      * @return 带冻结客户验收计划的工程配置
      */
+    private static EngineeringRun.Config baselineEngineering() {
+        var c=engineeringConfigWithAcceptance();
+        return new EngineeringRun.Config(c.paramSource(),c.companies().stream().filter(x->x.companyPartyId().equals("eng-a")).toList(),Map.of("eng-a",c.customerEvents().get("eng-a")));
+    }
+
     public static EngineeringRun.Config engineeringConfigWithAcceptance() {
         EngineeringRun.Config base = WorldWebScenario.engineeringConfig();
         java.util.Map<String, java.util.List<EngineeringRun.CustomerEventPlan>> events =

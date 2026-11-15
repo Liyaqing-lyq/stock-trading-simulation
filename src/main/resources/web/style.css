@@ -90,3 +90,15 @@ td.preview{white-space:normal;min-width:240px;max-width:380px;color:#5c6a80}
   .periodic-period h4{font-size:13px}
   .periodic-body pre{max-height:20rem}
 }
+
+/* 研发项目与同口径合并账：桌面并排，窄屏自然换行。 */
+#research-projects{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:18px 0}
+#research-projects .card{margin:0;padding:18px;overflow-wrap:anywhere}
+#research-projects h3{margin:0 0 12px;font-size:15px}
+#research-projects p{margin:7px 0;font-size:12px}
+#research-financial{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 28px}
+#research-financial h3{font-size:13px;margin:0 0 10px}
+#research-financial dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 14px;margin:0;font-size:12px}
+#research-financial dt{color:#6c7990;overflow-wrap:anywhere}
+#research-financial dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}
+@media(max-width:900px){#research-projects,#research-financial{grid-template-columns:1fr}}

@@ -253,6 +253,70 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
         return runtime.scheduleRoleUnread(this, clientCommandId, clientTaskId, dueMillis, ref);
     }
 
+    /**
+     * 以本会话冻结的观察任职发起研发立项（真实 session，不是字符串自认证）。
+     *
+     * <p>会话观察时必须有本公司在职经理任职；排程冻结 appointmentId+observedPosition；
+     * BEGIN/FINISH 复核同一条任职，不接受调用方自报身份。</p>
+     *
+     * @param clientCommandId    本人命令
+     * @param clientTaskId       本人任务
+     * @param dueMillis          真实完成时点
+     * @param organizationPartyId 研发公司
+     * @param projectId          冻结项目
+     * @param durationMillis     正工时
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public String registerResearch(String clientCommandId, String clientTaskId, long dueMillis,
+            String organizationPartyId, String projectId, long durationMillis) throws IOException {
+        return runtime.scheduleResearchFromSession(this, clientCommandId, clientTaskId, dueMillis,
+                organizationPartyId, projectId, null, durationMillis, "REGISTER");
+    }
+
+    /**
+     * 以本会话冻结的观察任职开工一个研发阶段（真实 session）。
+     *
+     * @param clientCommandId    本人命令
+     * @param clientTaskId       本人任务
+     * @param dueMillis          真实完成时点
+     * @param organizationPartyId 研发公司
+     * @param projectId          冻结项目
+     * @param stage              阶段
+     * @param durationMillis     正工时
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public String beginResearch(String clientCommandId, String clientTaskId, long dueMillis,
+            String organizationPartyId, String projectId, ResearchModel.Stage stage,
+            long durationMillis) throws IOException {
+        return runtime.scheduleResearchFromSession(this, clientCommandId, clientTaskId, dueMillis,
+                organizationPartyId, projectId, stage, durationMillis, "BEGIN");
+    }
+
+    /**
+     * 以本会话冻结的观察任职执行已通过的真实商业化授权。
+     *
+     * <p>授权引用由服务端从会议解析并可重算，调用方不能自报；若会话观察时无本公司在职经理，
+     * 或任职在 BEGIN/FINISH 失效，动作被拒。成功时 FINISH 时点即资产可使用起点。</p>
+     *
+     * @param clientCommandId     本人命令
+     * @param clientTaskId        本人任务
+     * @param dueMillis           真实完成时点（即可使用时点）
+     * @param organizationPartyId 研发公司
+     * @param projectId           冻结项目
+     * @param meetingId           商业化决议会议
+     * @param durationMillis      执行工时，必须为正
+     * @return 规范化回报
+     * @throws IOException 持久失败
+     */
+    public String approveCommercialization(String clientCommandId, String clientTaskId,
+            long dueMillis, String organizationPartyId, String projectId, String meetingId,
+            long durationMillis) throws IOException {
+        return runtime.approveCommercializationFromSession(this, clientCommandId, clientTaskId,
+                dueMillis, organizationPartyId, projectId, meetingId, durationMillis);
+    }
+
     // ------------------------------------------------------------------
     // 四个岗位动作
     // ------------------------------------------------------------------
@@ -1320,4 +1384,47 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
         return runtime.scheduleBankAction(this, clientCommandId, clientTaskId, dueMillis,
                 durationMillis, draft);
     }
+    /**
+     * 以本会话观察到的真实经理任职排程经营工作，经过开始与完成两个阶段。
+     * @param commandId 本人命令标识
+     * @param taskId 本人任务标识
+     * @param dueMillis 计划完成时点
+     * @param companyPartyId 经营公司
+     * @param action 明确的经营动作
+     * @param fields 该动作的业务字段；身份由本会话绑定
+     * @param durationMillis 正工时
+     * @return 排程回报
+     * @throws IOException 持久提交失败
+     */
+    public String operationsAction(String commandId, String taskId, long dueMillis,
+            String companyPartyId, CompanyOperationsRun.Action action,
+            CompanyOperationsRun.Fields fields, long durationMillis) throws IOException {
+        return runtime.scheduleOperationsFromSession(this, commandId, taskId, dueMillis,
+                companyPartyId, action.name(), fields, durationMillis);
+    }
+
+    /** 安排本人陈酿经营工作，真实任职和工时由世界复核。 */
+    public String agedAction(String commandId, String taskId, long dueMillis, String companyPartyId,
+            AgedOperations.Request request, long durationMillis) throws java.io.IOException {
+        return runtime.scheduleAgedFromSession(this, commandId, taskId, dueMillis, companyPartyId, request, durationMillis);
+    }
+
+    /** 安排本人数字服务经营工作，真实任职和工时由世界复核。 */
+    public String digitalAction(String commandId, String taskId, long dueMillis, String companyPartyId,
+            DigitalOperations.Request request, long durationMillis) throws java.io.IOException {
+        return runtime.scheduleDigitalFromSession(this, commandId, taskId, dueMillis, companyPartyId, request, durationMillis);
+    }
+
+    /** 安排本人水电公司经营工作；身份和任期由该会话冻结并由世界复核。 */
+    public String hydroAction(String commandId, String taskId, long dueMillis, String companyPartyId,
+            HydroOperations.Request request, long durationMillis) throws java.io.IOException {
+        return runtime.scheduleHydroFromSession(this, commandId, taskId, dueMillis, companyPartyId, request, durationMillis);
+    }
+
+    /** 资源公司经营：真实本人任职、正工时、有限储量与真实付款。 */
+    public String resourceAction(String commandId, String taskId, long dueMillis, String companyPartyId,
+            ResourceOperations.Request request, long durationMillis) throws IOException {
+        return runtime.scheduleResourceFromSession(this, commandId, taskId, dueMillis, companyPartyId, request, durationMillis);
+    }
+
 }
