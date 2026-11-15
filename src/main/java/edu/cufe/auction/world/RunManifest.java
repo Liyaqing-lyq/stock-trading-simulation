@@ -988,6 +988,13 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("behavior-policy", ConnectedWorldLoop.VERSION.equals(data.get("behavior-policy"))
                         ? ConnectedWorldLoop.VERSION : ManufacturingBehaviorPolicy.VERSION);
             }
+            if ("industry-prototype-v1".equals(data.get(DATA_PROFILE)) && data.containsKey("autonomy-driver")) {
+                if (data.containsKey("behavior-policy"))
+                    throw new IllegalArgumentException("模型连续运行不得混用固定行为策略");
+                expectedData.put("autonomy-driver", "role-events-v2".equals(data.get("autonomy-driver"))
+                        ? "role-events-v2" : "role-windows-v1");
+                expectedData.put("composed-governance-intent", "v2");
+            }
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData
                         + "，收到 " + data);

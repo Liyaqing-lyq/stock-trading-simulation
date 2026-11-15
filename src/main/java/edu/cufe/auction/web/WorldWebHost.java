@@ -209,6 +209,257 @@ public final class WorldWebHost implements AutoCloseable {
     private List<String> lastRoundPersons = List.of();
     private String lastRoundCompany;
 
+    // 自动运行只负责唤醒与时间，不选择业务动作。进程重开默认停止，不自动恢复付费调用。
+    private Autonomy autonomy;
+    private record WakeGroup(String scene, String company, List<String> persons) { }
+    private static final class Autonomy {
+        long target, step, revision, cycles, callsAtStart, failures;
+        int windowDecisions, windowFailures;
+        int next, decisionStart;
+        boolean running = true, awaiting;
+        String reason = "RUNNING";
+        List<WakeGroup> groups = List.of();
+        List<WakeGroup> roster = List.of();
+        final Map<String, com.fasterxml.jackson.databind.JsonNode> observed = new HashMap<>();
+        final Map<String, Long> lastWake = new HashMap<>();
+        final Set<String> busy = new HashSet<>();
+    }
+
+    /** 服务端运行状态；已完成窗口不代表经营成功或自主世界已验收。 */
+    public record AutonomyStatus(boolean available, boolean running, String reason,
+                                 String position, String timeMillis, String targetMillis,
+                                 long cycles, long calls, long failures, int companies, int persons) { }
+
+    /** 查询本进程自动运行控制；查询本身不启动任何模型调用。 */
+    public AutonomyStatus autonomyStatus() throws Exception {
+        return call(this::autonomyStatusOnWriter);
+    }
+
+    /**
+     * 明确启动一次有目标时点和既有模型预算上限的连续运行。
+     * 真实席位/任职决定唤醒名单，提供方决定动作；不与固定经营规则混用。
+     * @param expectedPosition 已观察位置
+     * @param expectedRevision 已观察模型配置版本
+     * @param targetMillis 目标世界时点，最多前进180日
+     * @param stepMillis 旧档为1小时窗口；事件档作为单次空闲推进上限，不跨过待办
+     * @throws Exception 版本冲突、配置不足、仍有旧轮次或世界读写失败
+     */
+    public void startAutonomy(long expectedPosition, long expectedRevision,
+                              long targetMillis, long stepMillis) throws Exception {
+        call(() -> {
+            var current = readyNow();
+            if (current.snapshot().position() != expectedPosition)
+                throw new PositionMismatch(current.snapshot().position());
+            if (!autonomyAvailable() || livePaused || liveFault != null || current.isPaused()
+                    || (autonomy != null && autonomy.running) || (sessionBegun && hasUnsettledWork()))
+                throw new IllegalStateException("自动运行不可用，须先停止或处理在途决定");
+            if (routes.view().revision() != expectedRevision)
+                throw new SceneRoutes.RevisionMismatch(routes.view().revision());
+            long now = current.snapshot().timeMillis();
+            if (targetMillis <= now || targetMillis - now > 180L * 86_400_000L
+                    || stepMillis != 3_600_000L)
+                throw new IllegalArgumentException("目标须在未来180日内，本版本窗口固定为1小时");
+            List<WakeGroup> groups = autonomyGroups();
+            for (WakeGroup group : groups) {
+                var route = routeOf(routes.view(), group.scene());
+                if (route == null || !route.enabled())
+                    throw new SceneRejected("请先启用实际角色所需的模型场景：" + group.scene());
+            }
+            if (groups.isEmpty()) throw new SceneRejected("当前没有可唤醒的真实角色");
+            if (!sessionBegun) {
+                current.beginDecisionSession("autonomy:" + expectedPosition + ":" + expectedRevision);
+                sessionBegun = true;
+            }
+            if (current.pendingBarrier().isPresent())
+                throw new IllegalStateException("旧决定屏障尚未解除");
+            Autonomy next = new Autonomy();
+            next.target = targetMillis; next.step = stepMillis; next.revision = expectedRevision;
+            next.callsAtStart = current.snapshot().decisions().orElseThrow().state().runUsage().attempts();
+            next.roster = groups;
+            next.groups = groups;
+            autonomy = next;
+            if (eventAutonomy()) {
+                for (var decision : current.snapshot().decisions().orElseThrow().state().decisions()) {
+                    if (!decision.attempts().isEmpty()) {
+                        next.observed.put(decision.personPartyId(), wakeFacts(PAYLOAD_MAPPER.readTree(decision.inputText())));
+                        next.lastWake.put(decision.personPartyId(), decision.decisionAtMillis());
+                    }
+                }
+                next.groups = eventWakeGroups(groups);
+            }
+            return null;
+        });
+    }
+
+    /** 停止后不再新唤醒或推进；已发出的调用仍结算，不能宣称未收费。 */
+    public void stopAutonomy() throws Exception {
+        call(() -> {
+            if (autonomy == null || !autonomy.running) return null;
+            endAutonomy("STOPPED");
+            if (liveRound != null) {
+                liveRound.stopping = true;
+                liveRound.pending.clear();
+            }
+            return null;
+        });
+    }
+
+    private boolean autonomyAvailable() {
+        return workers != null && liveRuntime()
+                && ("role-windows-v1".equals(runtime.profile().manifest().dataVersions().get("autonomy-driver")) || eventAutonomy())
+                && !edu.cufe.auction.world.ConnectedWorldLoop.enabled(runtime)
+                && !edu.cufe.auction.world.ManufacturingBehaviorLoop.enabled(runtime);
+    }
+
+    private boolean eventAutonomy() {
+        return "role-events-v2".equals(runtime.profile().manifest().dataVersions().get("autonomy-driver"));
+    }
+
+    // 比较本人可见的具体事实；世界时间或观察时点自身变化不触发全体付费调用。
+    private static com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
+        var facts = (com.fasterxml.jackson.databind.node.ObjectNode) input.deepCopy();
+        facts.remove(List.of("time", "observedAt", "wakeReason", "pendingActions"));
+        return facts;
+    }
+
+    private List<WakeGroup> eventWakeGroups(List<WakeGroup> roster) throws IOException {
+        var ready = new HashSet<String>();
+        long now = runtime.snapshot().timeMillis();
+        for (String person : roster.stream().flatMap(g -> g.persons().stream()).distinct().toList()) {
+            var input = runtime.autonomyRoleObservation(person);
+            if (runtime.autonomyRoleBusy(person) || !input.path("pendingActions").isEmpty()) {
+                autonomy.busy.add(person);
+                continue;
+            }
+            boolean finishedWork = autonomy.busy.remove(person);
+            Long last = autonomy.lastWake.get(person);
+            if (last == null || finishedWork || now - last >= 86_400_000L
+                    || !wakeFacts(input).equals(autonomy.observed.get(person))) ready.add(person);
+        }
+        return roster.stream().map(g -> new WakeGroup(g.scene(), g.company(),
+                        g.persons().stream().filter(ready::contains).toList()))
+                .filter(g -> !g.persons().isEmpty()).toList();
+    }
+
+    private long nextAutonomyTime() {
+        long now = runtime.snapshot().timeMillis();
+        long target = Math.min(autonomy.target, now + autonomy.step);
+        if (eventAutonomy()) {
+            for (PendingTask task : runtime.snapshot().pending())
+                if (task.dueTimeMillis() > now) target = Math.min(target, task.dueTimeMillis());
+            for (long last : autonomy.lastWake.values())
+                if (last + 86_400_000L > now) target = Math.min(target, last + 86_400_000L);
+        }
+        return target;
+    }
+
+    private List<WakeGroup> autonomyGroups() {
+        var groups = new ArrayList<WakeGroup>();
+        var byCompany = new java.util.TreeMap<String, List<String>>();
+        for (LivePerson person : governancePersons(runtime.snapshot()))
+            for (String company : person.governanceCompanies())
+                byCompany.computeIfAbsent(company, key -> new ArrayList<>()).add(person.personPartyId());
+        byCompany.forEach((company, persons) -> groups.add(new WakeGroup(SCENE_GOVERNANCE, company, List.copyOf(persons))));
+        var byScene = new java.util.TreeMap<String, List<String>>();
+        for (LivePerson person : livePeople(runtime.snapshot()))
+            if (person.sceneId() != null)
+                byScene.computeIfAbsent(person.sceneId(), key -> new ArrayList<>()).add(person.personPartyId());
+        byScene.forEach((scene, persons) -> groups.add(new WakeGroup(scene, null, List.copyOf(persons))));
+        // 一人兼任多家公司/岗位仍只有一个注意力窗口，不能为每个身份重复发起决定。
+        var contexts = new java.util.TreeMap<String, List<WakeGroup>>();
+        for (WakeGroup group : groups) for (String person : group.persons())
+            contexts.computeIfAbsent(person, key -> new ArrayList<>()).add(group);
+        long window = runtime.snapshot().timeMillis() / 3_600_000L;
+        var selected = new java.util.HashMap<String, WakeGroup>();
+        // 已有研究/交易/媒体岗位沿用其路由；路由不删减真实兼任权限和工具。
+        contexts.forEach((person, choices) -> selected.put(person,
+                choices.stream().filter(group -> group.company() == null).findFirst().orElseGet(() ->
+                        choices.get((int) Math.floorMod(window + person.hashCode(), choices.size())))));
+        var selectedGroups = new ArrayList<>(groups.stream().map(group -> new WakeGroup(group.scene(), group.company(),
+                group.persons().stream().filter(person -> selected.get(person).equals(group)).toList()))
+                .filter(group -> !group.persons().isEmpty()).toList());
+        // 每个世界窗口轮转起点，避免固定首家公司/岗位总是优先消费有限调用预算。
+        if (!selectedGroups.isEmpty()) java.util.Collections.rotate(selectedGroups,
+                -(int) ((runtime.snapshot().timeMillis() / 3_600_000L
+                        + Math.floorMod(runtime.profile().manifest().seed(), selectedGroups.size())) % selectedGroups.size()));
+        return List.copyOf(selectedGroups);
+    }
+
+    private AutonomyStatus autonomyStatusOnWriter() {
+        var snapshot = readyNow().snapshot();
+        var groups = autonomy == null ? List.<WakeGroup>of() : autonomy.roster;
+        long calls = snapshot.decisions().map(d -> d.state().runUsage().attempts()).orElse(0L);
+        return new AutonomyStatus(autonomyAvailable(), autonomy != null && autonomy.running,
+                autonomy == null ? "NOT_STARTED" : autonomy.running && livePaused ? "PAUSED" : autonomy.reason, num(snapshot.position()),
+                num(snapshot.timeMillis()), autonomy == null ? null : num(autonomy.target),
+                autonomy == null ? 0 : autonomy.cycles, autonomy == null ? 0 : calls - autonomy.callsAtStart,
+                autonomy == null ? 0 : autonomy.failures,
+                (int) groups.stream().flatMap(g -> g.persons().stream()).distinct()
+                        .flatMap(person -> runtime.governanceCompanies(person).stream()).distinct().count(),
+                (int) groups.stream().flatMap(g -> g.persons().stream()).distinct().count());
+    }
+
+    private void endAutonomy(String reason) {
+        if (autonomy != null) { autonomy.running = false; autonomy.reason = reason; }
+    }
+
+    private void pumpAutonomy() throws IOException {
+        if (closed || autonomy == null || !autonomy.running || livePaused) return;
+        if (liveFault != null || runtime.isPaused()) { endAutonomy("WORLD_FAULT"); return; }
+        if (routes.view().revision() != autonomy.revision) { endAutonomy("CONFIGURATION_CHANGED"); return; }
+        if (liveRound != null || hasUnsettledWork()) return;
+        var decisions = runtime.snapshot().decisions().orElseThrow().state().decisions();
+        if (autonomy.awaiting) {
+            autonomy.awaiting = false;
+            for (var decision : decisions.subList(autonomy.decisionStart, decisions.size())) {
+                if (decision.outcome() == DecisionModel.Outcome.BUDGET_EXHAUSTED) {
+                    endAutonomy(decision.outcome().name()); return;
+                }
+                autonomy.windowDecisions++;
+                if (decision.outcome() == DecisionModel.Outcome.TECHNICAL_FAILED) {
+                    autonomy.windowFailures++; autonomy.failures++;
+                }
+            }
+            if (!lastSkips.isEmpty()) { endAutonomy("ROLE_DISPATCH_REJECTED"); return; }
+        }
+        if (autonomy.next == autonomy.groups.size()) {
+            if (autonomy.windowDecisions > 0 && autonomy.windowFailures == autonomy.windowDecisions) {
+                endAutonomy("ALL_DECISIONS_FAILED"); return;
+            }
+            long target = nextAutonomyTime();
+            runtime.advanceTo(target);
+            if (runtime.snapshot().timeMillis() != target) { endAutonomy("UNRESOLVED_BARRIER"); return; }
+            autonomy.cycles++;
+            if (target == autonomy.target) { endAutonomy("TARGET_REACHED"); return; }
+            autonomy.roster = autonomyGroups();
+            autonomy.groups = eventAutonomy() ? eventWakeGroups(autonomy.roster) : autonomy.roster;
+            autonomy.next = 0;
+            autonomy.windowDecisions = 0; autonomy.windowFailures = 0;
+            if (autonomy.roster.isEmpty()) { endAutonomy("NO_ELIGIBLE_ROLES"); return; }
+            return;
+        }
+        WakeGroup group = autonomy.groups.get(autonomy.next++);
+        // 停止/重开后从已持久决定识别本时点已经唤醒的人，不重复扣费或重复安排动作。
+        Set<String> alreadyDecided = new HashSet<>();
+        decisions.stream().filter(d -> d.decisionAtMillis() == runtime.snapshot().timeMillis()
+                && !d.attempts().isEmpty()).forEach(d -> alreadyDecided.add(d.personPartyId()));
+        List<String> pendingPeople = group.persons().stream().filter(p -> !alreadyDecided.contains(p)).toList();
+        if (pendingPeople.isEmpty()) return;
+        autonomy.decisionStart = decisions.size();
+        try {
+            if (eventAutonomy()) for (String person : pendingPeople) {
+                autonomy.observed.put(person, wakeFacts(runtime.autonomyRoleObservation(person)));
+                autonomy.lastWake.put(person, runtime.snapshot().timeMillis());
+            }
+            startLiveRoundOnWriter(runtime.snapshot().position(), autonomy.revision,
+                    pendingPeople, group.scene(), group.company());
+            autonomy.awaiting = true;
+        } catch (PositionMismatch | SceneRoutes.RevisionMismatch | SceneRejected
+                 | IllegalArgumentException | IllegalStateException rejected) {
+            endAutonomy("ROLE_DISPATCH_REJECTED");
+        }
+    }
+
     /**
      * 启动 writer 线程并在其中创建运行。
      *
@@ -1671,7 +1922,11 @@ public final class WorldWebHost implements AutoCloseable {
      * @throws Exception 世界读取失败
      */
     public Map<String,Object> worldOverview() throws Exception {
-        return call(() -> WorldOverviewView.of(readyNow()));
+        return call(() -> {
+            var view = new LinkedHashMap<>(WorldOverviewView.of(readyNow()));
+            view.put("autonomy", autonomyStatusOnWriter());
+            return view;
+        });
     }
 
     /**
@@ -3518,6 +3773,8 @@ public final class WorldWebHost implements AutoCloseable {
             if (livePaused) {
                 throw new IllegalStateException("Host 已暂停，不能推进世界");
             }
+            if (autonomy != null && autonomy.running)
+                throw new IllegalStateException("先停止自动运行，再手动推进");
             if (edu.cufe.auction.world.ConnectedWorldLoop.enabled(current)) {
                 edu.cufe.auction.world.ConnectedWorldLoop.advanceTo(current, targetMillis);
             } else if (edu.cufe.auction.world.ManufacturingBehaviorLoop.enabled(current)) {
@@ -5183,6 +5440,8 @@ public final class WorldWebHost implements AutoCloseable {
                                String scene, String companyId)
             throws BusyException, SceneRejected, Exception {
         call(() -> {
+            if (autonomy != null && autonomy.running)
+                throw new IllegalStateException("先停止自动运行，再手动选择角色");
             startLiveRoundOnWriter(expectedPosition, expectedRevision, persons, scene, companyId);
             return null;
         });
@@ -5202,6 +5461,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (current.snapshot().position() != expectedPosition) {
                 throw new PositionMismatch(current.snapshot().position());
             }
+            endAutonomy("STOPPED");
             if (liveRound != null) {
                 liveRound.stopping = true;
                 liveRound.pending.clear();
@@ -5269,6 +5529,13 @@ public final class WorldWebHost implements AutoCloseable {
                 throw new IllegalStateException("当前 Host 不持有场景配置");
             }
             routes.replace(expectedRevision, updated);
+            if (autonomy != null && autonomy.running) {
+                endAutonomy("CONFIGURATION_CHANGED");
+                if (liveRound != null) {
+                    liveRound.stopping = true;
+                    liveRound.pending.clear();
+                }
+            }
             return null;
         });
     }
@@ -5434,10 +5701,13 @@ public final class WorldWebHost implements AutoCloseable {
         }
         try {
             pumpLive();
+            pumpAutonomy();
         } catch (IOException io) {
             liveFault = "IO_FAILURE";
+            endAutonomy("WORLD_FAULT");
         } catch (RuntimeException unexpected) {
             liveFault = "INTERNAL_FAILURE";
+            endAutonomy("WORLD_FAULT");
         }
     }
 

@@ -462,6 +462,10 @@ public final class WorldWebServer implements AutoCloseable {
                         mapper.writeValueAsString(liveState())));
                 return;
             }
+            if ("/api/admin/autonomy".equals(path) && ("GET".equals(method) || "POST".equals(method))) {
+                requireAdmin(exchange, session.get(), () -> autonomyAction(exchange, method));
+                return;
+            }
             if (LIVE_ACTIONS.contains(path) && "POST".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> liveAction(exchange, path));
                 return;
@@ -708,6 +712,7 @@ public final class WorldWebServer implements AutoCloseable {
                 || (LIVE_ACTIONS.contains(path) && "POST".equals(method))) {
             return true;
         }
+        if ("/api/admin/autonomy".equals(path) && ("GET".equals(method) || "POST".equals(method))) return true;
         if ("/api/admin/advance".equals(path) && "POST".equals(method)) {
             return true;
         }
@@ -1690,6 +1695,39 @@ public final class WorldWebServer implements AutoCloseable {
         } catch (Exception failure) {
             throw new WorldIoFailure();
         }
+    }
+
+    /** 服务端连续角色运行；沿用管理员会话与同源校验，不靠浏览器计时器推进。 */
+    private void autonomyAction(HttpExchange exchange, String method)
+            throws IOException, WorldWebHost.BusyException {
+        JsonNode body = "POST".equals(method) ? jsonBody(exchange,
+                Set.of("action", "expectedPosition", "expectedRevision", "targetMillis", "stepMillis")) : null;
+        try {
+            if ("POST".equals(method)) {
+                String action = body.path("action").asText();
+                if ("stop".equals(action)) host.stopAutonomy();
+                else if ("start".equals(action)) {
+                    Long position = strictLong(body.get("expectedPosition"));
+                    Long revision = strictLong(body.get("expectedRevision"));
+                    Long target = strictLong(body.get("targetMillis"));
+                    Long step = strictLong(body.get("stepMillis"));
+                    if (position == null || revision == null || target == null || step == null)
+                        throw new IllegalArgumentException("启动参数缺失");
+                    host.startAutonomy(position, revision, target, step);
+                } else throw new IllegalArgumentException("未知操作");
+            }
+            send(exchange, 200, mapper.writeValueAsString(host.autonomyStatus()));
+        } catch (WorldWebHost.PositionMismatch | SceneRoutes.RevisionMismatch changed) {
+            send(exchange, 409, error("VERSION_MISMATCH", "世界或模型配置已变化，请刷新后再开始"));
+        } catch (WorldWebHost.SceneRejected rejected) {
+            send(exchange, 400, error("INVALID", rejected.getMessage()));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "目标须在未来180日内，本版本决策窗口固定为1小时"));
+        } catch (IllegalStateException unavailable) {
+            send(exchange, 409, error("UNAVAILABLE", "须使用模型世界，处理暂停或在途决定；规则档不能混用"));
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (Exception failure) { throw new WorldIoFailure(); }
     }
 
     /** 管理员明确发起单轮或控制处理，权限与同源检查已由统一路由完成。 */

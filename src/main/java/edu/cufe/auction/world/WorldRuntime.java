@@ -6040,6 +6040,34 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /**
+     * 连续角色调度的只读观察，与真实决定使用同一投影；不打开决定或扣模型预算。
+     * @param personPartyId 真实人物
+     * @return 本人此刻可知的决定输入，不含管理视图
+     * @throws IOException 输入序列化失败
+     */
+    public synchronized JsonNode autonomyRoleObservation(String personPartyId) throws IOException {
+        requireOpen();
+        var view = roleTradingViewAt(state, openRoleSessionAt(state, personPartyId, state.timeMillis()));
+        return mapper.readTree(DecisionRun.inputText(view, "wake", state.timeMillis(),
+                pendingActionsAt(state, requireDecisions(), personPartyId), allowedToolsOf(view), decisionConfig,
+                toolContractVersion(), manifest.hasDialogue() ? interviewInput(state, personPartyId, state.timeMillis()) : null,
+                engineeringInput(state, personPartyId, state.timeMillis()), manifest.hasGroups()
+                        ? groupsInput(state, state.information().information(), personPartyId, state.timeMillis()) : null));
+    }
+
+    /**
+     * 本人当前是否正占用专注工时；调度不能在阅读、采访或业务动作中另塞一个决定。
+     * @param personPartyId 真实人物
+     * @return 当前时点落在本人实际占用区间内
+     */
+    public synchronized boolean autonomyRoleBusy(String personPartyId) {
+        requireOpen();
+        long now = state.timeMillis();
+        return runtimeBusy(state, personPartyId, null, now).stream()
+                .anyMatch(slot -> slot.fromMillis() <= now && slot.toMillis() > now);
+    }
+
+    /**
      * God 只读客户与豁免审计：请求、响应、真实付款、期间预算余量与授权状态。
      *
      * <p>只读派生，不建第二本账：现金取唯一账户表，应收/备查取纯核报表，
@@ -8991,7 +9019,10 @@ public final class WorldRuntime implements AutoCloseable {
             DecisionModel.State model, WorldState base) throws IOException {
         String person = binding.personPartyId();
         String company = textArg(args, "companyPartyId");
-        boolean charterCompany = company != null && company.equals(charter.companyPartyId());
+        // 旧组合档曾把此空章程异常持久为技术失败；重演仍须得到原失败，不能改写历史回执。
+        boolean composedIntentV2 = "v2".equals(manifest.dataVersions().get("composed-governance-intent"));
+        boolean charterCompany = company != null && (!composedIntentV2 || charter != null)
+                && company.equals(charter.companyPartyId());
         EngineeringRun.CompanySpec spec = company == null ? null
                 : engineeringConfig.specOf(company);
         boolean extraCompany = companyDecisionsEnabled() && base.companyGovernance() != null
@@ -28454,6 +28485,22 @@ public final class WorldRuntime implements AutoCloseable {
                 node.put("companyPartyId", company);
                 node.put("seatId", seat);
                 node.put("chair", seat.equals(charter.chairSeatId()));
+                if ("role-events-v2".equals(manifest.dataVersions().get("autonomy-driver"))) {
+                    var managers = node.putArray("activeManagers");
+                    for (var appointment : snap.roles().access().appointments()) {
+                        if (appointment.organizationPartyId().equals(company)
+                                && appointment.role() == RoleAccess.Role.COMPANY_MANAGER && appointment.activeAt(now))
+                            managers.addObject().put("personPartyId", appointment.personPartyId())
+                                    .put("appointmentId", appointment.id()).put("endsAt", appointment.effectiveEnd());
+                    }
+                    node.put("managerVacant", managers.isEmpty());
+                    long period = now / ManufacturingTemplateModel.PERIOD_MILLIS;
+                    node.put("currentBudgetPeriod", period);
+                    var budgets = node.putArray("authorizedBudgets");
+                    for (var budget : boardRun.board().budgets()) if (budget.period() == period)
+                        budgets.addObject().put("category", budget.category().name()).put("cap", money(budget.cap()));
+                    node.put("responsibility", "依据本人可读资料判断经理任免、预算和考核。经理空缺及预算缺失是待评估治理事项，不代表必须批准；已有议案先参与本人有权处理的会议，不能代替他人投票。");
+                }
                 var meetings = node.putArray("meetings");
                 List<BoardModel.Meeting> ordered = new ArrayList<>(
                         boardRun.board().meetings().values());
@@ -28716,6 +28763,16 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if ("v1".equals(manifest.dataVersions().get("role-decision-guide"))) {
             edu.cufe.auction.world.composed.PrototypeDecisionGuide.append(root);
+            if ("role-windows-v1".equals(manifest.dataVersions().get("autonomy-driver"))) {
+                var guide = (com.fasterxml.jackson.databind.node.ObjectNode) root.get("decisionGuide");
+                guide.put("decisionCadence", "本运行每个世界小时提供一次主动决定机会，每人每窗口最多一个动作；完成时间仍由工具决定。安排会议、材料和表决截止须覆盖各参与者多个决定窗口，不能假设他人在数秒内完成多步操作。");
+                guide.put("waitContract", "观望必须严格输出{\"tool\":\"role.wait\"}，不得带args字段，空args对象也会被判技术失败；失败不会产生业务动作。");
+            }
+            if ("role-events-v2".equals(manifest.dataVersions().get("autonomy-driver"))) {
+                var guide = (com.fasterxml.jackson.databind.node.ObjectNode) root.get("decisionGuide");
+                guide.put("decisionCadence", "本人可见信息、会议、任职或业务状态变化，以及本人专注动作完成时获得决定机会；无变化每天至多一次例行检查。每次一个动作。会议须给资料阅读、到会、提案和表决留下实际工时；不得假设一个意图已完成整条流程。");
+                guide.put("waitContract", "观望严格输出{\"tool\":\"role.wait\"}，不得带args字段。等待不会替你执行后继动作；阅读完成后应结合职责重新评估，允许继续等待或拒绝不合理议案。");
+            }
             var products = root.putArray("authorizedProducts");
             if (snap.roles() != null) {
                 var organizations = snap.roles().access().appointments().stream()
