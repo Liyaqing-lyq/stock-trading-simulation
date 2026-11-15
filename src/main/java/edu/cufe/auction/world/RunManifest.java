@@ -931,7 +931,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
-        if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion) && dataVersions!=null && "industry-baseline-v1".equals(dataVersions.get(DATA_PROFILE))) {
+        if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion) && dataVersions!=null && List.of("industry-baseline-v1", "industry-prototype-v1").contains(dataVersions.get(DATA_PROFILE))) {
             expected.keySet().removeAll(List.of("manufacturing","governance","dividend","manufacturing-funding"));
         }
         if (!expected.equals(modules)) {
@@ -959,13 +959,13 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             expectedData.put(DATA_TEMPLATES, TEMPLATES_VERSION);
             expectedData.put(DATA_COMPANIES, data.get(DATA_COMPANIES) == null ? ""
                     : data.get(DATA_COMPANIES));
-            if (List.of("manufacturing-runnable-v1", "manufacturing-runnable-v2", "industry-runnable-v1", "industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1").contains(data.get(DATA_PROFILE))) {
+            if (List.of("manufacturing-runnable-v1", "manufacturing-runnable-v2", "industry-runnable-v1", "industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1", "industry-prototype-v1").contains(data.get(DATA_PROFILE))) {
                 expectedData.put(DATA_PROFILE, data.get(DATA_PROFILE));
-                if (List.of("manufacturing-runnable-v2", "industry-runnable-v1", "industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1").contains(data.get(DATA_PROFILE))) expectedData.put("operations-decision", "v1");
-                if (List.of("industry-runnable-v1", "industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1").contains(data.get(DATA_PROFILE))) {
-                    if (List.of("industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1").contains(data.get(DATA_PROFILE))) expectedData.put("resource-expansion", "v1");
-                    if (List.of("industry-hydro-v1","industry-baseline-v1").contains(data.get(DATA_PROFILE))) { expectedData.put("hydro-operations","v1"); expectedData.put("hydro-decision","v1"); expectedData.put("hydro-company","hydro"); }
-                    if ("industry-baseline-v1".equals(data.get(DATA_PROFILE))) {
+                if (List.of("manufacturing-runnable-v2", "industry-runnable-v1", "industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1", "industry-prototype-v1").contains(data.get(DATA_PROFILE))) expectedData.put("operations-decision", "v1");
+                if (List.of("industry-runnable-v1", "industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1", "industry-prototype-v1").contains(data.get(DATA_PROFILE))) {
+                    if (List.of("industry-runnable-v2", "industry-hydro-v1", "industry-baseline-v1", "industry-prototype-v1").contains(data.get(DATA_PROFILE))) expectedData.put("resource-expansion", "v1");
+                    if (List.of("industry-hydro-v1","industry-baseline-v1", "industry-prototype-v1").contains(data.get(DATA_PROFILE))) { expectedData.put("hydro-operations","v1"); expectedData.put("hydro-decision","v1"); expectedData.put("hydro-company","hydro"); }
+                    if (List.of("industry-baseline-v1", "industry-prototype-v1").contains(data.get(DATA_PROFILE))) {
                         expectedData.put("digital-operations","v1");expectedData.put("digital-decision","v1");expectedData.put("digital-company","digital-company");
                         expectedData.put("aged-operations","v1");expectedData.put("aged-decision","v1");expectedData.put("aged-company","aged-company");
                     }
@@ -978,6 +978,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("role-account-projection", "authorized-v1");
                 expectedData.put("company-decision", "v1");
                 expectedData.put("company-introduction", "v1");
+            }
+            if ("industry-prototype-v1".equals(data.get(DATA_PROFILE))) {
+                expectedData.put("company-identities", "prototype-v1");
+                expectedData.put("journal-codec", "gzip-frame-v1");
+                expectedData.put("role-decision-guide", "v1");
             }
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData

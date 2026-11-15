@@ -1687,6 +1687,18 @@ public final class WorldWebHost implements AutoCloseable {
                     row.put("partyId", party.partyId());
                     row.put("kind", party.kind().name());
                     row.put("name", party.name());
+                    if (edu.cufe.auction.world.composed.PrototypeCompanies.PROFILE.equals(current.profile().manifest().dataVersions().get("profile"))) {
+                        var prototype = edu.cufe.auction.world.composed.PrototypeCompanies.find(party.partyId());
+                        if (prototype != null) {
+                            row.put("prototypeName", prototype.prototype());
+                            row.put("prototypeCode", prototype.stockCode());
+                            row.put("prototypeSource", prototype.source());
+                            row.put("prototypeSourceLabel", prototype.companyId().equals("mfg-versa") ? "年报镜像（官方正文未取到）" : "参考披露");
+                            row.put("business", prototype.business());
+                            row.put("mechanism", prototype.mechanism());
+                            row.put("boundary", prototype.boundary());
+                        }
+                    }
                     List<String> ownerIds = new ArrayList<>();
                     for (OpeningRegistry.PropertyOwner owner : registry.owners()) {
                         if (party.partyId().equals(owner.partyId())) {
@@ -1696,8 +1708,10 @@ public final class WorldWebHost implements AutoCloseable {
                     row.put("ownerIds", String.join(",", ownerIds));
                     partyRows.add(row);
                 }
-                partyRows.sort(Comparator.comparing(
-                        (Map<String, Object> row) -> String.valueOf(row.get("partyId"))));
+                // 新档十家发行人优先展示，避免人物目录分页把原型说明截掉；旧档排序不变。
+                partyRows.sort(Comparator.comparingInt(
+                        (Map<String, Object> row) -> row.containsKey("prototypeName") ? 0 : 1)
+                        .thenComparing(row -> String.valueOf(row.get("partyId"))));
             }
 
             List<Map<String, Object>> ownerRows = new ArrayList<>();

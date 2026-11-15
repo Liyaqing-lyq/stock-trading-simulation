@@ -1,0 +1,374 @@
+{
+  "generated_at": "2026-11-15",
+  "scope": "十公司原型机制来源复核；仅本会话已读页面；未改src、未运行世界/模型、未读Key、未部署",
+  "status_definitions": {
+    "official_pdf_read": "本轮从官方链接取到PDF并实际读到pages_read所列页",
+    "mirror_read_official_unavailable": "官方链接正文未取到；机制证据读自同份年报的非官方镜像"
+  },
+  "mapping_source": "src/main/java/edu/cufe/auction/world/composed/PrototypeCompanies.java:22-66",
+  "run_profiles": {
+    "prototype": "industry-prototype-v1 / web-industry-prototype-v1 / mode=world-prototype",
+    "baseline_18088": "industry-baseline-v1（描述性名称，虚构名未确认）"
+  },
+  "sources": [
+    {
+      "id": "mfg-tech",
+      "prototype": "中际旭创",
+      "stock_code": "300308",
+      "fictional_company": "澄曜光联",
+      "document": "2025年年度报告",
+      "year": 2025,
+      "publisher": "巨潮资讯网（发行人披露）",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-03-31/1225056459.PDF",
+      "probe": {
+        "range_request": 206,
+        "content_type": "application/pdf"
+      },
+      "download": {
+        "ok": true,
+        "bytes": 6150814,
+        "pages": 229
+      },
+      "pages_read_this_round": [
+        "PDF p12"
+      ],
+      "mechanism": [
+        "客户供应商认证与产品代码认证",
+        "以销定产",
+        "采购光器件、芯片、结构件",
+        "与云数据中心客户和通信设备厂商长期合作"
+      ],
+      "evidence_short": "公司通常需要通过客户的供应商认证和产品代码认证程序；生产采取以销定产。",
+      "status": "official_pdf_read"
+    },
+    {
+      "id": "aged-company",
+      "prototype": "贵州茅台",
+      "stock_code": "600519",
+      "fictional_company": "岚醴酒业",
+      "document": "2025年年度报告",
+      "year": 2025,
+      "publisher": "上海证券交易所（big5 站点）",
+      "url": "https://big5.sse.com.cn/site/cht/www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2026-04-17/600519_20260417_9QS4.pdf",
+      "probe": {
+        "range_request": 206,
+        "content_type": "application/pdf"
+      },
+      "download": {
+        "ok": true,
+        "bytes": 1082847,
+        "pages": 143
+      },
+      "pages_read_this_round": [
+        "PDF p9",
+        "PDF p17"
+      ],
+      "mechanism": [
+        "贮足陈酿、不卖新酒",
+        "直销渠道（自营、i茅台）",
+        "批发代理渠道（经销商、商超、电商）",
+        "分渠道销售量与收入"
+      ],
+      "evidence_short": "坚持崇本守道、坚守工艺、贮足陈酿、不卖新酒；产品通过直销和批发代理渠道销售。",
+      "status": "official_pdf_read"
+    },
+    {
+      "id": "mfg-struct",
+      "prototype": "宁德时代",
+      "stock_code": "300750",
+      "fictional_company": "衡储能源",
+      "document": "2025年年度报告",
+      "year": 2025,
+      "publisher": "宁德时代官网（发行人披露）",
+      "url": "https://www.catl.com/uploads/1/file/public/202603/20260310105829_c5p2l3q9ll.pdf",
+      "probe": {
+        "range_request": 403,
+        "note": "分段请求被拒；完整GET成功"
+      },
+      "download": {
+        "ok": true,
+        "bytes": 2051998,
+        "pages": 232
+      },
+      "pages_read_this_round": [
+        "PDF p26",
+        "PDF p27",
+        "PDF p28"
+      ],
+      "mechanism": [
+        "电池系统产能772GWh、在建321GWh、利用率96.9%",
+        "产量748GWh、库存186GWh",
+        "直接材料占营业成本71.79%",
+        "前五名客户占销售38.96%"
+      ],
+      "evidence_short": "产能772GWh、在建321GWh、产能利用率96.9%；直接材料占营业成本71.79%。",
+      "status": "official_pdf_read"
+    },
+    {
+      "id": "eng-a",
+      "prototype": "金螳螂",
+      "stock_code": "002081",
+      "fictional_company": "栖构工程",
+      "document": "2025年年度报告",
+      "year": 2025,
+      "publisher": "巨潮资讯网（发行人披露）",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-04-29/1225235268.PDF",
+      "probe": {
+        "range_request": 206,
+        "content_type": "application/pdf"
+      },
+      "download": {
+        "ok": true,
+        "bytes": 1573066,
+        "pages": 235
+      },
+      "pages_read_this_round": [
+        "PDF p10",
+        "PDF p11",
+        "PDF p12",
+        "PDF p21",
+        "PDF p27",
+        "PDF p28",
+        "PDF p33",
+        "PDF p34"
+      ],
+      "printed_pages": "9-10, 20, 26-27, 32-33",
+      "mechanism": [
+        "招投标、邀标取得项目",
+        "自主承揽、自主组织设计与施工",
+        "已完工未结算余额62.90亿元",
+        "应收账款占总资产32.76%、合同资产26.18%",
+        "单列应收账款减值风险"
+      ],
+      "evidence_short": "项目通过招投标、邀标方式取得；经营模式为自主承揽业务、自主组织设计与施工。",
+      "status": "official_pdf_read"
+    },
+    {
+      "id": "north",
+      "prototype": "招商银行",
+      "stock_code": "600036",
+      "fictional_company": "澜衡银行",
+      "document": "2025年度报告（A股）",
+      "year": 2025,
+      "publisher": "香港交易所披露易",
+      "url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0327/2026032703330_c.pdf",
+      "probe": {
+        "range_request": 206,
+        "content_type": "application/pdf"
+      },
+      "download": {
+        "ok": true,
+        "bytes": 32158321,
+        "pages": 351
+      },
+      "pages_read_this_round": [
+        "PDF p31",
+        "PDF p32"
+      ],
+      "printed_pages": "29, 30",
+      "mechanism": [
+        "客户存款占负债总额83.43%",
+        "存款是主要资金来源",
+        "贷款五级分类披露",
+        "不良贷款率0.94%"
+      ],
+      "evidence_short": "客户存款98,361.30亿元，占负债总额83.43%；不良贷款率0.94%。",
+      "status": "official_pdf_read"
+    },
+    {
+      "id": "resources",
+      "prototype": "中国神华",
+      "stock_code": "601088",
+      "fictional_company": "朔川资源",
+      "document": "2025年度报告",
+      "year": 2025,
+      "publisher": "香港交易所披露易",
+      "url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0330/2026033004060_c.pdf",
+      "probe": {
+        "range_request": 206,
+        "content_type": "application/pdf"
+      },
+      "download": {
+        "ok": true,
+        "bytes": 19875785,
+        "pages": 481
+      },
+      "pages_read_this_round": [
+        "PDF p17",
+        "PDF p18",
+        "PDF p19"
+      ],
+      "printed_pages": "15-17",
+      "mechanism": [
+        "煤炭、电力生产销售",
+        "铁路、港口、船舶运输",
+        "煤制烯烃",
+        "商品煤产量332.1百万吨、销量430.9百万吨",
+        "煤价中枢回落"
+      ],
+      "evidence_short": "主营业务是煤炭、电力的生产和销售，铁路、港口和船舶运输，煤制烯烃等业务。",
+      "status": "official_pdf_read"
+    },
+    {
+      "id": "digital-company",
+      "prototype": "天娱数科",
+      "stock_code": "002354",
+      "fictional_company": "云岫数智",
+      "document": "2025年年度报告",
+      "year": 2025,
+      "publisher": "巨潮资讯网（发行人披露）",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-04-21/1225128616.PDF",
+      "probe": {
+        "range_request": 206,
+        "content_type": "application/pdf"
+      },
+      "download": {
+        "ok": true,
+        "bytes": 2941247,
+        "pages": 180
+      },
+      "pages_read_this_round": [
+        "PDF p10",
+        "PDF p11",
+        "PDF p12",
+        "PDF p13"
+      ],
+      "mechanism": [
+        "智能营销",
+        "智慧能源（AI售电）",
+        "空间智能MaaS",
+        "2025年营收20.77亿元、同比+31.57%"
+      ],
+      "evidence_short": "聚焦智能营销、智慧能源、空间智能等领域；全年营业收入20.77亿元，同比增长31.57%。",
+      "status": "official_pdf_read"
+    },
+    {
+      "id": "mfg-versa",
+      "prototype": "黄河旋风",
+      "stock_code": "600172",
+      "fictional_company": "砺晶新材",
+      "document": "2025年年度报告",
+      "year": 2025,
+      "publisher": "上海证券交易所（官方）；东方财富镜像（实际读取）",
+      "url": "https://static.sse.com.cn/disclosure/listedinfo/announcement/c/new/2026-04-23/600172_20260423_S7AN.pdf",
+      "probe": {
+        "range_request": 200,
+        "content_type": "text/html",
+        "bytes": 3872,
+        "note": "官方仅返回反爬HTML，非PDF"
+      },
+      "download": {
+        "ok": false
+      },
+      "fallback": {
+        "url": "https://pdf.dfcfw.com/pdf/H2_AN202604221821464567_1.pdf?t=1777034684210",
+        "bytes": 1312282,
+        "pages": 213,
+        "pages_read_this_round": [
+          "PDF p9",
+          "PDF p11",
+          "PDF p12"
+        ],
+        "same_document_check": "页内公司名为河南黄河旋风股份有限公司、标题为2025年年度报告"
+      },
+      "mechanism": [
+        "工业金刚石、培育钻石、砂轮、刀具、钻头、锯片",
+        "培育钻石向芯片、微电子、量子、光学、高端医疗等新用途延伸",
+        "培育钻石受销售价格大幅降低影响"
+      ],
+      "evidence_short": "主要产品涵盖工业金刚石、培育钻石、砂轮、刀具等；培育钻石未来在芯片、微电子、光学等领域有更广应用。",
+      "status": "mirror_read_official_unavailable"
+    },
+    {
+      "id": "hydro",
+      "prototype": "长江电力",
+      "stock_code": "600900",
+      "fictional_company": "清峦水电",
+      "document": "2025年年度报告",
+      "year": 2025,
+      "publisher": "长江电力官网（发行人披露）",
+      "url": "https://www.cypc.com.cn/cypc/attachDir/2026/05/2026051815345898336.pdf",
+      "probe": {
+        "range_request": 206,
+        "content_type": "application/pdf"
+      },
+      "download": {
+        "ok": true,
+        "bytes": 1616683,
+        "pages": 259
+      },
+      "pages_read_this_round": [
+        "PDF p9",
+        "PDF p10",
+        "PDF p11",
+        "PDF p12",
+        "PDF p13",
+        "PDF p15",
+        "PDF p16",
+        "PDF p18"
+      ],
+      "mechanism": [
+        "六座梯级电站发电量3071.94亿千瓦时",
+        "六库联调",
+        "上网电价280.28元/兆瓦时",
+        "110台机组检修",
+        "债务结构优化"
+      ],
+      "evidence_short": "境内所属六座流域梯级电站发电量3071.94亿千瓦时；提炼六库联调研究成果。",
+      "status": "official_pdf_read"
+    },
+    {
+      "id": "pharma",
+      "prototype": "恒瑞医药",
+      "stock_code": "600276",
+      "fictional_company": "循证医药",
+      "document": "2025年年度报告",
+      "year": 2025,
+      "publisher": "巨潮资讯网（发行人披露）",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-03-26/1225032585.PDF",
+      "probe": {
+        "range_request": 206,
+        "content_type": "application/pdf"
+      },
+      "download": {
+        "ok": true,
+        "bytes": 3457175,
+        "pages": 236
+      },
+      "pages_read_this_round": [
+        "PDF p6",
+        "PDF p8",
+        "PDF p10",
+        "PDF p11",
+        "PDF p12",
+        "PDF p20",
+        "PDF p23",
+        "PDF p47",
+        "PDF p48",
+        "PDF p57",
+        "PDF p62"
+      ],
+      "mechanism": [
+        "研发覆盖靶点发现、临床前、注册全流程",
+        "创新药对外许可收入33.92亿元",
+        "首付款已确认收入",
+        "里程碑付款最高17.7亿美元",
+        "2025年营收316.29亿元"
+      ],
+      "evidence_short": "创新药对外许可收入33.92亿元；MSD里程碑付款最高可达17.7亿美元。",
+      "status": "official_pdf_read"
+    }
+  ],
+  "coverage": {
+    "official_links_probed": 10,
+    "official_pdf_read": 9,
+    "mirror_read_official_unavailable": 1,
+    "not_covered": [
+      "2026季报",
+      "财报附注全文审计",
+      "最新估值或投资建议",
+      "world-prototype运行页面实际显示",
+      "TECH扩产配置意图"
+    ]
+  }
+}

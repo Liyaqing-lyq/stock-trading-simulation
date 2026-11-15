@@ -149,6 +149,7 @@ public final class WorldWebServer implements AutoCloseable {
     /** 分支子进程的一次性 handoff 凭据；只有子进程非空，父进程为 null（该端点 404）。 */
     private final String handoffToken;
     private RunLauncher launcher;
+    private JsonNode experimentReport;
 
     /**
      * 构造（尚未监听），静态资源取自 classpath /web/。
@@ -237,6 +238,18 @@ public final class WorldWebServer implements AutoCloseable {
      */
     public void attachLauncher(RunLauncher launcher) {
         this.launcher = launcher;
+    }
+
+    /** 挂载同档的已核验实验报告，仅上帝组织页可读；必须在监听前调用。 */
+    public void attachExperimentReport(JsonNode report) {
+        if (server != null) throw new IllegalStateException("报告必须在启动前挂载");
+        if (report == null || !report.isObject()
+                || !"world-cycle-run-v1".equals(report.path("schema").asText())
+                || !report.path("runId").asText().equals(host.runId())
+                || !report.path("days").isArray() || report.path("days").size() > 365
+                || !report.path("companies").isArray())
+            throw new IllegalArgumentException("实验报告格式或所属运行不符");
+        experimentReport = report.deepCopy();
     }
 
     /**
@@ -863,7 +876,11 @@ public final class WorldWebServer implements AutoCloseable {
         } catch (Exception failure) {
             throw new WorldIoFailure();
         }
-        send(exchange, 200, mapper.writeValueAsString(view));
+        if ("/api/admin/people".equals(path) && experimentReport != null) {
+            var people = mapper.valueToTree(view);
+            ((com.fasterxml.jackson.databind.node.ObjectNode) people).set("experimentReport", experimentReport);
+            send(exchange, 200, mapper.writeValueAsString(people));
+        } else send(exchange, 200, mapper.writeValueAsString(view));
     }
 
     /** 管理员只读查询；复用严格JSON与同源POST协议，不接收实验策略。 */

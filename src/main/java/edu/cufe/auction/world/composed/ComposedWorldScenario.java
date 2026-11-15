@@ -271,7 +271,7 @@ public final class ComposedWorldScenario {
             List<CashLedger.OpeningAccount> openings, OpeningRegistry registry,
             BankOpeningRequest bankOpening, edu.cufe.auction.world.DecisionModel.Config decisions,
             Extras extras) throws Exception {
-        boolean baseline = BaselineIndustryConfig.PROFILE.equals(manifest.dataVersions().get("profile"));
+        boolean baseline = List.of(BaselineIndustryConfig.PROFILE, PrototypeCompanies.PROFILE).contains(manifest.dataVersions().get("profile"));
         long end = (baseline ? 360L : 30L) * 86_400_000L;
         List<RoleAccess.Appointment> appointments = new ArrayList<>(List.of(
                 new RoleAccess.Appointment("A-1", "alice", WorldWebScenario.COMPANY,
@@ -322,7 +322,7 @@ public final class ComposedWorldScenario {
                 WorldWebScenario.mediaConfig(), WorldWebScenario.interviewConfig(),
                 WorldWebScenario.dialogueConfig(), WorldWebScenario.evidenceConfig(),
                 WorldWebScenario.socialConfig(), WorldWebScenario.SOCIAL_BLOCK_MILLIS,
-                contacts, baseline ? baselineEngineering() : engineeringConfigWithAcceptance(),
+                contacts, PrototypeCompanies.PROFILE.equals(manifest.dataVersions().get("profile")) ? PrototypeCompanies.engineering() : baseline ? baselineEngineering() : engineeringConfigWithAcceptance(),
                 WorldWebScenario.groupsConfig(), WorldWebScenario.groupsPlatformConfig(),
                 WorldWebScenario.GROUPS_FEED_LIMIT, WorldWebScenario.GROUPS_READ_MILLIS,
                 governed, bankOpening, manifest.hasManufacturingFunding()
@@ -342,7 +342,7 @@ public final class ComposedWorldScenario {
      *
      * @return 带冻结客户验收计划的工程配置
      */
-    private static EngineeringRun.Config baselineEngineering() {
+    static EngineeringRun.Config baselineEngineering() {
         var c=engineeringConfigWithAcceptance();
         return new EngineeringRun.Config(c.paramSource(),c.companies().stream().filter(x->x.companyPartyId().equals("eng-a")).toList(),Map.of("eng-a",c.customerEvents().get("eng-a")));
     }

@@ -182,8 +182,9 @@ public final class WorldJournalScanner {
                 ByteBuffer header = ByteBuffer.allocate(8);
                 readFully(channel, offset, header);
                 header.flip();
-                int length = header.getInt();
-                if (header.getInt() != ~length || length <= 0 || length > MAX_BYTES) {
+                int headerLength = header.getInt();
+                int length = headerLength & Integer.MAX_VALUE;
+                if (header.getInt() != ~headerLength || length <= 0 || length > MAX_BYTES) {
                     throw new CorruptFrameException("世界日志帧头损坏", offset);
                 }
                 if (fileBytes - offset - 8 < (long) length + DIGEST_BYTES) {
@@ -200,7 +201,7 @@ public final class WorldJournalScanner {
                 }
                 WorldCommit commit;
                 try {
-                    commit = MAPPER.readValue(payload, WorldCommit.class);
+                    commit = MAPPER.readValue(JournalFrameCodec.decode(payload, headerLength), WorldCommit.class);
                 } catch (IOException | RuntimeException invalid) {
                     throw new CorruptFrameException("世界日志帧 JSON 不合法：" + invalid.getMessage(),
                             offset);
