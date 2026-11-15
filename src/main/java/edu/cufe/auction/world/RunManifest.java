@@ -985,7 +985,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("role-decision-guide", "v1");
             }
             if ("industry-prototype-v1".equals(data.get(DATA_PROFILE)) && data.containsKey("behavior-policy")) {
-                expectedData.put("behavior-policy", ManufacturingBehaviorPolicy.VERSION);
+                expectedData.put("behavior-policy", ConnectedWorldLoop.VERSION.equals(data.get("behavior-policy"))
+                        ? ConnectedWorldLoop.VERSION : ManufacturingBehaviorPolicy.VERSION);
             }
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData

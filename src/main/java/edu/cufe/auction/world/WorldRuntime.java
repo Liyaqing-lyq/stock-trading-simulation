@@ -4201,6 +4201,8 @@ public final class WorldRuntime implements AutoCloseable {
                                                        List<String> internalSourceIds)
             throws IOException {
         requireRoleReadingEnabled();
+        if (ConnectedWorldLoop.enabled(this) && docId != null && docId.startsWith(ConnectedWorldLoop.PREFIX))
+            throw new IllegalArgumentException("互通决策空间由冻结规则保留");
         if (ManufacturingBehaviorLoop.enabled(this) && docId != null && docId.startsWith("behavior-v1:")) {
             throw new IllegalArgumentException("经营决策空间由冻结规则保留");
         }
@@ -4219,6 +4221,24 @@ public final class WorldRuntime implements AutoCloseable {
                 internalSourceIds == null ? List.of() : List.copyOf(internalSourceIds));
         return schedulePublish(commandId, taskId, dueTimeMillis, payload,
                 PendingTask.INFORMATION_PUBLISH_V1);
+    }
+
+    /** 冻结互通角色的真实可见输入与规则选择；复演仍逐条验证，不接受伪造笔记。 */
+    public synchronized void recordConnectedDecision(ConnectedWorldLoop.Decision d) throws IOException {
+        String person=ConnectedWorldLoop.managers().getOrDefault(d.actor(),d.actor());
+        String company=ConnectedWorldLoop.managers().containsKey(d.actor())?d.actor():"";
+        String id=ConnectedWorldLoop.PREFIX+d.actor()+":"+state.timeMillis()/ConnectedWorldLoop.INTERVAL;
+        if(!ConnectedWorldLoop.enabled(this)||!ConnectedWorldLoop.VERSION.equals(d.version())||!id.equals(d.id())
+                ||!person.equals(d.person())||!company.equals(d.company())||d.observedAt()!=state.timeMillis())
+            throw new IllegalArgumentException("互通决定身份或时点不匹配");
+        JsonNode own=ConnectedWorldLoop.observation(this,d.actor());
+        if(!ConnectedWorldLoop.inputReceipt(own).equals(d.observation())
+                ||!mapper.readTree(mapper.writeValueAsString(ConnectedWorldLoop.choose(own,d.actor(),state.timeMillis(),id)))
+                .equals(mapper.readTree(mapper.writeValueAsString(d.choice()))))throw new IllegalArgumentException("互通决定与本人输入不匹配");
+        String task=id+":note",body=mapper.writeValueAsString(mapper.readTree(mapper.writeValueAsString(d)));
+        PublishPayload payload=new PublishPayload(task,id,person,InformationModel.AudienceKind.DIRECT.name(),person,
+                "人物决定："+d.choice().reason(),body,"本地规则本人决定，非公司公告、非模型输出",1,List.of());
+        schedulePublish(task,task,state.timeMillis()+1,payload,PendingTask.INFORMATION_PUBLISH_V1);
     }
 
     /** 冻结本人的状态规则选择；验证输入来自当前权限投影，业务执行仍走真实经理会话。 */
@@ -4271,6 +4291,7 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         requireRoleReadingEnabled();
         requireText(docId, "资料标识");
+        if (ConnectedWorldLoop.enabled(this) && docId.startsWith(ConnectedWorldLoop.PREFIX)) throw new IllegalArgumentException("互通决策记录不可改写");
         if (ManufacturingBehaviorLoop.enabled(this) && docId.startsWith("behavior-v1:")) throw new IllegalArgumentException("经营决策记录不可改写");
         if (manifest.hasDividend() && docId.startsWith("dividend-public:")) {
             throw new IllegalArgumentException("分红公告空间由授权批保留，普通版本入口不得占用：" + docId);
@@ -16556,7 +16577,9 @@ public final class WorldRuntime implements AutoCloseable {
                 PublishPayload body = readIntentBody(commit, intent, PublishPayload.class,
                         "资料发表");
                 if (PendingTask.INFORMATION_PUBLISH_V1.equals(task.kind())) {
-                    if (ManufacturingBehaviorLoop.enabled(this) && body.docId().startsWith("behavior-v1:")) {
+                    if (ConnectedWorldLoop.enabled(this) && body.docId().startsWith(ConnectedWorldLoop.PREFIX)) {
+                        recordConnectedDecision(mapper.readValue(body.body(), ConnectedWorldLoop.Decision.class));
+                    } else if (ManufacturingBehaviorLoop.enabled(this) && body.docId().startsWith("behavior-v1:")) {
                         recordManufacturingDecision(mapper.readValue(body.body(), ManufacturingBehaviorLoop.Decision.class));
                     } else schedulePublishDocument(intent.commandId(), intent.taskId(),
                             intent.dueTimeMillis(), body.docId(), body.publisherPartyId(),
@@ -28658,7 +28681,8 @@ public final class WorldRuntime implements AutoCloseable {
                 if (activeManager(snap.roles(), person, company, now)) {
                     var observation = CompanyOperationsDecisionTools.observation(
                             snap.companyOperations(), snap.companyGovernance().boardOf(company), company, now, snap.accounts());
-                    if (ManufacturingBehaviorPolicy.VERSION.equals(manifest.dataVersions().get("behavior-policy")))
+                    if (ManufacturingBehaviorPolicy.VERSION.equals(manifest.dataVersions().get("behavior-policy"))
+                            || ConnectedWorldLoop.VERSION.equals(manifest.dataVersions().get("behavior-policy")))
                         ManufacturingCustomerOffers.enrich((com.fasterxml.jackson.databind.node.ObjectNode) observation,
                                 snap.companyOperations(), company, now, snap.accounts());
                     operations.add(observation);

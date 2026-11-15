@@ -76,6 +76,28 @@ class WorldLocalOverviewTest {
         Path journal=dir.resolve(UUID.randomUUID()+".journal");
         return new WorldWebHost(()-> {var w=ComposedIndustryScenario.openPrototype(journal);return new WorldWebHost.Opened(w,w.profile().manifest().runId());});
     }
+
+    @Test void connectedWebAdvanceReturnsLiveNewsAndChartsWithoutQuarterAttachment() throws Exception {
+        try(var host=new WorldWebHost(()->{
+            var w=ComposedIndustryScenario.openConnected(dir.resolve("connected-web.journal"));
+            edu.cufe.auction.world.composed.ConnectedWorldBootstrap.grantBudgetAndAppoint(w,"mfg-tech",
+                    w.boardOfCompany("mfg-tech").orElseThrow().board().charter().seats().stream().map(edu.cufe.auction.world.BoardModel.Seat::partyId).toList(),"mfgtech-mgr","web-open",List.of(0L));
+            return new WorldWebHost.Opened(w,w.profile().manifest().runId());
+        });var server=server(host)) {
+            server.enableLocalAccess();server.start();var login=send(server,"POST","/api/session/local",null,true,Map.of());
+            String cookie=login.headers().firstValue("Set-Cookie").orElseThrow().split(";",2)[0];
+            var before=JSON.readTree(send(server,"GET","/api/admin/world",cookie,true,Map.of()).body());
+            var advance=HTTP.send(HttpRequest.newBuilder(URI.create(server.baseUrl()+"/api/admin/advance"))
+                    .header("Origin",server.baseUrl()).header("X-World-Request","1").header("Cookie",cookie).header("Content-Type","application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"expectedPosition\":\""+before.path("position").asText()+"\",\"targetMillis\":\"86400000\"}")).build(),HttpResponse.BodyHandlers.ofString());
+            assertEquals(200,advance.statusCode(),advance.body());
+            var after=JSON.readTree(send(server,"GET","/api/admin/world",cookie,true,Map.of()).body());
+            assertTrue(after.path("connected").path("enabled").asBoolean());assertFalse(after.has("experiment"));
+            assertFalse(after.path("connected").path("news").isEmpty());assertFalse(after.path("liveDetails").path("mfg-tech").path("days").isEmpty());
+            assertTrue(after.path("connected").path("news").get(0).path("body").asText().contains("现金"));
+            assertEquals("86400000",after.path("timeMillis").asText());
+        }
+    }
     private WorldWebServer server(WorldWebHost host) throws Exception {
         Path keys=dir.resolve("keys.txt");Files.writeString(keys,String.join("\n",List.of("sk-test-overview-0001","sk-test-overview-0002","sk-test-overview-0003","sk-test-overview-0004","sk-test-overview-0005")));
         return new WorldWebServer(host,KeySlots.load(keys),SceneRoutes.open(dir),0,"test-bootstrap",null,s->{});

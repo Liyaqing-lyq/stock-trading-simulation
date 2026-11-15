@@ -3518,7 +3518,9 @@ public final class WorldWebHost implements AutoCloseable {
             if (livePaused) {
                 throw new IllegalStateException("Host 已暂停，不能推进世界");
             }
-            if (edu.cufe.auction.world.ManufacturingBehaviorLoop.enabled(current)) {
+            if (edu.cufe.auction.world.ConnectedWorldLoop.enabled(current)) {
+                edu.cufe.auction.world.ConnectedWorldLoop.advanceTo(current, targetMillis);
+            } else if (edu.cufe.auction.world.ManufacturingBehaviorLoop.enabled(current)) {
                 edu.cufe.auction.world.ManufacturingBehaviorLoop.advanceTo(current, targetMillis);
             } else current.advanceTo(targetMillis);
             return current.snapshot().position();
