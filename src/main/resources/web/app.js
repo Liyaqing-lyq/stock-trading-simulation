@@ -768,7 +768,7 @@ function selectPage(page, refresh = true) {
     guard(refreshAdmin());
   }
 }
-function routeField(container, scene, name, labelText, value, choices) {
+function routeField(container, scene, name, labelText, value, choices, budgetPolicy) {
   const group = document.createElement("div");
   const label = document.createElement("label");
   const id = "route-" + scene + "-" + name;
@@ -788,7 +788,9 @@ function routeField(container, scene, name, labelText, value, choices) {
     control.type = "number";
     control.step = "1";
     control.min = name === "maxOutputTokens" ? "128" : name === "maxTotalTokens" ? "256" : "1";
-    control.max = ({ maxCalls: 100, maxTotalTokens: 1000000, maxOutputTokens: 8192, maxConcurrency: 4 })[name];
+    control.max = ({ maxCalls: budgetPolicy === "lifecycle-v1" ? 5000 : 100,
+      maxTotalTokens: budgetPolicy === "lifecycle-v1" ? 100000000 : 1000000,
+      maxOutputTokens: 8192, maxConcurrency: 4 })[name];
     control.required = true;
   }
   control.value = String(value);
@@ -817,6 +819,7 @@ async function refreshRoutes(generation, current = () => true) {
     const card = document.createElement("section");
     card.className = "route-card";
     card.dataset.scene = route.scene;
+    if (route.budgetPolicy) card.dataset.budgetPolicy = route.budgetPolicy;
     const head = document.createElement("div"); head.className = "route-head";
     const title = document.createElement("h3");
     title.textContent = route.sceneLabel || route.scene;
@@ -828,8 +831,8 @@ async function refreshRoutes(generation, current = () => true) {
     const fields = document.createElement("div"); fields.className = "route-fields";
     routeField(fields, route.scene, "slotId", "Key 槽位", route.slotId, ["key-1", "key-2", "key-3", "key-4", "key-5"]);
     routeField(fields, route.scene, "model", "模型", route.model, ["deepseek-flash", "deepseek-v4-pro"]);
-    routeField(fields, route.scene, "maxCalls", "调用上限", route.maxCalls);
-    routeField(fields, route.scene, "maxTotalTokens", "总 token 上限", route.maxTotalTokens);
+    routeField(fields, route.scene, "maxCalls", "累计调用上限", route.maxCalls, undefined, route.budgetPolicy);
+    routeField(fields, route.scene, "maxTotalTokens", "累计 token 上限", route.maxTotalTokens, undefined, route.budgetPolicy);
     routeField(fields, route.scene, "maxOutputTokens", "单次输出上限", route.maxOutputTokens);
     routeField(fields, route.scene, "maxConcurrency", "并发上限", route.maxConcurrency);
     card.append(head, fields); $("routes-list").appendChild(card);
@@ -841,6 +844,7 @@ async function saveRoutes(event) {
   const generation = state.generation;
   const routes = Array.from($("routes-list").children, card => {
     const route = { scene: card.dataset.scene };
+    if (card.dataset.budgetPolicy) route.budgetPolicy = card.dataset.budgetPolicy;
     card.querySelectorAll("[data-field]").forEach(input => {
       const name = input.dataset.field;
       if (name === "enabled") route[name] = input.checked;
@@ -3799,6 +3803,19 @@ function renderLive(v) {
       + " / 输出 " + text(item.declaredOutputTokens) + " · 费用 " + text(item.costStatus)
       + (item.reason ? " · 原因 " + item.reason : "");
     detail.appendChild(meta);
+    if (!item.replyTruncated && item.replyPreview) {
+      try {
+        const statement = JSON.parse(item.replyPreview).decision;
+        if (statement && typeof statement.basis === "string") {
+          const grounds = document.createElement("p");
+          grounds.textContent = "角色陈述的依据：" + statement.basis;
+          const review = document.createElement("p"); review.className = "hint";
+          review.textContent = "目标 " + text(statement.objective) + " · 下次复查（模拟毫秒） "
+            + text(statement.nextReviewAt) + " · 意图和理由不等于动作已执行。";
+          detail.append(grounds, review);
+        }
+      } catch (_) { /* 截断或不合法回执仍保留原文和协议拒绝原因。 */ }
+    }
     for (const [label, prefix] of [["实际输入", "input"], ["模型回执", "reply"]]) {
       const heading = document.createElement("h3");
       heading.textContent = label + "（" + item[prefix + "Length"] + " 字符"

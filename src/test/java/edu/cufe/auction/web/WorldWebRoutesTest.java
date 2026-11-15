@@ -202,6 +202,30 @@ class WorldWebRoutesTest {
         assertEquals(401, get("/api/admin/routes").statusCode());
     }
 
+    @Test
+    void lifecyclePolicyRoundTripsOverHttpAndCannotSilentlyUpgradeLegacy() throws Exception {
+        login();
+        String oversized = replaceBody("0", routesWith(false, "key-1", "deepseek-flash", 500));
+        assertEquals(400, post("/api/admin/routes", oversized).statusCode());
+        var request = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(oversized);
+        var first = (com.fasterxml.jackson.databind.node.ObjectNode) request.path("routes").get(0);
+        first.put("budgetPolicy", "lifecycle-v1").put("maxTotalTokens", 10_000_000);
+        var response = post("/api/admin/routes", request.toString());
+        assertEquals(200, response.statusCode(), response.body());
+        assertEquals("lifecycle-v1", body(response).path("routes").get(0).path("budgetPolicy").asText());
+        assertEquals("lifecycle-v1", body(get("/api/admin/routes")).path("routes").get(0).path("budgetPolicy").asText());
+        assertFalse(body(response).path("routes").get(1).has("budgetPolicy"));
+        try (var reopened = SceneRoutes.open(dir)) {
+            assertEquals("lifecycle-v1", reopened.view().routes().get(0).budgetPolicy());
+            assertEquals(500, reopened.view().routes().get(0).maxCalls());
+        }
+        request.put("expectedRevision", "1"); first.put("budgetPolicy", "unbounded");
+        assertEquals(400, post("/api/admin/routes", request.toString()).statusCode());
+        first.put("budgetPolicy", 1);
+        assertEquals(400, post("/api/admin/routes", request.toString()).statusCode());
+        assertEquals("1", body(get("/api/admin/routes")).path("revision").asText());
+    }
+
     // ------------------------------------------------------------ 工具
 
     private void login() throws Exception {

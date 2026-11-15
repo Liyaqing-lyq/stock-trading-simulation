@@ -92,7 +92,7 @@ public final class WorldWebServer implements AutoCloseable {
             "note");
     private static final Set<String> HANDOFF_FIELDS = Set.of("token", "probe");
     private static final Set<String> ROUTE_FIELDS = Set.of("scene", "slotId", "model", "enabled",
-            "maxCalls", "maxTotalTokens", "maxOutputTokens", "maxConcurrency");
+            "maxCalls", "maxTotalTokens", "maxOutputTokens", "maxConcurrency", "budgetPolicy");
     /** 工程页公司选择：只接受一个公司标识。 */
     private static final Set<String> ENGINEERING_COMPANY_FIELDS = Set.of("companyId");
     /** 工程命令：字段全部显式列出，未知字段直接 400。 */
@@ -1628,6 +1628,7 @@ public final class WorldWebServer implements AutoCloseable {
             row.put("maxTotalTokens", route.maxTotalTokens());
             row.put("maxOutputTokens", route.maxOutputTokens());
             row.put("maxConcurrency", route.maxConcurrency());
+            if (route.budgetPolicy() != null) row.put("budgetPolicy", route.budgetPolicy());
             rows.add(row);
         }
         root.put("routes", rows);
@@ -1652,6 +1653,8 @@ public final class WorldWebServer implements AutoCloseable {
         Integer total = intField(node.get("maxTotalTokens"));
         Integer output = intField(node.get("maxOutputTokens"));
         Integer concurrency = intField(node.get("maxConcurrency"));
+        JsonNode policy = node.get("budgetPolicy");
+        if (policy != null && !policy.isTextual()) return null;
         if (scene == null || !scene.isTextual() || slot == null || !slot.isTextual()
                 || model == null || !model.isTextual() || enabled == null || !enabled.isBoolean()
                 || calls == null || total == null || output == null || concurrency == null) {
@@ -1660,7 +1663,7 @@ public final class WorldWebServer implements AutoCloseable {
         try {
             return new SceneRoutes.Route(SceneRoutes.Scene.fromId(scene.textValue()),
                     slot.textValue(), model.textValue(), enabled.booleanValue(),
-                    calls, total, output, concurrency);
+                    calls, total, output, concurrency, policy == null ? null : policy.textValue());
         } catch (RuntimeException invalid) {
             return null;
         }
