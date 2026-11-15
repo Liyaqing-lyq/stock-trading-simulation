@@ -219,6 +219,10 @@ public final class WorldWebHost implements AutoCloseable {
         boolean running = true, awaiting;
         String reason = "RUNNING";
         List<WakeGroup> groups = List.of();
+        List<WakeGroup> roster = List.of();
+        final Map<String, com.fasterxml.jackson.databind.JsonNode> observed = new HashMap<>();
+        final Map<String, Long> lastWake = new HashMap<>();
+        final Set<String> busy = new HashSet<>();
     }
 
     /** 服务端运行状态；已完成窗口不代表经营成功或自主世界已验收。 */
@@ -237,7 +241,7 @@ public final class WorldWebHost implements AutoCloseable {
      * @param expectedPosition 已观察位置
      * @param expectedRevision 已观察模型配置版本
      * @param targetMillis 目标世界时点，最多前进180日
-     * @param stepMillis 本版本固定为1小时，与角色已知的唤醒节奏一致
+     * @param stepMillis 旧档为1小时窗口；事件档作为单次空闲推进上限，不跨过待办
      * @throws Exception 版本冲突、配置不足、仍有旧轮次或世界读写失败
      */
     public void startAutonomy(long expectedPosition, long expectedRevision,
@@ -271,8 +275,18 @@ public final class WorldWebHost implements AutoCloseable {
             Autonomy next = new Autonomy();
             next.target = targetMillis; next.step = stepMillis; next.revision = expectedRevision;
             next.callsAtStart = current.snapshot().decisions().orElseThrow().state().runUsage().attempts();
+            next.roster = groups;
             next.groups = groups;
             autonomy = next;
+            if (eventAutonomy()) {
+                for (var decision : current.snapshot().decisions().orElseThrow().state().decisions()) {
+                    if (!decision.attempts().isEmpty()) {
+                        next.observed.put(decision.personPartyId(), wakeFacts(PAYLOAD_MAPPER.readTree(decision.inputText())));
+                        next.lastWake.put(decision.personPartyId(), decision.decisionAtMillis());
+                    }
+                }
+                next.groups = eventWakeGroups(groups);
+            }
             return null;
         });
     }
@@ -292,9 +306,51 @@ public final class WorldWebHost implements AutoCloseable {
 
     private boolean autonomyAvailable() {
         return workers != null && liveRuntime()
-                && "role-windows-v1".equals(runtime.profile().manifest().dataVersions().get("autonomy-driver"))
+                && ("role-windows-v1".equals(runtime.profile().manifest().dataVersions().get("autonomy-driver")) || eventAutonomy())
                 && !edu.cufe.auction.world.ConnectedWorldLoop.enabled(runtime)
                 && !edu.cufe.auction.world.ManufacturingBehaviorLoop.enabled(runtime);
+    }
+
+    private boolean eventAutonomy() {
+        return "role-events-v2".equals(runtime.profile().manifest().dataVersions().get("autonomy-driver"));
+    }
+
+    // 比较本人可见的具体事实；世界时间或观察时点自身变化不触发全体付费调用。
+    private static com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
+        var facts = (com.fasterxml.jackson.databind.node.ObjectNode) input.deepCopy();
+        facts.remove(List.of("time", "observedAt", "wakeReason", "pendingActions"));
+        return facts;
+    }
+
+    private List<WakeGroup> eventWakeGroups(List<WakeGroup> roster) throws IOException {
+        var ready = new HashSet<String>();
+        long now = runtime.snapshot().timeMillis();
+        for (String person : roster.stream().flatMap(g -> g.persons().stream()).distinct().toList()) {
+            var input = runtime.autonomyRoleObservation(person);
+            if (runtime.autonomyRoleBusy(person) || !input.path("pendingActions").isEmpty()) {
+                autonomy.busy.add(person);
+                continue;
+            }
+            boolean finishedWork = autonomy.busy.remove(person);
+            Long last = autonomy.lastWake.get(person);
+            if (last == null || finishedWork || now - last >= 86_400_000L
+                    || !wakeFacts(input).equals(autonomy.observed.get(person))) ready.add(person);
+        }
+        return roster.stream().map(g -> new WakeGroup(g.scene(), g.company(),
+                        g.persons().stream().filter(ready::contains).toList()))
+                .filter(g -> !g.persons().isEmpty()).toList();
+    }
+
+    private long nextAutonomyTime() {
+        long now = runtime.snapshot().timeMillis();
+        long target = Math.min(autonomy.target, now + autonomy.step);
+        if (eventAutonomy()) {
+            for (PendingTask task : runtime.snapshot().pending())
+                if (task.dueTimeMillis() > now) target = Math.min(target, task.dueTimeMillis());
+            for (long last : autonomy.lastWake.values())
+                if (last + 86_400_000L > now) target = Math.min(target, last + 86_400_000L);
+        }
+        return target;
     }
 
     private List<WakeGroup> autonomyGroups() {
@@ -331,7 +387,7 @@ public final class WorldWebHost implements AutoCloseable {
 
     private AutonomyStatus autonomyStatusOnWriter() {
         var snapshot = readyNow().snapshot();
-        var groups = autonomy == null ? List.<WakeGroup>of() : autonomy.groups;
+        var groups = autonomy == null ? List.<WakeGroup>of() : autonomy.roster;
         long calls = snapshot.decisions().map(d -> d.state().runUsage().attempts()).orElse(0L);
         return new AutonomyStatus(autonomyAvailable(), autonomy != null && autonomy.running,
                 autonomy == null ? "NOT_STARTED" : autonomy.running && livePaused ? "PAUSED" : autonomy.reason, num(snapshot.position()),
@@ -370,15 +426,16 @@ public final class WorldWebHost implements AutoCloseable {
             if (autonomy.windowDecisions > 0 && autonomy.windowFailures == autonomy.windowDecisions) {
                 endAutonomy("ALL_DECISIONS_FAILED"); return;
             }
-            long target = Math.min(autonomy.target, runtime.snapshot().timeMillis() + autonomy.step);
+            long target = nextAutonomyTime();
             runtime.advanceTo(target);
             if (runtime.snapshot().timeMillis() != target) { endAutonomy("UNRESOLVED_BARRIER"); return; }
             autonomy.cycles++;
             if (target == autonomy.target) { endAutonomy("TARGET_REACHED"); return; }
-            autonomy.groups = autonomyGroups();
+            autonomy.roster = autonomyGroups();
+            autonomy.groups = eventAutonomy() ? eventWakeGroups(autonomy.roster) : autonomy.roster;
             autonomy.next = 0;
             autonomy.windowDecisions = 0; autonomy.windowFailures = 0;
-            if (autonomy.groups.isEmpty()) { endAutonomy("NO_ELIGIBLE_ROLES"); return; }
+            if (autonomy.roster.isEmpty()) { endAutonomy("NO_ELIGIBLE_ROLES"); return; }
             return;
         }
         WakeGroup group = autonomy.groups.get(autonomy.next++);
@@ -390,6 +447,10 @@ public final class WorldWebHost implements AutoCloseable {
         if (pendingPeople.isEmpty()) return;
         autonomy.decisionStart = decisions.size();
         try {
+            if (eventAutonomy()) for (String person : pendingPeople) {
+                autonomy.observed.put(person, wakeFacts(runtime.autonomyRoleObservation(person)));
+                autonomy.lastWake.put(person, runtime.snapshot().timeMillis());
+            }
             startLiveRoundOnWriter(runtime.snapshot().position(), autonomy.revision,
                     pendingPeople, group.scene(), group.company());
             autonomy.awaiting = true;

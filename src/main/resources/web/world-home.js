@@ -61,7 +61,7 @@ window.WorldHome = (() => {
     if(!data?.available)return;
     const reasons={NOT_STARTED:"本进程尚未开始（历史记录保留）",RUNNING:"持续运行中",PAUSED:"已暂停处理",STOPPED:"已停止新调用，在途调用继续结算",TARGET_REACHED:"已到达目标时点",BUDGET_EXHAUSTED:"调用预算不足，已停止",TECHNICAL_FAILED:"模型调用或回执失败，已停止",ROLE_DISPATCH_REJECTED:"角色无法派发，已停止；请查看模型决定记录",CONFIGURATION_CHANGED:"模型配置变化，已停止",WORLD_FAULT:"世界运行故障，已停止",UNRESOLVED_BARRIER:"尚有未解决的决定，已停止",NO_ELIGIBLE_ROLES:"当前没有可运行角色"};
     reasons.ALL_DECISIONS_FAILED="本窗口所有模型决定失败，已停止";
-    $("world-autonomy-status").textContent=(reasons[data.reason]||data.reason)+" · 本次唤醒范围涉及 "+data.companies+" 家公司 / "+data.persons+" 人 · "+data.calls+" 次调用 / "+(data.failures||0)+" 次失败 · 已推进 "+data.cycles+" 个窗口 · 世界第 "+(Number(data.timeMillis)/86400000).toFixed(2)+" 日";
+    $("world-autonomy-status").textContent=(reasons[data.reason]||data.reason)+" · 本次唤醒范围涉及 "+data.companies+" 家公司 / "+data.persons+" 人 · "+data.calls+" 次调用 / "+(data.failures||0)+" 次失败 · 已推进 "+data.cycles+" 个时间节点 · 世界第 "+(Number(data.timeMillis)/86400000).toFixed(2)+" 日";
     $("world-autonomy-start").disabled=data.running;
     $("world-autonomy-stop").disabled=!data.running;
     clearTimeout(autonomyTimer);
