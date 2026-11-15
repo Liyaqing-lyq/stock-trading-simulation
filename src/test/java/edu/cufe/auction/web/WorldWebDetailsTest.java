@@ -206,9 +206,11 @@ class WorldWebDetailsTest {
         JsonNode person = getJson("/api/me/view");
         Set<String> fields = new LinkedHashSet<>();
         person.fieldNames().forEachRemaining(fields::add);
-        assertEquals(Set.of("personPartyId", "timeMillis", "tools", "accounts", "holdings",
+        assertEquals(Set.of("personPartyId", "displayName", "timeMillis", "tools", "accounts", "holdings",
                 "market", "appointments", "catalog", "readings", "observations", "permissions"),
                 fields, "个人视图字段集合不得新增管理字段");
+        assertEquals("carol", person.path("personPartyId").asText(), "显示名不得替换权限身份");
+        assertEquals("许清衡", person.path("displayName").asText(), "仅新增本人公开显示名");
         assertEquals(0, person.path("appointments").size(), "撤销后本人不再有有效任职");
         assertFalse(person.toString().contains("A-3"), "个人视图不得泄露任职审计标识");
         assertFalse(person.toString().contains("managementReports"));

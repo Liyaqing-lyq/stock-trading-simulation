@@ -250,6 +250,7 @@ public final class WorldWebApp {
             server.attachExperimentReport(new com.fasterxml.jackson.databind.ObjectMapper()
                     .readTree(Files.readString(experimentReport)));
         }
+        if (mode.equals("world-prototype")) server.enableLocalAccess();
         try {
             server.start();
         } catch (IOException failure) {
@@ -266,7 +267,8 @@ public final class WorldWebApp {
         System.out.println("工作目录：" + workDir.toAbsolutePath().normalize());
         System.out.println("场景配置：" + workDir.resolve(SceneRoutes.FILE_NAME).toAbsolutePath()
                 .normalize());
-        System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
+        if (mode.equals("world-prototype")) System.out.println("本机直达：打开上方网址即可使用，无需登录码。");
+        else System.out.println("本机管理员一次性引导凭据（仅本次启动有效）：" + bootstrap);
         System.out.println("分支运行管理：本机端口 " + BRANCH_PORT_FROM + "-" + BRANCH_PORT_TO
                 + "，最多 " + MAX_BRANCH_RUNS + " 个；创建不等于启动，页面按真实状态显示。");
         System.out.println(mode.equals("world-prototype") ? "模式：十个虚构公司及A股机制原型；季度实验档，模型场景默认关闭。" : baselineMode ? "模式：最终十公司基线实验档；经理和预算须真实决议，模型默认关闭。参数未作现实校准。" : hydroMode ? "模式：水电/资源/三制造同世界增量调试；不是最终十公司基线，模型默认关闭。" : industryMode

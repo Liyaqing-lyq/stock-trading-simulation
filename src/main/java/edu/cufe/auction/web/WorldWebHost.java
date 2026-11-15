@@ -1666,6 +1666,15 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     /**
+     * 中文世界首页：在同一writer时点派生十公司报表、实际股价与人物任职，不修改历史身份。
+     * @return 只读视图
+     * @throws Exception 世界读取失败
+     */
+    public Map<String,Object> worldOverview() throws Exception {
+        return call(() -> WorldOverviewView.of(readyNow()));
+    }
+
+    /**
      * 人物与任职（单 writer 任务、单快照）。
      *
      * @return 视图

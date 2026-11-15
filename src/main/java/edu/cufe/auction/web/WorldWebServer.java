@@ -150,6 +150,7 @@ public final class WorldWebServer implements AutoCloseable {
     private final String handoffToken;
     private RunLauncher launcher;
     private JsonNode experimentReport;
+    private boolean localAccess;
 
     /**
      * 构造（尚未监听），静态资源取自 classpath /web/。
@@ -252,6 +253,12 @@ public final class WorldWebServer implements AutoCloseable {
         experimentReport = report.deepCopy();
     }
 
+    /** 本机所有者直达模式；必须在监听前显式启用，保留同源校验、会话与人物权限。 */
+    public void enableLocalAccess() {
+        if (server != null) throw new IllegalStateException("本机访问模式必须在启动前设置");
+        localAccess=true;
+    }
+
     /**
      * 开始监听 127.0.0.1。
      *
@@ -316,6 +323,19 @@ public final class WorldWebServer implements AutoCloseable {
             if ("GET".equals(method) && serveStatic(exchange, path)) {
                 return;
             }
+            if ("/api/session/local".equals(path) && "POST".equals(method) && localAccess) {
+                jsonBody(exchange, Set.of());
+                if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()
+                        || "cross-site".equals(exchange.getRequestHeaders().getFirst("Sec-Fetch-Site"))
+                        || exchange.getRequestHeaders().containsKey("Forwarded")
+                        || exchange.getRequestHeaders().containsKey("X-Forwarded-For")) {
+                    send(exchange,403,error("LOCAL_ONLY","本机直达只接受本机同源访问"));return;
+                }
+                var existing=resolveSession(exchange);
+                if (existing.isEmpty() || existing.get().role()!=WebSessions.Role.ADMIN)
+                    setCookie(exchange,sessions.create(WebSessions.Role.ADMIN,null));
+                send(exchange,200,"{\"role\":\"ADMIN\",\"localAccess\":true}");return;
+            }
             if ("/api/session".equals(path) && "POST".equals(method)) {
                 login(exchange);
                 return;
@@ -345,6 +365,16 @@ public final class WorldWebServer implements AutoCloseable {
             if ("/api/session/person".equals(path) && "POST".equals(method)) {
                 switchPerson(exchange, session.get());
                 return;
+            }
+            if ("/api/admin/world".equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange,session.get(),()-> {
+                    JsonNode view;
+                    try { view=mapper.valueToTree(host.worldOverview()); }
+                    catch (WorldWebHost.BusyException busy) { throw busy; }
+                    catch (Exception failure) { throw new WorldIoFailure(); }
+                    if(experimentReport!=null)((com.fasterxml.jackson.databind.node.ObjectNode)view).set("experiment",experimentReport);
+                    send(exchange,200,mapper.writeValueAsString(view));
+                });return;
             }
             if ("/api/admin/view".equals(path) && "GET".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> adminView(exchange));
@@ -588,6 +618,7 @@ public final class WorldWebServer implements AutoCloseable {
     }
 
     private boolean knownRoute(String path, String method) {
+        if ("/api/admin/world".equals(path) && "GET".equals(method)) return true;
         if (("/api/admin/media".equals(path) || "/api/admin/capabilities".equals(path))
                 && "GET".equals(method)) return true;
         if ("/api/admin/media-story".equals(path) && "POST".equals(method)) return true;
@@ -803,7 +834,7 @@ public final class WorldWebServer implements AutoCloseable {
     private void currentSession(HttpExchange exchange, WebSessions.Session session)
             throws IOException {
         if (session.role() == WebSessions.Role.ADMIN) {
-            send(exchange, 200, "{\"role\":\"ADMIN\"}");
+            send(exchange, 200, "{\"role\":\"ADMIN\",\"localAccess\":"+localAccess+"}");
             return;
         }
         send(exchange, 200, "{\"role\":\"PERSON\",\"personId\":\""
@@ -2587,6 +2618,7 @@ public final class WorldWebServer implements AutoCloseable {
             }
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("personPartyId", view.personPartyId());
+            response.put("displayName", WorldOverviewView.displayName(view.personPartyId()));
             response.put("timeMillis", Long.toString(view.timeMillis()));
             response.put("tools", view.tools());
             response.put("accounts", accounts);
@@ -2794,6 +2826,8 @@ public final class WorldWebServer implements AutoCloseable {
             case "/operations.js" -> "operations.js";
             case "/manufacturing.js" -> "manufacturing.js";
             case "/style.css" -> "style.css";
+            case "/world-home.js" -> "world-home.js";
+            case "/world-home.css" -> "world-home.css";
             default -> null;
         };
         if (name == null) {

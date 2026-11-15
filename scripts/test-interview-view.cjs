@@ -331,7 +331,7 @@ defineCase("personal-interview-cleared-on-identity-switch", async () => {
 
   const second = world.context.switchPerson("bob");
   await waitFor(() => pending.length === 1, "bob 的采访请求已发出");
-  assert.equal(world.$("person-name").textContent, "bob", "前置：已切到 bob 标记");
+  assert.equal(world.$("person-name").textContent, "正在读取人物…", "新身份观察返回前不显示旧姓名或内部编号");
   const duringInvites = world.rows("person-interview-invites");
   const duringContacts = world.rows("person-interview-contacts");
   const duringHidden = world.$("person-interview").hidden;
