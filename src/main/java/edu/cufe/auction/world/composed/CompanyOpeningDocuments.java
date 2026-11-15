@@ -94,7 +94,7 @@ public final class CompanyOpeningDocuments {
                 }
             }
         }
-        if ("evidence-v1".equals(world.profile().manifest().dataVersions().get("role-context"))) {
+        if (edu.cufe.auction.world.RoleDeliberation.hasEvidence(world.profile().manifest().dataVersions().get("role-context"))) {
             edu.cufe.auction.world.RoleEvidenceDocuments.publish(world, extraCandidates);
         }
         world.advanceTo(1L);

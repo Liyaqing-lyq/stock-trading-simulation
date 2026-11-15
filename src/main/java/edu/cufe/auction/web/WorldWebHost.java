@@ -319,6 +319,8 @@ public final class WorldWebHost implements AutoCloseable {
     private static com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
         var facts = (com.fasterxml.jackson.databind.node.ObjectNode) input.deepCopy();
         facts.remove(List.of("time", "observedAt", "wakeReason", "pendingActions"));
+        if (facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
+            delib.remove(List.of("reviewBounds", "recentDecisions"));
         return facts;
     }
 
@@ -333,7 +335,7 @@ public final class WorldWebHost implements AutoCloseable {
             }
             boolean finishedWork = autonomy.busy.remove(person);
             Long last = autonomy.lastWake.get(person);
-            if (last == null || finishedWork || now - last >= 86_400_000L
+            if (last == null || finishedWork || now >= runtime.autonomyNextReviewAt(person, last + 86_400_000L)
                     || !wakeFacts(input).equals(autonomy.observed.get(person))) ready.add(person);
         }
         return roster.stream().map(g -> new WakeGroup(g.scene(), g.company(),
@@ -347,8 +349,10 @@ public final class WorldWebHost implements AutoCloseable {
         if (eventAutonomy()) {
             for (PendingTask task : runtime.snapshot().pending())
                 if (task.dueTimeMillis() > now) target = Math.min(target, task.dueTimeMillis());
-            for (long last : autonomy.lastWake.values())
-                if (last + 86_400_000L > now) target = Math.min(target, last + 86_400_000L);
+            for (var entry : autonomy.lastWake.entrySet()) {
+                long review = runtime.autonomyNextReviewAt(entry.getKey(), entry.getValue() + 86_400_000L);
+                if (review > now) target = Math.min(target, review);
+            }
         }
         return target;
     }
@@ -5900,7 +5904,7 @@ public final class WorldWebHost implements AutoCloseable {
     private static DecisionModel.Route decisionRoute(SceneRoutes.Route route, long revision) {
         return new DecisionModel.Route(route.scene().id(), route.slotId(), route.model(),
                 revision, route.maxCalls(), route.maxTotalTokens(), route.maxOutputTokens(),
-                route.maxConcurrency());
+                route.maxConcurrency(), route.budgetPolicy());
     }
 
     private LiveStatus buildLiveStatus() {

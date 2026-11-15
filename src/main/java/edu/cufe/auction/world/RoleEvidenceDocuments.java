@@ -45,7 +45,7 @@ public final class RoleEvidenceDocuments {
      */
     public static void publish(WorldRuntime world, Map<String, List<String>> candidates) throws Exception {
         if (world.snapshot().timeMillis() != 0L
-                || !"evidence-v1".equals(world.profile().manifest().dataVersions().get("role-context"))) {
+                || !edu.cufe.auction.world.RoleDeliberation.hasEvidence(world.profile().manifest().dataVersions().get("role-context"))) {
             throw new IllegalStateException("角色依据只能由evidence-v1新档开局发布");
         }
         if (!CANDIDATES_V1.equals(candidates))

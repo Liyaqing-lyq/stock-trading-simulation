@@ -310,10 +310,19 @@ public final class DecisionModel {
      * @param maxTotalTokens  场景输入加输出的 token 总上限 256..1000000
      * @param maxOutputTokens 单次输出预留 128..8192，且不超过总上限
      * @param maxConcurrency  派发并发上限 1..4，且不超过调用上限
+     * @param budgetPolicy    空值保留旧上限；lifecycle-v1 显式启用有限跨期预算
      */
     public record Route(String sceneId, String slotId, String model, long revision,
                         int maxCalls, int maxTotalTokens, int maxOutputTokens,
-                        int maxConcurrency) {
+                        int maxConcurrency,
+                        @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy) {
+
+        /** 旧路由保留原有预算边界与序列化形态。 */
+        public Route(String sceneId, String slotId, String model, long revision,
+                     int maxCalls, int maxTotalTokens, int maxOutputTokens, int maxConcurrency) {
+            this(sceneId, slotId, model, revision, maxCalls, maxTotalTokens, maxOutputTokens,
+                    maxConcurrency, null);
+        }
 
         /** 校验场景、槽位、模型与各项范围。 */
         public Route {
@@ -329,11 +338,14 @@ public final class DecisionModel {
             if (revision < 0) {
                 throw new IllegalArgumentException("路由版本不能为负：" + revision);
             }
-            if (maxCalls < 1 || maxCalls > 100) {
-                throw new IllegalArgumentException("场景调用上限必须是 1..100：" + maxCalls);
+            if (budgetPolicy != null && !"lifecycle-v1".equals(budgetPolicy)) {
+                throw new IllegalArgumentException("未知预算策略");
             }
-            if (maxTotalTokens < 256 || maxTotalTokens > 1_000_000) {
-                throw new IllegalArgumentException("场景 token 总上限必须是 256..1000000："
+            if (maxCalls < 1 || maxCalls > (budgetPolicy == null ? 100 : 5000)) {
+                throw new IllegalArgumentException("场景调用上限超出预算策略范围：" + maxCalls);
+            }
+            if (maxTotalTokens < 256 || maxTotalTokens > (budgetPolicy == null ? 1_000_000 : 100_000_000)) {
+                throw new IllegalArgumentException("场景 token 总上限超出预算策略范围："
                         + maxTotalTokens);
             }
             if (maxOutputTokens < 128 || maxOutputTokens > 8_192) {
@@ -888,7 +900,7 @@ public final class DecisionModel {
                 throw new IllegalArgumentException("已记录回执结果或长度不合法");
             }
             try {
-                Parsed parsed = parse(config, decision.allowedTools(), attempt.replyBody());
+                Parsed parsed = parse(config, decision.allowedTools(), attempt.replyBody(), decision.inputText());
                 Outcome expectedOutcome = parsed.abstain() ? Outcome.WAIT : Outcome.INTENT;
                 if (attempt.outcome() != expectedOutcome) {
                     throw new IllegalArgumentException("回执正文与尝试结果不一致");
@@ -1213,7 +1225,7 @@ public final class DecisionModel {
         Outcome outcome;
         String recordedTool;
         try {
-            Parsed parsed = parse(config, decision.allowedTools(), reply.body());
+            Parsed parsed = parse(config, decision.allowedTools(), reply.body(), decision.inputText());
             outcome = parsed.abstain() ? Outcome.WAIT : Outcome.INTENT;
             recordedTool = parsed.abstain() ? "" : parsed.tool();
             if (!parsed.abstain()) {
@@ -2021,7 +2033,7 @@ public final class DecisionModel {
         return Math.addExact(decision.barrierAtMillis(), millis);
     }
 
-    private static Parsed parse(Config config, List<String> allowedTools, String body) {
+    private static Parsed parse(Config config, List<String> allowedTools, String body, String inputText) {
         JsonNode node;
         try {
             node = MAPPER.readTree(body);
@@ -2031,6 +2043,8 @@ public final class DecisionModel {
         if (node == null || !node.isObject()) {
             throw new ReplyFailure(REASON_BAD_REPLY_SHELL);
         }
+        try { node = RoleDeliberation.validatedAction(inputText, node); }
+        catch (IllegalArgumentException invalid) { throw new ReplyFailure("BAD_DELIBERATION"); }
         Set<String> fields = new LinkedHashSet<>();
         node.fieldNames().forEachRemaining(fields::add);
         if (!fields.contains("tool") || !node.get("tool").isTextual()) {

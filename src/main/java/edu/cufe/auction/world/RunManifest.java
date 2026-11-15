@@ -996,7 +996,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("composed-governance-intent", "v2");
                 if ("role-events-v2".equals(data.get("autonomy-driver")) && data.containsKey("role-context")) {
                     String context = data.get("role-context");
-                    if (!List.of("authority-v1", "evidence-v1").contains(context)) {
+                    if (!List.of("authority-v1", "evidence-v1", RoleDeliberation.VERSION).contains(context)) {
                         throw new IllegalArgumentException("未知角色依据版本：" + context);
                     }
                     expectedData.put("role-context", context);

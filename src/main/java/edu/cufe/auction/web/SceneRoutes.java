@@ -1,6 +1,7 @@
 package edu.cufe.auction.web;
 
 import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -105,10 +106,19 @@ public final class SceneRoutes implements AutoCloseable {
      * @param maxTotalTokens  总 token 上限 256..1000000
      * @param maxOutputTokens 单次输出上限 128..8192 且不超过总上限
      * @param maxConcurrency  并发上限 1..4 且不超过调用上限
+     * @param budgetPolicy    空值保留旧上限；lifecycle-v1 显式启用有限跨期预算
      */
     public record Route(Scene scene, String slotId, String model, boolean enabled,
                         int maxCalls, int maxTotalTokens, int maxOutputTokens,
-                        int maxConcurrency) {
+                        int maxConcurrency,
+                        @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy) {
+
+        /** 旧配置继续使用原有单场景上限。 */
+        public Route(Scene scene, String slotId, String model, boolean enabled,
+                     int maxCalls, int maxTotalTokens, int maxOutputTokens, int maxConcurrency) {
+            this(scene, slotId, model, enabled, maxCalls, maxTotalTokens, maxOutputTokens,
+                    maxConcurrency, null);
+        }
 
         /** 逐项校验；不合法时抛 IllegalArgumentException（文案不回显输入）。 */
         public Route {
@@ -119,10 +129,13 @@ public final class SceneRoutes implements AutoCloseable {
             if (!MODEL_FLASH.equals(model) && !MODEL_PRO.equals(model)) {
                 throw new IllegalArgumentException("模型不在允许列表");
             }
-            if (maxCalls < 1 || maxCalls > 100) {
+            if (budgetPolicy != null && !"lifecycle-v1".equals(budgetPolicy)) {
+                throw new IllegalArgumentException("未知预算策略");
+            }
+            if (maxCalls < 1 || maxCalls > (budgetPolicy == null ? 100 : 5000)) {
                 throw new IllegalArgumentException("调用上限超出范围");
             }
-            if (maxTotalTokens < 256 || maxTotalTokens > 1_000_000) {
+            if (maxTotalTokens < 256 || maxTotalTokens > (budgetPolicy == null ? 1_000_000 : 100_000_000)) {
                 throw new IllegalArgumentException("总 token 上限超出范围");
             }
             if (maxOutputTokens < 128 || maxOutputTokens > 8192
@@ -185,7 +198,8 @@ public final class SceneRoutes implements AutoCloseable {
     /** 持久化形态：只含非秘密字段。 */
     private record RouteDto(String scene, String slotId, String model, boolean enabled,
                             int maxCalls, int maxTotalTokens, int maxOutputTokens,
-                            int maxConcurrency) {
+                            int maxConcurrency,
+                            @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy) {
     }
 
     private record Persisted(long revision, List<RouteDto> routes) {
@@ -240,7 +254,7 @@ public final class SceneRoutes implements AutoCloseable {
             try {
                 parsed.add(new Route(Scene.fromId(dto.scene()), dto.slotId(), dto.model(),
                         dto.enabled(), dto.maxCalls(), dto.maxTotalTokens(),
-                        dto.maxOutputTokens(), dto.maxConcurrency()));
+                        dto.maxOutputTokens(), dto.maxConcurrency(), dto.budgetPolicy()));
             } catch (RuntimeException invalid) {
                 throw new IOException("场景路由配置不合法");
             }
@@ -305,7 +319,7 @@ public final class SceneRoutes implements AutoCloseable {
         for (Route route : target.routes()) {
             dtos.add(new RouteDto(route.scene().id(), route.slotId(), route.model(),
                     route.enabled(), route.maxCalls(), route.maxTotalTokens(),
-                    route.maxOutputTokens(), route.maxConcurrency()));
+                    route.maxOutputTokens(), route.maxConcurrency(), route.budgetPolicy()));
         }
         byte[] bytes;
         try {

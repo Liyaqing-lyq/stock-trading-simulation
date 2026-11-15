@@ -159,6 +159,12 @@ public final class ComposedIndustryScenario {
                 authorityOnly ? "authority-v1" : "evidence-v1");
     }
 
+    /** 显式决策依据与接续实验档；旧依据版本保持冻结。 */
+    public static WorldRuntime openDeliberativeAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.VERSION);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven) throws Exception {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, null);
     }
@@ -225,6 +231,8 @@ public final class ComposedIndustryScenario {
         if (hydro) decisions = HydroDecisionTools.config(decisions);
         if(baseline) decisions=AgedDecisionTools.config(DigitalDecisionTools.config(decisions));
         if(prototype) decisions=PrototypeCompanies.decisions(decisions);
+        if(edu.cufe.auction.world.RoleDeliberation.VERSION.equals(roleContext))
+            decisions=edu.cufe.auction.world.RoleDeliberation.lifecycleBudget(decisions);
         var openingAccounts = new ArrayList<>(openings());
         if (hydro) openingAccounts.addAll(HydroIndustryConfig.ACCOUNTS);
         var openingRegistry = hydro ? hydroRegistry(registry()) : registry();
