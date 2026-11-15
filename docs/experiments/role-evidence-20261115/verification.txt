@@ -1,0 +1,36 @@
+FILE: integrity-red.log
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 3.471 s <<< FAILURE! -- in edu.cufe.auction.world.RoleEvidenceIntegrityTest
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0
+[INFO] BUILD FAILURE
+[INFO] Total time:  11.993 s
+[INFO] Finished at: 2026-11-15T19:50:08+08:00
+FILE: integrity-green-2.log
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 8.327 s -- in edu.cufe.auction.world.composed.RoleEvidenceTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.009 s -- in edu.cufe.auction.world.RoleEvidenceIntegrityTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+[INFO] Total time:  25.903 s
+[INFO] Finished at: 2026-11-15T19:55:03+08:00
+FILE: affected-2.log
+[INFO] Tests run: 18, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.015 s -- in edu.cufe.auction.web.LiveDecisionProviderTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 30.60 s -- in edu.cufe.auction.web.WorldAutonomyTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 27.68 s -- in edu.cufe.auction.web.WorldEventAutonomyTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.208 s -- in edu.cufe.auction.world.composed.CompanyOpeningDocumentsTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 7.776 s -- in edu.cufe.auction.world.composed.PharmaDecisionToolTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.004 s -- in edu.cufe.auction.world.RunManifestLegacyBankCompositionTest
+[INFO] Tests run: 17, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.286 s -- in edu.cufe.auction.world.WorldRuntimeRoleReadingTest
+[INFO] Tests run: 56, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+[INFO] Total time:  01:11 min
+[INFO] Finished at: 2026-11-15T19:59:06+08:00
+FILE: final-check.log
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 8.380 s -- in edu.cufe.auction.world.composed.RoleEvidenceTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.317 s -- in edu.cufe.auction.world.RoleEvidenceIntegrityTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD FAILURE
+[INFO] Total time:  29.085 s
+[INFO] Finished at: 2026-11-15T20:05:03+08:00
+FILE: javadoc-2.log
+[INFO] BUILD SUCCESS
+[INFO] Total time:  13.212 s
+[INFO] Finished at: 2026-11-15T20:06:38+08:00

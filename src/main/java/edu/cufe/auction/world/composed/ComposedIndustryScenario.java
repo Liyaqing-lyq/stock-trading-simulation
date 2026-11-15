@@ -153,7 +153,17 @@ public final class ComposedIndustryScenario {
         return open(journal, true, true, true, true, false, false, true, true);
     }
 
+    /** 角色依据对照新档；authorityOnly只调整权限语义，不追加经营材料。 */
+    public static WorldRuntime openEvidenceAutonomous(Path journal, boolean authorityOnly) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                authorityOnly ? "authority-v1" : "evidence-v1");
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, null);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext) throws Exception {
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -247,6 +257,12 @@ public final class ComposedIndustryScenario {
             data.put("composed-governance-intent", "v2");
             data.put("autonomy-driver", eventDriven ? "role-events-v2" : "role-windows-v1");
             runManifest = new RunManifest(eventDriven ? "web-autonomous-world-v2" : "web-autonomous-world-v1", runManifest.seed(), runManifest.rulesVersion(),
+                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (roleContext != null) {
+            var data = new TreeMap<>(runManifest.dataVersions());
+            data.put("role-context", roleContext);
+            runManifest = new RunManifest("web-autonomous-" + roleContext, runManifest.seed(), runManifest.rulesVersion(),
                     runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,

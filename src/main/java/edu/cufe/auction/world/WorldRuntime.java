@@ -4203,6 +4203,8 @@ public final class WorldRuntime implements AutoCloseable {
         requireRoleReadingEnabled();
         if (ConnectedWorldLoop.enabled(this) && docId != null && docId.startsWith(ConnectedWorldLoop.PREFIX))
             throw new IllegalArgumentException("互通决策空间由冻结规则保留");
+        if ("evidence-v1".equals(manifest.dataVersions().get("role-context")) && docId != null && docId.startsWith("role-evidence:"))
+            throw new IllegalArgumentException("角色开局资料空间由冻结开局工厂保留");
         if (ManufacturingBehaviorLoop.enabled(this) && docId != null && docId.startsWith("behavior-v1:")) {
             throw new IllegalArgumentException("经营决策空间由冻结规则保留");
         }
@@ -4220,6 +4222,19 @@ public final class WorldRuntime implements AutoCloseable {
                 title, body, publicSourceDescription, readDurationMillis,
                 internalSourceIds == null ? List.of() : List.copyOf(internalSourceIds));
         return schedulePublish(commandId, taskId, dueTimeMillis, payload,
+                PendingTask.INFORMATION_PUBLISH_V1);
+    }
+
+    /** 仅供同包开局资料生成器调用；普通人物发表路径不能选取公司专属受众。 */
+    synchronized String scheduleOpeningRoleEvidence(String company) throws IOException {
+        if (state.timeMillis() != 0L || !"evidence-v1".equals(manifest.dataVersions().get("role-context")))
+            throw new IllegalStateException("角色依据只能在显式新档开局登记");
+        String command = "role-evidence:" + company;
+        PublishPayload payload = new PublishPayload(command, RoleEvidenceDocuments.documentId(company),
+                edu.cufe.auction.web.WorldWebScenario.INVESTOR, "COMPANY_OPERATING", company,
+                company + "：候选自述与开局经营资金依据（EXP，未授权）", RoleEvidenceDocuments.openingBody(this, company),
+                RoleEvidenceDocuments.SOURCE, 10_000L, List.of());
+        return schedulePublish(command, "role-evidence-task:" + company, 1L, payload,
                 PendingTask.INFORMATION_PUBLISH_V1);
     }
 
@@ -4291,6 +4306,8 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         requireRoleReadingEnabled();
         requireText(docId, "资料标识");
+        if ("evidence-v1".equals(manifest.dataVersions().get("role-context")) && docId.startsWith("role-evidence:"))
+            throw new IllegalArgumentException("冻结角色开局资料不可改写");
         if (ConnectedWorldLoop.enabled(this) && docId.startsWith(ConnectedWorldLoop.PREFIX)) throw new IllegalArgumentException("互通决策记录不可改写");
         if (ManufacturingBehaviorLoop.enabled(this) && docId.startsWith("behavior-v1:")) throw new IllegalArgumentException("经营决策记录不可改写");
         if (manifest.hasDividend() && docId.startsWith("dividend-public:")) {
@@ -5308,6 +5325,16 @@ public final class WorldRuntime implements AutoCloseable {
         };
     }
 
+    /** 新角色资料版本使用观察帧的真实章程；旧版本保持原目录和回执重演。 */
+    private BoardAccess roleBoards(WorldState snap) {
+        if (!"evidence-v1".equals(manifest.dataVersions().get("role-context"))) return BoardAccess.NONE;
+        return (company, person, at) -> {
+            BoardRun board = PeriodicWorldEngine.boardOf(snap.engineering(), snap.governance(), company);
+            if (board == null && snap.companyGovernance() != null) board = snap.companyGovernance().boardOf(company);
+            return board != null && person != null && board.board().charter().seatOf(person) != null;
+        };
+    }
+
     /**
      * 只读：某公司的周期状态（旧档或未初始化返回空）。
      *
@@ -6306,7 +6333,7 @@ public final class WorldRuntime implements AutoCloseable {
         List<RoleView.Holding> holdings = holdingsOf(snap, visible.keySet());
         List<RoleView.Market> market = marketOf(snap);
         List<InformationModel.CatalogEntry> catalog = InformationModel.catalog(information,
-                access, person, now, groupAccess(snap), BoardAccess.NONE);
+                access, person, now, groupAccess(snap), roleBoards(snap));
         Map<String, Integer> ordinals = readingOrdinals(information, person);
         List<RoleView.Experience> observations = new ArrayList<>();
         if (recall == null) {
@@ -15177,7 +15204,17 @@ public final class WorldRuntime implements AutoCloseable {
             case ORGANIZATION -> InformationModel.Audience.organization(payload.audiencePartyId());
             case DIRECT -> InformationModel.Audience.direct(payload.audiencePartyId());
             // 群组与董事会受众只能由各自的专用接缝发布；通用发表路径一律拒绝。
-            case GROUP, BOARD, COMPANY_OPERATING -> throw new IllegalArgumentException(
+            case COMPANY_OPERATING -> {
+                if (!"evidence-v1".equals(manifest.dataVersions().get("role-context")))
+                    throw new IllegalArgumentException("通用发表路径不能使用 " + kind + " 受众");
+                if (!RoleEvidenceDocuments.documentId(payload.audiencePartyId()).equals(payload.docId())
+                        || !("role-evidence:" + payload.audiencePartyId()).equals(payload.commandId())
+                        || !edu.cufe.auction.web.WorldWebScenario.INVESTOR.equals(payload.publisherPartyId())
+                        || !RoleEvidenceDocuments.SOURCE.equals(payload.publicSourceDescription()))
+                    throw new IllegalArgumentException("公司专属角色资料不属于冻结开局发布");
+                yield new InformationModel.Audience(kind, payload.audiencePartyId());
+            }
+            case GROUP, BOARD -> throw new IllegalArgumentException(
                     "通用发表路径不能使用 " + kind + " 受众");
         };
     }
@@ -16612,6 +16649,9 @@ public final class WorldRuntime implements AutoCloseable {
                         recordConnectedDecision(mapper.readValue(body.body(), ConnectedWorldLoop.Decision.class));
                     } else if (ManufacturingBehaviorLoop.enabled(this) && body.docId().startsWith("behavior-v1:")) {
                         recordManufacturingDecision(mapper.readValue(body.body(), ManufacturingBehaviorLoop.Decision.class));
+                    } else if ("evidence-v1".equals(manifest.dataVersions().get("role-context"))
+                            && body.docId().startsWith("role-evidence:")) {
+                        scheduleOpeningRoleEvidence(body.audiencePartyId());
                     } else schedulePublishDocument(intent.commandId(), intent.taskId(),
                             intent.dueTimeMillis(), body.docId(), body.publisherPartyId(),
                             new InformationModel.Audience(
@@ -28485,6 +28525,11 @@ public final class WorldRuntime implements AutoCloseable {
                 node.put("companyPartyId", company);
                 node.put("seatId", seat);
                 node.put("chair", seat.equals(charter.chairSeatId()));
+                if ("evidence-v1".equals(manifest.dataVersions().get("role-context"))) {
+                    node.put("decisionMaterialDocId", RoleEvidenceDocuments.documentId(company));
+                    node.put("decisionMaterialVersion", 1L);
+                    node.put("decisionMaterialScope", "本人公司专属的开局候选自述、财务与经营依据；需实际阅读，asOf时点后的变化须另核实。");
+                }
                 if ("role-events-v2".equals(manifest.dataVersions().get("autonomy-driver"))) {
                     var managers = node.putArray("activeManagers");
                     for (var appointment : snap.roles().access().appointments()) {
@@ -28782,6 +28827,11 @@ public final class WorldRuntime implements AutoCloseable {
                     if (organizations.contains(mandate.organizationPartyId())) products.add(mapper.valueToTree(mandate));
                 }
             }
+        }
+        String roleContext = manifest.dataVersions().get("role-context");
+        if ("authority-v1".equals(roleContext) || "evidence-v1".equals(roleContext)) {
+            root.put("roleContextVersion", roleContext);
+            root.put("authorityBasis", "appointments和permissions仅列雇佣任职及其岗位权限，不是全部权限清单。directorships来自公司真实章程席位，董事资格独立于雇佣；chair=true才有主席召集权。tools是本次可发起工具合同，执行时仍复核权限、时间及材料。候选人没有经理经营权，董事也不能代经理经营。");
         }
         return root;
     }
@@ -30615,7 +30665,7 @@ public final class WorldRuntime implements AutoCloseable {
             InformationModel.Document document = documentOf(before, body.docId());
             boolean allowed = document != null
                     && InformationModel.catalog(before, access, payload.personPartyId(), now,
-                    groupAccess(), BoardAccess.NONE).stream()
+                    groupAccess(), roleBoards(state)).stream()
                     .anyMatch(entry -> entry.docId().equals(body.docId()))
                     && (document.audience().kind() != InformationModel.AudienceKind.ORGANIZATION
                     || observedFor(payload, document.audience().partyId(), access, now) != null);
@@ -30624,7 +30674,7 @@ public final class WorldRuntime implements AutoCloseable {
             } else {
                 InformationModel.Outcome outcome = InformationModel.startRead(before, access,
                         payload.personPartyId(), body.docId(), body.version(), now, groupAccess(),
-                        BoardAccess.NONE);
+                        roleBoards(state));
                 after = outcome.state();
                 accepted = outcome.status() == InformationModel.Status.STARTED;
                 reason = outcome.status().name();

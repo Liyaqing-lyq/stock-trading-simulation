@@ -994,6 +994,13 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("autonomy-driver", "role-events-v2".equals(data.get("autonomy-driver"))
                         ? "role-events-v2" : "role-windows-v1");
                 expectedData.put("composed-governance-intent", "v2");
+                if ("role-events-v2".equals(data.get("autonomy-driver")) && data.containsKey("role-context")) {
+                    String context = data.get("role-context");
+                    if (!List.of("authority-v1", "evidence-v1").contains(context)) {
+                        throw new IllegalArgumentException("未知角色依据版本：" + context);
+                    }
+                    expectedData.put("role-context", context);
+                }
             }
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData

@@ -1,0 +1,3041 @@
+[
+  {
+    "part": "live-v1",
+    "file": "reply-1.json",
+    "person": "digital-company-director-4",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "b4a3b5e94c9010c49fd981ebe751a2717d6fd0f7aa389b219744b7d320d59ea2",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:48:1:governance:digital-company:act:digital-company-director-4",
+        "attemptId": "ATT-1",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:digital-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3763,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-2.json",
+    "person": "digital-company-director-5",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "96910c51d8ac2463422a1a63f52fc86ac9bee2e11406880252d22f68933e1582",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:48:1:governance:digital-company:act:digital-company-director-5",
+        "attemptId": "ATT-2",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:digital-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3763,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-3.json",
+    "person": "digital-company-director-1",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "94086277fc7e9b5460767536db843efa945fe505c2bc6fe35fd7918619c92e79",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:48:1:governance:digital-company:act:digital-company-director-1",
+        "attemptId": "ATT-3",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:digital-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3763,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-4.json",
+    "person": "digital-company-director-3",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "9a0e497dc697cc3e418dc0fafd6130ba119aee34d0608175d10d4e4e974cdcd1",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:48:1:governance:digital-company:act:digital-company-director-3",
+        "attemptId": "ATT-4",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:digital-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3763,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-5.json",
+    "person": "digital-company-director-2",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "f1662ccab0a801fe145c1d1b231bd48e33e257d2175089337407caf914c5fb4f",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:48:1:governance:digital-company:act:digital-company-director-2",
+        "attemptId": "ATT-5",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:digital-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3763,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-6.json",
+    "person": "erin",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "765c2f1f5f792d227f7f515bf2857444686d20eb826f90b7ff6ed942cf73f054",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:63:1:governance:eng-a:act:erin",
+        "attemptId": "ATT-6",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:eng-a:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4015,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-7.json",
+    "person": "hydro-director-5",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "c1d0ab82844c064b8282bc1ffec72f61796b56b8adfc67d241320abab22a4118",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:66:1:governance:hydro:act:hydro-director-5",
+        "attemptId": "ATT-7",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:hydro:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3751,
+          "outputTokens": 25,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-8.json",
+    "person": "hydro-director-4",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "0c4a1a533814269358242fbba259d95ae6c221ab65b6e4a46b56f28fd4858bcc",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:66:1:governance:hydro:act:hydro-director-4",
+        "attemptId": "ATT-8",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:hydro:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3751,
+          "outputTokens": 25,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-9.json",
+    "person": "hydro-director-3",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "d20559c76aa92ad84aedfdddcff9b67a4a0c2f24898c2fab9874b3e6cea3718f",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:66:1:governance:hydro:act:hydro-director-3",
+        "attemptId": "ATT-9",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:hydro:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3751,
+          "outputTokens": 25,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-10.json",
+    "person": "hydro-director-1",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "7f9cc6f6e61988e198a05b84c95ddc42e69f25cc42f22ee567aa4ba6a062a31a",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:66:1:governance:hydro:act:hydro-director-1",
+        "attemptId": "ATT-10",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:hydro:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3751,
+          "outputTokens": 25,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-11.json",
+    "person": "hydro-director-2",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "2b394d57f442f8fd56f8eb235fb5dd2244203b62d7a77fc83d9240da29d8d006",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:66:1:governance:hydro:act:hydro-director-2",
+        "attemptId": "ATT-11",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:hydro:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3751,
+          "outputTokens": 25,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-12.json",
+    "person": "mfgstruct-d2",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "d032272923b87e3231e616c78bafaa2b0ce06c42317bd76e19f1cc24f59d1d66",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:81:1:governance:mfg-struct:act:mfgstruct-d2",
+        "attemptId": "ATT-12",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-struct:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3758,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-13.json",
+    "person": "mfgstruct-d5",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "09566fbfb9f44848410e2f85b789cfcdb4b4df03b8a38d0b8712fafa2f8adf0c",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:81:1:governance:mfg-struct:act:mfgstruct-d5",
+        "attemptId": "ATT-13",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-struct:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3758,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-14.json",
+    "person": "mfgstruct-d1",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "1c258baa2b53866b7794cb624f9be91f96620981909fda23535acb10b03148c9",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:81:1:governance:mfg-struct:act:mfgstruct-d1",
+        "attemptId": "ATT-14",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-struct:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3758,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-15.json",
+    "person": "mfgstruct-d3",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "afc4a4dc8222833a828de65ea72a4f3f931dfb9d8f23891fb25228f7e38edfc8",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:81:1:governance:mfg-struct:act:mfgstruct-d3",
+        "attemptId": "ATT-15",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-struct:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3758,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-16.json",
+    "person": "mfgstruct-d4",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "5a2f1632024f41cf9326e57a32bab85465869ff0a232cb751d60d6dba2dc2fa6",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:81:1:governance:mfg-struct:act:mfgstruct-d4",
+        "attemptId": "ATT-16",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-struct:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3758,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-17.json",
+    "person": "mfgtech-d1",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "8aeddf7c1d7c2fd01e9ae23694a574f3686d5c5c977c65ac3bbf363e4938e051",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:96:1:governance:mfg-tech:act:mfgtech-d1",
+        "attemptId": "ATT-17",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-tech:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3754,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-18.json",
+    "person": "mfgtech-d5",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "57991762e8ae21aa9bd84495549a1800fbf0982212a91f4fa4fc627c25460d26",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:96:1:governance:mfg-tech:act:mfgtech-d5",
+        "attemptId": "ATT-18",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-tech:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3754,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-19.json",
+    "person": "mfgtech-d4",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "48341676c36fb4d7df99f93493dde11d221ad0758b5a57fca9b7dce038ccff98",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:96:1:governance:mfg-tech:act:mfgtech-d4",
+        "attemptId": "ATT-19",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-tech:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3754,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-20.json",
+    "person": "mfgtech-d3",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "da95e447345f4676e809d52a996f3ac576168bf45b9cfb80a0cdc6d0ebf87645",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:96:1:governance:mfg-tech:act:mfgtech-d3",
+        "attemptId": "ATT-20",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-tech:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3754,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-21.json",
+    "person": "mfgtech-d2",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "01e0be798acf27f562234b0ba7a44743855064790683947696419709205eb7a8",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:96:1:governance:mfg-tech:act:mfgtech-d2",
+        "attemptId": "ATT-21",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-tech:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3754,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-22.json",
+    "person": "mfgversa-d5",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "9e33030bcd1ac696401e0efb6dcca2a4ab24bebc72af73680e9ea2062c18db24",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:111:1:governance:mfg-versa:act:mfgversa-d5",
+        "attemptId": "ATT-22",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-versa:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3759,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-23.json",
+    "person": "mfgversa-d3",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "b6d595a28ea62dd53868c54f26914dd41f155836c1013a5cfe7e9aa155b2bf6f",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:111:1:governance:mfg-versa:act:mfgversa-d3",
+        "attemptId": "ATT-23",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-versa:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3759,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-24.json",
+    "person": "mfgversa-d4",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "5ae09a803375c0a78e38abc6d8bfae94ea512a69eab6d775ae9accef3072fb4a",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:111:1:governance:mfg-versa:act:mfgversa-d4",
+        "attemptId": "ATT-24",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-versa:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3759,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-25.json",
+    "person": "mfgversa-d1",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "2cbb37191ab7d19306d1dfd8cc040a8b1ab514003d2e7d2e33e0ead815a901e5",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:111:1:governance:mfg-versa:act:mfgversa-d1",
+        "attemptId": "ATT-25",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-versa:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3759,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-26.json",
+    "person": "mfgversa-d2",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "ec39660e66109fd4d98d8ce49a248c9fc607c280f1a3538b3caf8dd142b40660",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:111:1:governance:mfg-versa:act:mfgversa-d2",
+        "attemptId": "ATT-26",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:mfg-versa:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3759,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-27.json",
+    "person": "heidi",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "d74d1ac75280c5ea7ef20aa6effcafe562f5418fbbff1b79cfdc396d7a51a6f5",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:126:1:governance:pharma:act:heidi",
+        "attemptId": "ATT-27",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:pharma:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3815,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-28.json",
+    "person": "judy",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "d509f8f6456e68c48ff64f03e2c5177d1c8a3640ddbcab8e380112c7d07a2e71",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:126:1:governance:pharma:act:judy",
+        "attemptId": "ATT-28",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:pharma:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3815,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-29.json",
+    "person": "ivan",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "0095d6f8bbf7c0f3f0b8bdbf941fa8b552ac0a2b2c6af6fd61baf432a6a09994",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:126:1:governance:pharma:act:ivan",
+        "attemptId": "ATT-29",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:pharma:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3814,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-30.json",
+    "person": "grace",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "2ad1f6c84076cf54d69ead2579d807256b0719c259167e817226663a60ccd664",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:126:1:governance:pharma:act:grace",
+        "attemptId": "ATT-30",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:pharma:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3814,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-31.json",
+    "person": "frank",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "6bde53a72b5121fc11eda129cdf0b48b4b32af230930a9bc8ac9cd31a91f522c",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:126:1:governance:pharma:act:frank",
+        "attemptId": "ATT-31",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:pharma:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3815,
+          "outputTokens": 26,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-32.json",
+    "person": "resource-director-1",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "a30cd5ea1f9b28fb20fdf8492cd5819bd69bf8032a3eb26f953d584e5775d95d",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:141:1:governance:resources:act:resource-director-1",
+        "attemptId": "ATT-32",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:resources:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3751,
+          "outputTokens": 25,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-33.json",
+    "person": "resource-director-2",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "1234842ad8c001473f0c2be6555625b2e5044bb88df07ea6a8937518d10545db",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:141:1:governance:resources:act:resource-director-2",
+        "attemptId": "ATT-33",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:resources:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3751,
+          "outputTokens": 25,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-34.json",
+    "person": "resource-director-5",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "bc9f068e95d9378843ba5f0eb57f4556d998ac6be8b5144189f5ef2944c7bc2c",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:141:1:governance:resources:act:resource-director-5",
+        "attemptId": "ATT-34",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:resources:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3751,
+          "outputTokens": 25,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-35.json",
+    "person": "resource-director-4",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "38e797334c11bd6d401e9888985469585a1a5fa6d3ca2658507ccc23e42f996c",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:141:1:governance:resources:act:resource-director-4",
+        "attemptId": "ATT-35",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:resources:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3751,
+          "outputTokens": 25,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-36.json",
+    "person": "resource-director-3",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "17030def26670c4bf8eb16234fec43195e394021b7fe42425a9a991746ffb88e",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:141:1:governance:resources:act:resource-director-3",
+        "attemptId": "ATT-36",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:resources:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3751,
+          "outputTokens": 25,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-37.json",
+    "person": "ed",
+    "time": 1,
+    "scene": "media",
+    "inputSha256": "8a9edc0699d16b93b797aca071f606d9ebf213d8884bd012e6defa021b209613",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:156:1:media:act:ed",
+        "attemptId": "ATT-37",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3154,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-38.json",
+    "person": "sam",
+    "time": 1,
+    "scene": "media",
+    "inputSha256": "cf49658fe4a4519aaba617ff4011c4a10eafed28211715430b3a80d1b547cd46",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:156:1:media:act:sam",
+        "attemptId": "ATT-38",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"company-governance:aged-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3378,
+          "outputTokens": 28,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-39.json",
+    "person": "omar",
+    "time": 1,
+    "scene": "media",
+    "inputSha256": "d8eeb1b8e33a2479bd570f164855417bf2acb9b0bb1fc7abcc83ed1db43833c7",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:156:1:media:act:omar",
+        "attemptId": "ATT-39",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 2967,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-40.json",
+    "person": "investor",
+    "time": 1,
+    "scene": "media",
+    "inputSha256": "99d019289410e18d401ff4a8ee2024481e804effc4ca9478525adff5d893899d",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:156:1:media:act:investor",
+        "attemptId": "ATT-40",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"company-governance:aged-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3246,
+          "outputTokens": 28,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-41.json",
+    "person": "bea",
+    "time": 1,
+    "scene": "media",
+    "inputSha256": "8a6fbb3809fb0216d88385962482a55b6279c420d7b4c66cab049545746c7aff",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:156:1:media:act:bea",
+        "attemptId": "ATT-41",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3161,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-42.json",
+    "person": "rita",
+    "time": 1,
+    "scene": "media",
+    "inputSha256": "8281ef6d06532a02282c5f8258161c183a853ba044f3c5ccdd8c669f707d1103",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:156:1:media:act:rita",
+        "attemptId": "ATT-42",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3372,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-43.json",
+    "person": "nina",
+    "time": 1,
+    "scene": "media",
+    "inputSha256": "a1985e697729e71826631c2fa9d3f30410bc7ae8c3c414cb1bb572b236d341b1",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:156:1:media:act:nina",
+        "attemptId": "ATT-43",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 2968,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-44.json",
+    "person": "alice",
+    "time": 1,
+    "scene": "research",
+    "inputSha256": "d912dcb42bee3d1205b08103acbdcfa9c78e5fbcf94e47cf5abdd0691a9b4bef",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:177:1:research:act:alice",
+        "attemptId": "ATT-44",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4686,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-45.json",
+    "person": "carol",
+    "time": 1,
+    "scene": "trading",
+    "inputSha256": "8b2452c6eb99c7f8b1c2e1a824d2434361bf5608c24a3d5acff27ee9ac3e0569",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:180:1:trading:act:carol",
+        "attemptId": "ATT-45",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4723,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-46.json",
+    "person": "dave",
+    "time": 1,
+    "scene": "trading",
+    "inputSha256": "8509d36e0f59eed070d170a1f9d66d1fe71bb9bf1893006ee2e72e5369383379",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:180:1:trading:act:dave",
+        "attemptId": "ATT-46",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4643,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-47.json",
+    "person": "bob",
+    "time": 1,
+    "scene": "trading",
+    "inputSha256": "4287dfca2fe947f8465548eefbcdbebb98246eb1182692b070390aec25d4fc40",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:180:1:trading:act:bob",
+        "attemptId": "ATT-47",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4798,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-48.json",
+    "person": "aged-company-director-5",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "3b5260a25e974690765a02bfab69f77c51b52a0563c55c6b6093c2906f115dc9",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:189:1:governance:aged-company:act:aged-company-director-5",
+        "attemptId": "ATT-48",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:aged-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3763,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-49.json",
+    "person": "aged-company-director-1",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "612a2a3e1a457c1c21039dd7080ba80bb1ef7ded83d232b3ef3540c337b13230",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:189:1:governance:aged-company:act:aged-company-director-1",
+        "attemptId": "ATT-49",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:aged-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3763,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-50.json",
+    "person": "aged-company-director-4",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "3efdaab80fe3aded3461dddba8a9192003b3a885be77d13c1f16ed0edd00b304",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:189:1:governance:aged-company:act:aged-company-director-4",
+        "attemptId": "ATT-50",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:aged-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3763,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-51.json",
+    "person": "aged-company-director-2",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "87f9fbb0e844aad48c9ed3b7463921e6910bf46dbe3209df987345a53b8fbb34",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:189:1:governance:aged-company:act:aged-company-director-2",
+        "attemptId": "ATT-51",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:aged-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3763,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-52.json",
+    "person": "aged-company-director-3",
+    "time": 1,
+    "scene": "governance",
+    "inputSha256": "27a55cde45a5e991970800228e3daf5c496712d42708778c746bd05f673f1850",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:189:1:governance:aged-company:act:aged-company-director-3",
+        "attemptId": "ATT-52",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"role-evidence:aged-company:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3763,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-53.json",
+    "person": "sam",
+    "time": 4001,
+    "scene": "media",
+    "inputSha256": "238501f2ba1cf60debe891770ff4df254e6fe43978b3b79a956cff3ebea802ed",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:249:1:media:act:sam",
+        "attemptId": "ATT-53",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3987,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-54.json",
+    "person": "investor",
+    "time": 4001,
+    "scene": "media",
+    "inputSha256": "d0480962602e97679845b3ad537f651f6ae01b90307b59f2300c997f7ecb43b2",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:249:1:media:act:investor",
+        "attemptId": "ATT-54",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 3856,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-55.json",
+    "person": "digital-company-director-4",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "2f0b46b94c3ceed7f871a7fcdc8ebfd0909a61f37c36b07e1eb69e925ad30ecb",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:296:1:governance:digital-company:act:digital-company-director-4",
+        "attemptId": "ATT-55",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5301,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-56.json",
+    "person": "digital-company-director-5",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "fde9e94062cf726090dbff5e6ea8751760152f1eaf947846ace150b605e8ad3d",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:296:1:governance:digital-company:act:digital-company-director-5",
+        "attemptId": "ATT-56",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5301,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-57.json",
+    "person": "digital-company-director-1",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "ce8412cc001da1d171bb2e0d71bcadba21ce92fb46f3aff0c3e89a6b18892aef",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:296:1:governance:digital-company:act:digital-company-director-1",
+        "attemptId": "ATT-57",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5301,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-58.json",
+    "person": "digital-company-director-3",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "e28991b03e116f012ec5918768fe670a923fd2e3e727540fd8084488141dc7c0",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:296:1:governance:digital-company:act:digital-company-director-3",
+        "attemptId": "ATT-58",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5301,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-59.json",
+    "person": "digital-company-director-2",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "9c3fb6feab1277758e72ce5c8178bcaf5df1673e05fa3a58af27bd2f6647db58",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:296:1:governance:digital-company:act:digital-company-director-2",
+        "attemptId": "ATT-59",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5301,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-60.json",
+    "person": "erin",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "09abb61119c513f2cb990770b1706c603ce14f7431820fb8a7df758867895166",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:311:1:governance:eng-a:act:erin",
+        "attemptId": "ATT-60",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.reading.start\",\"args\":{\"docId\":\"company-governance:eng-a:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4866,
+          "outputTokens": 27,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-61.json",
+    "person": "hydro-director-5",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "79f9d919cbe28704994d9a7955a48dc2ba295eb009d3bca2345dd90bcb2081cc",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:314:1:governance:hydro:act:hydro-director-5",
+        "attemptId": "ATT-61",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5229,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-62.json",
+    "person": "hydro-director-4",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "8a4596f9fb091d995c19e677a483016f2f6621690d00c5e47ba4ec358c7cc98d",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:314:1:governance:hydro:act:hydro-director-4",
+        "attemptId": "ATT-62",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5229,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-63.json",
+    "person": "hydro-director-3",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "993870466a4199153c23d0762524b3a2e04ee2f7bd5b41b2cfeda2d4eccf04b2",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:314:1:governance:hydro:act:hydro-director-3",
+        "attemptId": "ATT-63",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5229,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-64.json",
+    "person": "hydro-director-1",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "ae3ab7f4c135448c7f6b4e41fead4b936d87cb22b49b22f4a2926d8554471e62",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:314:1:governance:hydro:act:hydro-director-1",
+        "attemptId": "ATT-64",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5229,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-65.json",
+    "person": "hydro-director-2",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "568a3add1262e4612b7697a1de4f04b463a97c0713241860a56e92d83b41dfad",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:314:1:governance:hydro:act:hydro-director-2",
+        "attemptId": "ATT-65",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5229,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-66.json",
+    "person": "mfgstruct-d2",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "867bc6a499087c2dcd9c959d74b9fa088f97cefbd043dab3add6cb5a7b90724e",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:329:1:governance:mfg-struct:act:mfgstruct-d2",
+        "attemptId": "ATT-66",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5334,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-67.json",
+    "person": "mfgstruct-d5",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "d489eb822af9734753348b566de22c2ef0e65bb000c4860f1dd921f2a9bb1cdd",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:329:1:governance:mfg-struct:act:mfgstruct-d5",
+        "attemptId": "ATT-67",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5334,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-68.json",
+    "person": "mfgstruct-d1",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "71e3edc6320ef8f39a644cd87275e9b7e1f9d6bdfa711467dd23fbe1550d73dd",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:329:1:governance:mfg-struct:act:mfgstruct-d1",
+        "attemptId": "ATT-68",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5334,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-69.json",
+    "person": "mfgstruct-d3",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "91405f9283838850f2e40b2c27bc19611ee8d9b8df9bfb172be484dc8c89636b",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:329:1:governance:mfg-struct:act:mfgstruct-d3",
+        "attemptId": "ATT-69",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5334,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-70.json",
+    "person": "mfgstruct-d4",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "837f35f3b5203979667569204f80d5789887710f67124e1d409c85a4db77b72a",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:329:1:governance:mfg-struct:act:mfgstruct-d4",
+        "attemptId": "ATT-70",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5334,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-71.json",
+    "person": "mfgtech-d1",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "f7a5d1ef1a02809ae1e506a102b5ab6d666337152b896ccdf29ec6058b1a1636",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:344:1:governance:mfg-tech:act:mfgtech-d1",
+        "attemptId": "ATT-71",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"board.convene\",\"args\":{\"companyPartyId\":\"mfg-tech\",\"meetingId\":\"mfgtech-d1-13001-budget-appt\",\"materialDeadline\":150000,\"opensAt\":160000,\"closesAt\":400000,\"topic\":\"MANAGER_APPOINTMENT\"}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5286,
+          "outputTokens": 66,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-72.json",
+    "person": "mfgtech-d5",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "c3f8455a1e2e3f5c4b888c47d1c045512b40850f9efa16d1902797f86b17c43a",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:344:1:governance:mfg-tech:act:mfgtech-d5",
+        "attemptId": "ATT-72",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"board.convene\",\"args\":{\"companyPartyId\":\"mfg-tech\",\"meetingId\":\"mfg-tech-budget-manager-13001\",\"materialDeadline\":1405001,\"opensAt\":1405001,\"closesAt\":2293001,\"topic\":\"MANAGER_APPOINTMENT\"}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5286,
+          "outputTokens": 67,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-73.json",
+    "person": "mfgtech-d4",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "b1bdaf1a6699714ac15809040130809ece9c0a88c0ec575299ffa7dabed25168",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:344:1:governance:mfg-tech:act:mfgtech-d4",
+        "attemptId": "ATT-73",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5286,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-74.json",
+    "person": "mfgtech-d3",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "96b52c59b312cec7ab0339710beeeb16ffc13177123abe559f0ff1a778f2a672",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:344:1:governance:mfg-tech:act:mfgtech-d3",
+        "attemptId": "ATT-74",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5286,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-75.json",
+    "person": "mfgtech-d2",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "fe8680b6c3a83492dc8acae6b56b4aa5fc1e25640a3e69e6ddba24ebd71dcf2c",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:344:1:governance:mfg-tech:act:mfgtech-d2",
+        "attemptId": "ATT-75",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5286,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-76.json",
+    "person": "mfgversa-d5",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "c90d3cded4e24286df2e347bc8be5d86fd5173da711f5f45357bd57dfa647deb",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:359:1:governance:mfg-versa:act:mfgversa-d5",
+        "attemptId": "ATT-76",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5341,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-77.json",
+    "person": "mfgversa-d3",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "3f2679d9e45b83b0d25ec7e1bc7549cd0d8bcbb56447f6cbef93383af85706ba",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:359:1:governance:mfg-versa:act:mfgversa-d3",
+        "attemptId": "ATT-77",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5341,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-78.json",
+    "person": "mfgversa-d4",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "3a4768b160a1791cd011d84bbcc93a0e650a1bd61f72efaebfb640299eb85f02",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:359:1:governance:mfg-versa:act:mfgversa-d4",
+        "attemptId": "ATT-78",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5341,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-79.json",
+    "person": "mfgversa-d1",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "5a62ed8942542495f19a55b51e14a9c3ce914cf3793d0f41bd55e8a6c7662a20",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:359:1:governance:mfg-versa:act:mfgversa-d1",
+        "attemptId": "ATT-79",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5341,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-80.json",
+    "person": "mfgversa-d2",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "b9de435a806048d99a625046911b3a58644946131847a9987402c149a7025282",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:359:1:governance:mfg-versa:act:mfgversa-d2",
+        "attemptId": "ATT-80",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5341,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-81.json",
+    "person": "heidi",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "a37e67efbc53347722f7e93d04babb8acd0217ba1c2121b1b82be429db31926b",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:374:1:governance:pharma:act:heidi",
+        "attemptId": "ATT-81",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4810,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-82.json",
+    "person": "judy",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "eef03635f6229ec5ea1cae87e650ae414c86cf60d8a457cf15e11d71dcc02edf",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:374:1:governance:pharma:act:judy",
+        "attemptId": "ATT-82",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4810,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-83.json",
+    "person": "ivan",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "26550e0fe7ba0b051feed9bcff30c7679ad9c143f020040ba9da074d67a59f6e",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:374:1:governance:pharma:act:ivan",
+        "attemptId": "ATT-83",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4808,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-84.json",
+    "person": "grace",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "5e001d119ad839580709dd75407e57c39c2d08f6dfffc1721a7a19f8c563e578",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:374:1:governance:pharma:act:grace",
+        "attemptId": "ATT-84",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4808,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-85.json",
+    "person": "frank",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "2d05d57aa95dc9bcbc6717f351c0b5ef8173db59087d89973905f634ddd41f6b",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:374:1:governance:pharma:act:frank",
+        "attemptId": "ATT-85",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4809,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-86.json",
+    "person": "resource-director-1",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "14435a8510f60bdd6dd54eb6ee3a007e81ce749bc034fadf7a85f1dfbab6e9bd",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:389:1:governance:resources:act:resource-director-1",
+        "attemptId": "ATT-86",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "",
+        "usage": null,
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": "HTTP_NETWORK"
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-87.json",
+    "person": "resource-director-2",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "c167f840d847d153824164be3c9ed4d50cb8c4b08faf69e293436966e02a0f00",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:389:1:governance:resources:act:resource-director-2",
+        "attemptId": "ATT-87",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "",
+        "usage": null,
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": "HTTP_NETWORK"
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-88.json",
+    "person": "resource-director-5",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "c65c7d3e9afd59b13aff2dcef515717f552475cef829f01954bd77324b7b568f",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:389:1:governance:resources:act:resource-director-5",
+        "attemptId": "ATT-88",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4735,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-89.json",
+    "person": "resource-director-4",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "43d074df7559e5c7398b4f8d711ac0b65c16f32cd0797e6b0568259371897048",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:389:1:governance:resources:act:resource-director-4",
+        "attemptId": "ATT-89",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4735,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-90.json",
+    "person": "resource-director-3",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "a995debec5bde79aaf5203adc1091d04e85f880e4d4e34a6d3ecbd4cb6a0613e",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:389:1:governance:resources:act:resource-director-3",
+        "attemptId": "ATT-90",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4735,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-91.json",
+    "person": "aged-company-director-5",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "76283c8d856ba74ad551e8fcb512eb2e2cd673ed75470126cfd9bbed3d99889c",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:404:1:governance:aged-company:act:aged-company-director-5",
+        "attemptId": "ATT-91",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4757,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-92.json",
+    "person": "aged-company-director-1",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "63e21a01ea50b26d960957943b38297dbf8d5d3d37e27b7fa73a077da6d888c9",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:404:1:governance:aged-company:act:aged-company-director-1",
+        "attemptId": "ATT-92",
+        "attemptNo": 1,
+        "recoveryGeneration": 1,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4757,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-93.json",
+    "person": "aged-company-director-4",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "ad076f844f5bbb4a43af850cbbd0f7d222de3cd046f091e732ab214bae8a6cc8",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:411:2:governance:aged-company:act:aged-company-director-4",
+        "attemptId": "ATT-93",
+        "attemptNo": 1,
+        "recoveryGeneration": 2,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4757,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-94.json",
+    "person": "aged-company-director-2",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "5e5d88717896f1e34c7329d289cb72b7eb7c9fe7d6d5649eaf4104618fb552f0",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:411:2:governance:aged-company:act:aged-company-director-2",
+        "attemptId": "ATT-94",
+        "attemptNo": 1,
+        "recoveryGeneration": 2,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4757,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-95.json",
+    "person": "aged-company-director-3",
+    "time": 13001,
+    "scene": "governance",
+    "inputSha256": "7b992622ba356b75ce9777efa60bcc1a23641d9352a32667d8cf3c3e0e27d3b2",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:411:2:governance:aged-company:act:aged-company-director-3",
+        "attemptId": "ATT-95",
+        "attemptNo": 1,
+        "recoveryGeneration": 2,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 4757,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-96.json",
+    "person": "mfgtech-d5",
+    "time": 14001,
+    "scene": "governance",
+    "inputSha256": "3ea881a58d1b4646a9e02ca09b902fa0d75773011002f4d3720a5e6aa12f4b37",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:422:2:governance:mfg-tech:act:mfgtech-d5",
+        "attemptId": "ATT-96",
+        "attemptNo": 1,
+        "recoveryGeneration": 2,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5286,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-97.json",
+    "person": "mfgtech-d1",
+    "time": 15001,
+    "scene": "governance",
+    "inputSha256": "94623a314ba354d11ae369e833242dda9908c85816f4b963b24e30a0c53b42ab",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:426:2:governance:mfg-tech:act:mfgtech-d1",
+        "attemptId": "ATT-97",
+        "attemptNo": 1,
+        "recoveryGeneration": 2,
+        "body": "{\"tool\":\"board.attend\",\"args\":{\"companyPartyId\":\"mfg-tech\",\"meetingId\":\"mfgtech-d1-13001-budget-appt\"}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5366,
+          "outputTokens": 35,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-98.json",
+    "person": "mfgtech-d5",
+    "time": 15001,
+    "scene": "governance",
+    "inputSha256": "94c43666f0c49e65f698f54e29c24320eb8714e24cd560bb0b66f9b05fc944b0",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:426:2:governance:mfg-tech:act:mfgtech-d5",
+        "attemptId": "ATT-98",
+        "attemptNo": 1,
+        "recoveryGeneration": 2,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5366,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-99.json",
+    "person": "mfgtech-d4",
+    "time": 15001,
+    "scene": "governance",
+    "inputSha256": "601480ba7f9e5e835d4f033ce7ec75f15062526f9bc22c0fd250b6486bb95a02",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:426:2:governance:mfg-tech:act:mfgtech-d4",
+        "attemptId": "ATT-99",
+        "attemptNo": 1,
+        "recoveryGeneration": 2,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5366,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1",
+    "file": "reply-100.json",
+    "person": "mfgtech-d3",
+    "time": 15001,
+    "scene": "governance",
+    "inputSha256": "27659b8f49ec9a1617b17f1533cf783f22c3f2e63afccd6003dadb08b8a4c090",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:426:2:governance:mfg-tech:act:mfgtech-d3",
+        "attemptId": "ATT-100",
+        "attemptNo": 1,
+        "recoveryGeneration": 2,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5366,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-1.json",
+    "person": "mfgtech-d2",
+    "time": 15001,
+    "scene": "governance",
+    "inputSha256": "be19e7e617f6457c4e9fbe0886e36388faeb7151070e98193fc0cbc4dd989b07",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:439:2:governance:mfg-tech:act:mfgtech-d2",
+        "attemptId": "ATT-101",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5366,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-2.json",
+    "person": "erin",
+    "time": 17001,
+    "scene": "governance",
+    "inputSha256": "994ffc53fd917999efae61cff99d1f41aa7e6b2be4e981ebd0bb7368ce30a63b",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:446:2:governance:eng-a:act:erin",
+        "attemptId": "ATT-102",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5305,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-3.json",
+    "person": "mfgtech-d1",
+    "time": 17001,
+    "scene": "governance",
+    "inputSha256": "0ca2160e972a7809c8a693517f0862c2b846eea92c489b7aacf0688a51e8f6a6",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:449:2:governance:mfg-tech:act:mfgtech-d1",
+        "attemptId": "ATT-103",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"board.addMaterial\",\"args\":{\"companyPartyId\":\"mfg-tech\",\"meetingId\":\"mfgtech-d1-13001-budget-appt\",\"materialId\":\"mfgtech-d1-m1-appt-budget-16001\",\"sourceRef\":\"role-evidence:mfg-tech:1\",\"version\":1}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5366,
+          "outputTokens": 68,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-4.json",
+    "person": "mfgtech-d1",
+    "time": 19001,
+    "scene": "governance",
+    "inputSha256": "323e9b9860b6249fcffbef5cb280f3e8e600e0c38078078cdc06352835a64066",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:454:2:governance:mfg-tech:act:mfgtech-d1",
+        "attemptId": "ATT-104",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5409,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-5.json",
+    "person": "mfgtech-d5",
+    "time": 19001,
+    "scene": "governance",
+    "inputSha256": "155b02fda3536ada188a21456518f421cec449f4720c0f6ca8b907bfcd0d0d83",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:454:2:governance:mfg-tech:act:mfgtech-d5",
+        "attemptId": "ATT-105",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5409,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-6.json",
+    "person": "mfgtech-d4",
+    "time": 19001,
+    "scene": "governance",
+    "inputSha256": "5747af38791e732d19ba8f71131bdc385d5e2620c3e9273b5f0c3eb5dd89f1a9",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:454:2:governance:mfg-tech:act:mfgtech-d4",
+        "attemptId": "ATT-106",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5409,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-7.json",
+    "person": "mfgtech-d3",
+    "time": 19001,
+    "scene": "governance",
+    "inputSha256": "b7c494cb216b99b8bb443529d8fb2daa2b8dd7293eb537a6b43ae45f8ea1ef88",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:454:2:governance:mfg-tech:act:mfgtech-d3",
+        "attemptId": "ATT-107",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"board.attend\",\"args\":{\"companyPartyId\":\"mfg-tech\",\"meetingId\":\"mfgtech-d1-13001-budget-appt\"}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5409,
+          "outputTokens": 35,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-8.json",
+    "person": "mfgtech-d2",
+    "time": 19001,
+    "scene": "governance",
+    "inputSha256": "b00165839872be64eb8da4592aab5fbafed27a3fae21e0285d9fab5c4b4cd410",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:454:2:governance:mfg-tech:act:mfgtech-d2",
+        "attemptId": "ATT-108",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5409,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-9.json",
+    "person": "mfgtech-d3",
+    "time": 21001,
+    "scene": "governance",
+    "inputSha256": "a0b0d0826786578169fb8ecbc71f9b59beff04468a6f2184c80363d487cc65de",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:471:2:governance:mfg-tech:act:mfgtech-d3",
+        "attemptId": "ATT-109",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"role.wait\"}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5409,
+          "outputTokens": 6,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-10.json",
+    "person": "mfgtech-d1",
+    "time": 160000,
+    "scene": "governance",
+    "inputSha256": "980e27f536e1b581fa6242150ed425a5eedfd3626e8018ea5fb213822d77116f",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:476:2:governance:mfg-tech:act:mfgtech-d1",
+        "attemptId": "ATT-110",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"board.attend\",\"args\":{\"companyPartyId\":\"mfg-tech\",\"meetingId\":\"mfgtech-d1-13001-budget-appt\"}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5413,
+          "outputTokens": 35,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-11.json",
+    "person": "mfgtech-d5",
+    "time": 160000,
+    "scene": "governance",
+    "inputSha256": "99fa6a30bcc04b27801938295e64f074ec6916960fd74d46ea17da533529faa6",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:476:2:governance:mfg-tech:act:mfgtech-d5",
+        "attemptId": "ATT-111",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"board.attend\",\"args\":{\"companyPartyId\":\"mfg-tech\",\"meetingId\":\"mfgtech-d1-13001-budget-appt\"}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5413,
+          "outputTokens": 35,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-12.json",
+    "person": "mfgtech-d4",
+    "time": 160000,
+    "scene": "governance",
+    "inputSha256": "a2d7ed21951d4c5e73829e72c2ecb8574fd58245abd35984f5bf8c4177eac02f",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:476:2:governance:mfg-tech:act:mfgtech-d4",
+        "attemptId": "ATT-112",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"board.attend\",\"args\":{\"companyPartyId\":\"mfg-tech\",\"meetingId\":\"mfgtech-d1-13001-budget-appt\"}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5413,
+          "outputTokens": 35,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  },
+  {
+    "part": "live-v1-remaining",
+    "file": "reply-13.json",
+    "person": "mfgtech-d3",
+    "time": 160000,
+    "scene": "governance",
+    "inputSha256": "31b68ecabd0b39ff912b4f84d58e335388054e24d98d579328673a87dfb3d095",
+    "reply": {
+      "reply": {
+        "runId": "web-autonomous-evidence-v1",
+        "actionId": "live:476:2:governance:mfg-tech:act:mfgtech-d3",
+        "attemptId": "ATT-113",
+        "attemptNo": 1,
+        "recoveryGeneration": 3,
+        "body": "{\"tool\":\"board.attend\",\"args\":{\"companyPartyId\":\"mfg-tech\",\"meetingId\":\"mfgtech-d1-13001-budget-appt\"}}",
+        "usage": {
+          "attempts": 1,
+          "inputTokens": 5413,
+          "outputTokens": 35,
+          "cost": null,
+          "costStatus": "UNKNOWN"
+        },
+        "usageSource": "DEEPSEEK_HTTP"
+      },
+      "failureCode": null
+    }
+  }
+]
