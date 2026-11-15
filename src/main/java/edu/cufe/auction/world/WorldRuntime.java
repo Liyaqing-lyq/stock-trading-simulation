@@ -4201,6 +4201,9 @@ public final class WorldRuntime implements AutoCloseable {
                                                        List<String> internalSourceIds)
             throws IOException {
         requireRoleReadingEnabled();
+        if (ManufacturingBehaviorLoop.enabled(this) && docId != null && docId.startsWith("behavior-v1:")) {
+            throw new IllegalArgumentException("经营决策空间由冻结规则保留");
+        }
         if (manifest.hasDividend() && docId != null && docId.startsWith("dividend-public:")) {
             throw new IllegalArgumentException("分红公告空间由授权批保留，普通发表不得占用：" + docId);
         }
@@ -4216,6 +4219,31 @@ public final class WorldRuntime implements AutoCloseable {
                 internalSourceIds == null ? List.of() : List.copyOf(internalSourceIds));
         return schedulePublish(commandId, taskId, dueTimeMillis, payload,
                 PendingTask.INFORMATION_PUBLISH_V1);
+    }
+
+    /** 冻结本人的状态规则选择；验证输入来自当前权限投影，业务执行仍走真实经理会话。 */
+    public synchronized void recordManufacturingDecision(ManufacturingBehaviorLoop.Decision decision) throws IOException {
+        requireRoleReadingEnabled();
+        String company = edu.cufe.auction.world.composed.ComposedManufacturingThreeScenario.TECH;
+        String person = edu.cufe.auction.world.composed.ComposedManufacturingThreeScenario.TECH_MANAGER;
+        String id = "behavior-v1:" + company + ":" + state.timeMillis() / ManufacturingBehaviorLoop.INTERVAL;
+        if (!ManufacturingBehaviorLoop.enabled(this) || !ManufacturingBehaviorPolicy.VERSION.equals(decision.version())
+                || !id.equals(decision.id()) || !company.equals(decision.company()) || !person.equals(decision.person())
+                || decision.observedAt() != state.timeMillis()) throw new IllegalArgumentException("经营决定身份或时点不一致");
+        JsonNode own = null;
+        for (JsonNode entry : engineeringRoleInput(person).path("companyOperations"))
+            if (company.equals(entry.path("companyId").asText())) own = entry;
+        if (own == null || !mapper.readTree(mapper.writeValueAsString(own)).equals(
+                        mapper.readTree(mapper.writeValueAsString(decision.observation())))
+                || !mapper.readTree(mapper.writeValueAsString(ManufacturingBehaviorPolicy.choose(own, state.timeMillis(), id)))
+                        .equals(mapper.readTree(mapper.writeValueAsString(decision.choice()))))
+            throw new IllegalArgumentException("经营决定不来自本人当前输入");
+        String task = id + ":note";
+        String body = mapper.writeValueAsString(mapper.readTree(mapper.writeValueAsString(decision)));
+        PublishPayload payload = new PublishPayload(task, id, person, InformationModel.AudienceKind.DIRECT.name(), person,
+                "经营决策：" + decision.choice().reason(), body,
+                "本地状态规则的本人决策记录，非模型生成、非公司公告", 1, List.of());
+        schedulePublish(task, task, state.timeMillis() + 1, payload, PendingTask.INFORMATION_PUBLISH_V1);
     }
 
     /**
@@ -4243,6 +4271,7 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         requireRoleReadingEnabled();
         requireText(docId, "资料标识");
+        if (ManufacturingBehaviorLoop.enabled(this) && docId.startsWith("behavior-v1:")) throw new IllegalArgumentException("经营决策记录不可改写");
         if (manifest.hasDividend() && docId.startsWith("dividend-public:")) {
             throw new IllegalArgumentException("分红公告空间由授权批保留，普通版本入口不得占用：" + docId);
         }
@@ -16527,7 +16556,9 @@ public final class WorldRuntime implements AutoCloseable {
                 PublishPayload body = readIntentBody(commit, intent, PublishPayload.class,
                         "资料发表");
                 if (PendingTask.INFORMATION_PUBLISH_V1.equals(task.kind())) {
-                    schedulePublishDocument(intent.commandId(), intent.taskId(),
+                    if (ManufacturingBehaviorLoop.enabled(this) && body.docId().startsWith("behavior-v1:")) {
+                        recordManufacturingDecision(mapper.readValue(body.body(), ManufacturingBehaviorLoop.Decision.class));
+                    } else schedulePublishDocument(intent.commandId(), intent.taskId(),
                             intent.dueTimeMillis(), body.docId(), body.publisherPartyId(),
                             new InformationModel.Audience(
                                     InformationModel.AudienceKind.valueOf(body.audienceKind()),
@@ -28624,8 +28655,14 @@ public final class WorldRuntime implements AutoCloseable {
         if (operationsDecisionEnabled() && snap.companyOperations() != null) {
             var operations = root.putArray("companyOperations");
             for (String company : snap.companyOperations().companyIds()) {
-                if (activeManager(snap.roles(), person, company, now)) operations.add(CompanyOperationsDecisionTools.observation(
-                        snap.companyOperations(), snap.companyGovernance().boardOf(company), company, now, snap.accounts()));
+                if (activeManager(snap.roles(), person, company, now)) {
+                    var observation = CompanyOperationsDecisionTools.observation(
+                            snap.companyOperations(), snap.companyGovernance().boardOf(company), company, now, snap.accounts());
+                    if (ManufacturingBehaviorPolicy.VERSION.equals(manifest.dataVersions().get("behavior-policy")))
+                        ManufacturingCustomerOffers.enrich((com.fasterxml.jackson.databind.node.ObjectNode) observation,
+                                snap.companyOperations(), company, now, snap.accounts());
+                    operations.add(observation);
+                }
             }
         }
         if (researchDecisionEnabled() && snap.research() != null

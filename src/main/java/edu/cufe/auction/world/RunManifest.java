@@ -984,6 +984,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("journal-codec", "gzip-frame-v1");
                 expectedData.put("role-decision-guide", "v1");
             }
+            if ("industry-prototype-v1".equals(data.get(DATA_PROFILE)) && data.containsKey("behavior-policy")) {
+                expectedData.put("behavior-policy", ManufacturingBehaviorPolicy.VERSION);
+            }
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData
                         + "，收到 " + data);

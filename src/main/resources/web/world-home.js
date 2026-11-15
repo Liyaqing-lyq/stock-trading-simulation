@@ -25,7 +25,7 @@ window.WorldHome = (() => {
   function chart(target, rows, field, priceMode) {
     const wrap=$(target);wrap.replaceChildren();
     const valid=rows.filter(r=>r[field]!=null && Number.isFinite(Number(r[field])));
-    if(!valid.length){wrap.append(element("p","尚无实际成交，不能生成价格曲线。","world-empty"));return;}
+    if(!valid.length){wrap.append(element("p",priceMode?"尚无实际成交，不能生成价格曲线。":"尚无逐日现金记录；当前余额见上方报表。","world-empty"));return;}
     const values=valid.map(r=>Number(r[field]));let low=Math.min(...values),high=Math.max(...values);
     const pad=Math.max((high-low)*.15,Math.abs(high)*.015,.05);low-=pad;high+=pad;
     const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");svg.setAttribute("viewBox","0 0 900 260");svg.setAttribute("role","img");svg.setAttribute("aria-label",company().name+(priceMode?"季度实际成交价与无成交时段":"每日现金变化"));
@@ -44,10 +44,23 @@ window.WorldHome = (() => {
     const exp=view.experiment,days=exp?.days||[],trades=view.companies.reduce((a,c)=>a+c.trades,0);
     $("world-day").textContent="第 "+Math.floor(Number(view.timeMillis)/86400000)+" 个实验日";
     $("world-hero-note").textContent=exp?"已完成一个季度。查看公司的真实经营、市场成交和人物任职。":"从公司的经营开始，观察信息、人物和交易如何相互影响。";
-    $("world-metrics").replaceChildren(metric("公司",view.companies.length,"十种经营机制"),metric("真实成交",trades,"来自实际撮合"),metric("有成交的日子",days.filter(d=>d.trades>0).length+" / "+days.length,"无成交日不补造价格"),metric("人物",view.people.filter(p=>!p.system).length,"另有研发试验系统"));
+    $("world-metrics").replaceChildren(metric("公司",view.companies.length,"十种经营机制"),metric("真实成交",trades,"来自实际撮合"),view.behavior?.enabled?metric("交易行为","待整改","本轮验证制造经营闭环"):metric("有成交的日子",days.filter(d=>d.trades>0).length+" / "+days.length,"无成交日不补造价格"),metric("人物",view.people.filter(p=>!p.system).length,"另有研发试验系统"));
     table("world-company-list",["公司","最近成交价","累计成交量","现金 / 准备金","累计损益","查看"],view.companies.map(c=>[
       button(c.name,()=>choose(c.id,"world-companies")),c.lastPrice==null?"尚无成交（参考 "+money(c.referencePrice)+"）":money(c.lastPrice),c.volume+" 股",money(c.cash),element("span",money(c.profit),sign(c.profit)),button("股价与成交",()=>choose(c.id,"world-market"))]));
     $("world-run-note").textContent=exp?.note||"当前公司状态来自同一已确认世界时点。";
+    $("world-behavior").hidden=!view.behavior?.enabled;
+    if(view.behavior?.enabled){
+      const actions={SIGN_CONTRACT:"接受订单",ORDER_MATERIAL:"采购缺料",START_BATCH:"安排生产",DELIVER:"交付产品",COLLECT:"收取到期货款",MARK_OVERDUE:"记录履约逾期",WAIT:"等待"};
+      $("world-hero-note").textContent="行为整改实验：先验证一家制造公司的持续经营。其余公司和市场行为仍待修正。";
+      $("world-behavior-note").textContent="客户使用有限的开局资金，不自动补款；生产须有订单，采购和生产须有资金与授权。下表显示最近业务动作及当前等待原因。";
+      const decisions=view.behavior.decisions.filter(d=>d.action!=="WAIT");
+      const latest=view.behavior.decisions.at(-1);if(latest?.action==="WAIT")decisions.push(latest);
+      table("world-behavior-decisions",["实验时点","决定","规模","依据","实际结果"],decisions.slice(-12).reverse().map(d=>[
+        "第 "+Math.floor(Number(d.timeMillis)/86400000)+" 日 "+Math.floor(Number(d.timeMillis)%86400000/3600000)+" 时",
+        actions[d.action]||d.action,d.fields?.quantity!=null?d.fields.quantity+(d.action==="ORDER_MATERIAL"?" 单位原料":" 件产品"):
+          d.action==="COLLECT"&&d.results.some(r=>r.accepted)?money(d.results.filter(r=>r.accepted).reduce((sum,r)=>sum+Number(r.amount),0))+" 元":"—",
+        d.limitingFactor||d.reason,d.action==="WAIT"?"未新增业务":d.results.length?d.results.map(r=>r.accepted?"已执行" : "未执行："+r.reason).join("；"):"待执行"]));
+    }
   }
   function renderMarket() {
     const c=company(),d=detail();$("world-market-name").textContent=c.name;$("world-market-business").textContent=c.business;
@@ -67,6 +80,7 @@ window.WorldHome = (() => {
     const report=item?.statement||(period==="current"?c.statement:null);
     $("world-report-name").textContent=c.name;$("world-report-description").textContent=c.business+" · 机制原型："+c.prototype;
     $("world-report-cut").textContent=item?`第${item.period}期 · 第${item.day}日末；利润表为本期发生额，资产负债表为期末余额。`:"当前已确认状态 · 利润表为从开局至今的累计额。";
+    if(view.behavior?.enabled&&!item&&c.id==="mfg-tech")$("world-report-cut").textContent+=" 本模型固定费用按30日关期入账，期中利润尚未包含本期固定费用；客户报价和成本规模仍为未校准实验值。";
     for(const id of ["world-balance","world-income","world-report-metrics","world-cash-chart","world-boundaries"])$(id).replaceChildren();
     $("world-cash-summary").textContent="";
     if(!report){$("world-balance").append(element("p","这份期末报表尚不可用。"));return;}
@@ -104,13 +118,14 @@ window.WorldHome = (() => {
       $("world-home").hidden=!view;
       if(!view){api.clear();return;}
       for(const page of ["market","company","org","people"])document.querySelector(`[data-page="${page}"]`).hidden=true;
-      if(!view.companies.some(c=>c.id===selected))selected=view.companies[0].id;
+      if(!view.companies.some(c=>c.id===selected))selected=view.behavior?.enabled&&view.companies.some(c=>c.id==="mfg-tech")?"mfg-tech":view.companies[0].id;
       if(!initialized){$("overview-audit").open=false;initialized=true;}
       $("context-time").textContent="第 "+Math.floor(Number(view.timeMillis)/86400000)+" 个实验日 · "+view.companies.length+" 家公司";
       paint();
     },
     clear(){
       view=null;selected="";initialized=false;
+      $("world-behavior-decisions").replaceChildren();$("world-behavior-note").textContent="";$("world-behavior").hidden=true;
       for(const id of ["world-company-list","world-person-cards","world-balance","world-income","world-price-chart","world-trade-days","world-cash-chart","world-report-metrics","world-metrics","world-quote","world-boundaries","world-market-select","world-company-select"])$(id)?.replaceChildren();
       for(const id of ["world-run-note","world-price-note","world-day","world-hero-note","world-report-name","world-report-description","world-report-cut","world-cash-summary","world-person-count","world-market-name","world-market-business"])if($(id))$(id).textContent="";
       $("world-person-search").value="";$("world-home").hidden=true;
@@ -122,5 +137,10 @@ window.WorldHome = (() => {
   $("world-report-period").addEventListener("change",()=>view&&renderCompany());
   $("world-person-search").addEventListener("input",()=>view&&renderPeople());$("world-person-filter").addEventListener("change",()=>view&&renderPeople());
   $("world-open-controls").addEventListener("click",()=>{$("overview-audit").open=true;$("advance-form").scrollIntoView({behavior:"smooth",block:"center"});});
+  $("world-behavior-day").addEventListener("click",()=>{
+    if(!view?.behavior?.enabled)return;
+    $("advance-target").value=String(BigInt(view.timeMillis)+86400000n);
+    $("advance-form").requestSubmit();
+  });
   return api;
 })();
