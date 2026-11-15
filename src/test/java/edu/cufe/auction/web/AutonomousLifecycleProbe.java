@@ -20,7 +20,7 @@ public final class AutonomousLifecycleProbe {
             if (!java.util.Set.of("ACCOUNTABLE", "OPERATING").contains(mode)
                     || maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
-                    || stepMillis <= 0 || stepMillis > 86400000
+                    || stepMillis != 3_600_000
                     || sourceCommit == null || sourceCommit.isBlank()) throw new IllegalArgumentException("无效试跑参数");
         }
     }
