@@ -165,10 +165,16 @@ public final class ComposedIndustryScenario {
                 edu.cufe.auction.world.RoleDeliberation.VERSION);
     }
 
+    /** 权威本人动作反馈与单人故障隔离的新自主档；旧v2工厂不变。 */
+    public static WorldRuntime openAccountableAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION);
+    }
+
     /** 有限外部需求的新自主经营档案。 */
     public static WorldRuntime openOperatingAutonomous(Path journal) throws Exception {
         return open(journal, true, true, true, true, false, false, true, true,
-                edu.cufe.auction.world.RoleDeliberation.VERSION, true);
+                edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION, true);
     }
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven) throws Exception {
@@ -243,7 +249,7 @@ public final class ComposedIndustryScenario {
         if (hydro) decisions = HydroDecisionTools.config(decisions);
         if(baseline) decisions=AgedDecisionTools.config(DigitalDecisionTools.config(decisions));
         if(prototype) decisions=PrototypeCompanies.decisions(decisions);
-        if(edu.cufe.auction.world.RoleDeliberation.VERSION.equals(roleContext))
+        if(edu.cufe.auction.world.RoleDeliberation.isDeliberative(roleContext))
             decisions=edu.cufe.auction.world.RoleDeliberation.lifecycleBudget(decisions);
         var openingAccounts = new ArrayList<>(openings());
         if (hydro) openingAccounts.addAll(HydroIndustryConfig.ACCOUNTS);

@@ -6097,7 +6097,7 @@ public final class WorldRuntime implements AutoCloseable {
     /** @param person 本人 @param fallback 旧版固定复查时点 @return 新版持久决定中的复查时点，事件仍可提前唤醒 */
     public synchronized long autonomyNextReviewAt(String person, long fallback) {
         requireOpen();
-        return RoleDeliberation.VERSION.equals(manifest.dataVersions().get("role-context"))
+        return RoleDeliberation.isDeliberative(manifest.dataVersions().get("role-context"))
                 ? RoleDeliberation.reviewAt(state.decisions(), person, fallback) : fallback;
     }
 
@@ -28841,8 +28841,11 @@ public final class WorldRuntime implements AutoCloseable {
             root.put("roleContextVersion", roleContext);
             root.put("authorityBasis", "appointments和permissions仅列雇佣任职及其岗位权限，不是全部权限清单。directorships来自公司真实章程席位，董事资格独立于雇佣；chair=true才有主席召集权。tools是本次可发起工具合同，执行时仍复核权限、时间及材料。候选人没有经理经营权，董事也不能代经理经营。");
         }
-        if (RoleDeliberation.VERSION.equals(roleContext))
+        if (RoleDeliberation.isDeliberative(roleContext))
             RoleDeliberation.append(root, person, now, snap.decisions(), snap.pending());
+        if (RoleDeliberation.ACCOUNTABLE_VERSION.equals(roleContext))
+            RoleActionFeedback.append(root, person, snap.decisions(), snap.pending(),
+                    snap.engineering(), snap.companyOperations(), snap.information(), snap.trading());
         return root;
     }
 

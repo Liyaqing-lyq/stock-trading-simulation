@@ -85,6 +85,18 @@ class LiveDecisionProviderTest {
     }
 
     @Test
+    void bothDeliberationVersionsUseStrictStatementPromptOnlyAtRootContext() throws Exception {
+        for (String version : List.of("deliberation-v2", "deliberation-v3")) {
+            server.enqueue(200, successBody("{\"tool\":\"role.wait\"}", 11, 5, 16));
+            provider.evaluate(call("{\"engineering\":{\"roleContextVersion\":\"" + version + "\"}}", route("key-1", "deepseek-flash", 640)), 5_000L);
+            assertEquals(LiveDecisionProvider.DELIBERATION_SYSTEM_TEXT, server.lastRequestJson().path("messages").get(0).path("content").asText());
+        }
+        server.enqueue(200, successBody("{\"tool\":\"role.wait\"}", 11, 5, 16));
+        provider.evaluate(call("{\"profile\":{\"document\":{\"engineering\":{\"roleContextVersion\":\"deliberation-v3\"}}}}", route("key-1", "deepseek-flash", 640)), 5_000L);
+        assertEquals(LiveDecisionProvider.SYSTEM_TEXT, server.lastRequestJson().path("messages").get(0).path("content").asText());
+    }
+
+    @Test
     void prototypeGuideUsesVersionedPromptAndNestedDocumentCannotSelectIt() throws Exception {
         assertTrue(LiveDecisionProvider.PROTOTYPE_SYSTEM_TEXT.getBytes(StandardCharsets.UTF_8).length <= 1024);
         for (boolean prototype : new boolean[]{true, false}) {

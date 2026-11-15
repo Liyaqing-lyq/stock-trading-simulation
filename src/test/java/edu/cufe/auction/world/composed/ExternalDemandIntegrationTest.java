@@ -33,7 +33,7 @@ class ExternalDemandIntegrationTest {
         }
         try (var world = ComposedIndustryScenario.openOperatingAutonomous(dir.resolve("operating.journal"))) {
             assertEquals("v1", world.profile().manifest().dataVersions().get("external-demand"));
-            assertEquals("deliberation-v2", world.profile().manifest().dataVersions().get("role-context"));
+            assertEquals("deliberation-v3", world.profile().manifest().dataVersions().get("role-context"));
             assertEquals(oldTotal.add(new BigDecimal("90000.00")), total(world));
             assertEquals(new BigDecimal("90000.00"), world.snapshot().accounts().get("EXT-FINAL-DEMAND").cash());
             assertEquals(1, world.snapshot().pending().stream().filter(t -> t.kind().equals("EXTERNAL_DEMAND_SETTLE_V1")).count());

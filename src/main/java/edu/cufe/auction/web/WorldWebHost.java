@@ -315,12 +315,19 @@ public final class WorldWebHost implements AutoCloseable {
         return "role-events-v2".equals(runtime.profile().manifest().dataVersions().get("autonomy-driver"));
     }
 
+    private boolean accountableAutonomy() {
+        return edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION.equals(runtime.profile().manifest().dataVersions().get("role-context"));
+    }
+
     // 比较本人可见的具体事实；世界时间或观察时点自身变化不触发全体付费调用。
     private static com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
         var facts = (com.fasterxml.jackson.databind.node.ObjectNode) input.deepCopy();
         facts.remove(List.of("time", "observedAt", "wakeReason", "pendingActions"));
         if (facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
             delib.remove(List.of("reviewBounds", "recentDecisions"));
+        if (edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION.equals(input.path("engineering").path("roleContextVersion").asText())
+                && facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
+            delib.remove("lastActionResult");
         return facts;
     }
 
@@ -333,6 +340,9 @@ public final class WorldWebHost implements AutoCloseable {
                 autonomy.busy.add(person);
                 continue;
             }
+            // 同一事实的严格协议失败已由DecisionModel有限重试；从持久决定派生隔离，跨重开也不重试。
+            // 本人失败历史不算外部新事实，新的真实业务信息仍可解除隔离。
+            if (accountableAutonomy() && failedOnSameFacts(person, input)) continue;
             boolean finishedWork = autonomy.busy.remove(person);
             Long last = autonomy.lastWake.get(person);
             if (last == null || finishedWork || now >= runtime.autonomyNextReviewAt(person, last + 86_400_000L)
@@ -341,6 +351,17 @@ public final class WorldWebHost implements AutoCloseable {
         return roster.stream().map(g -> new WakeGroup(g.scene(), g.company(),
                         g.persons().stream().filter(ready::contains).toList()))
                 .filter(g -> !g.persons().isEmpty()).toList();
+    }
+
+    private boolean failedOnSameFacts(String person, com.fasterxml.jackson.databind.JsonNode input) throws IOException {
+        var decisions = runtime.snapshot().decisions().orElseThrow().state().decisions();
+        for (int i = decisions.size()-1; i >= 0; i--) {
+            var d = decisions.get(i);
+            if (!d.personPartyId().equals(person) || d.attempts().isEmpty()) continue;
+            return d.outcome() == DecisionModel.Outcome.TECHNICAL_FAILED
+                    && wakeFacts(input).equals(wakeFacts(PAYLOAD_MAPPER.readTree(d.inputText())));
+        }
+        return false;
     }
 
     private long nextAutonomyTime() {
@@ -427,7 +448,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (!lastSkips.isEmpty()) { endAutonomy("ROLE_DISPATCH_REJECTED"); return; }
         }
         if (autonomy.next == autonomy.groups.size()) {
-            if (autonomy.windowDecisions > 0 && autonomy.windowFailures == autonomy.windowDecisions) {
+            if (!accountableAutonomy() && autonomy.windowDecisions > 0 && autonomy.windowFailures == autonomy.windowDecisions) {
                 endAutonomy("ALL_DECISIONS_FAILED"); return;
             }
             long target = nextAutonomyTime();

@@ -12,12 +12,16 @@ import java.util.Set;
 public final class RoleDeliberation {
     /** 新决定外壳及输入的冻结标识。 */
     public static final String VERSION = "deliberation-v2";
+    /** 权威执行反馈与单人故障隔离的新档标识；v2保持冻结。 */
+    public static final String ACCOUNTABLE_VERSION = "deliberation-v3";
+    /** @param version 角色合同版本 @return 是否使用显式决定声明合同 */
+    public static boolean isDeliberative(String version) { return VERSION.equals(version) || ACCOUNTABLE_VERSION.equals(version); }
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long MONTH = ManufacturingTemplateModel.PERIOD_MILLIS;
     private RoleDeliberation() { }
 
     /** @param version 角色输入版本 @return 是否具有原evidence-v1资料能力 */
-    public static boolean hasEvidence(String version) { return "evidence-v1".equals(version) || VERSION.equals(version); }
+    public static boolean hasEvidence(String version) { return "evidence-v1".equals(version) || isDeliberative(version); }
 
     /**
      * 新世界一次冻结的有限运行预算；不重置旧运行的累计用量。
@@ -104,7 +108,7 @@ public final class RoleDeliberation {
     public static JsonNode validatedAction(String inputText, JsonNode reply) {
         JsonNode input;
         try { input = JSON.readTree(inputText); } catch (java.io.IOException bad) { return reply; }
-        if (input == null || !VERSION.equals(input.path("engineering").path("roleContextVersion").asText())) return reply;
+        if (input == null || !isDeliberative(input.path("engineering").path("roleContextVersion").asText())) return reply;
         if (reply == null || !reply.isObject()) throw new IllegalArgumentException("BAD_DELIBERATION");
         var statement = reply.path("decision");
         Set<String> fields = new java.util.HashSet<>(); statement.fieldNames().forEachRemaining(fields::add);
