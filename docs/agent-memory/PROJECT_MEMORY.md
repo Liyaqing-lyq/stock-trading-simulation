@@ -50,3 +50,10 @@
 - 独审从明确冻结SHA与自足源码闭包编译；区分作者、独审与正式验收的计数和覆盖，不能混加后宣称同一套通过。真实浏览器与HTTP、跨JVM、篡改、旧实现互操作分别留证据。
 - Root冻结收据使用独立`root-freeze-receipt.json`且不得覆盖清单内文件，SHA清单不自包含；来源在冻结前后均核验。旧research候选1仅元数据同名覆盖问题保留记录，不修写旧证据。
 - 代码走带`[AI-Generated]`的PR，人工review与AI独审分开，不自动合并、不把CI绿当人工review。已验服务只部署已接受的完整切片；未通过候选不得热替换持久Web。
+
+
+## 自主经营整改接续（2026-11-16）
+
+- 当前任务在隔离clone `logs/world-operating-loop`、分支 `codex/world-operating-evidence`，不覆盖原工作树。接续读取其中 `docs/superpowers/plans/2026-11-15-autonomous-world.md` 和 `.superpowers/sdd/autonomous-world/progress.md`。
+- 真实v3仍无有效任职、预算、经营合同；原失败数据保留。完整模型轨迹与持久化断点见整改试跑记录，不以模型请求数、测试数或运行天数声称世界成立。
+- 用户要求后续日志放项目目录；本轮日志在隔离clone的 `logs/operating-cycle`。新存储/角色合同显式版本，旧档和预算不得隐式迁移或重置。

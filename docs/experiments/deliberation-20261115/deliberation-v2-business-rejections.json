@@ -1,0 +1,261 @@
+{
+  "position": 854,
+  "timeMillis": 371001,
+  "counts": {
+    "NOT_AUTHORIZED": 19,
+    "NOT_ELIGIBLE_SEAT": 4,
+    "UNKNOWN_MEETING": 2
+  },
+  "reports": [
+    {
+      "taskId": "decT:45:live:377:1:governance:mfg-tech:act:mfgtech-d4:45",
+      "commandId": "dec:45:live:377:1:governance:mfg-tech:act:mfgtech-d4:45",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "mfg-tech",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 460
+    },
+    {
+      "taskId": "decT:45:live:377:1:governance:mfg-tech:act:mfgtech-d5:45",
+      "commandId": "dec:45:live:377:1:governance:mfg-tech:act:mfgtech-d5:45",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "mfg-tech",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 469
+    },
+    {
+      "taskId": "decT:45:live:755:1:governance:mfg-tech:act:mfgtech-d1:45:finish",
+      "commandId": "dec:45:live:755:1:governance:mfg-tech:act:mfgtech-d1:45",
+      "kind": "ENGINEERING_BOARD_V1",
+      "companyPartyId": "mfg-tech",
+      "accepted": false,
+      "reason": "NOT_ELIGIBLE_SEAT",
+      "timeMillis": 304000,
+      "position": 793
+    },
+    {
+      "taskId": "decT:47:live:389:1:governance:mfg-versa:act:mfgversa-d2:47",
+      "commandId": "dec:47:live:389:1:governance:mfg-versa:act:mfgversa-d2:47",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "mfg-versa",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 459
+    },
+    {
+      "taskId": "decT:47:live:389:1:governance:mfg-versa:act:mfgversa-d3:47",
+      "commandId": "dec:47:live:389:1:governance:mfg-versa:act:mfgversa-d3:47",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "mfg-versa",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 461
+    },
+    {
+      "taskId": "decT:47:live:498:1:governance:mfg-versa:act:mfgversa-d3:47",
+      "commandId": "dec:47:live:498:1:governance:mfg-versa:act:mfgversa-d3:47",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "mfg-versa",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 15001,
+      "position": 524
+    },
+    {
+      "taskId": "decT:47:live:537:1:governance:mfg-versa:act:mfgversa-d3:47",
+      "commandId": "dec:47:live:537:1:governance:mfg-versa:act:mfgversa-d3:47",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "mfg-versa",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 16001,
+      "position": 561
+    },
+    {
+      "taskId": "decT:47:live:597:1:governance:mfg-versa:act:mfgversa-d4:47",
+      "commandId": "dec:47:live:597:1:governance:mfg-versa:act:mfgversa-d4:47",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "mfg-versa",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 18001,
+      "position": 608
+    },
+    {
+      "taskId": "decT:47:live:612:1:governance:mfg-versa:act:mfgversa-d1:47:finish",
+      "commandId": "dec:47:live:612:1:governance:mfg-versa:act:mfgversa-d1:47",
+      "kind": "ENGINEERING_BOARD_V1",
+      "companyPartyId": "mfg-versa",
+      "accepted": false,
+      "reason": "NOT_ELIGIBLE_SEAT",
+      "timeMillis": 20001,
+      "position": 646
+    },
+    {
+      "taskId": "decT:48:live:353:1:governance:hydro:act:hydro-director-5:48",
+      "commandId": "dec:48:live:353:1:governance:hydro:act:hydro-director-5:48",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "hydro",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 465
+    },
+    {
+      "taskId": "decT:49:live:368:1:governance:mfg-struct:act:mfgstruct-d2:49",
+      "commandId": "dec:49:live:368:1:governance:mfg-struct:act:mfgstruct-d2:49",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "mfg-struct",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 456
+    },
+    {
+      "taskId": "decT:49:live:368:1:governance:mfg-struct:act:mfgstruct-d4:49",
+      "commandId": "dec:49:live:368:1:governance:mfg-struct:act:mfgstruct-d4:49",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "mfg-struct",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 458
+    },
+    {
+      "taskId": "decT:49:live:525:1:governance:mfg-struct:act:mfgstruct-d2:49:finish",
+      "commandId": "dec:49:live:525:1:governance:mfg-struct:act:mfgstruct-d2:49",
+      "kind": "ENGINEERING_BOARD_V1",
+      "companyPartyId": "mfg-struct",
+      "accepted": false,
+      "reason": "NOT_ELIGIBLE_SEAT",
+      "timeMillis": 17001,
+      "position": 585
+    },
+    {
+      "taskId": "decT:49:live:591:1:governance:mfg-struct:act:mfgstruct-d5:49:finish",
+      "commandId": "dec:49:live:591:1:governance:mfg-struct:act:mfgstruct-d5:49",
+      "kind": "ENGINEERING_BOARD_V1",
+      "companyPartyId": "mfg-struct",
+      "accepted": false,
+      "reason": "NOT_ELIGIBLE_SEAT",
+      "timeMillis": 19001,
+      "position": 633
+    },
+    {
+      "taskId": "decT:55:live:419:1:governance:resources:act:resource-director-3:55",
+      "commandId": "dec:55:live:419:1:governance:resources:act:resource-director-3:55",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "resources",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 462
+    },
+    {
+      "taskId": "decT:55:live:419:1:governance:resources:act:resource-director-4:55",
+      "commandId": "dec:55:live:419:1:governance:resources:act:resource-director-4:55",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "resources",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 457
+    },
+    {
+      "taskId": "decT:55:live:627:1:governance:resources:act:resource-director-2:55",
+      "commandId": "dec:55:live:627:1:governance:resources:act:resource-director-2:55",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "resources",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 19001,
+      "position": 632
+    },
+    {
+      "taskId": "decT:55:live:638:1:governance:resources:act:resource-director-2:55",
+      "commandId": "dec:55:live:638:1:governance:resources:act:resource-director-2:55",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "resources",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 20001,
+      "position": 645
+    },
+    {
+      "taskId": "decT:62:live:440:1:governance:aged-company:act:aged-company-director-4:62",
+      "commandId": "dec:62:live:440:1:governance:aged-company:act:aged-company-director-4:62",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "aged-company",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 468
+    },
+    {
+      "taskId": "decT:68:live:335:1:governance:digital-company:act:digital-company-director-2:68",
+      "commandId": "dec:68:live:335:1:governance:digital-company:act:digital-company-director-2:68",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "digital-company",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 470
+    },
+    {
+      "taskId": "decT:68:live:335:1:governance:digital-company:act:digital-company-director-3:68",
+      "commandId": "dec:68:live:335:1:governance:digital-company:act:digital-company-director-3:68",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "digital-company",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 464
+    },
+    {
+      "taskId": "decT:68:live:335:1:governance:digital-company:act:digital-company-director-4:68",
+      "commandId": "dec:68:live:335:1:governance:digital-company:act:digital-company-director-4:68",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "digital-company",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 467
+    },
+    {
+      "taskId": "decT:68:live:335:1:governance:digital-company:act:digital-company-director-5:68",
+      "commandId": "dec:68:live:335:1:governance:digital-company:act:digital-company-director-5:68",
+      "kind": "ENGINEERING_BEGIN_V1",
+      "companyPartyId": "digital-company",
+      "accepted": false,
+      "reason": "NOT_AUTHORIZED",
+      "timeMillis": 14001,
+      "position": 463
+    },
+    {
+      "taskId": "decT:68:live:471:1:governance:digital-company:act:digital-company-director-3:68:finish",
+      "commandId": "dec:68:live:471:1:governance:digital-company:act:digital-company-director-3:68",
+      "kind": "ENGINEERING_BOARD_V1",
+      "companyPartyId": "digital-company",
+      "accepted": false,
+      "reason": "UNKNOWN_MEETING",
+      "timeMillis": 16001,
+      "position": 562
+    },
+    {
+      "taskId": "decT:68:live:471:1:governance:digital-company:act:digital-company-director-4:68:finish",
+      "commandId": "dec:68:live:471:1:governance:digital-company:act:digital-company-director-4:68",
+      "kind": "ENGINEERING_BOARD_V1",
+      "companyPartyId": "digital-company",
+      "accepted": false,
+      "reason": "UNKNOWN_MEETING",
+      "timeMillis": 16001,
+      "position": 559
+    }
+  ]
+}
