@@ -55,7 +55,28 @@ window.WorldHome = (() => {
     for(const r of valid) if(!priceMode||r.trades){const dot=add("circle",{cx:x(r.day),cy:y(r[field]),r:priceMode?3.2:1.8,class:"world-dot"});const title=document.createElementNS(ns,"title");title.textContent=`第${r.day}日 · ${money(r[field])}`+(priceMode?` · ${r.trades}笔 / ${r.volume}股`:"");dot.append(title);}
     wrap.append(svg);
   }
+  let autonomyTimer=null;
+  function renderAutonomy(data) {
+    $("world-autonomy").hidden=!data?.available;
+    if(!data?.available)return;
+    const reasons={NOT_STARTED:"本进程尚未开始（历史记录保留）",RUNNING:"持续运行中",PAUSED:"已暂停处理",STOPPED:"已停止新调用，在途调用继续结算",TARGET_REACHED:"已到达目标时点",BUDGET_EXHAUSTED:"调用预算不足，已停止",TECHNICAL_FAILED:"模型调用或回执失败，已停止",ROLE_DISPATCH_REJECTED:"角色无法派发，已停止；请查看模型决定记录",CONFIGURATION_CHANGED:"模型配置变化，已停止",WORLD_FAULT:"世界运行故障，已停止",UNRESOLVED_BARRIER:"尚有未解决的决定，已停止",NO_ELIGIBLE_ROLES:"当前没有可运行角色"};
+    reasons.ALL_DECISIONS_FAILED="本窗口所有模型决定失败，已停止";
+    $("world-autonomy-status").textContent=(reasons[data.reason]||data.reason)+" · 本次唤醒范围涉及 "+data.companies+" 家公司 / "+data.persons+" 人 · "+data.calls+" 次调用 / "+(data.failures||0)+" 次失败 · 已推进 "+data.cycles+" 个窗口 · 世界第 "+(Number(data.timeMillis)/86400000).toFixed(2)+" 日";
+    $("world-autonomy-start").disabled=data.running;
+    $("world-autonomy-stop").disabled=!data.running;
+    clearTimeout(autonomyTimer);
+    if(data.running){const current=generation;autonomyTimer=setTimeout(async()=>{
+      try {const next=await api.onAutonomy?.("status");if(current!==generation)return;renderAutonomy(next);if(!next?.running)await api.onRefresh?.();}
+      catch(error){if(current===generation)$("world-autonomy-status").textContent="无法读取运行状态："+error.message+"。服务端可能仍在运行，请刷新核对。";}
+    },2000);}
+  }
+  async function controlAutonomy(action) {
+    const current=generation;
+    try {const data=await api.onAutonomy(action,Number($("world-autonomy-days").value));if(current===generation)renderAutonomy(data);}
+    catch(error){if(current===generation)$("world-autonomy-status").textContent=error.message;}
+  }
   function renderOverview() {
+    renderAutonomy(view.autonomy);
     const exp=view.experiment,days=exp?.days||[],trades=view.companies.reduce((a,c)=>a+c.trades,0);
     $("world-day").textContent="第 "+Math.floor(Number(view.timeMillis)/86400000)+" 个实验日";
     $("world-hero-note").textContent=exp?"已完成一个季度。查看公司的真实经营、市场成交和人物任职。":"从公司的经营开始，观察信息、人物和交易如何相互影响。";
@@ -214,7 +235,7 @@ window.WorldHome = (() => {
     for(const id of ["world-market-select","world-company-select"]){const select=$(id);select.replaceChildren();for(const c of view.companies){const o=element("option",c.name);o.value=c.id;select.append(o);}select.value=selected;}
     renderOverview();renderMarket();renderCompany();renderPeople();
   }
-  const api={onPage:null,onPerson:null,onAdvance:null,
+  const api={onPage:null,onPerson:null,onAdvance:null,onAutonomy:null,onRefresh:null,
     render(value){
       if(view?.runId&&value?.runId&&view.runId!==value.runId){generation++;stepping=false;stopRunning();selectedSource="";}
       view=value?.available?value:null;document.querySelectorAll("[data-world-nav]").forEach(n=>n.hidden=!view);
@@ -227,6 +248,7 @@ window.WorldHome = (() => {
       paint();
     },
     clear(){
+      clearTimeout(autonomyTimer);autonomyTimer=null;$("world-autonomy").hidden=true;
       generation++;running=false;stepping=false;clearTimeout(runTimer);runTimer=null;
       view=null;selected="";initialized=false;selectedSource="";
       $("world-connected").hidden=true;$("world-orders-panel").hidden=true;
@@ -242,6 +264,8 @@ window.WorldHome = (() => {
   };
   $("world-market-select").addEventListener("change",e=>choose(e.target.value));$("world-company-select").addEventListener("change",e=>choose(e.target.value));
   $("world-report-period").addEventListener("change",()=>view&&renderCompany());
+  $("world-autonomy-start").addEventListener("click",()=>void controlAutonomy("start"));
+  $("world-autonomy-stop").addEventListener("click",()=>void controlAutonomy("stop"));
   $("world-person-search").addEventListener("input",()=>view&&renderPeople());$("world-person-filter").addEventListener("change",()=>view&&renderPeople());
   $("world-feed-company").addEventListener("change",()=>view&&renderConnected());
   $("world-connected-toggle").addEventListener("click",()=>{if(running){stopRunning(stepping?"正在完成已提交的这一天，随后暂停。":"已暂停。");return;}if(stepping||!view?.connected?.enabled)return;running=true;void advanceDay();});

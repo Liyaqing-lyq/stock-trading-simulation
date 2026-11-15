@@ -8991,7 +8991,10 @@ public final class WorldRuntime implements AutoCloseable {
             DecisionModel.State model, WorldState base) throws IOException {
         String person = binding.personPartyId();
         String company = textArg(args, "companyPartyId");
-        boolean charterCompany = company != null && company.equals(charter.companyPartyId());
+        // 旧组合档曾把此空章程异常持久为技术失败；重演仍须得到原失败，不能改写历史回执。
+        boolean composedIntentV2 = "v2".equals(manifest.dataVersions().get("composed-governance-intent"));
+        boolean charterCompany = company != null && (!composedIntentV2 || charter != null)
+                && company.equals(charter.companyPartyId());
         EngineeringRun.CompanySpec spec = company == null ? null
                 : engineeringConfig.specOf(company);
         boolean extraCompany = companyDecisionsEnabled() && base.companyGovernance() != null
@@ -28716,6 +28719,11 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if ("v1".equals(manifest.dataVersions().get("role-decision-guide"))) {
             edu.cufe.auction.world.composed.PrototypeDecisionGuide.append(root);
+            if ("role-windows-v1".equals(manifest.dataVersions().get("autonomy-driver"))) {
+                var guide = (com.fasterxml.jackson.databind.node.ObjectNode) root.get("decisionGuide");
+                guide.put("decisionCadence", "本运行每个世界小时提供一次主动决定机会，每人每窗口最多一个动作；完成时间仍由工具决定。安排会议、材料和表决截止须覆盖各参与者多个决定窗口，不能假设他人在数秒内完成多步操作。");
+                guide.put("waitContract", "观望必须严格输出{\"tool\":\"role.wait\"}，不得带args字段，空args对象也会被判技术失败；失败不会产生业务动作。");
+            }
             var products = root.putArray("authorizedProducts");
             if (snap.roles() != null) {
                 var organizations = snap.roles().access().appointments().stream()

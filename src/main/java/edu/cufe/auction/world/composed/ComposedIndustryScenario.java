@@ -136,6 +136,15 @@ public final class ComposedIndustryScenario {
     }
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, false);
+    }
+
+    /** 新模型运行档：显式冻结组合公司工具修订，不改变旧档案的回执重演。 */
+    public static WorldRuntime openAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous) throws Exception {
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -223,6 +232,13 @@ public final class ComposedIndustryScenario {
         if (connected) {
             var data=new TreeMap<>(runManifest.dataVersions());data.put("behavior-policy",ConnectedWorldLoop.VERSION);
             runManifest=new RunManifest("web-connected-world-v1",runManifest.seed(),runManifest.rulesVersion(),runManifest.moduleVersions(),data,runManifest.modelConfigVersion());
+        }
+        if (autonomous) {
+            var data = new TreeMap<>(runManifest.dataVersions());
+            data.put("composed-governance-intent", "v2");
+            data.put("autonomy-driver", "role-windows-v1");
+            runManifest = new RunManifest("web-autonomous-world-v1", runManifest.seed(), runManifest.rulesVersion(),
+                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,
                 new ComposedWorldScenario.Extras(charters, List.of(), readers));

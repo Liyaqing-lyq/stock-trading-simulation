@@ -3527,6 +3527,25 @@ $("media-story-select").addEventListener("change", () => guard(loadMediaStory())
 if (globalThis.WorldHome) {
   globalThis.WorldHome.onPage = selectPage;
   globalThis.WorldHome.onPerson = personId => guard(switchPerson(personId));
+  globalThis.WorldHome.onRefresh = refreshAdmin;
+  globalThis.WorldHome.onAutonomy = async (action, days) => {
+    if (state.mode !== "admin") throw new Error("请返回上帝视角操作");
+    let result;
+    if (action === "status") result = await request("GET", "/api/admin/autonomy");
+    else {
+      let body = {action};
+      if (action === "start") {
+        const current = await request("GET", "/api/admin/autonomy");
+        const routes = await request("GET", "/api/admin/routes");
+        if (current.status !== 200 || routes.status !== 200) throw new Error("读取运行配置失败，请刷新重试");
+        body = {...body, expectedPosition:current.payload.position, expectedRevision:routes.payload.revision,
+          targetMillis:String(BigInt(current.payload.timeMillis)+BigInt(days)*86400000n), stepMillis:"3600000"};
+      }
+      result = await request("POST", "/api/admin/autonomy", body);
+    }
+    if(result.status !== 200) throw new Error(result.payload?.message||result.payload?.error?.message||"运行操作未完成，请核对模型场景、预算与在途决定");
+    return result.payload;
+  };
   globalThis.WorldHome.onAdvance = async targetMillis => {
     const generation = state.generation;
     if (state.mode !== "admin") throw new Error("请返回上帝视角运行世界");

@@ -11,6 +11,7 @@
 <div data-panel="overview"><div id="world-home" hidden>
 <section class="world-hero"><div><p class="world-eyebrow">竞价世界 · 运行观察</p><h2 id="world-day">正在读取世界</h2><p id="world-hero-note"></p></div><button id="world-open-controls" type="button">运行详情与调试 →</button></section>
 <div id="world-metrics" class="world-metrics"></div>
+<section id="world-autonomy" class="card" hidden><h2>持续角色运行 · 调试中</h2><p>由服务端持续唤醒真实任职人物，模型自行选择动作。关闭网页后继续；服务重启后须重新开始。长期需求、跨期经营与自主世界验收仍未完成。</p><p id="world-autonomy-status" role="status" aria-live="polite"></p><div class="world-run-buttons"><label>目标跨度 <select id="world-autonomy-days"><option value="1">1 个实验日</option><option value="30">30 个实验日</option><option value="90">一个季度</option><option value="180">半年</option></select></label><button id="world-autonomy-start" class="primary" type="button">开始角色运行</button><button id="world-autonomy-stop" type="button">停止新调用</button></div><p class="world-note">先在“模型与密钥”启用实际岗位所需场景。沿用已配置预算；耗尽或失败会停止，不保证运行到目标时点。</p></section>
 <section id="world-connected" hidden>
 <div class="card world-live-control"><div><h2>让世界继续发生</h2><p>每一步推进一个实验日，等待经营、阅读与交易的实际结果后再继续。</p><p id="world-connected-status" class="world-note" role="status" aria-live="polite"></p></div><div class="world-run-buttons"><button id="world-connected-toggle" class="primary" type="button">开始运行</button><button id="world-connected-day" type="button">运行一天</button></div></div>
 <div id="world-connections" class="world-connections" aria-label="本世界实际活动统计"></div>
