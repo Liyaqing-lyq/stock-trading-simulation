@@ -130,6 +130,28 @@ class ExternalDemandRunTest {
                 receipt.unitPrice(), receipt.cashPaid(), receipt.inputCost(), receipt.profit(), receipt.recognizedAt(), receipt.matureAt(), receipt.settledAt(), receipt.period()));
     }
 
+    @Test void finalBuyerCannotReuseExactCompanyAccountRegardlessOfDemandOrMaturity() {
+        assertOperatingAccountCannotBeFinalBuyer("A-CO", "A");
+    }
+
+    @Test void finalBuyerCannotReuseExactCustomerAccountRegardlessOfDemandOrMaturity() {
+        assertOperatingAccountCannotBeFinalBuyer("A-CUS", "A-customer");
+    }
+
+    private static void assertOperatingAccountCannotBeFinalBuyer(String accountId, String ownerId) {
+        Fixture f = fixture(10, true, "1000");
+        for (long demand : List.of(0L, 200L)) {
+            for (long now : List.of(5 * DAY, 6 * DAY)) {
+                var run = ExternalDemandRun.opening(new ExternalDemandRun.Config(ExternalDemandRun.RULES,
+                        accountId, ownerId, Set.of(), demand, m("20000"), 3 * DAY));
+                IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
+                        () -> run.settle(f.operations(), f.cash(), now),
+                        "必须在结算前拒绝经营账户冒用：demand=" + demand + ", now=" + now);
+                assertEquals("最终买方不能复用经营公司或客户账户", rejection.getMessage());
+            }
+        }
+    }
+
     @Test void emptyBoundaryIsRecordedOnceAndLaterActualIncomeWaitsForNextBoundary() {
         Fixture f = fixture(10, true, "0");
         var first = run(0, "20000", Set.of("A-OPS")).settle(f.operations(), f.cash(), PERIOD);

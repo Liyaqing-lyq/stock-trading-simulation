@@ -222,11 +222,10 @@ public record ExternalDemandRun(Config config, long watermark, List<SaleReceipt>
         CashLedger.CashAccount buyer = accounts.get(config.finalBuyerAccountId());
         require(buyer != null && buyer.ownerId().equals(config.finalBuyerOwnerId()), "最终买方账户缺失或属主不符");
         Set<String> eligible = new HashSet<>();
-        Set<String> forbidden = new HashSet<>();
-        forbidden.add(config.finalBuyerAccountId());
+        Set<String> operatingAccounts = new HashSet<>();
         for (var company : operations.companies()) {
             var mapping = company.ledger().accounts();
-            forbidden.add(mapping.companyAccountId()); forbidden.addAll(mapping.customerAccounts().values());
+            operatingAccounts.add(mapping.companyAccountId()); operatingAccounts.addAll(mapping.customerAccounts().values());
             eligible.add(mapping.opsAccountId()); eligible.addAll(mapping.supplierAccounts().values());
             Set<String> bound = new HashSet<>(mapping.customerAccounts().values());
             bound.addAll(mapping.supplierAccounts().values()); bound.add(mapping.companyAccountId()); bound.add(mapping.opsAccountId());
@@ -238,26 +237,32 @@ public record ExternalDemandRun(Config config, long watermark, List<SaleReceipt>
         }
         if (operations.resource() != null) {
             var mapping = operations.resource().ledger().config();
-            forbidden.addAll(List.of(mapping.companyAccountId(), mapping.coalCustomerAccountId(), mapping.gridAccountId()));
+            operatingAccounts.addAll(List.of(mapping.companyAccountId(), mapping.coalCustomerAccountId(), mapping.gridAccountId()));
         }
         if (operations.hydro() != null) {
             var mapping = operations.hydro().ledger().config();
-            forbidden.addAll(List.of(mapping.companyAccountId(), mapping.buyerAccountId()));
+            operatingAccounts.addAll(List.of(mapping.companyAccountId(), mapping.buyerAccountId()));
         }
         if (operations.digital() != null) {
             var mapping = operations.digital().config().model();
-            forbidden.addAll(List.of(mapping.companyAccountId(), mapping.customerAccountId()));
+            operatingAccounts.addAll(List.of(mapping.companyAccountId(), mapping.customerAccountId()));
         }
         if (operations.aged() != null) {
             var mapping = operations.aged().config().model();
-            forbidden.add(mapping.companyAccountId());
-            mapping.channels().forEach(channel -> forbidden.add(channel.accountId()));
+            operatingAccounts.add(mapping.companyAccountId());
+            mapping.channels().forEach(channel -> operatingAccounts.add(channel.accountId()));
         }
-        Set<String> forbiddenOwners = new HashSet<>();
-        forbidden.forEach(id -> {
+        require(!operatingAccounts.contains(config.finalBuyerAccountId()), "最终买方不能复用经营公司或客户账户");
+        Set<String> operatingOwners = new HashSet<>();
+        operatingAccounts.forEach(id -> {
             require(accounts.containsKey(id), "经营公司或客户账户缺失：" + id);
-            forbiddenOwners.add(accounts.get(id).ownerId());
+            operatingOwners.add(accounts.get(id).ownerId());
         });
+        require(!operatingOwners.contains(config.finalBuyerOwnerId()), "最终买方不能复用经营公司或客户属主");
+        Set<String> forbidden = new HashSet<>(operatingAccounts);
+        forbidden.add(config.finalBuyerAccountId());
+        Set<String> forbiddenOwners = new HashSet<>(operatingOwners);
+        forbiddenOwners.add(config.finalBuyerOwnerId());
         Set<String> sourceOwners = new HashSet<>();
         for (String source : config.incomeSourceAccountIds()) {
             require(eligible.contains(source) && !forbidden.contains(source), "非法收入来源账户：" + source);
