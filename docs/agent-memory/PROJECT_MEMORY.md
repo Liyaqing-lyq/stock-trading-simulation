@@ -55,5 +55,5 @@
 ## 自主经营整改接续（2026-11-16）
 
 - 当前任务在隔离clone `logs/world-operating-loop`、分支 `codex/world-operating-evidence`，不覆盖原工作树。接续读取其中 `docs/superpowers/plans/2026-11-15-autonomous-world.md` 和 `.superpowers/sdd/autonomous-world/progress.md`。
-- 真实v3仍无有效任职、预算、经营合同；原失败数据保留。完整模型轨迹与持久化断点见整改试跑记录，不以模型请求数、测试数或运行天数声称世界成立。
+- 旧v2/v3/v4原始试跑及失败数据全部保留；最新真实行为与修复状态以当前实施看板和整改试跑记录为准，不以模型请求数、测试数或运行天数声称世界成立。
 - 用户要求后续日志放项目目录；本轮日志在隔离clone的 `logs/operating-cycle`。新存储/角色合同显式版本，旧档和预算不得隐式迁移或重置。
