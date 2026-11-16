@@ -19714,8 +19714,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (!body.hasObservedPosition() || body.observedPosition() > previous.position()) {
             throw new IOException("媒体待办缺少真实观察帧：" + task.taskId());
         }
-        WorldState frame = frameAtOrNull(body.observedPosition());
-        if (frame == null || frame.timeMillis() != body.observedAtMillis()) {
+        Long frameTime = verifiedFrameTimeAtOrNull(body.observedPosition());
+        if (frameTime == null || frameTime != body.observedAtMillis()) {
             throw new IOException("媒体待办的观察帧不可解析：" + task.taskId());
         }
         if (candidate.information() == null
@@ -19731,6 +19731,26 @@ public final class WorldRuntime implements AutoCloseable {
         if (body.budgetRejected() != rejected) {
             throw new IOException("媒体待办的预算标志与提交前预留不符：" + task.taskId());
         }
+    }
+
+    /** 只复用已权威核验帧的时点；未命中仍完整解码，不准入或推进可信前沿。 */
+    private Long verifiedFrameTimeAtOrNull(long position) {
+        if (position <= 0) return null;
+        for (WorldCommit commit : commitSource.commitAt(position).stream().toList()) {
+            if (commit.position() != position) continue;
+            try {
+                if (compactState() && commit.position() <= verifiedInformationPosition) {
+                    Long cached = historicalInformationCache.findTime(historicalInformationSource, commit);
+                    if (cached != null) return cached;
+                }
+                // 实际目标身份可能已改变；同位置旧游标不能替代本次完整核验。
+                if (deltaReadCursor != null && deltaReadCursor.position() == position) deltaReadCursor = null;
+                return decodeSnapshot(commit).timeMillis();
+            } catch (IOException unreadable) {
+                return null;
+            }
+        }
+        return null;
     }
 
     /** 按位置取历史帧；不存在返回 null（校验期不依赖当前 state 的边界）。 */
@@ -30634,7 +30654,7 @@ public final class WorldRuntime implements AutoCloseable {
                 || frame.position() != commit.position() || !frame.runId().equals(commit.runId())) return;
         verifiedInformationPosition = commit.position();
         historicalInformationCache.remember(historicalInformationSource, commit,
-                frame.information() == null ? null : frame.information().information());
+                frame.information() == null ? null : frame.information().information(), frame.timeMillis());
     }
 
     /** 按真实观察位置取历史信息子集；没有位置或帧不可读时返回 null。 */

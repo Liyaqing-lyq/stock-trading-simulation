@@ -10,7 +10,7 @@ final class HistoricalInformationCache {
     static final int MAX_ENTRIES = 64;
     static final int MAX_BYTES = 8 * 1024 * 1024;
     private record Key(Object sourceIdentity, String runId, long position) { }
-    private record Entry(byte[] commitDigest, byte[] information) { }
+    private record Entry(byte[] commitDigest, byte[] information, long frameTimeMillis) { }
     private final LinkedHashMap<Key, Entry> entries = new LinkedHashMap<>(16, .75f, true);
     private final ObjectMapper writer;
     private final ObjectMapper reader;
@@ -23,7 +23,7 @@ final class HistoricalInformationCache {
     }
 
     /** 只接受调用方已完成持久确认及原命令核验的帧；普通缓存故障不改变业务结果。 */
-    void remember(Object sourceIdentity, WorldCommit commit, InformationModel.State information) {
+    void remember(Object sourceIdentity, WorldCommit commit, InformationModel.State information, long frameTimeMillis) {
         Key key = new Key(sourceIdentity, commit.runId(), commit.position());
         remove(key);
         if (information == null) return;
@@ -35,7 +35,7 @@ final class HistoricalInformationCache {
             while (!entries.isEmpty() && (entries.size() >= MAX_ENTRIES || bytes + payload.length > MAX_BYTES)) {
                 remove(entries.keySet().iterator().next());
             }
-            entries.put(key, new Entry(identity, payload));
+            entries.put(key, new Entry(identity, payload, frameTimeMillis));
             bytes += payload.length;
         } catch (IOException | RuntimeException optionalFailure) {
             remove(key);
@@ -53,6 +53,23 @@ final class HistoricalInformationCache {
                 return null;
             }
             return reader.readValue(entry.information(), InformationModel.State.class);
+        } catch (IOException | RuntimeException optionalFailure) {
+            remove(key);
+            return null;
+        }
+    }
+
+    /** 复用已核验帧的固定时点；真实目标完整身份失配或普通缓存故障均为未命中。 */
+    Long findTime(Object sourceIdentity, WorldCommit commit) {
+        Key key = new Key(sourceIdentity, commit.runId(), commit.position());
+        Entry entry = entries.get(key);
+        if (entry == null) return null;
+        try {
+            if (!MessageDigest.isEqual(entry.commitDigest(), fingerprint(commit))) {
+                remove(key);
+                return null;
+            }
+            return entry.frameTimeMillis();
         } catch (IOException | RuntimeException optionalFailure) {
             remove(key);
             return null;
