@@ -4,7 +4,7 @@
 
 更新：2026-11-16。本页只维护当前状态；总体约束见[设计基线](design/总体设计基线.md)，详细合同与历史见[总Plan](superpowers/plans/2026-11-06-world-implementation.md)。运行证据见[验证记录](05-运行与验证记录.md)。阶段通过不等于总体完成，人工review与合并状态单独核对。
 
-当前整改快照（隔离分支 `codex/world-operating-evidence`）：最新真实75f17f4试跑503请求，两项经理任命和5次水电调度有效，制造预算/合同/采购/应收均0，仍未形成经营闭环。原2075帧恢复及503份原输入回执核验已完成；manager-v1当前资料、有界报告和个人超限隔离分别完成机制独审。新运行入口及提供方模型标识留证正在接入，尚未开展新的真实试跑。完整原始失败、修复范围和下一步见[决策与需求试验](experiments/2026-11-15-deliberation-and-funded-demand.md)及本机 `logs/operating-cycle/ACTIVE.md`。未替换旧Web，未自动合并；后文早期试跑按历史记录理解。
+当前整改快照（隔离分支 `codex/world-operating-evidence`）：最新真实75f17f4试跑503请求，两项经理任命和5次水电调度有效，制造预算/合同/采购/应收均0，仍未形成经营闭环。原2075帧恢复及503份原输入回执核验已完成；manager-v1当前资料、有界报告和个人超限隔离分别完成机制独审。新入口c78e978已独审及正式工程验证通过，冻结INFORMED_OPERATING新档正在进行真实试跑，尚无终态结论。完整原始失败、修复范围和下一步见[决策与需求试验](experiments/2026-11-15-deliberation-and-funded-demand.md)及本机 `logs/operating-cycle/ACTIVE.md`。未替换旧Web，未自动合并；后文早期试跑按历史记录理解。
 
 此前角色依据切片：在独立分支`codex/world-operating-evidence`新增显式authority/evidence版本，澄清章程权利、补公司私有开局资料并修复真实董事阅读资格，恢复时重算正文以拒绝伪造。真实52人累计113次请求，实际1场会/1份材料/2人到会，治理原额度耗尽，无任命、预算或经营；不是完整治理/自主经营通过。18次输入对照与原回执重放另列，不与真实执行混计。[证据和下一步](experiments/2026-11-15-role-evidence-ledger.md)。未替换现有Web，持续需求、多订单、跨期经营仍待。
 
