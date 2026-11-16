@@ -70,3 +70,14 @@
 最终1c冻结类（对应源码6f61bb5）独立恢复至position2075/time5105000，exit0，605446ms，HTTP0。另独立核对503份原call的inputText、tools、plan、attempt身份与规范摘要，以及503份原reply正文和声明用量，全部一致；原journal和恢复副本SHA均a671a4a4dab3e453481d2111fee0c3323b26e8f096cd4ba41faadc27aa36b724。恢复状态全部11字段与保留成功审计深比较相等，但audit.json表示字节不同，未声称该JSON文件逐字一致。独审据实际收据关闭Task9恢复切片，0 Critical/Important/Minor。
 
 证据汇总：deliberation-20261115/deliberation-v4-recovery-final.json；独立原输入核对helper源码audit-input-provenance.cjs.txt。固定原75旧续写样本及来源校验在src/test/resources/operating-replay-75f17f4。最终受影响19项与新增路径边界9项分别运行，不拿测试数量当世界验收。当前真实模型经营结果仍是两任命/5次水电调度/制造订单0；Task10正在修有界输入与个人超限隔离，新的模型试跑尚未开始。
+
+
+### 7424fab：有界报告与个人输入隔离切片完成
+
+仅新 openInformedOperating 显式启用 bounded-history-v1 / local-input-v1，五类经理的已授权报告取最新12条、最新6条非SETTLE及最新6条拒绝的并集，最多24条；准确显示保留和遗漏，完整账本及当前资金/合同/物理状态不删。原32768字符/60000字节上限不变。只有typed INPUT_TOO_LARGE局部阻断，其他人物和未来事件继续；预算、世界故障及配置变化仍全局停止，在途回执正常drain/记账。旧模式保持原合同。
+
+独审发现免费尺寸缓存误用付费wakeFacts：真实会议时间197999→198000，输入32769→32755字符而业务facts相同，旧缓存仍阻断。已改用权威position+time，公开Host回归验证实际fit后免费解除、随后首次派发，重复查询不增调用或账。配置变更仍补发的竞态亦以真实在途latch修复，原回执仍一次记账。
+
+39个不同针对性/兼容用例分次通过；原38项运行37通过/1旧manifest fixture错误，fixture适配后5项通过，缓存修复后1项及其余Host7项分别通过，不能称一次39/39。独审最终0 Critical/Important/Minor；所有RED、失败夹具和反例保留在logs/operating-cycle/task10-*。资料目录或合同等其他输入仍可能超限，不承诺普遍无限输入。
+
+这只是机制修复：尚无新模式真实模型结果，原真实结果仍是两项任命、5次水电调度、制造订单0。接续Task11新Web/Probe入口和提供方模型元数据记录；冻结审查后另开新档试跑，不将原v4无声升级。整体验收仍失败。
