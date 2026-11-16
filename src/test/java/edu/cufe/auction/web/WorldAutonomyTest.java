@@ -115,8 +115,23 @@ class WorldAutonomyTest {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var calls = new AtomicInteger();
+        var admitted = new CountDownLatch(2);
+        var releaseSecondEntry = new CountDownLatch(1);
+        var entryOrdinal = new AtomicInteger();
+        var runtimeRef = new java.util.concurrent.atomic.AtomicReference<edu.cufe.auction.world.WorldRuntime>();
         Set<String> beforeRestart = ConcurrentHashMap.newKeySet();
-        try (var routes = routes(100); var host = host(routes, (c, t) -> {
+        try (var routes = routes(100); var host = new WorldWebHost(() -> {
+            var world = ComposedIndustryScenario.openAutonomous(dir.resolve("world.journal"));
+            runtimeRef.set(world);
+            return new WorldWebHost.Opened(world, world.profile().manifest().runId());
+        }, routes, (c, t) -> {
+            int ordinal = entryOrdinal.incrementAndGet();
+            admitted.countDown();
+            // 模拟第二个已派发工作线程迟于停止才进入计数位置。
+            if (ordinal == 2) {
+                try { assertTrue(releaseSecondEntry.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException stop) { Thread.currentThread().interrupt(); }
+            }
             beforeRestart.add(c.actionId().substring(c.actionId().lastIndexOf(":act:") + 5));
             calls.incrementAndGet(); entered.countDown();
             try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
@@ -127,17 +142,25 @@ class WorldAutonomyTest {
                 String initialTime = host.autonomyStatus().timeMillis();
                 start(host, routes, 3_600_000L);
                 assertTrue(entered.await(10, TimeUnit.SECONDS));
+                assertTrue(admitted.await(10, TimeUnit.SECONDS));
                 assertEquals(initialTime, host.autonomyStatus().timeMillis());
                 host.stopAutonomy();
                 int stoppedCalls = calls.get();
+                assertEquals(1, stoppedCalls, "第二个已派发回调仍停在计数前");
+                var stoppedDispatches = host.call(() -> Set.copyOf(runtimeRef.get().snapshot()
+                        .decisions().orElseThrow().dispatches().keySet()));
+                assertEquals(2, stoppedDispatches.size());
+                releaseSecondEntry.countDown();
                 release.countDown();
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
                 while (!"IDLE".equals(host.liveStatus().phase()) && System.nanoTime() < deadline) Thread.sleep(25);
                 assertEquals("IDLE", host.liveStatus().phase());
-                assertEquals(stoppedCalls, calls.get());
+                assertEquals(stoppedDispatches, host.call(() -> Set.copyOf(runtimeRef.get().snapshot()
+                        .decisions().orElseThrow().dispatches().keySet())), "停止后不得新增派发身份");
+                assertEquals(stoppedDispatches.size(), calls.get(), "每个已派发调用恰好进入提供方一次");
                 assertEquals(initialTime, host.autonomyStatus().timeMillis());
                 assertEquals("STOPPED", host.autonomyStatus().reason());
-            } finally { release.countDown(); }
+            } finally { releaseSecondEntry.countDown(); release.countDown(); }
         }
         Set<String> afterRestart = ConcurrentHashMap.newKeySet();
         try (var routes = SceneRoutes.open(dir); var host = host(routes, (c, t) -> {

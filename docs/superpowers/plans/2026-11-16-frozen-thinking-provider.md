@@ -30,7 +30,7 @@
 - [x] Implement newfactory/probe plus strict v2seed checks and firstproviderfailure stop/drain for newmode. New config only timeout difference beyondmanifest.
 - [x] Add focused oldserialization/conflict/length/empty/unknownfinish/overusage/tamperedseed/factorycross-open tests, and UI control preservation within existing JS verification where possible.
 - [x] Run affected JUnit classes once; inspect final XML and raw exits. No full-suite launch by worker.
-- [x] Self-review, save source hashes/test evidence and report; release ownership to Root. Root independent review, fixloop ifneeded, commit/freeze and final integration.
+- [x] Self-review, save source hashes/test evidence and report; release ownership to Root. Root independent review, fixloop and implementation commit complete; final integration/runtime freeze are tracked by Task24 below.
 
 ### Task24: 真实新档与经营验收
 - [ ] Independentreview complete; one formalverify/JavaDoc integratedsource and frozenclassparity.
