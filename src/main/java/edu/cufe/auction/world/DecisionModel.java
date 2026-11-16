@@ -310,18 +310,28 @@ public final class DecisionModel {
      * @param maxTotalTokens  场景输入加输出的 token 总上限 256..1000000
      * @param maxOutputTokens 单次输出预留 128..8192，且不超过总上限
      * @param maxConcurrency  派发并发上限 1..4，且不超过调用上限
+     * @param providerPolicy  空值保留关闭思考；deepseek-thinking-high-v1 显式启用思考
      * @param budgetPolicy    空值保留旧上限；lifecycle-v1 显式启用有限跨期预算
      */
     public record Route(String sceneId, String slotId, String model, long revision,
                         int maxCalls, int maxTotalTokens, int maxOutputTokens,
                         int maxConcurrency,
-                        @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy) {
+                        @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy,
+                        @JsonInclude(JsonInclude.Include.NON_NULL) String providerPolicy) {
 
         /** 旧路由保留原有预算边界与序列化形态。 */
         public Route(String sceneId, String slotId, String model, long revision,
                      int maxCalls, int maxTotalTokens, int maxOutputTokens, int maxConcurrency) {
             this(sceneId, slotId, model, revision, maxCalls, maxTotalTokens, maxOutputTokens,
                     maxConcurrency, null);
+        }
+
+        /** 旧九参路由保留关闭思考策略。 */
+        public Route(String sceneId, String slotId, String model, long revision,
+                     int maxCalls, int maxTotalTokens, int maxOutputTokens, int maxConcurrency,
+                     String budgetPolicy) {
+            this(sceneId, slotId, model, revision, maxCalls, maxTotalTokens, maxOutputTokens,
+                    maxConcurrency, budgetPolicy, null);
         }
 
         /** 校验场景、槽位、模型与各项范围。 */
@@ -337,6 +347,9 @@ public final class DecisionModel {
             }
             if (revision < 0) {
                 throw new IllegalArgumentException("路由版本不能为负：" + revision);
+            }
+            if (providerPolicy != null && !"deepseek-thinking-high-v1".equals(providerPolicy)) {
+                throw new IllegalArgumentException("未知提供方策略");
             }
             if (budgetPolicy != null && !"lifecycle-v1".equals(budgetPolicy)) {
                 throw new IllegalArgumentException("未知预算策略");

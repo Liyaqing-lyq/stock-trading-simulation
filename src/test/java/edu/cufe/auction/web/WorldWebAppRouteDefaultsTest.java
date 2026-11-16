@@ -14,7 +14,7 @@ class WorldWebAppRouteDefaultsTest {
     @TempDir Path root;
 
     @Test void existingRevisionZeroLegacyFileRemainsByteForByteUnchangedInBothNewModes() throws Exception {
-        for (String mode : new String[]{"world-accountable", "world-operating", "world-planning", "world-planning-operating", "world-informed-operating", "world-contextual-informed-operating"}) {
+        for (String mode : new String[]{"world-accountable", "world-operating", "world-planning", "world-planning-operating", "world-informed-operating", "world-contextual-informed-operating", "world-thinking-informed-operating"}) {
             Path work = Files.createDirectory(root.resolve(mode));
             try (var routes = SceneRoutes.open(work)) { assertEquals(0, routes.view().revision()); }
             byte[] before = Files.readAllBytes(work.resolve(SceneRoutes.FILE_NAME));
@@ -62,6 +62,22 @@ class WorldWebAppRouteDefaultsTest {
         try(var world=edu.cufe.auction.world.composed.ComposedIndustryScenario.openContextualInformedOperating(journal)){
             assertEquals("web-informed-operating-v2",world.profile().manifest().runId());
             assertEquals("deliberation-v5",world.profile().manifest().dataVersions().get("role-context"));
+        }
+    }
+
+    @Test void thinkingEntryHasSeparateJournalExplicitPolicyAndSixtySecondLimit() throws Exception {
+        Path work=Files.createDirectory(root.resolve("thinking-manifest"));initialize(work,"world-thinking-informed-operating");
+        Path journal=work.resolve("world-thinking-informed-operating-v1.journal");assertTrue(Files.isRegularFile(journal));
+        assertFalse(Files.exists(work.resolve("world-contextual-informed-operating-v2.journal")));
+        try(var routes=SceneRoutes.open(work)) {
+            for(var route:routes.view().routes()) {
+                assertFalse(route.enabled());assertEquals("lifecycle-v1",route.budgetPolicy());assertEquals("deepseek-thinking-high-v1",route.providerPolicy());
+                assertEquals(2500,route.maxCalls());assertEquals(35000000,route.maxTotalTokens());assertEquals(8192,route.maxOutputTokens());assertEquals(4,route.maxConcurrency());
+            }
+        }
+        try(var world=edu.cufe.auction.world.composed.ComposedIndustryScenario.openThinkingInformedOperating(journal)) {
+            assertEquals("web-thinking-operating-v1",world.profile().manifest().runId());assertEquals("deepseek-thinking-high-v1",world.profile().manifest().dataVersions().get("provider-policy"));
+            assertEquals(60000,world.profile().decisions().limits().wallTimeoutMillis());assertEquals(2,world.profile().decisions().limits().maxInFlight());
         }
     }
 

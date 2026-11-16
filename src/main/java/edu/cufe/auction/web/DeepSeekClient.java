@@ -1,5 +1,6 @@
 package edu.cufe.auction.web;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -47,6 +48,8 @@ public final class DeepSeekClient {
     public static final String MODEL_FLASH = "deepseek-flash";
     /** 允许的推理模型。 */
     public static final String MODEL_PRO = "deepseek-v4-pro";
+    /** 显式思考调用策略；空值保持旧关闭模式。 */
+    public static final String THINKING_HIGH_POLICY = "deepseek-thinking-high-v1";
     /** 请求体上限 64 KiB。 */
     public static final int MAX_REQUEST_BYTES = 64 * 1024;
     /** 响应体上限 1 MiB。 */
@@ -98,9 +101,18 @@ public final class DeepSeekClient {
 
     /** 一次请求的输入（toString 只给形状，不含正文）。 */
     public record Request(String model, String systemText, String userText,
-                          int maxOutputTokens, long timeoutMillis) {
+                          int maxOutputTokens, long timeoutMillis,
+                          @JsonInclude(JsonInclude.Include.NON_NULL) String providerPolicy) {
+
+        /** 旧五参请求保留关闭思考模式。 */
+        public Request(String model, String systemText, String userText, int maxOutputTokens, long timeoutMillis) {
+            this(model, systemText, userText, maxOutputTokens, timeoutMillis, null);
+        }
 
         public Request {
+            if (providerPolicy != null && !THINKING_HIGH_POLICY.equals(providerPolicy)) {
+                throw new IllegalArgumentException("未知提供方策略");
+            }
             if (!MODEL_FLASH.equals(model) && !MODEL_PRO.equals(model)) {
                 throw new IllegalArgumentException("模型不在允许列表");
             }
@@ -185,9 +197,17 @@ public final class DeepSeekClient {
      * @param model     提供方回报的模型名（有界）
      */
     public record Result(Outcome outcome, String content, Usage usage, String requestId,
-                         String model) {
+                         String model, @JsonInclude(JsonInclude.Include.NON_NULL) String finishReason) {
+
+        /** 旧五参结果不补造结束元数据。 */
+        public Result(Outcome outcome, String content, Usage usage, String requestId, String model) {
+            this(outcome, content, usage, requestId, model, null);
+        }
 
         public Result {
+            if (finishReason != null && !List.of("stop", "length", "content_filter", "tool_calls").contains(finishReason)) {
+                throw new IllegalArgumentException("未知结束原因");
+            }
             Objects.requireNonNull(outcome, "效果");
             if (outcome == Outcome.COMPLETE) {
                 if (content == null || content.isBlank()) {
@@ -340,7 +360,8 @@ public final class DeepSeekClient {
         messages.addObject().put("role", "system").put("content", request.systemText());
         messages.addObject().put("role", "user").put("content", request.userText());
         root.put("stream", false);
-        root.putObject("thinking").put("type", "disabled");
+        root.putObject("thinking").put("type", request.providerPolicy() == null ? "disabled" : "enabled");
+        if (request.providerPolicy() != null) root.put("reasoning_effort", "high");
         root.putObject("response_format").put("type", "json_object");
         root.put("max_tokens", request.maxOutputTokens());
         byte[] body;
@@ -390,9 +411,13 @@ public final class DeepSeekClient {
         if (role == null || !role.isTextual() || !"assistant".equals(role.textValue())) {
             throw new Failure(Failure.Code.PROTOCOL, "message.role 不是 assistant", usage);
         }
+        JsonNode finishMetadata = choice.get("finish_reason");
+        String safeFinish = finishMetadata != null && finishMetadata.isTextual()
+                && List.of("stop", "length", "content_filter", "tool_calls").contains(finishMetadata.textValue())
+                ? finishMetadata.textValue() : null;
         if (message.has("tool_calls") && !message.get("tool_calls").isNull()) {
             return new Result(Outcome.TOOL_CALLS, null, usage,
-                    requestIdOf(root, key), modelOf(root, key));
+                    requestIdOf(root, key), modelOf(root, key), safeFinish);
         }
         JsonNode content = message.get("content");
         String text = null;
@@ -408,25 +433,25 @@ public final class DeepSeekClient {
             throw new Failure(Failure.Code.PROTOCOL, "finish_reason 类型不合法", usage);
         }
         if ("length".equals(reason)) {
-            return new Result(Outcome.LENGTH, null, usage, requestIdOf(root, key), modelOf(root, key));
+            return new Result(Outcome.LENGTH, null, usage, requestIdOf(root, key), modelOf(root, key), safeFinish);
         }
         if ("content_filter".equals(reason)) {
-            return new Result(Outcome.FILTERED, null, usage, requestIdOf(root, key), modelOf(root, key));
+            return new Result(Outcome.FILTERED, null, usage, requestIdOf(root, key), modelOf(root, key), safeFinish);
         }
         if (reason == null) {
-            return new Result(Outcome.EMPTY, null, usage, requestIdOf(root, key), modelOf(root, key));
+            return new Result(Outcome.EMPTY, null, usage, requestIdOf(root, key), modelOf(root, key), safeFinish);
         }
         if (!"stop".equals(reason)) {
             throw new Failure(Failure.Code.PROTOCOL, "未知的 finish_reason", usage);
         }
         if (text == null || text.isBlank()) {
-            return new Result(Outcome.EMPTY, null, usage, requestIdOf(root, key), modelOf(root, key));
+            return new Result(Outcome.EMPTY, null, usage, requestIdOf(root, key), modelOf(root, key), safeFinish);
         }
         if (text.contains(key)) {
             // 已知密钥出现在正文里：整体拒绝，避免把秘密送进后续世界归档
             throw new Failure(Failure.Code.PROTOCOL, "响应包含凭据", usage);
         }
-        return new Result(Outcome.COMPLETE, text, usage, requestIdOf(root, key), modelOf(root, key));
+        return new Result(Outcome.COMPLETE, text, usage, requestIdOf(root, key), modelOf(root, key), safeFinish);
     }
 
     /** 错误响应里尽力读取用量；任何不合法都视为未知。 */

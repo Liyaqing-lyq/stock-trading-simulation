@@ -20,23 +20,41 @@ final class ProbeProviderEvidence {
     private final TreeMap<String, Integer> reportedModels = new TreeMap<>();
     private int completed, recorded, missingIdentity;
     private volatile boolean failed;
+    private final boolean thinking;
+    private volatile String stopReason;
+    static final String TECHNICAL_FAILURE = "PROBE_PROVIDER_TECHNICAL_FAILURE";
+    static final String UNKNOWN_EVIDENCE = "PROBE_PROVIDER_EVIDENCE_UNKNOWN";
 
-    ProbeProviderEvidence(Path out) { this.out = out; }
+    ProbeProviderEvidence(Path out) { this(out, false); }
 
-    static ObjectNode policy() {
-        return JSON.createObjectNode().put("schema", LiveDecisionProvider.PROVENANCE_SCHEMA)
+    ProbeProviderEvidence(Path out, boolean thinking) { this.out = out; this.thinking = thinking; }
+
+    static ObjectNode policy() { return policy(false); }
+
+    static ObjectNode policy(boolean thinking) {
+        var result = JSON.createObjectNode().put("schema", thinking ? LiveDecisionProvider.THINKING_PROVENANCE_SCHEMA : LiveDecisionProvider.PROVENANCE_SCHEMA)
                 .put("identityScope", "PROVIDER_DECLARED_ONLY").put("underlyingModelVersion", "UNKNOWN");
+        if (thinking) result.put("providerPolicy", DeepSeekClient.THINKING_HIGH_POLICY);
+        return result;
     }
 
     static void freezePolicy(Path out) throws IOException {
-        JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve(POLICY_FILE).toFile(), policy());
+        freezePolicy(out, false);
+    }
+
+    static void freezePolicy(Path out, boolean thinking) throws IOException {
+        JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve(POLICY_FILE).toFile(), policy(thinking));
     }
 
     boolean failed() { return failed; }
+    boolean stopRequested() { return failed || stopReason != null; }
+    String stopReason() { return failed ? WRITE_FAILURE : stopReason; }
 
     LiveCompletionInbox.Completion evaluate(int index, DecisionRun.Call call, long timeout,
                                             LiveDecisionProvider provider) {
         try {
+            if (call.plan() == null || !java.util.Objects.equals(call.plan().route().providerPolicy(),
+                    thinking ? DeepSeekClient.THINKING_HIGH_POLICY : null)) throw invalid();
             write("call-", index, call);
         } catch (IOException | RuntimeException failure) {
             failed = true;
@@ -47,6 +65,10 @@ final class ProbeProviderEvidence {
         synchronized (this) {
             completed++;
             count(audited.provenance());
+            if (thinking && stopReason == null) {
+                if (!audited.completion().businessReply()) stopReason = TECHNICAL_FAILURE;
+                else if (!completeMetadata(audited.provenance(), audited.completion())) stopReason = UNKNOWN_EVIDENCE;
+            }
         }
         // 已收到的完成候选必须原样返回。每项落盘独立尝试，额外证据失败不能覆盖已付费结果。
         try {
@@ -69,7 +91,7 @@ final class ProbeProviderEvidence {
     }
 
     synchronized ObjectNode summary(int expectedCalls, int physicalInFlight) {
-        var result = JSON.createObjectNode().put("schema", LiveDecisionProvider.PROVENANCE_SCHEMA)
+        var result = JSON.createObjectNode().put("schema", thinking ? LiveDecisionProvider.THINKING_PROVENANCE_SCHEMA : LiveDecisionProvider.PROVENANCE_SCHEMA)
                 .put("evidenceComplete", !failed && completed == expectedCalls && recorded == completed && physicalInFlight == 0)
                 .put("completedCalls", completed).put("recordedCalls", recorded).put("missingIdentityCalls", missingIdentity);
         result.set("reportedModelCounts", JSON.valueToTree(reportedModels));
@@ -78,15 +100,17 @@ final class ProbeProviderEvidence {
     }
 
     /** 新模式接续必须有逐调用完整来源；显式 null 身份允许保留 UNKNOWN，不允许补造。 */
-    static void validateSeed(Path seed, JsonNode result) throws IOException {
+    static void validateSeed(Path seed, JsonNode result) throws IOException { validateSeed(seed, result, false); }
+
+    static void validateSeed(Path seed, JsonNode result, boolean thinking) throws IOException {
         if (!Files.isRegularFile(seed.resolve(POLICY_FILE))
-                || !policy().equals(JSON.readTree(seed.resolve(POLICY_FILE).toFile())))
+                || !policy(thinking).equals(JSON.readTree(seed.resolve(POLICY_FILE).toFile())))
             throw invalid();
         JsonNode calls = result.path("httpCalls");
         if (!calls.isIntegralNumber() || !calls.canConvertToInt() || calls.intValue() < 0 || calls.intValue() > 3000)
             throw invalid();
         int total = calls.intValue();
-        var expected = new ProbeProviderEvidence(seed);
+        var expected = new ProbeProviderEvidence(seed, thinking);
         try (var paths = Files.list(seed)) {
             var names = paths.map(p -> p.getFileName().toString()).toList();
             for (String prefix : new String[]{"call-", "reply-", "provider-"}) {
@@ -110,7 +134,15 @@ final class ProbeProviderEvidence {
                     || !call.equals(JSON.readTree(JSON.writeValueAsBytes(frozenCall)))
                     || !reply.equals(JSON.readTree(JSON.writeValueAsBytes(completion)))) throw invalid();
             var provenance = JSON.treeToValue(raw, LiveDecisionProvider.ProviderProvenance.class);
-            if (!raw.equals(JSON.readTree(JSON.writeValueAsBytes(provenance))) || !LiveDecisionProvider.PROVENANCE_SCHEMA.equals(provenance.schema())) throw invalid();
+            if (!raw.equals(JSON.readTree(JSON.writeValueAsBytes(provenance))) || !(thinking ? LiveDecisionProvider.THINKING_PROVENANCE_SCHEMA : LiveDecisionProvider.PROVENANCE_SCHEMA).equals(provenance.schema())) throw invalid();
+            String frozenPolicy = frozenCall.plan().route().providerPolicy();
+            if (!java.util.Objects.equals(frozenPolicy, thinking ? DeepSeekClient.THINKING_HIGH_POLICY : null)) throw invalid();
+            if (thinking) {
+                if (!edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION.equals(
+                        JSON.readTree(frozenCall.inputText()).path("engineering").path("roleContextVersion").asText())) throw invalid();
+                validateInvocation(provenance, frozenCall, completion);
+            }
+            else if (provenance.invocation() != null) throw invalid();
             var identity = JSON.createObjectNode();
             for (String field : new String[]{"runId", "actionId", "attemptId", "attemptNo", "recoveryGeneration"}) {
                 JsonNode value = call.path(field);
@@ -140,6 +172,42 @@ final class ProbeProviderEvidence {
             expected.completed++; expected.recorded++; expected.count(provenance);
         }
         if (!expected.summary(total, 0).equals(result.path("providerProvenance"))) throw invalid();
+    }
+
+    private static boolean completeMetadata(LiveDecisionProvider.ProviderProvenance provenance,
+                                            LiveCompletionInbox.Completion completion) {
+        return provenance.providerReportedModel() != null && provenance.requestId() != null
+                && completion.reply().usage() != null && provenance.invocation() != null
+                && "stop".equals(provenance.invocation().finishReason());
+    }
+
+    private static void validateInvocation(LiveDecisionProvider.ProviderProvenance provenance,
+                                           DecisionRun.Call call, LiveCompletionInbox.Completion completion) {
+        var invocation = provenance.invocation();
+        if (invocation == null || !DeepSeekClient.THINKING_HIGH_POLICY.equals(invocation.providerPolicy())
+                || !"enabled".equals(invocation.thinkingType()) || !"high".equals(invocation.reasoningEffort())
+                || invocation.maxOutputTokens() != call.plan().route().maxOutputTokens()
+                || invocation.maxOutputTokens() != 8192) throw invalid();
+        String finish = invocation.finishReason();
+        if (finish != null && !java.util.Set.of("stop", "length", "content_filter", "tool_calls").contains(finish)) throw invalid();
+        switch (provenance.outcome() == null ? "" : provenance.outcome()) {
+            case "COMPLETE" -> { if (!completion.businessReply() || !completeMetadata(provenance, completion)) throw invalid(); }
+            case "LENGTH" -> { if (!"length".equals(finish)) throw invalid(); }
+            case "FILTERED" -> { if (!"content_filter".equals(finish)) throw invalid(); }
+            case "EMPTY" -> { if (finish != null && !"stop".equals(finish)) throw invalid(); }
+            case "TOOL_CALLS" -> { }
+            case "UNKNOWN" -> {
+                if (finish != null || provenance.failureCode() == null) throw invalid();
+                if (!"LOCAL_PROVIDER_ERROR".equals(provenance.failureCode())) {
+                    try { DeepSeekClient.Failure.Code.valueOf(provenance.failureCode().startsWith("HTTP_") ? provenance.failureCode().substring(5) : ""); }
+                    catch (IllegalArgumentException unknownFailure) { throw invalid(); }
+                }
+            }
+            default -> throw invalid();
+        }
+        if (!"COMPLETE".equals(provenance.outcome()) && (completion.businessReply() || !completion.reply().body().isEmpty())) throw invalid();
+        if (!LiveDecisionProvider.USAGE_SOURCE.equals(completion.reply().usageSource())
+                || !"UNKNOWN".equals(provenance.outcome()) && completion.reply().usage() == null) throw invalid();
     }
 
     private static boolean safeIdentifier(JsonNode value) {

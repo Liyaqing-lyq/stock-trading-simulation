@@ -781,7 +781,7 @@ function routeField(container, scene, name, labelText, value, choices, budgetPol
     for (const item of choices) {
       const option = document.createElement("option");
       option.value = item;
-      option.textContent = item;
+      option.textContent = name === "providerPolicy" ? (item ? "开启 (high)" : "关闭") : item;
       control.appendChild(option);
     }
   } else {
@@ -831,6 +831,7 @@ async function refreshRoutes(generation, current = () => true) {
     const fields = document.createElement("div"); fields.className = "route-fields";
     routeField(fields, route.scene, "slotId", "Key 槽位", route.slotId, ["key-1", "key-2", "key-3", "key-4", "key-5"]);
     routeField(fields, route.scene, "model", "模型", route.model, ["deepseek-flash", "deepseek-v4-pro"]);
+    routeField(fields, route.scene, "providerPolicy", "思考模式", route.providerPolicy || "", ["", "deepseek-thinking-high-v1"]);
     routeField(fields, route.scene, "maxCalls", "累计调用上限", route.maxCalls, undefined, route.budgetPolicy);
     routeField(fields, route.scene, "maxTotalTokens", "累计 token 上限", route.maxTotalTokens, undefined, route.budgetPolicy);
     routeField(fields, route.scene, "maxOutputTokens", "单次输出上限", route.maxOutputTokens);
@@ -847,7 +848,8 @@ async function saveRoutes(event) {
     if (card.dataset.budgetPolicy) route.budgetPolicy = card.dataset.budgetPolicy;
     card.querySelectorAll("[data-field]").forEach(input => {
       const name = input.dataset.field;
-      if (name === "enabled") route[name] = input.checked;
+      if (name === "providerPolicy") { if (input.value) route[name] = input.value; }
+      else if (name === "enabled") route[name] = input.checked;
       else if (name.startsWith("max")) {
         const value = Number(input.value);
         if (!Number.isSafeInteger(value) || !/^[1-9][0-9]*$/.test(input.value)) throw new Error("预算必须填写正整数。");

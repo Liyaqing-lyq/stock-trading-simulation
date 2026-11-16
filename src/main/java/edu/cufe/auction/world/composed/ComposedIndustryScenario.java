@@ -229,7 +229,22 @@ public final class ComposedIndustryScenario {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, roleContext, operating, compact, false);
     }
 
+    /** 显式思考经营新档；只增加调用策略和60秒墙钟，保留v5经营与角色合同。
+     * @param journal 新档日志路径
+     * @return 已严格恢复或创建的世界
+     * @throws Exception 开局或冻结合同不匹配
+     */
+    public static WorldRuntime openThinkingInformedOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, true);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous,
+                eventDriven, roleContext, operating, compact, informedOperating, false);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating, boolean thinking) throws Exception {
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -295,6 +310,14 @@ public final class ComposedIndustryScenario {
         if(prototype) decisions=PrototypeCompanies.decisions(decisions);
         if(edu.cufe.auction.world.RoleDeliberation.isDeliberative(roleContext))
             decisions=edu.cufe.auction.world.RoleDeliberation.lifecycleBudget(decisions);
+        if (thinking) {
+            var limits = decisions.limits();
+            decisions = new DecisionModel.Config(decisions.providerKind(), decisions.providerId(), decisions.pricingVersion(),
+                    decisions.thinkMillisByWake(), decisions.actionMillisByTool(),
+                    new DecisionModel.Limits(limits.maxAttemptsPerDecision(), limits.maxInputChars(), limits.maxReplyChars(),
+                            limits.perCallInputTokens(), limits.perCallOutputTokens(), limits.queueCapacity(), limits.maxInFlight(), 60_000L),
+                    decisions.budget(), decisions.profile());
+        }
         var openingAccounts = new ArrayList<>(openings());
         if (hydro) openingAccounts.addAll(HydroIndustryConfig.ACCOUNTS);
         var openingRegistry = hydro ? hydroRegistry(registry()) : registry();
@@ -363,6 +386,11 @@ public final class ComposedIndustryScenario {
             data.put("dispatch-policy", "local-input-v1");
             runManifest = new RunManifest(edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION.equals(roleContext)
                     ? "web-informed-operating-v2" : "web-informed-operating-v1", runManifest.seed(), runManifest.rulesVersion(),
+                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (thinking) {
+            var data = new TreeMap<>(runManifest.dataVersions()); data.put("provider-policy", "deepseek-thinking-high-v1");
+            runManifest = new RunManifest("web-thinking-operating-v1", runManifest.seed(), runManifest.rulesVersion(),
                     runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,

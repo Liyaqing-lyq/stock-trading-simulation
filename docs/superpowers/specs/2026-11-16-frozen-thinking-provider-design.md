@@ -21,3 +21,7 @@ AutonomousLifecycleProbe新增THINKING_INFORMED_OPERATING，明确新factory，�
 通过真实回环HTTP断言旧请求body和新enabled/high/max_tokens8192、输入原样与冻结策略不随配置改变。模拟带reasoning_content的响应只检查该正文未进入任何保存/回执，而completion_tokens完整结算。覆盖length/empty/unknownfinish、用量超预留、未知policy拒绝、旧JSON字节、v1/v2seed不混用、source/config恢复。新档生命周期不安排董事投票/经理采购，不补预算。只证明机制后运行有界新档；成败以实际预算、订单、交付、到账、跨期而非动作建议或测试数。
 
 局部TDD、独审后统一一次verify.sh --with-gui及JavaDoc，不重复无变化测试。真实UI与人工PR审查仍须后续；禁止自动合并。日志保留项目文件夹，失败全部保留。
+
+实现澄清（Root核对BASE DecisionModel.settleTechnical）：正常声明完整completion_tokens计入结算；若提供方声明超过单次预留，沿既有合同在Attempt.declaredUsage完整保留实际声明，结算计数使用原预留并全局阻断，不能将结算计数冒充真实超额用量，也不能继续自动调用。真实审计另对提供方声明求和，不能只统计最终JSON。该切片不改旧预算核。
+
+入口补全（Root检查现有WorldWebApp后明确）：新增显式world-thinking-informed-operating模式，调用openThinkingInformedOperating并使用独立world-thinking-informed-operating-v1.journal。只在scene-routes.json缺失时初始化2500/35000000/8192/4/lifecycle-v1/new providerPolicy，五场景全部enabled=false且不自动开始。包括revision0在内的已有配置文件逐字保留，旧入口不改。WorldWebAppRouteDefaultsTest覆盖已有文件/新默认/新journal与60000ms配置。此入口用于随后同一真实世界的Web核验，不新增页面、不以启动代替业务验收。

@@ -141,7 +141,7 @@ public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider
         }
         DecisionModel.Route route = plan.route();
         DeepSeekClient.Request request = new DeepSeekClient.Request(route.model(), systemText(call),
-                call.inputText(), route.maxOutputTokens(), timeoutMillis);
+                call.inputText(), route.maxOutputTokens(), timeoutMillis, route.providerPolicy());
         try {
             DeepSeekClient client = clients.apply(route.slotId());
             if (client == null) {
@@ -165,12 +165,27 @@ public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider
     /** 审计策略独立于业务回执格式；提供方名称可能仍是别名，不代表底层权重版本。 */
     static final String PROVENANCE_SCHEMA = "provider-provenance-v1";
 
+    /** 显式思考策略的来源合同。 */
+    static final String THINKING_PROVENANCE_SCHEMA = "provider-provenance-v2";
+
+    /** 安全调用形状；结束原因未知时保持null，不记录提供方思考正文。 */
+    record Invocation(String providerPolicy, String thinkingType, String reasoningEffort,
+                      int maxOutputTokens, String finishReason) { }
+
     /** 只含冻结调用身份及客户端已经过滤的提供方元数据，不含正文、认证或原始响应。 */
     record ProviderProvenance(String schema, String runId, String actionId, String attemptId,
                               int attemptNo, long recoveryGeneration, String requestedModel,
-                              String providerReportedModel, String requestId, String outcome, String failureCode) {
+                              String providerReportedModel, String requestId, String outcome, String failureCode,
+                              @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Invocation invocation) {
+        /** 旧来源构造及逐字序列化合同。 */
+        ProviderProvenance(String schema, String runId, String actionId, String attemptId,
+                           int attemptNo, long recoveryGeneration, String requestedModel,
+                           String providerReportedModel, String requestId, String outcome, String failureCode) {
+            this(schema, runId, actionId, attemptId, attemptNo, recoveryGeneration, requestedModel,
+                    providerReportedModel, requestId, outcome, failureCode, null);
+        }
         @Override public String toString() {
-            return "ProviderProvenance[schema=" + PROVENANCE_SCHEMA
+            return "ProviderProvenance[schema=" + schema
                     + ", providerReportedModel=" + (providerReportedModel == null ? "none" : "present")
                     + ", requestId=" + (requestId == null ? "none" : "present") + "]";
         }
@@ -185,11 +200,14 @@ public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider
 
     private static AuditedEvaluation audited(DecisionRun.Call call, LiveCompletionInbox.Completion completion,
                                              DeepSeekClient.Result result) {
-        return new AuditedEvaluation(completion, new ProviderProvenance(PROVENANCE_SCHEMA,
+        var route = call.plan().route();
+        boolean thinking = route.providerPolicy() != null;
+        return new AuditedEvaluation(completion, new ProviderProvenance(thinking ? THINKING_PROVENANCE_SCHEMA : PROVENANCE_SCHEMA,
                 call.runId(), call.actionId(), call.attemptId(), call.attemptNo(), call.recoveryGeneration(),
                 call.plan().route().model(), result == null ? null : result.model(),
                 result == null ? null : result.requestId(), result == null ? "UNKNOWN" : result.outcome().name(),
-                completion.failureCode()));
+                completion.failureCode(), thinking ? new Invocation(route.providerPolicy(), "enabled", "high",
+                        route.maxOutputTokens(), result == null ? null : result.finishReason()) : null));
     }
 
     /** 身份完全取 Call；usage 已知时记一次尝试，费用保持未知；来源固定。 */

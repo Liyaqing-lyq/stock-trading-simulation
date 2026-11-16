@@ -71,7 +71,7 @@ class AutonomousLifecycleProbeSeedTest {
     }
 
     @Test void planningModesFreezeTheirRelativePromptBeforeLoadingKeys() throws Exception {
-        for (String mode : new String[]{"PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING"}) {
+        for (String mode : new String[]{"PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING"}) {
             Path config = root.resolve(mode + ".json"), out = root.resolve(mode);
             JSON.writeValue(config.toFile(), assertDoesNotThrow(() -> new AutonomousLifecycleProbe.Config(mode, 20, 1, 86400000, 3600000, null, "same-source")));
             assertThrows(java.io.IOException.class, () -> AutonomousLifecycleProbe.main(new String[]{out.toString(), root.resolve("absent-keys").toString(), config.toString()}));

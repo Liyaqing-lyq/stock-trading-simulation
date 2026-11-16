@@ -17,7 +17,7 @@ public final class AutonomousLifecycleProbe {
                          long stepMillis, String seed, String sourceCommit) {
         /** 约束试跑边界，额度是上限，不是调用承诺或经营验收。 */
         public Config {
-            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING").contains(mode)
+            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING").contains(mode)
                     || maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
                     || stepMillis != 3_600_000
@@ -34,34 +34,28 @@ public final class AutonomousLifecycleProbe {
         JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("config.json").toFile(), config);
         Files.writeString(out.resolve("system-prompt.txt"), systemPrompt(config));
         boolean informed = informedMode(config.mode());
-        if (informed) ProbeProviderEvidence.freezePolicy(out);
+        boolean thinking = thinkingMode(config.mode());
+        if (informed) ProbeProviderEvidence.freezePolicy(out, thinking);
         if (seed != null) {
             Files.copy(seed.resolve("world.journal"), out.resolve("world.journal"));
             Files.copy(seed.resolve(SceneRoutes.FILE_NAME), out.resolve(SceneRoutes.FILE_NAME));
         }
         var provider = new LiveDecisionProvider(KeySlots.load(Path.of(args[1])));
         var issued = new AtomicInteger();
-        var evidence = informed ? new ProbeProviderEvidence(out) : null;
+        var evidence = informed ? new ProbeProviderEvidence(out, thinking) : null;
+        var activeHost = new java.util.concurrent.atomic.AtomicReference<WorldWebHost>();
         try (var routes = SceneRoutes.open(out)) {
-            if (seed == null && routes.view().revision() == 0) routes.replace(0, routes.view().routes().stream().map(r ->
-                    new SceneRoutes.Route(r.scene(), r.slotId(), "deepseek-flash", true,
-                            2500, 35_000_000, 2048, 4, "lifecycle-v1")).toList());
+            if (seed == null && routes.view().revision() == 0) routes.replace(0, probeRoutes(routes.view(), config.mode()));
             try (var host = new WorldWebHost(() -> {
                 var world = openWorld(config.mode(), out.resolve("world.journal"));
                 return new WorldWebHost.Opened(world, world.profile().manifest().runId());
             }, routes, (call, timeout) -> {
-                if (evidence != null && evidence.failed()) return LiveCompletionInbox.Completion.failure("PROBE_EVIDENCE_STOP",
-                        new DecisionModel.Reply(call.runId(), call.actionId(), call.attemptId(), call.attemptNo(),
-                                call.recoveryGeneration(), "", null, "PROBE_LIMIT"));
+                if (evidence != null) return evaluateEvidence(config, evidence, issued, call, timeout, provider, () -> {
+                    try { activeHost.get().stopAutonomy(); }
+                    catch (Exception stopFailure) { System.err.println("PROBE_STOP_REQUEST_FAILED"); }
+                });
                 int index = issued.incrementAndGet();
-                if (index > config.maxHttpCalls()) return LiveCompletionInbox.Completion.failure("PROBE_CALL_LIMIT",
-                        new DecisionModel.Reply(call.runId(), call.actionId(), call.attemptId(), call.attemptNo(),
-                                call.recoveryGeneration(), "", null, "PROBE_LIMIT"));
-                if (evidence != null) {
-                    var completion = evidence.evaluate(index, call, timeout, provider);
-                    System.out.println("completed=" + index + " action=" + call.actionId());
-                    return completion;
-                }
+                if (index > config.maxHttpCalls()) return limitFailure(call, "PROBE_CALL_LIMIT");
                 try {
                     JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("call-" + index + ".json").toFile(), call);
                     var completion = provider.evaluate(call, timeout);
@@ -70,12 +64,13 @@ public final class AutonomousLifecycleProbe {
                     return completion;
                 } catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
             })) {
+                activeHost.set(host);
                 var initial = host.autonomyStatus();
                 host.startAutonomy(Long.parseLong(initial.position()), routes.view().revision(), config.targetMillis(), config.stepMillis());
                 long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(config.wallMinutes());
                 while (host.autonomyStatus().running() && issued.get() < config.maxHttpCalls()
                         && System.nanoTime() < deadline && !Files.exists(out.resolve("STOP"))
-                        && (evidence == null || !evidence.failed())) {
+                        && (evidence == null || !(thinking ? evidence.stopRequested() : evidence.failed()))) {
                     Thread.sleep(500);
                     JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("status.json").toFile(), host.autonomyStatus());
                 }
@@ -85,8 +80,8 @@ public final class AutonomousLifecycleProbe {
                 if (host.autonomyStatus().running()) host.stopAutonomy();
                 long drain = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
                 while (host.liveStatus().physicalInFlight() > 0 && System.nanoTime() < drain) Thread.sleep(100);
-                if (evidence != null && evidence.failed()) {
-                    stop = ProbeProviderEvidence.WRITE_FAILURE;
+                if (evidence != null && (thinking ? evidence.stopRequested() : evidence.failed())) {
+                    stop = evidence.stopReason();
                     System.err.println(stop);
                 }
                 var result = JSON.createObjectNode().put("probeStop", stop)
@@ -111,8 +106,32 @@ public final class AutonomousLifecycleProbe {
         }
     }
 
+    /** 先检查证据停止边界再分配真实调用序号；已入途结果始终原样返回。 */
+    static LiveCompletionInbox.Completion evaluateEvidence(Config config, ProbeProviderEvidence evidence,
+            AtomicInteger issued, edu.cufe.auction.world.DecisionRun.Call call, long timeout,
+            LiveDecisionProvider provider, Runnable stopScheduling) {
+        boolean thinking = thinkingMode(config.mode());
+        if (thinking ? evidence.stopRequested() : evidence.failed()) return limitFailure(call, "PROBE_EVIDENCE_STOP");
+        int index = issued.incrementAndGet();
+        if (index > config.maxHttpCalls()) return limitFailure(call, "PROBE_CALL_LIMIT");
+        var completion = evidence.evaluate(index, call, timeout, provider);
+        // The host registers this immutable completion only after evaluate returns. Never
+        // wait for its writer here: the evidence flag already blocks further paid HTTP,
+        // and the outer probe loop still owns the blocking stop and drain.
+        if (thinking && evidence.stopRequested()) java.util.concurrent.CompletableFuture.runAsync(stopScheduling)
+                .exceptionally(failure -> { System.err.println("PROBE_STOP_REQUEST_FAILED"); return null; });
+        System.out.println("completed=" + index + " action=" + call.actionId());
+        return completion;
+    }
+
+    private static LiveCompletionInbox.Completion limitFailure(edu.cufe.auction.world.DecisionRun.Call call, String code) {
+        return LiveCompletionInbox.Completion.failure(code, new DecisionModel.Reply(call.runId(), call.actionId(),
+                call.attemptId(), call.attemptNo(), call.recoveryGeneration(), "", null, "PROBE_LIMIT"));
+    }
+
     static edu.cufe.auction.world.WorldRuntime openWorld(String mode, Path journal) throws Exception {
         return switch (mode) {
+            case "THINKING_INFORMED_OPERATING" -> ComposedIndustryScenario.openThinkingInformedOperating(journal);
             case "CONTEXTUAL_INFORMED_OPERATING" -> ComposedIndustryScenario.openContextualInformedOperating(journal);
             case "INFORMED_OPERATING" -> ComposedIndustryScenario.openInformedOperating(journal);
             case "PLANNING_OPERATING" -> ComposedIndustryScenario.openPlanningOperating(journal);
@@ -123,7 +142,16 @@ public final class AutonomousLifecycleProbe {
     }
 
     private static boolean informedMode(String mode) {
-        return mode.equals("INFORMED_OPERATING") || mode.equals("CONTEXTUAL_INFORMED_OPERATING");
+        return mode.equals("INFORMED_OPERATING") || mode.equals("CONTEXTUAL_INFORMED_OPERATING") || thinkingMode(mode);
+    }
+
+    static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING"); }
+
+    static java.util.List<SceneRoutes.Route> probeRoutes(SceneRoutes.Snapshot original, String mode) {
+        boolean thinking = thinkingMode(mode);
+        return original.routes().stream().map(r -> new SceneRoutes.Route(r.scene(), r.slotId(), "deepseek-flash", true,
+                2500, 35_000_000, thinking ? 8192 : 2048, 4, "lifecycle-v1",
+                thinking ? DeepSeekClient.THINKING_HIGH_POLICY : null)).toList();
     }
 
     private static String systemPrompt(Config config) {
@@ -158,7 +186,13 @@ public final class AutonomousLifecycleProbe {
                     if (!Files.isRegularFile(seed.resolve(call.getFileName().toString().replace("call-", "reply-"))))
                         throw new IllegalArgumentException("种子存在结果未知的请求");
             }
-            if (informedMode(requested.mode())) ProbeProviderEvidence.validateSeed(seed, result);
+            if (informedMode(requested.mode())) ProbeProviderEvidence.validateSeed(seed, result, thinkingMode(requested.mode()));
+            if (thinkingMode(requested.mode())) {
+                try (var routes = SceneRoutes.open(seed)) {
+                    if (!routes.view().routes().equals(probeRoutes(routes.view(), requested.mode())))
+                        throw new IllegalArgumentException("种子的思考路由不符合冻结策略");
+                }
+            }
             return seed;
         } catch (java.io.IOException invalid) {
             throw new IllegalArgumentException("种子冻结文件不可读或格式不合法", invalid);

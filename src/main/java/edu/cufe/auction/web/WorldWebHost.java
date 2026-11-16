@@ -5999,7 +5999,7 @@ public final class WorldWebHost implements AutoCloseable {
     private static DecisionModel.Route decisionRoute(SceneRoutes.Route route, long revision) {
         return new DecisionModel.Route(route.scene().id(), route.slotId(), route.model(),
                 revision, route.maxCalls(), route.maxTotalTokens(), route.maxOutputTokens(),
-                route.maxConcurrency(), route.budgetPolicy());
+                route.maxConcurrency(), route.budgetPolicy(), route.providerPolicy());
     }
 
     private LiveStatus buildLiveStatus() throws IOException {

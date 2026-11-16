@@ -129,6 +129,7 @@ if node --check src/main/resources/web/app.js > "$LOG/web-chart.log" 2>&1 \
     && node scripts/test-market-chart.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node scripts/test-performance-chart.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node scripts/test-interview-view.cjs >> "$LOG/web-chart.log" 2>&1 \
+    && node scripts/test-thinking-routes.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/engineering-form-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/governance-live-scene-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/history-page-check.cjs >> "$LOG/web-chart.log" 2>&1 \

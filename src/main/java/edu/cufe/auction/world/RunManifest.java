@@ -931,6 +931,14 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
+        if (("web-thinking-operating-v1".equals(runId) || dataVersions != null && dataVersions.containsKey("provider-policy"))
+                && (dataVersions == null || !"deepseek-thinking-high-v1".equals(dataVersions.get("provider-policy"))
+                    || !"web-thinking-operating-v1".equals(runId)
+                    || !RoleDeliberation.CONTEXTUAL_VERSION.equals(dataVersions.get("role-context"))
+                    || !"manager-v1".equals(dataVersions.get("operating-information"))
+                    || !"bounded-history-v1".equals(dataVersions.get("role-input-policy"))
+                    || !"local-input-v1".equals(dataVersions.get("dispatch-policy"))))
+            throw new IllegalArgumentException("提供方策略必须显式绑定思考经营新档与v5经营输入");
         if (dataVersions != null && (dataVersions.containsKey("role-input-policy") || dataVersions.containsKey("dispatch-policy"))
                 && (!"bounded-history-v1".equals(dataVersions.get("role-input-policy"))
                     || !"local-input-v1".equals(dataVersions.get("dispatch-policy"))
@@ -1038,6 +1046,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("operating-report-order")) expectedData.put("operating-report-order", "position-v1");
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
+            if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData
                         + "，收到 " + data);

@@ -22,7 +22,7 @@ import java.util.concurrent.CountDownLatch;
  * 凭据只加载到服务端内存，用于场景调用及遮罩/显式查看，控制台只打印一次性管理员引导凭据，
  * 绝不打印 API key。启动不调用模型；只有管理员显式开始后，已启用场景才可发送有界请求。</p>
  *
- * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media|engineering|composed|custody|research|world|world-manager|world-debug|world-ready|world-manufacturing|world-industry|world-informed-operating]}；默认
+ * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media|engineering|composed|custody|research|world|world-manager|world-debug|world-ready|world-manufacturing|world-industry|world-informed-operating|world-thinking-informed-operating]}；默认
  * {@code logs/web-workbench}、{@code C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt}、
  * 端口 18080（被占用则明确失败，不会杀掉已有服务）；默认live用独立world-live.journal，scripted仍用world.journal，
  * 显式cognition使用world-cognition.journal与冻结的回忆实验策略，belief使用独立world-belief.journal
@@ -55,7 +55,7 @@ public final class WorldWebApp {
     /**
      * 启动并阻塞，直至进程结束或启动失败。
      *
-     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating或world-informed-operating，均可省略
+     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating或world-thinking-informed-operating，均可省略
      * @throws Exception 启动失败（凭据、目录、端口、世界）
      */
     public static void main(String[] args) throws Exception {
@@ -67,6 +67,7 @@ public final class WorldWebApp {
         }
 
         String mode = args.length > 3 ? args[3] : "live";
+        boolean thinkingInformedOperatingMode = mode.equals("world-thinking-informed-operating");
         boolean contextualInformedOperatingMode = mode.equals("world-contextual-informed-operating");
         boolean informedOperatingMode = mode.equals("world-informed-operating");
         boolean planningMode = mode.equals("world-planning");
@@ -74,7 +75,7 @@ public final class WorldWebApp {
         boolean operatingMode = mode.equals("world-operating");
         boolean accountableMode = mode.equals("world-accountable");
         boolean autonomousMode = mode.equals("world-autonomous") || mode.equals("world-events")
-                || operatingMode || accountableMode || planningMode || planningOperatingMode || informedOperatingMode || contextualInformedOperatingMode;
+                || operatingMode || accountableMode || planningMode || planningOperatingMode || informedOperatingMode || contextualInformedOperatingMode || thinkingInformedOperatingMode;
         if (!mode.equals("live") && !mode.equals("scripted") && !mode.equals("cognition")
                 && !mode.equals("belief") && !mode.equals("media") && !mode.equals("interview")
                 && !mode.equals("dialogue") && !mode.equals("evidence")
@@ -83,7 +84,7 @@ public final class WorldWebApp {
                 && !mode.equals("composed") && !mode.equals("custody") && !mode.equals("research") && !mode.equals("world") && !mode.equals("world-manager") && !mode.equals("world-debug") && !mode.equals("world-ready") && !mode.equals("world-manufacturing") && !mode.equals("world-industry") && !mode.equals("world-hydro") && !mode.equals("world-baseline") && !(mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode)) && !mode.equals("world-behavior")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating或world-contextual-informed-operating");
+                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-contextual-informed-operating或world-thinking-informed-operating");
         }
         boolean worldMode = mode.equals("world");
         boolean managerMode = mode.equals("world-manager");
@@ -121,13 +122,19 @@ public final class WorldWebApp {
 
         boolean routesAbsent = !Files.exists(workDir.resolve(SceneRoutes.FILE_NAME));
         SceneRoutes routes = SceneRoutes.open(workDir);
+        if (thinkingInformedOperatingMode && routesAbsent) {
+            routes.replace(0, routes.view().routes().stream().map(r -> new SceneRoutes.Route(
+                    r.scene(), r.slotId(), r.model(), false, 2500, 35_000_000, 8192, 4, "lifecycle-v1",
+                    "deepseek-thinking-high-v1")).toList());
+        }
         if ((operatingMode || accountableMode || planningMode || planningOperatingMode || informedOperatingMode || contextualInformedOperatingMode) && routesAbsent) {
             routes.replace(0, routes.view().routes().stream().map(r -> new SceneRoutes.Route(
                     r.scene(), r.slotId(), r.model(), false, 2500, 35_000_000, 2048, 4, "lifecycle-v1")).toList());
         }
         WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode))
                 ? new WorldWebHost(() -> {
-                    var runtime=contextualInformedOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openContextualInformedOperating(workDir.resolve("world-contextual-informed-operating-v2.journal"))
+                    var runtime=thinkingInformedOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openThinkingInformedOperating(workDir.resolve("world-thinking-informed-operating-v1.journal"))
+                            : contextualInformedOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openContextualInformedOperating(workDir.resolve("world-contextual-informed-operating-v2.journal"))
                             : informedOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openInformedOperating(workDir.resolve("world-informed-operating-v1.journal"))
                             : planningOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openPlanningOperating(workDir.resolve("world-planning-operating-v4.journal"))
                             : planningMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openPlanningAutonomous(workDir.resolve("world-planning-v4.journal"))

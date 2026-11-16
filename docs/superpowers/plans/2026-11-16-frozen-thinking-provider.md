@@ -25,15 +25,17 @@
 ### Task23: 冻结策略与显式新档（一个集成变更）
 **Modify:** src/main/java/edu/cufe/auction/world/DecisionModel.java; web/SceneRoutes.java,WorldWebHost.java,WorldWebServer.java,DeepSeekClient.java,LiveDecisionProvider.java; world/composed/ComposedIndustryScenario.java; src/main/resources/web/app.js; src/test/java/edu/cufe/auction/web/AutonomousLifecycleProbe.java,ProbeProviderEvidence.java and focused tests.
 **Interfaces:** Nullable providerPolicy appended to route/request records, old constructors retained. New factory openThinkingInformedOperating(Path). New probe mode THINKING_INFORMED_OPERATING. Result nullable finishReason and new nullable ProviderProvenance invocation as specified.
-- [ ] Add failing tests proving actual frozen-enabled request vs old-disabled body, new scene save/reopen/freeze, complete usage incl reasoning generation. Preserve genuine RED.
-- [ ] Implement minimal nullable strategy propagation and v2 evidence. Keep v1 bytes with null-omission.
-- [ ] Implement newfactory/probe plus strict v2seed checks and firstproviderfailure stop/drain for newmode. New config only timeout difference beyondmanifest.
-- [ ] Add focused oldserialization/conflict/length/empty/unknownfinish/overusage/tamperedseed/factorycross-open tests, and UI control preservation within existing JS verification where possible.
-- [ ] Run affected JUnit classes once; inspect final XML and raw exits. No full-suite launch by worker.
-- [ ] Self-review, save source hashes/test evidence and report; release ownership to Root. Root independent review, fixloop ifneeded, commit/freeze and final integration.
+- [x] Add failing tests proving actual frozen-enabled request vs old-disabled body, new scene save/reopen/freeze, complete usage incl reasoning generation. Preserve genuine RED.
+- [x] Implement minimal nullable strategy propagation and v2 evidence. Keep v1 bytes with null-omission.
+- [x] Implement newfactory/probe plus strict v2seed checks and firstproviderfailure stop/drain for newmode. New config only timeout difference beyondmanifest.
+- [x] Add focused oldserialization/conflict/length/empty/unknownfinish/overusage/tamperedseed/factorycross-open tests, and UI control preservation within existing JS verification where possible.
+- [x] Run affected JUnit classes once; inspect final XML and raw exits. No full-suite launch by worker.
+- [x] Self-review, save source hashes/test evidence and report; release ownership to Root. Root independent review, fixloop ifneeded, commit/freeze and final integration.
 
 ### Task24: 真实新档与经营验收
 - [ ] Independentreview complete; one formalverify/JavaDoc integratedsource and frozenclassparity.
 - [ ] Preserve opening/strict frozenconfig, fresh bounded trial max2000HTTP/30min/60day target no seed, no pre-read/autovote/auto budget, original52roles. Underlyingweights/costUNKNOWN.
 - [ ] Preserve all calls/replies/provider invocation, stop+drain onfirsttechnicalproviderfailure/evidenceunknown; review actualworld businessstate and failedoperations.
 - [ ] Audit journal strictreplay/provenance/Decimalcash; if businesschainmissing, diagnose earliest real blocker andcontinue. No claim overallcompletion without originalquarter/halfyear/causal/UI/humancriteria.
+
+Task23接线补充：src/main/java/edu/cufe/auction/app/WorldWebApp.java与WorldWebAppRouteDefaultsTest.java加入上述新显式模式/独立journal/仅缺失路由初始化。既有8类最终定向结果保存，新增入口仅跑其受影响类，不重复全组；统一正式验收后进行。scripts/test-thinking-routes.cjs需要纳入既有verify Node检查序列，或明确未注册的实际限制。
