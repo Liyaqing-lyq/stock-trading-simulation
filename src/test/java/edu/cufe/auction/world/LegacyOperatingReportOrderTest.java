@@ -71,6 +71,8 @@ class LegacyOperatingReportOrderTest {
              var informed=ComposedIndustryScenario.openInformedOperating(dir.resolve("informed.journal"))) {
             var original=informed.profile().manifest(); var legacyData=new TreeMap<>(original.dataVersions());
             legacyData.remove("operating-report-order");
+            legacyData.remove("role-input-policy");
+            legacyData.remove("dispatch-policy");
             var legacyManager=new RunManifest(original.runId(),original.seed(),original.rulesVersion(),original.moduleVersions(),legacyData,original.modelConfigVersion());
             for(var manifest:List.of(connected.profile().manifest(),legacyManager)) {
                 var paths=LegacyOperatingReportOrder.affectedPaths(manifest);

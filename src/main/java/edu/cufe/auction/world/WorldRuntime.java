@@ -6093,13 +6093,33 @@ public final class WorldRuntime implements AutoCloseable {
      * @throws IOException 输入序列化失败
      */
     public synchronized JsonNode autonomyRoleObservation(String personPartyId) throws IOException {
+        return mapper.readTree(autonomyRoleInputText(personPartyId));
+    }
+
+    /**
+     * 免费核对当前角色输入的冻结字符和字节上限；不打开决定、不预留预算、不改世界。
+     * @param personPartyId 真实人物
+     * @return 仅含安全数值的超限原因；符合上限时为空
+     * @throws IOException 同一输入序列化失败
+     */
+    public synchronized Optional<DecisionInputTooLargeException> autonomyInputLimitViolation(String personPartyId) throws IOException {
+        String input = autonomyRoleInputText(personPartyId);
+        try {
+            requireInputWithinLimits(input, decisionConfig.limits());
+            return Optional.empty();
+        } catch (DecisionInputTooLargeException tooLarge) {
+            return Optional.of(tooLarge);
+        }
+    }
+
+    private String autonomyRoleInputText(String personPartyId) throws IOException {
         requireOpen();
         var view = roleTradingViewAt(state, openRoleSessionAt(state, personPartyId, state.timeMillis()));
-        return mapper.readTree(DecisionRun.inputText(view, "wake", state.timeMillis(),
+        return DecisionRun.inputText(view, "wake", state.timeMillis(),
                 pendingActionsAt(state, requireDecisions(), personPartyId), allowedToolsOf(view), decisionConfig,
                 toolContractVersion(), manifest.hasDialogue() ? interviewInput(state, personPartyId, state.timeMillis()) : null,
                 engineeringInput(state, personPartyId, state.timeMillis()), manifest.hasGroups()
-                        ? groupsInput(state, state.information().information(), personPartyId, state.timeMillis()) : null));
+                        ? groupsInput(state, state.information().information(), personPartyId, state.timeMillis()) : null);
     }
 
     /**
@@ -28883,6 +28903,8 @@ public final class WorldRuntime implements AutoCloseable {
                 }
             }
         }
+        if (BoundedOperatingReports.VERSION.equals(manifest.dataVersions().get("role-input-policy")))
+            BoundedOperatingReports.project(root);
         if (researchDecisionEnabled() && snap.research() != null
                 && activeManager(snap.roles(), person, snap.research().companyPartyId(), now)) {
             String company = snap.research().companyPartyId();

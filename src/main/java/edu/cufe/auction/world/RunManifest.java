@@ -931,6 +931,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
+        if (dataVersions != null && (dataVersions.containsKey("role-input-policy") || dataVersions.containsKey("dispatch-policy"))
+                && (!"bounded-history-v1".equals(dataVersions.get("role-input-policy"))
+                    || !"local-input-v1".equals(dataVersions.get("dispatch-policy"))
+                    || !"position-v1".equals(dataVersions.get("operating-report-order"))
+                    || !"manager-v1".equals(dataVersions.get("operating-information"))))
+            throw new IllegalArgumentException("有界输入必须显式配对 bounded-history-v1 / local-input-v1 / position-v1 / manager-v1");
         if (dataVersions != null && dataVersions.containsKey("operating-report-order")
                 && (!"position-v1".equals(dataVersions.get("operating-report-order"))
                     || !"manager-v1".equals(dataVersions.get("operating-information"))))
@@ -1030,6 +1036,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             }
             if (data.containsKey("operating-information")) expectedData.put("operating-information", "manager-v1");
             if (data.containsKey("operating-report-order")) expectedData.put("operating-report-order", "position-v1");
+            if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
+            if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData
                         + "，收到 " + data);

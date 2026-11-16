@@ -204,6 +204,11 @@ public final class WorldWebHost implements AutoCloseable {
     private boolean sessionBegun;
     /** 上一轮结束时的跳过原因（有界，保留给状态页）。 */
     private List<SkipReason> lastSkips = List.of();
+    // 当前快照可重建的免费输入阻断，不是已付费失败决定，也不是第二本持久账。
+    private record BlockedInput(long position, long timeMillis, InputSize size) { }
+    private final Map<String, BlockedInput> blockedInputs = new HashMap<>();
+    private long blockedRefreshPosition = -1;
+    private long blockedRefreshTimeMillis = -1;
     /** 最近一次显式开始的轮次摘要（本轮场景/人员/公司）；未开始时为空。 */
     private String lastRoundScene;
     private List<String> lastRoundPersons = List.of();
@@ -320,7 +325,7 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     // 比较本人可见的具体事实；世界时间或观察时点自身变化不触发全体付费调用。
-    private static com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
+    private com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
         var facts = (com.fasterxml.jackson.databind.node.ObjectNode) input.deepCopy();
         facts.remove(List.of("time", "observedAt", "wakeReason", "pendingActions"));
         if (facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
@@ -335,18 +340,61 @@ public final class WorldWebHost implements AutoCloseable {
                 for (var meeting : director.path("meetings"))
                     ((com.fasterxml.jackson.databind.node.ObjectNode) meeting).remove("planningPrerequisites");
         }
+        if (localInputPolicy())
+            for (var company : facts.path("engineering").path("companyOperations"))
+                ((com.fasterxml.jackson.databind.node.ObjectNode) company).remove("asOfMillis");
         return facts;
+    }
+
+    private boolean localInputPolicy() {
+        return "local-input-v1".equals(runtime.profile().manifest().dataVersions().get("dispatch-policy"));
+    }
+
+    private static InputSize inputSize(WorldRuntime.DecisionInputTooLargeException error) {
+        return new InputSize(Long.toString(error.actualChars()), Long.toString(error.actualBytes()),
+                Long.toString(error.maxChars()), Long.toString(error.maxBytes()));
+    }
+
+    private boolean inputBlocked(String person) throws IOException {
+        // 输入仅取当前state及本Host冻结的manifest/decisionConfig；付费wakeFacts会剥离影响尺寸的提示，不能用于免费检查缓存。
+        var snapshot = runtime.snapshot();
+        var previous = blockedInputs.get(person);
+        if (previous != null && previous.position() == snapshot.position()
+                && previous.timeMillis() == snapshot.timeMillis()) return true;
+        var violation = runtime.autonomyInputLimitViolation(person);
+        if (violation.isPresent()) {
+            blockedInputs.put(person, new BlockedInput(snapshot.position(), snapshot.timeMillis(), inputSize(violation.get())));
+            return true;
+        }
+        blockedInputs.remove(person);
+        return false;
+    }
+
+    private void refreshBlockedInputs() throws IOException {
+        var snapshot = runtime.snapshot();
+        long position = snapshot.position(), timeMillis = snapshot.timeMillis();
+        if (blockedInputs.isEmpty() || (position == blockedRefreshPosition
+                && timeMillis == blockedRefreshTimeMillis)) return;
+        var eligible = autonomyGroups().stream().flatMap(group -> group.persons().stream()).collect(java.util.stream.Collectors.toSet());
+        blockedInputs.keySet().retainAll(eligible);
+        for (String person : List.copyOf(blockedInputs.keySet()))
+            inputBlocked(person);
+        blockedRefreshPosition = position;
+        blockedRefreshTimeMillis = timeMillis;
     }
 
     private List<WakeGroup> eventWakeGroups(List<WakeGroup> roster) throws IOException {
         var ready = new HashSet<String>();
         long now = runtime.snapshot().timeMillis();
+        if (localInputPolicy()) blockedInputs.keySet().retainAll(roster.stream()
+                .flatMap(group -> group.persons().stream()).collect(java.util.stream.Collectors.toSet()));
         for (String person : roster.stream().flatMap(g -> g.persons().stream()).distinct().toList()) {
             var input = runtime.autonomyRoleObservation(person);
             if (runtime.autonomyRoleBusy(person) || !input.path("pendingActions").isEmpty()) {
                 autonomy.busy.add(person);
                 continue;
             }
+            if (localInputPolicy() && inputBlocked(person)) continue;
             // 同一事实的严格协议失败已由DecisionModel有限重试；从持久决定派生隔离，跨重开也不重试。
             // 本人失败历史不算外部新事实，新的真实业务信息仍可解除隔离。
             if (accountableAutonomy() && failedOnSameFacts(person, input)) continue;
@@ -438,6 +486,7 @@ public final class WorldWebHost implements AutoCloseable {
     private void pumpAutonomy() throws IOException {
         if (closed || autonomy == null || !autonomy.running || livePaused) return;
         if (liveFault != null || runtime.isPaused()) { endAutonomy("WORLD_FAULT"); return; }
+        if (stopChangedAutonomyConfiguration()) return;
         if (routes.view().revision() != autonomy.revision) { endAutonomy("CONFIGURATION_CHANGED"); return; }
         if (liveRound != null || hasUnsettledWork()) return;
         var decisions = runtime.snapshot().decisions().orElseThrow().state().decisions();
@@ -452,7 +501,10 @@ public final class WorldWebHost implements AutoCloseable {
                     autonomy.windowFailures++; autonomy.failures++;
                 }
             }
-            if (!lastSkips.isEmpty()) { endAutonomy("ROLE_DISPATCH_REJECTED"); return; }
+            if (lastSkips.stream().anyMatch(skip -> !localInputPolicy()
+                    || !WorldRuntime.DecisionInputTooLargeException.CODE.equals(skip.reason()))) {
+                endAutonomy("ROLE_DISPATCH_REJECTED"); return;
+            }
         }
         if (autonomy.next == autonomy.groups.size()) {
             if (!accountableAutonomy() && autonomy.windowDecisions > 0 && autonomy.windowFailures == autonomy.windowDecisions) {
@@ -5743,6 +5795,17 @@ public final class WorldWebHost implements AutoCloseable {
         }
     }
 
+    private boolean stopChangedAutonomyConfiguration() {
+        if (!localInputPolicy() || autonomy == null || !autonomy.running
+                || routes.view().revision() == autonomy.revision) return false;
+        if (liveRound != null) {
+            liveRound.stopping = true;
+            liveRound.pending.clear();
+        }
+        endAutonomy("CONFIGURATION_CHANGED");
+        return true;
+    }
+
     private void pumpLive() throws IOException {
         WorldRuntime current = readyNow();
         if (closed || workers == null || !liveRuntime() || livePaused || liveFault != null
@@ -5752,6 +5815,8 @@ public final class WorldWebHost implements AutoCloseable {
         if (!sessionBegun) {
             return;
         }
+        // 新调度合同先停止补发，已经在途的调用仍沿原路径结算。
+        stopChangedAutonomyConfiguration();
         current.drainDecisionCallbacks();
         current.expireDecisionTimeouts();
         LiveRound round = liveRound;
@@ -5772,6 +5837,7 @@ public final class WorldWebHost implements AutoCloseable {
         SceneRoutes.Snapshot snapshot = routes.view();
         Iterator<String> iterator = round.pending.iterator();
         while (iterator.hasNext()) {
+            if (stopChangedAutonomyConfiguration()) break;
             if (physicalInFlight.size() >= capacity
                     || current.liveCompletionSlots() >= capacity
                     || unsettledCount() >= capacity) {
@@ -5810,9 +5876,9 @@ public final class WorldWebHost implements AutoCloseable {
                                 decisionRoute(route, snapshot.revision()))));
             } catch (WorldRuntime.DecisionInputTooLargeException tooLarge) {
                 round.skipped.put(person, "INPUT_TOO_LARGE");
-                round.inputSizes.put(person, new InputSize(Long.toString(tooLarge.actualChars()),
-                        Long.toString(tooLarge.actualBytes()), Long.toString(tooLarge.maxChars()),
-                        Long.toString(tooLarge.maxBytes())));
+                round.inputSizes.put(person, inputSize(tooLarge));
+                if (localInputPolicy()) blockedInputs.put(person, new BlockedInput(
+                        current.snapshot().position(), current.snapshot().timeMillis(), inputSize(tooLarge)));
                 iterator.remove();
                 continue;
             } catch (IllegalArgumentException | IllegalStateException rejected) {
@@ -5821,6 +5887,7 @@ public final class WorldWebHost implements AutoCloseable {
                 iterator.remove();
                 continue;
             }
+            if (localInputPolicy()) blockedInputs.remove(person);
             DecisionModel.Decision opened = DecisionModel.decision(
                     current.snapshot().decisions().orElseThrow().state(), actionId).orElseThrow();
             if (opened.status() != DecisionModel.Status.OPEN) {
@@ -5935,7 +6002,7 @@ public final class WorldWebHost implements AutoCloseable {
                 route.maxConcurrency(), route.budgetPolicy());
     }
 
-    private LiveStatus buildLiveStatus() {
+    private LiveStatus buildLiveStatus() throws IOException {
         WorldRuntime current = readyNow();
         WorldRuntime.Snapshot snapshot = current.snapshot();
         boolean live = workers != null && liveRuntime();
@@ -5956,6 +6023,15 @@ public final class WorldWebHost implements AutoCloseable {
         List<String> pending = liveRound == null ? List.of()
                 : List.copyOf(liveRound.pending);
         List<SkipReason> skips = liveRound != null ? collectSkips(liveRound) : lastSkips;
+        if (localInputPolicy()) {
+            refreshBlockedInputs();
+            var merged = new java.util.TreeMap<String, SkipReason>();
+            for (var skip : skips)
+                if (!WorldRuntime.DecisionInputTooLargeException.CODE.equals(skip.reason())) merged.put(skip.personPartyId(), skip);
+            blockedInputs.forEach((person, blocked) -> merged.putIfAbsent(person, new SkipReason(person,
+                    WorldRuntime.DecisionInputTooLargeException.CODE, blocked.size())));
+            skips = List.copyOf(merged.values());
+        }
         List<SceneState> scenes = new ArrayList<>();
         if (snapshot.decisions().isPresent() && routes != null) {
             SceneRoutes.Snapshot view = routes.view();
