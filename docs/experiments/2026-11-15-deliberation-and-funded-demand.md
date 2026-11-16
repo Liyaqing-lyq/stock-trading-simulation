@@ -132,3 +132,9 @@ Task13A+B独审发现的预算并发证据缺口已补齐并复审通过；只�
 独立逐条诊断（36条原basis已核对）：按被测主事实保守分类，原臂4一致/4明确矛盾/6未决/4陈述不足，新臂15一致/1明确矛盾/0未决/2陈述不足；未决与陈述不足均不计错误，不是全句准确率或策略胜率。新臂仍出现把个人NOT_ADOPTED当表决结果、把已APPLIED到会当待确认，以及主席要求先等经理提案/新会议的无据前提。WAIT本身不判错。逐行证据见logs/operating-cycle/paired-result-diagnosis/grades.json及本计划task-14-diagnostic-report.md。
 
 正式verify实际exit0，298套/2375用例无失败错误跳过，CSV46笔/124单/7排名及Web、GUI启动通过；冻结二进制与正式重编译相同。JavaDoc实际重新生成9.3秒，新入口页存在；既有JavaFX依赖模型警告保留，未做视觉人工验收。新经营试跑已启动：CONTEXTUAL_INFORMED_OPERATING、source f8b7127、2000HTTP/30分钟/60日目标，开局与规则未改、无seed/预读/脚本动作，终态尚未裁定。
+
+### v5真实终态与后续断点
+
+2026-11-16 新版v5终态：487真实HTTP，实际墙钟1852503ms，WALL_CLOCK_LIMIT，2017帧/4867001ms（约1.35模拟小时），在途0。4项任命实施（终态3在任、1待生效），预算全部0；三制造0合同/采购/生产/应收，两次采购因BUDGET_NOT_SET拒绝。整体继续不通过，原始档案SHA及487份调用/回执/来源已封存，原版独立恢复进行中。24条事实索引世界外对照结果混合，不纳入生产。已用真实线程栈确认媒体排程时点校验重解码完整历史，Task18严格认证时间复用正在修复；经理—董事经营计划通信通道正按现有工具查验，不假定缺新工具。
+
+证据：logs/operating-cycle/live-contextual-informed-f8b7127.root-terminal-summary.json；原journal SHA256 0c12c669c1da0b04abea6b57da142cbf2da515bf1e5c4b4072b32622d7a440dd；1468文件原始归档已往返核验。事实抽取task15、事实索引24条task17、只读性能定位task16均与真实世界动作分列。费用与底层权重版本均UNKNOWN；提供方声明deepseek-flash487/487，留证完整。
