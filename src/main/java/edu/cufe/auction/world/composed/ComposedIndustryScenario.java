@@ -189,6 +189,12 @@ public final class ComposedIndustryScenario {
                 edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION, true, true);
     }
 
+    /** 经理当前经营信息新档；冻结v4规划、有限需求与增量存储，不启用固定行为策略。 */
+    public static WorldRuntime openInformedOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION, true, true, true);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven) throws Exception {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, null);
     }
@@ -214,6 +220,10 @@ public final class ComposedIndustryScenario {
     }
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, roleContext, operating, compact, false);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating) throws Exception {
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -339,6 +349,11 @@ public final class ComposedIndustryScenario {
                     ? (operating ? "web-planning-operating-v4" : "web-planning-autonomous-v4")
                     : (operating ? "web-compact-operating-v1" : "web-compact-accountable-v1"),
                     runManifest.seed(), runManifest.rulesVersion(), runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (informedOperating) {
+            var data = new TreeMap<>(runManifest.dataVersions()); data.put("operating-information", "manager-v1");
+            runManifest = new RunManifest("web-informed-operating-v1", runManifest.seed(), runManifest.rulesVersion(),
+                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,
                 new ComposedWorldScenario.Extras(charters, List.of(), readers));

@@ -931,6 +931,16 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
+        if (dataVersions != null && dataVersions.containsKey("operating-information")
+                && (!RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion)
+                    || !"industry-prototype-v1".equals(dataVersions.get(DATA_PROFILE))
+                    || !"manager-v1".equals(dataVersions.get("operating-information"))
+                    || !RoleDeliberation.PLANNING_VERSION.equals(dataVersions.get("role-context"))
+                    || !StateDeltaCodec.VERSION.equals(dataVersions.get("state-storage"))
+                    || !"v1".equals(dataVersions.get("external-demand"))
+                    || !"role-events-v2".equals(dataVersions.get("autonomy-driver"))
+                    || dataVersions.containsKey("behavior-policy")))
+            throw new IllegalArgumentException("经理经营信息必须显式使用 manager-v1 / deliberation-v4 / delta-v1 / external-demand=v1，且不得混用固定行为策略");
         if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion) && dataVersions!=null && List.of("industry-baseline-v1", "industry-prototype-v1").contains(dataVersions.get(DATA_PROFILE))) {
             expected.keySet().removeAll(List.of("manufacturing","governance","dividend","manufacturing-funding"));
         }
@@ -1014,6 +1024,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                     }
                 }
             }
+            if (data.containsKey("operating-information")) expectedData.put("operating-information", "manager-v1");
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData
                         + "，收到 " + data);

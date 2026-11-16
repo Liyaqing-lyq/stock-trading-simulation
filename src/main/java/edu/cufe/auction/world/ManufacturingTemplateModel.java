@@ -44,6 +44,10 @@ public final class ManufacturingTemplateModel {
     public static final long DAY_MILLIS = 86_400_000L;
     /** 一个实验期间毫秒数（30 日）。 */
     public static final long PERIOD_MILLIS = 30L * DAY_MILLIS;
+    /** 当前采购合同的固定到货提前期；执行与经理公开条款共用。 */
+    public static final long MATERIAL_LEAD_MILLIS = DAY_MILLIS;
+    /** 当前销售合同从实际交付起计算的应收账期；不表示付款保证。 */
+    public static final long PAYMENT_TERM_MILLIS = 15L * DAY_MILLIS;
 
     /** 结果：成功（无具体业务码时的通用成功）。 */
     public static final String OK = "OK";
@@ -1067,7 +1071,7 @@ public final class ManufacturingTemplateModel {
         }
         Draft draft = new Draft(state, now);
         draft.purchases.put(poId, new PurchaseOrder(poId, materialId, quote.supplierId(), quantity,
-                quote.price(), now, now + DAY_MILLIS, PurchaseStatus.ORDERED));
+                quote.price(), now, now + MATERIAL_LEAD_MILLIS, PurchaseStatus.ORDERED));
         draft.usedIds.add(poId);
         return accept(draft, REASON_ORDERED, leg, commandId, content);
     }
@@ -1574,7 +1578,7 @@ public final class ManufacturingTemplateModel {
                 contract.unitPrice(), contract.signedAt(), contract.promisedAt(),
                 contract.expiresAt(), contract.period(), status, contract.released()));
         draft.receivables.put(receivableId, new Receivable(receivableId, contractId,
-                contract.customerId(), quantity, amount, cost, now, now + 15 * DAY_MILLIS,
+                contract.customerId(), quantity, amount, cost, now, now + PAYMENT_TERM_MILLIS,
                 amount, ReceivableStatus.OPEN));
         draft.usedIds.add(receivableId);
         return accept(draft, REASON_DELIVERED, leg, commandId, content);

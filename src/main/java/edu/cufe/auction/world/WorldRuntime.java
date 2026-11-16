@@ -28666,6 +28666,8 @@ public final class WorldRuntime implements AutoCloseable {
                 // 章程公司经理没有工程经营状态：只给本公司周期行（准备/授权/发布的依据）。
                 var node = managerships.addObject();
                 node.put("companyPartyId", company);
+                if (ManagerOperatingInformation.VERSION.equals(manifest.dataVersions().get("operating-information")))
+                    ManagerOperatingInformation.addOpeningReference(node, company);
                 java.util.Optional<PeriodicModel.CompanyPeriods> periodicState =
                         decisionPeriods(snap, company);
                 if (periodicState.isPresent()) {
@@ -28677,6 +28679,8 @@ public final class WorldRuntime implements AutoCloseable {
                 EngineeringModel.State state = snap.engineering().stateOf(company);
                 var node = managerships.addObject();
                 node.put("companyPartyId", company);
+                if (ManagerOperatingInformation.VERSION.equals(manifest.dataVersions().get("operating-information")))
+                    ManagerOperatingInformation.addOpeningReference(node, company);
                 java.util.Optional<PeriodicModel.CompanyPeriods> periodicState =
                         decisionPeriods(snap, company);
                 if (periodicState.isPresent()) {
@@ -28838,6 +28842,9 @@ public final class WorldRuntime implements AutoCloseable {
                     if (ManufacturingBehaviorPolicy.VERSION.equals(manifest.dataVersions().get("behavior-policy"))
                             || ConnectedWorldLoop.VERSION.equals(manifest.dataVersions().get("behavior-policy")))
                         ManufacturingCustomerOffers.enrich((com.fasterxml.jackson.databind.node.ObjectNode) observation,
+                                snap.companyOperations(), company, now, snap.accounts());
+                    if (ManagerOperatingInformation.VERSION.equals(manifest.dataVersions().get("operating-information")))
+                        ManagerOperatingInformation.enrich((com.fasterxml.jackson.databind.node.ObjectNode) observation,
                                 snap.companyOperations(), company, now, snap.accounts());
                     operations.add(observation);
                 }
