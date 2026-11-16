@@ -406,6 +406,153 @@ class LiveDecisionProviderTest {
         }
     }
 
+
+    @Test void auditedEvaluationSendsOnceAndPreservesLegacyRequestAndCompletion() throws Exception {
+        String content = "{\"tool\":\"role.wait\",\"decision\":{\"basis\":\"verbatim body\"}}";
+        var call = call("{\"engineering\":{\"roleContextVersion\":\"deliberation-v4\"}}", route("key-1", "deepseek-flash", 512));
+        server.enqueue(200, successBody(content, 5, 2, 7));
+        var audited = audited(call);
+        assertEquals(1, server.requestCount());
+        var firstRequest = server.lastRequestJson();
+        var tree = JSON.valueToTree(audited);
+        var provenance = tree.path("provenance");
+        assertEquals("provider-provenance-v1", provenance.path("schema").asText());
+        assertEquals("deepseek-flash", provenance.path("requestedModel").asText());
+        assertEquals("deepseek-flash", provenance.path("providerReportedModel").asText());
+        assertEquals("req-fixture", provenance.path("requestId").asText());
+        assertEquals("COMPLETE", provenance.path("outcome").asText());
+        assertTrue(provenance.path("failureCode").isNull());
+        assertEquals("run-1", provenance.path("runId").asText());
+        assertEquals("action-1", provenance.path("actionId").asText());
+        assertEquals("attempt-1", provenance.path("attemptId").asText());
+        assertEquals(1, provenance.path("attemptNo").asInt());
+        assertEquals(1, provenance.path("recoveryGeneration").asInt());
+        assertEquals(content, tree.path("completion").path("reply").path("body").asText());
+        assertFalse(audited.toString().contains("verbatim body"));
+        assertFalse(audited.toString().contains("req-fixture"));
+        server.enqueue(200, successBody(content, 5, 2, 7));
+        var legacy = provider.evaluate(call, 5_000);
+        assertEquals(2, server.requestCount());
+        assertEquals(JSON.writeValueAsString(legacy), JSON.writeValueAsString(tree.path("completion")));
+        assertEquals(firstRequest, server.lastRequestJson());
+        assertEquals(LiveDecisionProvider.PLANNING_SYSTEM_TEXT, firstRequest.path("messages").get(0).path("content").asText());
+        assertFalse(firstRequest.toString().contains("provider-provenance"));
+    }
+
+    @Test void auditedHttpFailureHasUnknownProviderIdentityAndNoExtraSend() throws Exception {
+        server.enqueue(503, "{\"id\":\"untrusted-error-id\",\"model\":\"untrusted-error-model\"}");
+        var tree = JSON.valueToTree(audited(call("observation", route("key-1", "deepseek-flash", 512))));
+        assertEquals(1, server.requestCount());
+        assertEquals("HTTP_SERVICE_UNAVAILABLE", tree.path("completion").path("failureCode").asText());
+        assertEquals("HTTP_SERVICE_UNAVAILABLE", tree.path("provenance").path("failureCode").asText());
+        assertEquals("UNKNOWN", tree.path("provenance").path("outcome").asText());
+        assertTrue(tree.path("provenance").path("providerReportedModel").isNull());
+        assertTrue(tree.path("provenance").path("requestId").isNull());
+        assertEquals("deepseek-flash", tree.path("provenance").path("requestedModel").asText());
+    }
+
+    @Test void auditedMetadataReusesClientFilteringForCredentialsAndInvalidIdentifiers() throws Exception {
+        for (String unsafe : List.of(KEYS.get("key-1"), "bad id", "x".repeat(65))) {
+            var body = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(successBody("{\"tool\":\"role.wait\"}", 5, 2, 7));
+            body.put("id", unsafe); body.put("model", unsafe);
+            server.enqueue(200, body.toString());
+            var audited = audited(call("observation", route("key-1", "deepseek-flash", 512)));
+            var tree = JSON.valueToTree(audited);
+            assertTrue(tree.path("completion").path("failureCode").isNull());
+            assertTrue(tree.path("provenance").path("providerReportedModel").isNull());
+            assertTrue(tree.path("provenance").path("requestId").isNull());
+            assertFalse(tree.toString().contains(unsafe));
+            assertFalse(audited.toString().contains(unsafe));
+        }
+        assertEquals(3, server.requestCount());
+    }
+
+    @Test void auditedIncompleteResponseRetainsParsedOutcomeAndSanitizedIdentity() throws Exception {
+        var body = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(body("assistant", "length", false, null, 7, 3));
+        body.put("id", "req-length"); body.put("model", "provider-declared-model");
+        server.enqueue(200, body.toString());
+        var tree = JSON.valueToTree(audited(call("observation", route("key-1", "deepseek-flash", 512))));
+        assertEquals(1, server.requestCount());
+        assertEquals("LENGTH", tree.path("provenance").path("outcome").asText());
+        assertEquals("PROVIDER_LENGTH", tree.path("completion").path("failureCode").asText());
+        assertEquals("PROVIDER_LENGTH", tree.path("provenance").path("failureCode").asText());
+        assertEquals("provider-declared-model", tree.path("provenance").path("providerReportedModel").asText());
+        assertEquals("req-length", tree.path("provenance").path("requestId").asText());
+    }
+
+    private Object audited(DecisionRun.Call call) throws Exception {
+        var method = org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> LiveDecisionProvider.class.getDeclaredMethod("evaluateAudited", DecisionRun.Call.class, long.class));
+        method.setAccessible(true);
+        return method.invoke(provider, call, 5_000L);
+    }
+
+
+    @Test void probeSidecarRecordsSameCallAndReplyWithSeparateModelCounts(@org.junit.jupiter.api.io.TempDir java.nio.file.Path out) throws Exception {
+        var evidence = evidence(out);
+        var call = call("{\"engineering\":{\"roleContextVersion\":\"deliberation-v4\"}}", route("key-1", "deepseek-flash", 512));
+        server.enqueue(200, successBody("{\"tool\":\"role.wait\"}", 5, 2, 7));
+        var completion = record(evidence, call);
+        assertEquals(1, server.requestCount());
+        assertEquals(JSON.readTree(JSON.writeValueAsBytes(call)), JSON.readTree(out.resolve("call-1.json").toFile()));
+        assertEquals(JSON.readTree(JSON.writeValueAsBytes(completion)), JSON.readTree(out.resolve("reply-1.json").toFile()));
+        assertEquals(JSON.writerWithDefaultPrettyPrinter().writeValueAsString(call), java.nio.file.Files.readString(out.resolve("call-1.json")));
+        assertEquals(JSON.writerWithDefaultPrettyPrinter().writeValueAsString(completion), java.nio.file.Files.readString(out.resolve("reply-1.json")));
+        var sidecar = JSON.readTree(out.resolve("provider-1.json").toFile());
+        assertEquals("provider-provenance-v1", sidecar.path("schema").asText());
+        assertEquals("req-fixture", sidecar.path("requestId").asText());
+        var summary = evidenceSummary(evidence);
+        assertTrue(summary.path("evidenceComplete").asBoolean());
+        assertEquals(1, summary.path("completedCalls").asInt());
+        assertEquals(1, summary.path("recordedCalls").asInt());
+        assertEquals(0, summary.path("missingIdentityCalls").asInt());
+        assertEquals(1, summary.path("reportedModelCounts").path("deepseek-flash").asInt());
+        assertEquals("UNKNOWN", summary.path("underlyingModelVersion").asText());
+        assertFalse(server.lastRequestJson().toString().contains("req-fixture"));
+    }
+
+    @Test void probeSidecarWriteFailureCannotReplacePaidCompletion(@org.junit.jupiter.api.io.TempDir java.nio.file.Path out) throws Exception {
+        var evidence = evidence(out);
+        java.nio.file.Files.createDirectory(out.resolve("provider-1.json"));
+        String body = "{\"tool\":\"role.wait\",\"decision\":{\"basis\":\"original paid reply\"}}";
+        server.enqueue(200, successBody(body, 5, 2, 7));
+        var completion = record(evidence, call("observation", route("key-1", "deepseek-flash", 512)));
+        assertTrue(completion.businessReply());
+        assertEquals(body, completion.reply().body());
+        assertEquals(1, server.requestCount());
+        assertEquals(JSON.readTree(JSON.writeValueAsBytes(completion)), JSON.readTree(out.resolve("reply-1.json").toFile()));
+        var summary = evidenceSummary(evidence);
+        assertFalse(summary.path("evidenceComplete").asBoolean());
+        assertEquals("PROBE_EVIDENCE_WRITE_FAILED", summary.path("failureCode").asText());
+        assertEquals(1, summary.path("completedCalls").asInt());
+        assertEquals(0, summary.path("recordedCalls").asInt());
+        assertEquals(true, evidence.getClass().getDeclaredMethod("failed").invoke(evidence));
+    }
+
+    @Test void probeExplicitUnknownIdentityIsCompleteButNeverVersionPinned(@org.junit.jupiter.api.io.TempDir java.nio.file.Path out) throws Exception {
+        var evidence = evidence(out);
+        server.enqueue(503, "{}");
+        var completion = record(evidence, call("observation", route("key-1", "deepseek-flash", 512)));
+        assertEquals("HTTP_SERVICE_UNAVAILABLE", completion.failureCode());
+        var summary = evidenceSummary(evidence);
+        assertTrue(summary.path("evidenceComplete").asBoolean());
+        assertEquals(1, summary.path("missingIdentityCalls").asInt());
+        assertEquals(0, summary.path("reportedModelCounts").size());
+        assertEquals("UNKNOWN", summary.path("underlyingModelVersion").asText());
+        assertTrue(JSON.readTree(out.resolve("provider-1.json").toFile()).path("providerReportedModel").isNull());
+    }
+
+    private Object evidence(java.nio.file.Path out) throws Exception {
+        var type = org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> Class.forName("edu.cufe.auction.web.ProbeProviderEvidence"));
+        return type.getDeclaredConstructor(java.nio.file.Path.class).newInstance(out);
+    }
+    private LiveCompletionInbox.Completion record(Object evidence, DecisionRun.Call call) throws Exception {
+        return (LiveCompletionInbox.Completion) evidence.getClass().getDeclaredMethod("evaluate", int.class, DecisionRun.Call.class, long.class, LiveDecisionProvider.class)
+                .invoke(evidence, 1, call, 5_000L, provider);
+    }
+    private JsonNode evidenceSummary(Object evidence) throws Exception {
+        return (JsonNode) evidence.getClass().getDeclaredMethod("summary", int.class, int.class).invoke(evidence, 1, 0);
+    }
+
     // ------------------------------------------------------------ fixture
 
     private static DecisionModel.Route route(String slotId, String model, int maxOutputTokens) {

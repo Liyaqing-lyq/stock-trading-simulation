@@ -14,7 +14,7 @@ class WorldWebAppRouteDefaultsTest {
     @TempDir Path root;
 
     @Test void existingRevisionZeroLegacyFileRemainsByteForByteUnchangedInBothNewModes() throws Exception {
-        for (String mode : new String[]{"world-accountable", "world-operating", "world-planning", "world-planning-operating"}) {
+        for (String mode : new String[]{"world-accountable", "world-operating", "world-planning", "world-planning-operating", "world-informed-operating"}) {
             Path work = Files.createDirectory(root.resolve(mode));
             try (var routes = SceneRoutes.open(work)) { assertEquals(0, routes.view().revision()); }
             byte[] before = Files.readAllBytes(work.resolve(SceneRoutes.FILE_NAME));
@@ -28,7 +28,7 @@ class WorldWebAppRouteDefaultsTest {
     }
 
     @Test void freshExplicitModesReceiveFiniteDisabledLifecycleDefaults() throws Exception {
-        for (String mode : new String[]{"world-accountable", "world-operating", "world-planning", "world-planning-operating"}) {
+        for (String mode : new String[]{"world-accountable", "world-operating", "world-planning", "world-planning-operating", "world-informed-operating"}) {
             Path work = Files.createDirectory(root.resolve(mode));
             initialize(work, mode);
             try (var routes = SceneRoutes.open(work)) {
@@ -41,6 +41,17 @@ class WorldWebAppRouteDefaultsTest {
                     assertEquals(4, route.maxConcurrency());
                 }
             }
+        }
+    }
+
+    @Test void informedEntryCreatesItsOwnVersionedJournal() throws Exception {
+        Path work = Files.createDirectory(root.resolve("informed-manifest"));
+        initialize(work, "world-informed-operating");
+        Path journal = work.resolve("world-informed-operating-v1.journal");
+        assertTrue(Files.isRegularFile(journal));
+        assertFalse(Files.exists(work.resolve("world-planning-operating-v4.journal")));
+        try (var world = edu.cufe.auction.world.composed.ComposedIndustryScenario.openInformedOperating(journal)) {
+            assertEquals("web-informed-operating-v1", world.profile().manifest().runId());
         }
     }
 

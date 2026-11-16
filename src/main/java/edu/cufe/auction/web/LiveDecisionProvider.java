@@ -22,7 +22,7 @@ import java.util.function.Function;
  *
  * <p><b>失败口径</b>：提供方传输/协议失败 → {@code HTTP_<Code>}；不完整效果 →
  * {@code PROVIDER_<Outcome>}；本地意外异常 → {@code LOCAL_PROVIDER_ERROR}。技术失败正文为空，
- * 不伪造观望回执；异常自由文本不外传。来源固定 {@value #USAGE_SOURCE}，不记录 requestId/model。</p>
+ * 不伪造观望回执；异常自由文本不外传。来源固定 {@value #USAGE_SOURCE}，原回执不记录 requestId/model；显式审计入口单独返回已过滤的来源元数据。</p>
  */
 public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider {
 
@@ -124,6 +124,11 @@ public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider
      * @throws IllegalArgumentException 缺少冻结计划、超时越界、调用为空（都在发请求之前）
      */
     public LiveCompletionInbox.Completion evaluate(DecisionRun.Call call, long timeoutMillis) {
+        return evaluateAudited(call, timeoutMillis).completion();
+    }
+
+    /** 显式审计入口：同一请求的完成候选和安全来源分开返回，不执行任何审计写入。 */
+    AuditedEvaluation evaluateAudited(DecisionRun.Call call, long timeoutMillis) {
         if (call == null) {
             throw new IllegalArgumentException("派发描述不能为空");
         }
@@ -140,21 +145,51 @@ public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider
         try {
             DeepSeekClient client = clients.apply(route.slotId());
             if (client == null) {
-                return LiveCompletionInbox.Completion.failure(FAILURE_LOCAL, reply(call, "", null));
+                return audited(call, LiveCompletionInbox.Completion.failure(FAILURE_LOCAL, reply(call, "", null)), null);
             }
             DeepSeekClient.Result result = client.send(request);
             if (result.outcome() == DeepSeekClient.Outcome.COMPLETE) {
-                return LiveCompletionInbox.Completion.business(
-                        reply(call, result.content(), result.usage()));
+                return audited(call, LiveCompletionInbox.Completion.business(
+                        reply(call, result.content(), result.usage())), result);
             }
-            return LiveCompletionInbox.Completion.failure(
-                    "PROVIDER_" + result.outcome().name(), reply(call, "", result.usage()));
+            return audited(call, LiveCompletionInbox.Completion.failure(
+                    "PROVIDER_" + result.outcome().name(), reply(call, "", result.usage())), result);
         } catch (DeepSeekClient.Failure failure) {
-            return LiveCompletionInbox.Completion.failure(
-                    "HTTP_" + failure.code().name(), reply(call, "", failure.usageOrNull()));
+            return audited(call, LiveCompletionInbox.Completion.failure(
+                    "HTTP_" + failure.code().name(), reply(call, "", failure.usageOrNull())), null);
         } catch (RuntimeException local) {
-            return LiveCompletionInbox.Completion.failure(FAILURE_LOCAL, reply(call, "", null));
+            return audited(call, LiveCompletionInbox.Completion.failure(FAILURE_LOCAL, reply(call, "", null)), null);
         }
+    }
+
+    /** 审计策略独立于业务回执格式；提供方名称可能仍是别名，不代表底层权重版本。 */
+    static final String PROVENANCE_SCHEMA = "provider-provenance-v1";
+
+    /** 只含冻结调用身份及客户端已经过滤的提供方元数据，不含正文、认证或原始响应。 */
+    record ProviderProvenance(String schema, String runId, String actionId, String attemptId,
+                              int attemptNo, long recoveryGeneration, String requestedModel,
+                              String providerReportedModel, String requestId, String outcome, String failureCode) {
+        @Override public String toString() {
+            return "ProviderProvenance[schema=" + PROVENANCE_SCHEMA
+                    + ", providerReportedModel=" + (providerReportedModel == null ? "none" : "present")
+                    + ", requestId=" + (requestId == null ? "none" : "present") + "]";
+        }
+    }
+
+    /** 完成候选原样返回；摘要不展开回执正文或提供方控制的文本。 */
+    record AuditedEvaluation(LiveCompletionInbox.Completion completion, ProviderProvenance provenance) {
+        @Override public String toString() {
+            return "AuditedEvaluation[completion=present, provenance=" + provenance + "]";
+        }
+    }
+
+    private static AuditedEvaluation audited(DecisionRun.Call call, LiveCompletionInbox.Completion completion,
+                                             DeepSeekClient.Result result) {
+        return new AuditedEvaluation(completion, new ProviderProvenance(PROVENANCE_SCHEMA,
+                call.runId(), call.actionId(), call.attemptId(), call.attemptNo(), call.recoveryGeneration(),
+                call.plan().route().model(), result == null ? null : result.model(),
+                result == null ? null : result.requestId(), result == null ? "UNKNOWN" : result.outcome().name(),
+                completion.failureCode()));
     }
 
     /** 身份完全取 Call；usage 已知时记一次尝试，费用保持未知；来源固定。 */
