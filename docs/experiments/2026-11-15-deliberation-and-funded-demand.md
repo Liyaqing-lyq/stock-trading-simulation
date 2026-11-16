@@ -92,3 +92,22 @@ world-informed-operating / INFORMED_OPERATING显式接入manager-v1、position-v
 本次完整正式命令bash scripts/verify.sh --with-gui退出0：294套2347项、失败/错误/跳过0；真实CSV46成交/117订单/7排行复算通过，Web检查和GUI启动通过。JavaDoc真实重新生成退出0。此处未声称浏览器视觉通过，也不是经营通过。证据在logs/operating-cycle/verification-c78e978。
 
 冻结informed-c78e978-runtime共1760文件，源文件和运行文件SHA逐项吻合、18项依赖另留指纹。新鲜真实试跑live-informed-operating-v1-c78e978已经启动：无seed、无预读、无脚本选票或经营，上限2000请求/30分钟，目标60模拟日。原始call/reply/provider与只读资源样本全部留项目日志；当前尚无终态经营结论。提供方首批声明模型仍是deepseek-flash别名，不能当作底层权重版本锁定。整体复选框不变。
+
+
+### 2026-11-16 c78e978 informed真实终态：仍不通过
+
+冻结新模式无seed、无预读、无脚本经营，709次真实HTTP/709原回执/709提供方来源文件；墙钟1810473ms后按WALL_CLOCK_LIMIT退出0，physicalInFlight=0，终态2902/10821001ms（约3.006小时）。60日仅为目标，未达到。status.json保留末次运行中采样，最终状态以result.json和.exit.json为准。
+
+| 实际结果 | 核验口径 |
+| --- | --- |
+| 4项经理任命实施 | 陈酿、研发、衡储、砺晶；终态衡储任期已到，另外3项仍在任 |
+| 1场制造预算会议实施 | 澄曜采购3000.00、人工1200.00，5席独立原回执表决；该公司仍无经理 |
+| 三制造经营全0 | 合同、采购、生产批次、应收均为空；砺晶有经理无预算，衡储任期到期前也无预算 |
+| 陈酿1笔原料下单 | ORDER_RAW受理，amount0.00；后续PRODUCE因MATERIAL_SHORT拒绝，不是到货/付款/产成品或回款 |
+| 水电123条SETTLE | 系统结算，不计模型经营动作；无DISPATCH_FLOW |
+
+模型声明输入5536218/输出60470 tokens；709次请求模型及提供方声明均deepseek-flash，无提供方故障码，底层权重版本与实际费用UNKNOWN。2次运行失败分别为BAD_REPLY_SHELL和UNKNOWN_TOOL，已由后续原始输入的protocolReason确认，不能与提供方网络失败混称。最大输入25330字符/33855字节，均未触及32768/60000门限。
+
+完整原journal11823970字节，SHA256 5e4058d14aa81f8554c2b982441de40c05755dcacbe2e209ff6f988f2f13336f；2131份原始文本归档5616944字节，SHA256 c3c86cad118617c4bdd5736c6f9de25af189119f487781b94692e8984311c11e。来源与文件SHA清单见logs/operating-cycle/informed-c78e978-evidence-seal.json；真实终态汇总informed-final-summary-c78e978.json。原journal复制到informed-recovered-c78e978后由原冻结c78类独立恢复，HTTP0；当前恢复结果待核，不能提前称通过。
+
+运行中历史信息查询导致writer数分钟占用：线程栈和受控复现定位到commit后delta游标回到当前位置，旧观察反复从开头解码；不是已证实永久死锁。Task12仅修精确历史信息的有界缓存，不放宽哈希、事件或恢复审计。Task13只读追查当前治理事实、重复实施的反馈及经理复查时间，区分模型选择、信息缺项和墙钟截断；尚未以脚本补预算、任命或订单。整体经营、跨期、因果对照、季度/半年、真实视觉及人工review仍未完成。
