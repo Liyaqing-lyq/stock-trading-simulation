@@ -931,6 +931,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
+        if (dataVersions != null && dataVersions.containsKey("operating-report-order")
+                && (!"position-v1".equals(dataVersions.get("operating-report-order"))
+                    || !"manager-v1".equals(dataVersions.get("operating-information"))))
+            throw new IllegalArgumentException("经营报告顺序必须显式配对 position-v1 / manager-v1");
         if (dataVersions != null && dataVersions.containsKey("operating-information")
                 && (!RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion)
                     || !"industry-prototype-v1".equals(dataVersions.get(DATA_PROFILE))
@@ -1025,6 +1029,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 }
             }
             if (data.containsKey("operating-information")) expectedData.put("operating-information", "manager-v1");
+            if (data.containsKey("operating-report-order")) expectedData.put("operating-report-order", "position-v1");
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData
                         + "，收到 " + data);

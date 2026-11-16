@@ -352,6 +352,7 @@ public final class ComposedIndustryScenario {
         }
         if (informedOperating) {
             var data = new TreeMap<>(runManifest.dataVersions()); data.put("operating-information", "manager-v1");
+            data.put("operating-report-order", "position-v1");
             runManifest = new RunManifest("web-informed-operating-v1", runManifest.seed(), runManifest.rulesVersion(),
                     runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }

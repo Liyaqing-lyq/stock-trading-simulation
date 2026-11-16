@@ -352,6 +352,10 @@ public final class WorldRuntime implements AutoCloseable {
     public String commitFailureCode() { return commitFailureCode; }
 
     private boolean compactState() { return StateDeltaCodec.VERSION.equals(manifest.dataVersions().get("state-storage")); }
+    /** 仅显式新信息合同固定报告提交序；所有旧档保持原实时投影。 */
+    private boolean positionOrderedOperationsReports() {
+        return "position-v1".equals(manifest.dataVersions().get("operating-report-order"));
+    }
     private static boolean stateEvent(String type) { return SNAPSHOT_TYPE.equals(type) || StateDeltaCodec.TYPE.equals(type); }
 
     private boolean closed;
@@ -9806,7 +9810,7 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("决定批次的审计数量与操作不一致");
         }
         DecisionBatch expected = mutating.isEmpty() ? expectedIdentityRejection(previous, commit)
-                : expectedDecisionBatch(previous, commit, mutating.get(0));
+                : expectedDecisionBatch(previous, commit, mutating.get(0), candidate.decisions());
         if (!expected.decisions().equals(candidate.decisions())
                 || !expected.pending().equals(candidate.pending())
                 || !expected.usedTaskIds().equals(candidate.usedTaskIds())
@@ -9877,10 +9881,10 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private DecisionBatch expectedDecisionBatch(WorldState previous, WorldCommit commit,
-                                                WorldEvent event) throws IOException {
+                                                WorldEvent event, DecisionRun historicalDecisions) throws IOException {
         return switch (event.type()) {
             case "DECISION_SESSION_OPEN_V1" -> expectedSessionOpen(previous, commit, event);
-            case "DECISION_OPENED_V1" -> expectedOpen(previous, commit, event);
+            case "DECISION_OPENED_V1" -> expectedOpen(previous, commit, event, historicalDecisions);
             case "DECISION_REPLIED_V1" -> expectedReply(previous, commit, event, false);
             case "DECISION_ACTION_SCHEDULED_V1" -> expectedReply(previous, commit, event, true);
             case "DECISION_FAILED_V1" -> expectedFailure(previous, commit, event, false);
@@ -9923,8 +9927,8 @@ public final class WorldRuntime implements AutoCloseable {
                 outcome, true);
     }
 
-    private DecisionBatch expectedOpen(WorldState previous, WorldCommit commit, WorldEvent event)
-            throws IOException {
+    private DecisionBatch expectedOpen(WorldState previous, WorldCommit commit, WorldEvent event,
+                                       DecisionRun historicalDecisions) throws IOException {
         if (!commit.commandId().startsWith("dec-open:")) {
             throw new IOException("开决定批次命令前缀不符：" + commit.commandId());
         }
@@ -9988,6 +9992,7 @@ public final class WorldRuntime implements AutoCloseable {
         DecisionRun candidate = run;
         DecisionModel.State model = run.state();
         GroupsRun groupsAfter = previous.groups();
+        List<LegacyOperatingReportOrder.InputPair> legacyInputs = new ArrayList<>();
         int opened = 0;
         int created = 0;
         for (DecisionRun.Request request : requests) {
@@ -10012,6 +10017,12 @@ public final class WorldRuntime implements AutoCloseable {
                                     : previous.information().information(), request.personPartyId(),
                                     cutoffTime)
                             : null);
+            DecisionModel.Decision historical = DecisionModel.decision(historicalDecisions.state(),
+                    request.actionId()).orElseThrow(() -> new IOException("历史决定缺失：" + request.actionId()));
+            legacyInputs.add(new LegacyOperatingReportOrder.InputPair(input, historical.inputText()));
+            input = historicalDecisionInput(input, historical.inputText(), cutoffPosition);
+            if (!input.equals(historical.inputText()))
+                throw new IOException("决定输入无法由历史快照重生成：" + request.actionId());
             DecisionModel.ProviderPlan plan = new DecisionModel.ProviderPlan(request.route(),
                     input.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
             DecisionModel.OpenRequest openRequest = new DecisionModel.OpenRequest(model.runId(),
@@ -10040,6 +10051,9 @@ public final class WorldRuntime implements AutoCloseable {
                 default -> throw new IOException("无法重建开决定：" + result.reason());
             }
         }
+        if (legacyOperatingReportRepresentation())
+            LegacyOperatingReportOrder.requireCommonBatch(legacyInputs, cutoffPosition,
+                    LegacyOperatingReportOrder.affectedPaths(manifest));
         if (created == 0) {
             throw new IOException("持久化开决定批次必须新建决定");
         }
@@ -10413,9 +10427,24 @@ public final class WorldRuntime implements AutoCloseable {
                                 : previous.information().information(),
                                 decision.personPartyId(), decision.cutoffTimeMillis())
                         : null);
+        regenerated = historicalDecisionInput(regenerated, decision.inputText(), decision.cutoffPosition());
         if (!regenerated.equals(decision.inputText())) {
             throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());
         }
+    }
+
+    private boolean legacyOperatingReportRepresentation() {
+        return !manifest.dataVersions().containsKey("operating-report-order")
+                && (manifest.hasDefaultPeriodicGovernance() || compactState());
+    }
+
+    /** 两道历史审计共用表示恢复；候选只能提示报告排列，所有行与其他字节来自重生成文本。 */
+    private String historicalDecisionInput(String regenerated, String historical, long cutoff) throws IOException {
+        if (!regenerated.equals(historical)
+                && legacyOperatingReportRepresentation())
+            return LegacyOperatingReportOrder.reconstruct(regenerated, historical, cutoff,
+                    LegacyOperatingReportOrder.affectedPaths(manifest));
+        return regenerated;
     }
 
     /** 历史前缀：身份、输入、屏障与已结算尝试逐项不得改写。 */
@@ -28805,7 +28834,7 @@ public final class WorldRuntime implements AutoCloseable {
                 var board=snap.companyGovernance().boardOf(company.companyPartyId()).board();var bank=snap.bank().decode(snap.accounts());
                 long period=now/ManufacturingTemplateModel.PERIOD_MILLIS;
                 BigDecimal budget=board.budget(period,BoardModel.BudgetCategory.PRODUCTION_LABOR)==null ? null : BoardModel.availableBudget(board,period,BoardModel.BudgetCategory.PRODUCTION_LABOR);
-                var reports=snap.companyOperations().reports().values().stream().filter(r->r.companyPartyId().equals(company.companyPartyId())).toList();
+                var reports=CompanyOperationsDecisionTools.reports(snap.companyOperations(), company.companyPartyId(), positionOrderedOperationsReports());
                 root.set("digitalOperations",DigitalDecisionTools.observation(company,now,snap.accounts().get(company.config().model().companyAccountId()).cash(),reports,budget));
             }
         }
@@ -28815,7 +28844,7 @@ public final class WorldRuntime implements AutoCloseable {
                 var board=snap.companyGovernance().boardOf(company.companyPartyId()).board();var bank=snap.bank().decode(snap.accounts());
                 long period=now/ManufacturingTemplateModel.PERIOD_MILLIS;
                 BigDecimal budget=board.budget(period,BoardModel.BudgetCategory.PRODUCTION_LABOR)==null ? null : BoardModel.availableBudget(board,period,BoardModel.BudgetCategory.PRODUCTION_LABOR);
-                var reports=snap.companyOperations().reports().values().stream().filter(r->r.companyPartyId().equals(company.companyPartyId())).toList();
+                var reports=CompanyOperationsDecisionTools.reports(snap.companyOperations(), company.companyPartyId(), positionOrderedOperationsReports());
                 root.set("agedOperations",AgedDecisionTools.observation(company,new edu.cufe.auction.world.bank.FundState(snap.accounts(),bank.state(),bank.book()),now,reports,budget));
             }
         }
@@ -28824,21 +28853,21 @@ public final class WorldRuntime implements AutoCloseable {
             if (activeManager(snap.roles(),person,hydro.companyPartyId(),now)) root.set("hydroOperations",
                     HydroDecisionTools.observation(hydro,snap.companyGovernance().boardOf(hydro.companyPartyId()),
                             snap.accounts().get(hydro.config().model().companyAccountId()).cash(),
-                            snap.companyOperations().reports().values().stream().filter(r->r.companyPartyId().equals(hydro.companyPartyId())).toList()));
+                            CompanyOperationsDecisionTools.reports(snap.companyOperations(), hydro.companyPartyId(), positionOrderedOperationsReports())));
         }
         if (resourceDecisionEnabled() && snap.companyOperations() != null && snap.companyOperations().resource() != null) {
             var resource = snap.companyOperations().resource();
             if (activeManager(snap.roles(), person, resource.companyPartyId(), now)) root.set("resourceOperations",
                     ResourceDecisionTools.observation(resource, snap.companyGovernance().boardOf(resource.companyPartyId()), now,
                             snap.accounts().get(resource.ledger().config().companyAccountId()).cash(),
-                            snap.companyOperations().reports().values().stream().filter(report -> resource.companyPartyId().equals(report.companyPartyId())).toList()));
+                            CompanyOperationsDecisionTools.reports(snap.companyOperations(), resource.companyPartyId(), positionOrderedOperationsReports())));
         }
         if (operationsDecisionEnabled() && snap.companyOperations() != null) {
             var operations = root.putArray("companyOperations");
             for (String company : snap.companyOperations().companyIds()) {
                 if (activeManager(snap.roles(), person, company, now)) {
                     var observation = CompanyOperationsDecisionTools.observation(
-                            snap.companyOperations(), snap.companyGovernance().boardOf(company), company, now, snap.accounts());
+                            snap.companyOperations(), snap.companyGovernance().boardOf(company), company, now, snap.accounts(), positionOrderedOperationsReports());
                     if (ManufacturingBehaviorPolicy.VERSION.equals(manifest.dataVersions().get("behavior-policy"))
                             || ConnectedWorldLoop.VERSION.equals(manifest.dataVersions().get("behavior-policy")))
                         ManufacturingCustomerOffers.enrich((com.fasterxml.jackson.databind.node.ObjectNode) observation,
@@ -28846,6 +28875,10 @@ public final class WorldRuntime implements AutoCloseable {
                     if (ManagerOperatingInformation.VERSION.equals(manifest.dataVersions().get("operating-information")))
                         ManagerOperatingInformation.enrich((com.fasterxml.jackson.databind.node.ObjectNode) observation,
                                 snap.companyOperations(), company, now, snap.accounts());
+                    if (positionOrderedOperationsReports())
+                        ((com.fasterxml.jackson.databind.node.ObjectNode) observation).set("reports",
+                                mapper.valueToTree(CompanyOperationsDecisionTools.reports(
+                                        snap.companyOperations(), company, true)));
                     operations.add(observation);
                 }
             }
