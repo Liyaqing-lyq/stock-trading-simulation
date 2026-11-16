@@ -116,3 +116,19 @@ world-informed-operating / INFORMED_OPERATING显式接入manager-v1、position-v
 原informed档审计补记：冻结c78 reader已完整恢复2902帧，退出0、墙钟1350484ms、HTTP0，终态2902/10821001ms与原result一致；709份原输入/工具/计划/摘要/身份/回执/用量及提供方声明逐条锚定通过，原journal SHA未变。独立Decimal核验总现金447500.00→447500.00，最终消费者期初/期末90000.00、实际收入分配与消费付款均0、销售回执0；三制造合同/采购/批次/应收和关期仍全0。该核验确认失败数据一致，不是持续需求或经营通过。证据informed-recovered-c78e978/{recovery-exit,original-call-provenance,funded-cash-audit}.json。
 
 历史资料缓存切片8bdefb2：仅delta-v1近期精确InformationModel投影，最多64条/8MiB；旧状态、业务规则、哈希和原命令审计不改。首版受影响200项通过后，独审F1发现自洽替换帧可被数值前沿错误重热，故该候选未接受；修1删除fallback准入，3个真实RED及最终两suite14项GREEN、独立限定复审PASS。只允许durable/fullvalidated recovery暖缓存，远旧/淘汰/超限/身份不匹配仍每次走完整原decoder；原decoder返回边界未另行加固，通用全状态提交/恢复成本仍存在。1770个冻结运行文件SHA已逐一核对；正在用冻结8bdefb2恢复同一原档副本，结果尚待，不混称原c78审计或新模型行为。
+
+2026-11-16 原档核验关闭：c78 原版独立严格恢复2902帧、709份原输入/回执/提供方来源全部对应，Decimal现金审计通过但销售回款仍为0。8bdefb2 缓存版对同一封存档独立恢复 exit0；11个审计区块的值、数字字面量和数组顺序与原版一致，原journal SHA未变；原始JSON字节不完全相同（对象键序/格式）。约20分钟恢复仍暴露通用全状态成本，单次耗时差不是受控性能结论。治理v5切片实现待独审，尚未产生新模型改善或经营证据。
+
+### 124. v5治理事实同切点真实对照（f8b7127）
+
+Task13A+B独审发现的预算并发证据缺口已补齐并复审通过；只新增事实上下文与已有预算提案阻断，原拒绝、业务执行与权限保留。完整集成仍运行中，此处只记录世界外诊断。
+
+6个原始真实观察切点×2臂×3次重复，固定原PLANNING提示，deepseek-flash提供方声明36次；底层权重版本与费用UNKNOWN。36请求/36回复/36来源完整，50292ms、exit0；输入token308601、输出3099。原输入臂16WAIT+1attend+1addMaterial；新输入臂17WAIT+1convene。全部是建议，世界命令执行0，不能计为会议或经营成功。两臂重复proposeBudget均0/3，不能拿原历史call509的失败替代本轮对照，也不能宣称该项行为改善。
+
+新输入减少若干任职/预算误读，但仍有未改正的表决结果误读及主席等待新会议等理由；逐条事实/权限诊断进行中，不先给统计显著或完整闭环结论。原始证据150文件封存于logs/operating-cycle/live-governance-paired-f8b7127，SHA清单root-provenance-seal.json，gzip备份同名.raw-evidence.jsonl.gz。
+
+第一次启动被自动审批按可能敏感外发拦截，未建进程；之后逐份核对输入与生成源均显式EXP虚构，12份无凭据/邮箱/本机路径，目的地固定DeepSeek官方接口；带新增低风险证据重新提交后获准执行，未变更执行渠道或放开安全设置。核验见governance-paired-helper/synthetic-disclosure-check.json。
+
+独立逐条诊断（36条原basis已核对）：按被测主事实保守分类，原臂4一致/4明确矛盾/6未决/4陈述不足，新臂15一致/1明确矛盾/0未决/2陈述不足；未决与陈述不足均不计错误，不是全句准确率或策略胜率。新臂仍出现把个人NOT_ADOPTED当表决结果、把已APPLIED到会当待确认，以及主席要求先等经理提案/新会议的无据前提。WAIT本身不判错。逐行证据见logs/operating-cycle/paired-result-diagnosis/grades.json及本计划task-14-diagnostic-report.md。
+
+正式verify实际exit0，298套/2375用例无失败错误跳过，CSV46笔/124单/7排名及Web、GUI启动通过；冻结二进制与正式重编译相同。JavaDoc实际重新生成9.3秒，新入口页存在；既有JavaFX依赖模型警告保留，未做视觉人工验收。新经营试跑已启动：CONTEXTUAL_INFORMED_OPERATING、source f8b7127、2000HTTP/30分钟/60日目标，开局与规则未改、无seed/预读/脚本动作，终态尚未裁定。
