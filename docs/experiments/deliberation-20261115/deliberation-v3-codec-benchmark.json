@@ -1,0 +1,12 @@
+{
+  "scope" : "offline codec equivalence only; unchanged historical commands; not a migrated world or new autonomous experiment",
+  "sourceBytes" : 2397066556,
+  "sourceSha256" : "1125a81ac9af90020774dd1a9cdc977bd811c741087c1b4ca961f03658378bdf",
+  "confirmedFrames" : 2001,
+  "maxDecodedDeltaFrameBytes" : 214098,
+  "totalDecodedDeltaBytes" : 36423574,
+  "derivedBytes" : 7237401,
+  "elapsedMillis" : 766284,
+  "httpCalls" : 0,
+  "allStateValuesEquivalent" : true
+}

@@ -1,0 +1,14 @@
+{
+  "sourceCommit": "75f17f4cdd3d23334da1f0166580c0d75fe528d8",
+  "sourceJournalSha256": "a671a4a4dab3e453481d2111fee0c3323b26e8f096cd4ba41faadc27aa36b724",
+  "httpCalls": 0,
+  "exit": {
+    "code": 1,
+    "signal": null,
+    "wallMillis": 213410
+  },
+  "reason": "决定输入无法由历史快照重生成",
+  "decisionId": "live:1253:1:governance:hydro:act:hydro-manager",
+  "recoveryPassed": false,
+  "scope": "Independent recovery using frozen 75f17f4 classes and unchanged journal copy; diagnosis pending"
+}

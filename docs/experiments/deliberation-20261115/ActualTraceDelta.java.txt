@@ -1,0 +1,45 @@
+package edu.cufe.auction.world;
+import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import java.io.*;import java.nio.file.*;import java.security.*;import java.util.*;
+/** Offline codec benchmark only. Does not migrate a runtime, call models, or produce business actions. */
+public final class ActualTraceDelta {
+ static final ObjectMapper JSON=new ObjectMapper().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).setNodeFactory(JsonNodeFactory.withExactBigDecimals(true));
+ public static void main(String[] args)throws Exception{
+  Path input=Path.of(args[0]), output=Path.of(args[1]); Files.createDirectory(output);
+  String previous=null,run=null;long position=0,maxDelta=0,totalRaw=0,started=System.nanoTime();
+  MessageDigest sourceHash=MessageDigest.getInstance("SHA-256");
+  try(var stream=new DataInputStream(new BufferedInputStream(new DigestInputStream(Files.newInputStream(input),sourceHash)));
+      var target=new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(output.resolve("codec-only.frames"),StandardOpenOption.CREATE_NEW)))){
+   while(true){int header;try{header=stream.readInt();}catch(EOFException done){break;}
+    if(stream.readInt()!=~header)throw new IOException("bad header");int length=header&Integer.MAX_VALUE;
+    if(length<=0||length>16*1024*1024)throw new IOException("bad bound");
+    byte[] bytes=stream.readNBytes(length),hash=stream.readNBytes(32);
+    if(bytes.length!=length||hash.length!=32||!Arrays.equals(hash,MessageDigest.getInstance("SHA-256").digest(bytes)))throw new IOException("incomplete/corrupt frame");
+    byte[] decoded=JournalFrameCodec.decode(bytes,header);WorldCommit commit=JSON.readValue(decoded,WorldCommit.class);
+    if(commit.position()!=++position)throw new IOException("position gap");
+    if(run==null)run=commit.runId();if(!run.equals(commit.runId()))throw new IOException("run differs");
+    var states=commit.events().stream().filter(e->e.type().equals("STATE_SNAPSHOT_V1")).toList();
+    if(states.size()!=1)throw new IOException("expected one STATE_SNAPSHOT_V1, found "+states.size()+" types="+commit.events().stream().map(WorldEvent::type).toList());
+    var original=states.get(0);String delta=StateDeltaCodec.encode(run,position,previous,original.payload());
+    String reconstructed=StateDeltaCodec.apply(run,position,previous,delta);
+    if(!JSON.readTree(reconstructed).toString().equals(JSON.readTree(original.payload()).toString())){
+      // Object field order is intentionally canonicalized; values/numeric scale and raw strings must agree.
+      if(!JSON.readTree(reconstructed).equals(JSON.readTree(original.payload())))throw new IOException("state mismatch at "+position);
+    }
+    var events=commit.events().stream().map(e->e==original?new WorldEvent(e.eventId(),StateDeltaCodec.TYPE,delta):e).toList();
+    byte[] derived=JSON.writeValueAsBytes(new WorldCommit(commit.schemaVersion(),commit.position(),commit.runId(),commit.commandId(),commit.commandContent(),commit.result(),events));
+    if(derived.length>16*1024*1024)throw new IOException("derived frame exceeds bound");maxDelta=Math.max(maxDelta,derived.length);totalRaw+=derived.length;
+    byte[] packed=JournalFrameCodec.encode(derived);int outHeader=packed.length|Integer.MIN_VALUE;
+    target.writeInt(outHeader);target.writeInt(~outHeader);target.write(packed);target.write(MessageDigest.getInstance("SHA-256").digest(packed));
+    previous=reconstructed;
+    if(position%100==0)System.out.println("verified="+position+" maxDelta="+maxDelta+" elapsedMs="+(System.nanoTime()-started)/1000000);
+   }
+  }
+  var result=JSON.createObjectNode().put("scope","offline codec equivalence only; unchanged historical commands; not a migrated world or new autonomous experiment")
+   .put("sourceBytes",Files.size(input)).put("sourceSha256",HexFormat.of().formatHex(sourceHash.digest())).put("confirmedFrames",position)
+   .put("maxDecodedDeltaFrameBytes",maxDelta).put("totalDecodedDeltaBytes",totalRaw).put("derivedBytes",Files.size(output.resolve("codec-only.frames")))
+   .put("elapsedMillis",(System.nanoTime()-started)/1000000).put("httpCalls",0).put("allStateValuesEquivalent",true);
+  JSON.writerWithDefaultPrettyPrinter().writeValue(output.resolve("result.json").toFile(),result);System.out.println(result);
+ }
+}
