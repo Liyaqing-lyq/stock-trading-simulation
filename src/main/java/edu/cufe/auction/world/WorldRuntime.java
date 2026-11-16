@@ -347,6 +347,12 @@ public final class WorldRuntime implements AutoCloseable {
     private volatile boolean paused;
     private volatile String commitFailureCode;
     private WorldState deltaReadCursor;
+    /** 每个固定 CommitSource 生命周期独占的轻量身份，不保留源对象图。 */
+    private final Object historicalInformationSource = new Object();
+    private final HistoricalInformationCache historicalInformationCache =
+            new HistoricalInformationCache(mapper, decisionMapper);
+    /** 仅在完整原命令核验后推进；受控捕获及未核验的解码不会推进。 */
+    private long verifiedInformationPosition;
 
     /** @return 最近提交失败的安全错误码；没有失败时为空。 */
     public String commitFailureCode() { return commitFailureCode; }
@@ -10520,6 +10526,7 @@ public final class WorldRuntime implements AutoCloseable {
             return;
         }
         closed = true;
+        historicalInformationCache.clear();
         if (liveInbox != null) {
             liveInbox.close();
         }
@@ -15674,11 +15681,12 @@ public final class WorldRuntime implements AutoCloseable {
             throw invalid;
         }
         List<WorldEvent> events = new ArrayList<>(domainEvents);
+        WorldCommit committed;
         try {
             events.add(snapshotEvent(candidate));
             validateAudits(new WorldCommit(1, candidate.position(), manifest.runId(), commandId,
                     content, result, events), candidate, state);
-            WorldCommit committed = journal.commit(commandId, content, result, events);
+            committed = journal.commit(commandId, content, result, events);
             if (committed.position() != candidate.position()) {
                 throw new IOException("候选快照缺少对应的新持久批次");
             }
@@ -15691,6 +15699,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         state = candidate;
         if (compactState()) deltaReadCursor = candidate;
+        rememberVerifiedInformation(committed, candidate);
     }
 
     private PendingTask peek(long inclusiveMillis) {
@@ -24116,6 +24125,7 @@ public final class WorldRuntime implements AutoCloseable {
                 throw new IOException("开局快照与期望开局状态不一致（必须等于清单绑定的初始资产）："
                         + initialDifference(expectedInitial, snapshot));
             }
+            rememberVerifiedInformation(commit, snapshot);
             previous = snapshot;
         }
         return previous;
@@ -30613,6 +30623,15 @@ public final class WorldRuntime implements AutoCloseable {
                 List.copyOf(pending), List.copyOf(removed), evidenceAfter);
     }
 
+    /** 只有已核验且连续的新帧能推进可信前沿；缓存维护不参与提交成败。 */
+    private void rememberVerifiedInformation(WorldCommit commit, WorldState frame) {
+        if (!compactState() || capturing || commit.position() != verifiedInformationPosition + 1
+                || frame.position() != commit.position() || !frame.runId().equals(commit.runId())) return;
+        verifiedInformationPosition = commit.position();
+        historicalInformationCache.remember(historicalInformationSource, commit,
+                frame.information() == null ? null : frame.information().information());
+    }
+
     /** 按真实观察位置取历史信息子集；没有位置或帧不可读时返回 null。 */
     private InformationModel.State observedInformation(MediaTaskBody wrapper) {
         if (!wrapper.hasObservedPosition()) {
@@ -30623,6 +30642,12 @@ public final class WorldRuntime implements AutoCloseable {
                 continue;
             }
             try {
+                if (compactState() && commit.position() <= verifiedInformationPosition) {
+                    InformationModel.State cached = historicalInformationCache.find(historicalInformationSource, commit);
+                    if (cached != null) return cached;
+                    // 未命中（包括目标身份变化）必须实际核验目标，不能复用同位置的旧解码对象。
+                    if (deltaReadCursor != null && deltaReadCursor.position() == commit.position()) deltaReadCursor = null;
+                }
                 WorldState frame = decodeSnapshot(commit);
                 if (frame.information() == null) {
                     return null;
