@@ -59,3 +59,14 @@
 独立新JVM只读恢复失败：同一冻结类、原journal副本SHA256 a671a4a4dab3e453481d2111fee0c3323b26e8f096cd4ba41faadc27aa36b724，HTTP0，213410ms后exit1；历史决定live:1253:1:governance:hydro:act:hydro-manager的输入不能逐字重生成。正在定位精确差异；尚未宣称日志可恢复。原journal及首次失败日志不修改。
 
 原回执归档deliberation-20261115/deliberation-v4-raw.json.gz，SHA256 88cbf3f3a0a8c1bd75d3049f8b9507c40c8df4de6682323f515886f76a181e4e；摘要和恢复失败单据同目录。完整日志位于logs/operating-cycle/live-planning-operating-v4-75f17f4。经理当前报价/供应/时延补充为新manager-v1切片，独审中；未混入本轮冻结试验。
+
+
+### 6f61bb5：原v4恢复切片完成，经营验收仍失败
+
+真正根因是持久化对象键规范排序与角色报告数组的live提交序不同，delta-v1及composed-v2全快照均受影响。首次修复按position统一排序，虽然18项通过且原2075帧可恢复，却被独审用原75程序实际“写报告→关闭→重开→才决定”的合法旧档反例拦下。随后仅补历史input验证又漏了expectedOpen原命令重演，完整33项中10失败，原大档恢复亦失败；这些候选、失败和一次核验自有进程后中断的审计全部保留，不能抹掉成一次通过。
+
+最终只在新openInformedOperating标明operating-report-order=position-v1，直接严格重生成；其他旧入口保持原live投影。旧canonical历史仅允许以留存input的taskId顺序提示表示：报告唯一集合/数量/内容从权威状态核验，内容和非报告原文不复制旧值；排列还须符合某次旧重开的键排序前缀与后续提交尾部，同批所有人物须共享可能cut。原本已按time/command固定排序的制造数组直接strict，不参加该hint。输入验证与expectedOpen两处同规处理后，从可信input重算摘要/计划/预算，完整批次equals保持。旧map顺序和实际重开点未单独持久化，因此未独立证明跨不同批次的排列轨迹；这是明确限制，不包装成全历史顺序真实性证明。后续真实实验只用新position-v1，不将旧档无声升级继续经营。
+
+最终1c冻结类（对应源码6f61bb5）独立恢复至position2075/time5105000，exit0，605446ms，HTTP0。另独立核对503份原call的inputText、tools、plan、attempt身份与规范摘要，以及503份原reply正文和声明用量，全部一致；原journal和恢复副本SHA均a671a4a4dab3e453481d2111fee0c3323b26e8f096cd4ba41faadc27aa36b724。恢复状态全部11字段与保留成功审计深比较相等，但audit.json表示字节不同，未声称该JSON文件逐字一致。独审据实际收据关闭Task9恢复切片，0 Critical/Important/Minor。
+
+证据汇总：deliberation-20261115/deliberation-v4-recovery-final.json；独立原输入核对helper源码audit-input-provenance.cjs.txt。固定原75旧续写样本及来源校验在src/test/resources/operating-replay-75f17f4。最终受影响19项与新增路径边界9项分别运行，不拿测试数量当世界验收。当前真实模型经营结果仍是两任命/5次水电调度/制造订单0；Task10正在修有界输入与个人超限隔离，新的模型试跑尚未开始。

@@ -1,0 +1,69 @@
+{
+  "scope": "Task9 journal-recovery slice only; not autonomous-world or business-cycle acceptance",
+  "fixedSourceCommit": "6f61bb5",
+  "legacyOrderingLimit": "Possible representation is checked per input and within each open batch; monotonic cut across separate historical batches is not independently proven. New position-v1 has no legacy fallback.",
+  "exit": {
+    "code": 0,
+    "signal": null,
+    "wallMillis": 605446
+  },
+  "recovery": {
+    "httpCalls": 0,
+    "timeMillis": 5105000,
+    "elapsedMillis": 605132,
+    "position": 2075
+  },
+  "originalCallProvenance": {
+    "scope": "Independent original saved provider calls/replies compared byte-for-byte with recovered authoritative decisions; no model calls; applies to this audit candidate only",
+    "sourceCommit": "75f17f4cdd3d23334da1f0166580c0d75fe528d8",
+    "sourceJournalSha256": "a671a4a4dab3e453481d2111fee0c3323b26e8f096cd4ba41faadc27aa36b724",
+    "originalConfigSha256": "5b40734741ca3fc07e0e6da0ee466a727b85743cbe4b1891dcd5383576593168",
+    "originalSystemPromptSha256": "4c19ee25c2941a8f7a1994d9d4efc6c1f0f2cae8ebd6f0bb175cc2738f81ed09",
+    "position": 2075,
+    "timeMillis": 5105000,
+    "callsChecked": 503,
+    "replyBodiesAndDeclaredUsageChecked": 503,
+    "inputAndDigestAndPlanAndToolsAndAttemptIdentityMatch": true,
+    "requestedModels": {
+      "deepseek-flash": 503
+    },
+    "providerReportedModelVersion": "UNKNOWN (not retained by this older provider adapter)",
+    "httpCalls": 0
+  },
+  "stateValuesEqualToRetainedSuccessfulAudit": true,
+  "independentReview": {
+    "proof": {
+      "candidateSha256": true,
+      "classesManifestSha256": true,
+      "auditSourceSha256": true,
+      "sourceJournalSha256": "a671a4a4dab3e453481d2111fee0c3323b26e8f096cd4ba41faadc27aa36b724",
+      "copyJournalSha256": "a671a4a4dab3e453481d2111fee0c3323b26e8f096cd4ba41faadc27aa36b724"
+    },
+    "perField": {
+      "position": true,
+      "timeMillis": true,
+      "httpCalls": true,
+      "manifest": true,
+      "engineering": true,
+      "companyGovernance": true,
+      "roles": true,
+      "decisions": true,
+      "operations": true,
+      "accounts": true,
+      "pending": true
+    },
+    "wholeStateEqual": true,
+    "auditTextBytesEqual": false,
+    "sourceCommitMatchesFreezeAfterLineEndingNormalization": {
+      "src/main/java/edu/cufe/auction/world/WorldRuntime.java": true,
+      "src/main/java/edu/cufe/auction/world/CompanyOperationsDecisionTools.java": true,
+      "src/test/java/edu/cufe/auction/world/composed/OperatingReportReplayTest.java": true,
+      "src/test/java/edu/cufe/auction/world/CompanyOperationsReportProjectionTest.java": true,
+      "src/main/java/edu/cufe/auction/world/LegacyOperatingReportOrder.java": true,
+      "src/main/java/edu/cufe/auction/world/RunManifest.java": true,
+      "src/main/java/edu/cufe/auction/world/composed/ComposedIndustryScenario.java": true,
+      "src/test/java/edu/cufe/auction/world/LegacyOperatingReportOrderTest.java": true,
+      "src/test/java/edu/cufe/auction/world/composed/LegacyOperatingReplayValidationTest.java": true
+    }
+  }
+}
