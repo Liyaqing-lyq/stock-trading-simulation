@@ -14,7 +14,7 @@ public final class RolePlanningContext {
     /** Append timing after the complete decision root is built; never infer rights from document text. */
     public static void append(ObjectNode input, String wake, DecisionModel.Config config) {
         if (!(input.path("engineering") instanceof ObjectNode eng)
-                || !RoleDeliberation.PLANNING_VERSION.equals(eng.path("roleContextVersion").asText())) return;
+                || !RoleDeliberation.isPlanning(eng.path("roleContextVersion").asText())) return;
         long now = input.path("time").longValue();
         Long think = config.thinkMillisByWake().get(wake);
         var planning = eng.putObject("planning").put("nowMillis", now).put("millisPerDay", MILLIS_PER_DAY);
@@ -82,6 +82,9 @@ public final class RolePlanningContext {
                         if (tool.equals("board.proposeAppointment") && !"MANAGER_APPOINTMENT".equals(m.path("topic").asText())) blockers.add("WRONG_TOPIC");
                         if (tool.equals("board.proposeAppointment") && m.has("appointmentRequest")) blockers.add("PROPOSAL_EXISTS");
                         if (tool.equals("board.proposeBudget") && !"BUDGET".equals(m.path("topic").asText())) blockers.add("WRONG_TOPIC");
+                        if (RoleDeliberation.CONTEXTUAL_VERSION.equals(eng.path("roleContextVersion").asText())
+                                && tool.equals("board.proposeBudget") && "BUDGET".equals(m.path("topic").asText())
+                                && m.path("proposedLines").isArray() && !m.path("proposedLines").isEmpty()) blockers.add("PROPOSAL_EXISTS");
                     }
                     row.put("status", !blockers.isEmpty() ? "BLOCKED" : !unknown.isEmpty() ? "NOT_PROVEN" : "NECESSARY_CONDITIONS_MET");
                     row.put("executorRevalidates", true);

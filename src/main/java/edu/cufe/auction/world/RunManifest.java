@@ -945,7 +945,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 && (!RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion)
                     || !"industry-prototype-v1".equals(dataVersions.get(DATA_PROFILE))
                     || !"manager-v1".equals(dataVersions.get("operating-information"))
-                    || !RoleDeliberation.PLANNING_VERSION.equals(dataVersions.get("role-context"))
+                    || !RoleDeliberation.isPlanning(dataVersions.get("role-context"))
                     || !StateDeltaCodec.VERSION.equals(dataVersions.get("state-storage"))
                     || !"v1".equals(dataVersions.get("external-demand"))
                     || !"role-events-v2".equals(dataVersions.get("autonomy-driver"))
@@ -1018,7 +1018,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("composed-governance-intent", "v2");
                 if ("role-events-v2".equals(data.get("autonomy-driver")) && data.containsKey("role-context")) {
                     String context = data.get("role-context");
-                    if (!List.of("authority-v1", "evidence-v1", RoleDeliberation.VERSION, RoleDeliberation.ACCOUNTABLE_VERSION, RoleDeliberation.PLANNING_VERSION).contains(context)) {
+                    if (!List.of("authority-v1", "evidence-v1", RoleDeliberation.VERSION, RoleDeliberation.ACCOUNTABLE_VERSION, RoleDeliberation.PLANNING_VERSION, RoleDeliberation.CONTEXTUAL_VERSION).contains(context)) {
                         throw new IllegalArgumentException("未知角色依据版本：" + context);
                     }
                     expectedData.put("role-context", context);

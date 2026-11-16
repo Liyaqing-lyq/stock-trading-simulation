@@ -195,6 +195,12 @@ public final class ComposedIndustryScenario {
                 edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION, true, true, true);
     }
 
+    /** 显式v5治理结果上下文新档；旧informed工厂及其日志保持冻结。 */
+    public static WorldRuntime openContextualInformedOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven) throws Exception {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, null);
     }
@@ -355,7 +361,8 @@ public final class ComposedIndustryScenario {
             data.put("operating-report-order", "position-v1");
             data.put("role-input-policy", "bounded-history-v1");
             data.put("dispatch-policy", "local-input-v1");
-            runManifest = new RunManifest("web-informed-operating-v1", runManifest.seed(), runManifest.rulesVersion(),
+            runManifest = new RunManifest(edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION.equals(roleContext)
+                    ? "web-informed-operating-v2" : "web-informed-operating-v1", runManifest.seed(), runManifest.rulesVersion(),
                     runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,

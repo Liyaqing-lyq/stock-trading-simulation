@@ -79,7 +79,7 @@ public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider
     private static String systemText(DecisionRun.Call call) {
         try {
             var root = new com.fasterxml.jackson.databind.ObjectMapper().readTree(call.inputText());
-            if (edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION.equals(root.path("engineering").path("roleContextVersion").asText()))
+            if (edu.cufe.auction.world.RoleDeliberation.isPlanning(root.path("engineering").path("roleContextVersion").asText()))
                 return PLANNING_SYSTEM_TEXT;
             if (edu.cufe.auction.world.RoleDeliberation.isDeliberative(root.path("engineering").path("roleContextVersion").asText()))
                 return DELIBERATION_SYSTEM_TEXT;

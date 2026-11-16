@@ -17,7 +17,7 @@ public final class AutonomousLifecycleProbe {
                          long stepMillis, String seed, String sourceCommit) {
         /** 约束试跑边界，额度是上限，不是调用承诺或经营验收。 */
         public Config {
-            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING").contains(mode)
+            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING").contains(mode)
                     || maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
                     || stepMillis != 3_600_000
@@ -33,7 +33,7 @@ public final class AutonomousLifecycleProbe {
         Files.createDirectory(out);
         JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("config.json").toFile(), config);
         Files.writeString(out.resolve("system-prompt.txt"), systemPrompt(config));
-        boolean informed = config.mode().equals("INFORMED_OPERATING");
+        boolean informed = informedMode(config.mode());
         if (informed) ProbeProviderEvidence.freezePolicy(out);
         if (seed != null) {
             Files.copy(seed.resolve("world.journal"), out.resolve("world.journal"));
@@ -113,6 +113,7 @@ public final class AutonomousLifecycleProbe {
 
     static edu.cufe.auction.world.WorldRuntime openWorld(String mode, Path journal) throws Exception {
         return switch (mode) {
+            case "CONTEXTUAL_INFORMED_OPERATING" -> ComposedIndustryScenario.openContextualInformedOperating(journal);
             case "INFORMED_OPERATING" -> ComposedIndustryScenario.openInformedOperating(journal);
             case "PLANNING_OPERATING" -> ComposedIndustryScenario.openPlanningOperating(journal);
             case "PLANNING" -> ComposedIndustryScenario.openPlanningAutonomous(journal);
@@ -121,8 +122,12 @@ public final class AutonomousLifecycleProbe {
         };
     }
 
+    private static boolean informedMode(String mode) {
+        return mode.equals("INFORMED_OPERATING") || mode.equals("CONTEXTUAL_INFORMED_OPERATING");
+    }
+
     private static String systemPrompt(Config config) {
-        return (config.mode().startsWith("PLANNING") || config.mode().equals("INFORMED_OPERATING")) ? LiveDecisionProvider.PLANNING_SYSTEM_TEXT
+        return (config.mode().startsWith("PLANNING") || informedMode(config.mode())) ? LiveDecisionProvider.PLANNING_SYSTEM_TEXT
                 : LiveDecisionProvider.DELIBERATION_SYSTEM_TEXT;
     }
 
@@ -153,7 +158,7 @@ public final class AutonomousLifecycleProbe {
                     if (!Files.isRegularFile(seed.resolve(call.getFileName().toString().replace("call-", "reply-"))))
                         throw new IllegalArgumentException("种子存在结果未知的请求");
             }
-            if (requested.mode().equals("INFORMED_OPERATING")) ProbeProviderEvidence.validateSeed(seed, result);
+            if (informedMode(requested.mode())) ProbeProviderEvidence.validateSeed(seed, result);
             return seed;
         } catch (java.io.IOException invalid) {
             throw new IllegalArgumentException("种子冻结文件不可读或格式不合法", invalid);

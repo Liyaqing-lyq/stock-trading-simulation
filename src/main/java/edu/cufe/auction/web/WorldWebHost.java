@@ -333,7 +333,7 @@ public final class WorldWebHost implements AutoCloseable {
         if (edu.cufe.auction.world.RoleDeliberation.isAccountable(input.path("engineering").path("roleContextVersion").asText())
                 && facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
             delib.remove("lastActionResult");
-        if (edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION.equals(input.path("engineering").path("roleContextVersion").asText())
+        if (edu.cufe.auction.world.RoleDeliberation.isPlanning(input.path("engineering").path("roleContextVersion").asText())
                 && facts.path("engineering") instanceof com.fasterxml.jackson.databind.node.ObjectNode eng) {
             eng.remove("planning");
             for (var director : eng.path("directorships"))

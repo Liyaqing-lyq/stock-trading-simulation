@@ -18,8 +18,12 @@ public final class RoleDeliberation {
     public static boolean isDeliberative(String version) { return VERSION.equals(version) || isAccountable(version); }
     /** 相对复查与实际耗时规划合同。 */
     public static final String PLANNING_VERSION = "deliberation-v4";
+    /** 本人执行结果与当前决议效果分列的新输入合同。 */
+    public static final String CONTEXTUAL_VERSION = "deliberation-v5";
+    /** @param version 冻结合同版本 @return 是否使用相对复查及实际耗时规划 */
+    public static boolean isPlanning(String version) { return PLANNING_VERSION.equals(version) || CONTEXTUAL_VERSION.equals(version); }
     /** @param version 冻结版本 @return 是否保留权威反馈和单人故障隔离 */
-    public static boolean isAccountable(String version) { return ACCOUNTABLE_VERSION.equals(version) || PLANNING_VERSION.equals(version); }
+    public static boolean isAccountable(String version) { return ACCOUNTABLE_VERSION.equals(version) || isPlanning(version); }
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long MONTH = ManufacturingTemplateModel.PERIOD_MILLIS;
     private RoleDeliberation() { }
@@ -95,7 +99,7 @@ public final class RoleDeliberation {
                 if (reply.has("decision")) {
                     row.set("ownStatement", reply.get("decision"));
                     var frozen = JSON.readTree(d.inputText());
-                    if (PLANNING_VERSION.equals(frozen.path("engineering").path("roleContextVersion").asText())) {
+                    if (isPlanning(frozen.path("engineering").path("roleContextVersion").asText())) {
                         try {
                             validatedAction(d.inputText(), reply);
                             long duration = reply.path("decision").path("reviewAfterMillis").longValue();
@@ -125,7 +129,7 @@ public final class RoleDeliberation {
         if (input == null || !isDeliberative(input.path("engineering").path("roleContextVersion").asText())) return reply;
         if (reply == null || !reply.isObject()) throw new IllegalArgumentException("BAD_DELIBERATION");
         var statement = reply.path("decision");
-        boolean planning = PLANNING_VERSION.equals(input.path("engineering").path("roleContextVersion").asText());
+        boolean planning = isPlanning(input.path("engineering").path("roleContextVersion").asText());
         String reviewField = planning ? "reviewAfterMillis" : "nextReviewAt";
         Set<String> fields = new java.util.HashSet<>(); statement.fieldNames().forEachRemaining(fields::add);
         if (!statement.isObject() || !fields.equals(Set.of("objective", "basis", reviewField))
@@ -154,7 +158,7 @@ public final class RoleDeliberation {
             if (d.outcome() != DecisionModel.Outcome.WAIT && d.outcome() != DecisionModel.Outcome.INTENT) return fallback;
             try { var body = JSON.readTree(d.attempts().get(d.attempts().size()-1).replyBody());
                 var frozen = JSON.readTree(d.inputText());
-                if (PLANNING_VERSION.equals(frozen.path("engineering").path("roleContextVersion").asText())) {
+                if (isPlanning(frozen.path("engineering").path("roleContextVersion").asText())) {
                     validatedAction(d.inputText(), body);
                     return Math.addExact(frozen.path("time").asLong(), body.path("decision").path("reviewAfterMillis").asLong());
                 }

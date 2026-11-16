@@ -71,7 +71,7 @@ class AutonomousLifecycleProbeSeedTest {
     }
 
     @Test void planningModesFreezeTheirRelativePromptBeforeLoadingKeys() throws Exception {
-        for (String mode : new String[]{"PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING"}) {
+        for (String mode : new String[]{"PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING"}) {
             Path config = root.resolve(mode + ".json"), out = root.resolve(mode);
             JSON.writeValue(config.toFile(), assertDoesNotThrow(() -> new AutonomousLifecycleProbe.Config(mode, 20, 1, 86400000, 3600000, null, "same-source")));
             assertThrows(java.io.IOException.class, () -> AutonomousLifecycleProbe.main(new String[]{out.toString(), root.resolve("absent-keys").toString(), config.toString()}));
@@ -180,6 +180,31 @@ class AutonomousLifecycleProbeSeedTest {
         Path reverse = informedConfig(seed, "INFORMED_OPERATING");
         assertThrows(IllegalArgumentException.class, () -> AutonomousLifecycleProbe.main(new String[]{out.toString(), root.resolve("absent-keys").toString(), reverse.toString()}));
         assertFalse(Files.exists(out));
+    }
+
+    @Test void contextualFactoryAndSeedStayVersionedAndProvenanceBound() throws Exception {
+        var method=AutonomousLifecycleProbe.class.getDeclaredMethod("openWorld",String.class,Path.class);method.setAccessible(true);
+        try(var w=(edu.cufe.auction.world.WorldRuntime)method.invoke(null,"CONTEXTUAL_INFORMED_OPERATING",root.resolve("v5.journal"))){
+            assertEquals("web-informed-operating-v2",w.profile().manifest().runId());
+            assertEquals("deliberation-v5",w.profile().manifest().dataVersions().get("role-context"));
+        }
+        Path seed=informedSeed();
+        Path request=informedConfig(seed,"CONTEXTUAL_INFORMED_OPERATING"),out=root.resolve("v5-resume");
+        assertThrows(IllegalArgumentException.class,()->AutonomousLifecycleProbe.main(new String[]{out.toString(),root.resolve("absent-keys").toString(),request.toString()}));
+        assertFalse(Files.exists(out));
+        var frozen=(ObjectNode)JSON.readTree(seed.resolve("config.json").toFile());frozen.put("mode","CONTEXTUAL_INFORMED_OPERATING");
+        var result=(ObjectNode)JSON.readTree(seed.resolve("result.json").toFile());result.set("config",frozen.deepCopy());
+        JSON.writeValue(seed.resolve("config.json").toFile(),frozen);JSON.writeValue(seed.resolve("result.json").toFile(),result);
+        Path oldRequest=informedConfig(seed,"INFORMED_OPERATING");
+        assertThrows(IllegalArgumentException.class,()->AutonomousLifecycleProbe.main(new String[]{out.toString(),root.resolve("absent-keys").toString(),oldRequest.toString()}));
+        assertFalse(Files.exists(out));
+        byte[] provider=Files.readAllBytes(seed.resolve("provider-1.json"));Files.delete(seed.resolve("provider-1.json"));
+        assertThrows(IllegalArgumentException.class,()->AutonomousLifecycleProbe.main(new String[]{out.toString(),root.resolve("absent-keys").toString(),request.toString()}));
+        assertFalse(Files.exists(out));Files.write(seed.resolve("provider-1.json"),provider);
+        assertThrows(java.io.IOException.class,()->AutonomousLifecycleProbe.main(new String[]{out.toString(),root.resolve("absent-keys").toString(),request.toString()}));
+        assertArrayEquals(Files.readAllBytes(seed.resolve("world.journal")),Files.readAllBytes(out.resolve("world.journal")));
+        assertArrayEquals(Files.readAllBytes(seed.resolve(SceneRoutes.FILE_NAME)),Files.readAllBytes(out.resolve(SceneRoutes.FILE_NAME)));
+        assertTrue(Files.isRegularFile(out.resolve("provider-provenance-policy.json")));
     }
 
     private Path informedConfig(Path seed, String mode) throws Exception {
