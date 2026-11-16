@@ -33,9 +33,11 @@
 - [x] Self-review, save source hashes/test evidence and report; release ownership to Root. Root independent review, fixloop and implementation commit complete; final integration/runtime freeze are tracked by Task24 below.
 
 ### Task24: 真实新档与经营验收
-- [ ] Independentreview complete; one formalverify/JavaDoc integratedsource and frozenclassparity.
-- [ ] Preserve opening/strict frozenconfig, fresh bounded trial max2000HTTP/30min/60day target no seed, no pre-read/autovote/auto budget, original52roles. Underlyingweights/costUNKNOWN.
-- [ ] Preserve all calls/replies/provider invocation, stop+drain onfirsttechnicalproviderfailure/evidenceunknown; review actualworld businessstate and failedoperations.
-- [ ] Audit journal strictreplay/provenance/Decimalcash; if businesschainmissing, diagnose earliest real blocker andcontinue. No claim overallcompletion without originalquarter/halfyear/causal/UI/humancriteria.
+- [x] Independentreview complete; one formalverify/JavaDoc integratedsource and frozenclassparity.
+- [x] Preserve opening/strict frozenconfig, fresh bounded trial max2000HTTP/30min/60day target no seed, no pre-read/autovote/auto budget, original52roles. Underlyingweights/costUNKNOWN.
+- [x] Preserve all calls/replies/provider invocation, stop+drain onfirsttechnicalproviderfailure/evidenceunknown; review actualworld businessstate and failedoperations.
+- [x] Audit journal strictreplay/provenance/Decimalcash; if businesschainmissing, diagnose earliest real blocker andcontinue. No claim overallcompletion without originalquarter/halfyear/causal/UI/humancriteria.
 
 Task23接线补充：src/main/java/edu/cufe/auction/app/WorldWebApp.java与WorldWebAppRouteDefaultsTest.java加入上述新显式模式/独立journal/仅缺失路由初始化。既有8类最终定向结果保存，新增入口仅跑其受影响类，不重复全组；统一正式验收后进行。scripts/test-thinking-routes.cjs需要纳入既有verify Node检查序列，或明确未注册的实际限制。
+
+Task24执行与原档审计已结束，结果为世界故障和0经营（运行记录§129）；勾选只代表试验执行/留证完成，不代表经营验收。后续Task25与Task26先修复实际执行和反馈阻断，整体季度/半年、因果、UI与人工门仍开放。

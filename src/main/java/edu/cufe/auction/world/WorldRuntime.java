@@ -9665,7 +9665,17 @@ public final class WorldRuntime implements AutoCloseable {
                             && manufacturingReport.kind().equals(replanned.kind())
                             && manufacturingReport.commandId().equals(replanned.commandId())
                             && manufacturingReport.timeMillis() == ref.dueMillis();
-                    if (!interviewDone && !socialDone && !engineeringDone && !manufacturingDone) {
+                    // 群/平台回报保留原 BEGIN 身份；业务拒绝也是完成，结果另由群组逐帧重算核验。
+                    GroupsRun.GroupReport groupReport = candidate.groups() == null ? null
+                            : candidate.groups().reports().stream()
+                                    .filter(item -> item.taskId().equals(ref.taskId()))
+                                    .findFirst().orElse(null);
+                    boolean groupDone = groupReport != null
+                            && groupReport.person().equals(decision.personPartyId())
+                            && groupReport.kind().equals(replanned.kind())
+                            && groupReport.atMillis() == ref.dueMillis();
+                    if (!interviewDone && !socialDone && !engineeringDone && !manufacturingDone
+                            && !groupDone) {
                         throw new IOException("已记录意图缺少待办或准确完成回报：" + ref.actionId());
                     }
                 }
@@ -33290,8 +33300,10 @@ public final class WorldRuntime implements AutoCloseable {
                 return "BUSY";
             }
         }
+        // 恢复时尚未安装 this.state；焦点必须读取本次逐帧重算的基准。
         if (hasPendingReading(person, base.pending())
-                || (base.information() != null && hasActiveReading(person))) {
+                || (base.information() != null && base.information().information().active()
+                        .stream().anyMatch(reading -> reading.personPartyId().equals(person)))) {
             return "BUSY";
         }
         if (manifest.hasMedia() && base.media() != null
