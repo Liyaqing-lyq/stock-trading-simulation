@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import java.io.*;
 import java.math.BigDecimal;
 import java.nio.file.*;
@@ -7,8 +8,7 @@ import java.util.*;
 import edu.cufe.auction.world.composed.ComposedIndustryScenario;
 import static org.junit.jupiter.api.Assertions.*;
 class CompactWorldPersistenceTest {
- @Test void cumulativeRuntimeStateBeyondOldBoundAndLegacyCausalFailure() throws Exception {
-  Path dir=Files.createTempDirectory(Path.of("logs/operating-cycle"),"delta-large-");
+ @Test void cumulativeRuntimeStateBeyondOldBoundAndLegacyCausalFailure(@TempDir Path dir) throws Exception {
   Path old=dir.resolve("legacy.journal"), compact=dir.resolve("compact.journal");
   WorldRuntime.Snapshot saved; long legacyPosition=0; int failedAt=-1; String from,to,owner;
   long started=System.nanoTime();

@@ -2,12 +2,12 @@ package edu.cufe.auction.web;
 import edu.cufe.auction.world.*;
 import edu.cufe.auction.world.composed.ComposedIndustryScenario;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import java.math.BigDecimal;
 import java.nio.file.*;
 import static org.junit.jupiter.api.Assertions.*;
 class CompactWorldCommitFaultTest {
- @Test void actualOversizedDeltaStopsAndExposesSafeFaultWithoutPublishingCandidate() throws Exception {
-  Path dir=Files.createTempDirectory(Path.of("logs/operating-cycle"),"delta-fault-");
+ @Test void actualOversizedDeltaStopsAndExposesSafeFaultWithoutPublishingCandidate(@TempDir Path dir) throws Exception {
   try(var routes=SceneRoutes.open(dir);var host=new WorldWebHost(()->{
    var world=ComposedIndustryScenario.openCompactAccountableAutonomous(dir.resolve("world.journal"));
    var before=world.snapshot();

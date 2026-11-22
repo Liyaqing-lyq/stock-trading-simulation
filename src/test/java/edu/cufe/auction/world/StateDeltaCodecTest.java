@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.*;
 import edu.cufe.auction.world.composed.ComposedIndustryScenario;
@@ -21,14 +22,14 @@ class StateDeltaCodecTest {
   assertThrows(IOException.class,()->StateDeltaCodec.apply("r",2,result,delta));
   assertThrows(IOException.class,()->StateDeltaCodec.apply("r",2,restored,delta.replace("123401","123402")));
  }
- @Test void compactOperatingVersionIsExplicitAndLegacyFactoryRejectsIt() throws Exception {
-  Path dir=Files.createTempDirectory(Path.of("logs/operating-cycle"),"delta-operating-");Path file=dir.resolve("world.journal");
+ @Test void compactOperatingVersionIsExplicitAndLegacyFactoryRejectsIt(@TempDir Path dir) throws Exception {
+  Path file=dir.resolve("world.journal");
   try(var world=ComposedIndustryScenario.openCompactOperatingAutonomous(file)) {assertEquals("v1",world.profile().manifest().dataVersions().get("external-demand"));world.advanceTo(10);}
   try(var world=ComposedIndustryScenario.openCompactOperatingAutonomous(file)) {assertEquals(10,world.snapshot().timeMillis());}
   assertThrows(IOException.class,()->ComposedIndustryScenario.openOperatingAutonomous(file));
  }
- @Test void compactRuntimeReopensAndHistoryAndAppend() throws Exception {
-  Path dir=Files.createTempDirectory(Path.of("logs/operating-cycle"),"delta-smoke-");Path file=dir.resolve("world.journal"); WorldRuntime.Snapshot saved;
+ @Test void compactRuntimeReopensAndHistoryAndAppend(@TempDir Path dir) throws Exception {
+  Path file=dir.resolve("world.journal"); WorldRuntime.Snapshot saved;
   try(var world=ComposedIndustryScenario.openCompactAccountableAutonomous(file)) {
    assertEquals("delta-v1",world.profile().manifest().dataVersions().get("state-storage"));
    var initial=world.snapshot();world.advanceTo(10);saved=world.snapshot();assertEquals(initial,world.historyFrame(initial.position()).snapshot());assertEquals(saved,world.historyFrame(saved.position()).snapshot());

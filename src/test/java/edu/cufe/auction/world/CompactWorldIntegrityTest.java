@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
@@ -8,9 +9,8 @@ import com.fasterxml.jackson.databind.node.*;
 import edu.cufe.auction.world.composed.ComposedIndustryScenario;
 import static org.junit.jupiter.api.Assertions.*;
 class CompactWorldIntegrityTest {
- private Path directory() throws IOException { return Files.createTempDirectory(Path.of("logs/operating-cycle"),"delta-integrity-"); }
- @Test void decisionInputRawReplyAndMoneySurviveReopenWithoutByteChanges() throws Exception {
-  Path dir=directory();WorldRuntime.Snapshot saved;String input;
+ @Test void decisionInputRawReplyAndMoneySurviveReopenWithoutByteChanges(@TempDir Path dir) throws Exception {
+  WorldRuntime.Snapshot saved;String input;
   try(var legacy=ComposedIndustryScenario.openAccountableAutonomous(dir.resolve("old.journal"));var world=ComposedIndustryScenario.openCompactAccountableAutonomous(dir.resolve("new.journal"))) {
    var route=new DecisionModel.Route("governance","key-1","deepseek-flash",1,500,5000000,512,4,"lifecycle-v1");
    for(var runtime:List.of(legacy,world)) {runtime.beginDecisionSession("session");runtime.openDecisions("open",List.of(new DecisionRun.Request("mfgtech-d1","action",runtime.snapshot().decisions().orElseThrow().state().config().thinkMillisByWake().keySet().iterator().next(),route)));}
@@ -24,8 +24,8 @@ class CompactWorldIntegrityTest {
   }
   try(var world=ComposedIndustryScenario.openCompactAccountableAutonomous(dir.resolve("new.journal"))) {assertEquals(saved,world.snapshot());assertEquals(input,DecisionModel.decision(world.snapshot().decisions().orElseThrow().state(),"action").orElseThrow().inputText());}
  }
- @Test void validFrameHashesCannotHideTamperedOrMissingDeltaAndPartialTailKeepsPrefix() throws Exception {
-  Path dir=directory(), source=dir.resolve("source.journal");String run;
+ @Test void validFrameHashesCannotHideTamperedOrMissingDeltaAndPartialTailKeepsPrefix(@TempDir Path dir) throws Exception {
+  Path source=dir.resolve("source.journal");String run;
   try(var world=ComposedIndustryScenario.openCompactAccountableAutonomous(source)){world.advanceTo(1);world.advanceTo(2);run=world.profile().manifest().runId();}
   List<WorldCommit> commits;long priorEnd;
   try(var journal=new WorldJournal(source,run)){commits=journal.commits();priorEnd=journal.endOffsetOf(commits.size()-1);}
