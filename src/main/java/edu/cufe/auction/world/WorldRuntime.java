@@ -6182,7 +6182,23 @@ public final class WorldRuntime implements AutoCloseable {
                 pendingActionsAt(state, requireDecisions(), personPartyId), allowedToolsOf(view), decisionConfig,
                 toolContractVersion(), manifest.hasDialogue() ? interviewInput(state, personPartyId, state.timeMillis()) : null,
                 engineeringInput(state, personPartyId, state.timeMillis()), manifest.hasGroups()
-                        ? groupsInput(state, state.information().information(), personPartyId, state.timeMillis()) : null);
+                        ? groupsInput(state, state.information().information(), personPartyId, state.timeMillis()) : null, ownVisibleReadTimes(state, view));
+    }
+
+    private Map<String, Long> ownVisibleReadTimes(WorldState snapshot, RoleTradingView view) {
+        if (!"visible-version-v1".equals(manifest.dataVersions().get("catalog-read-receipts"))) return Map.of();
+        Map<String, Long> visibleVersions = new LinkedHashMap<>();
+        for (var entry : view.profile().catalog()) visibleVersions.put(entry.docId(), entry.version());
+        Map<String, Long> completed = new LinkedHashMap<>();
+        for (var read : snapshot.information().information().closed()) {
+            if (view.personPartyId().equals(read.personPartyId())
+                    && read.reason() == InformationModel.CloseReason.COMPLETED
+                    && read.closedAt() <= snapshot.timeMillis()
+                    && Objects.equals(visibleVersions.get(read.docId()), read.version())) {
+                completed.merge(read.docId(), read.closedAt(), Math::max);
+            }
+        }
+        return completed;
     }
 
     /**
@@ -6444,9 +6460,6 @@ public final class WorldRuntime implements AutoCloseable {
         List<RoleView.Market> market = marketOf(snap);
         List<InformationModel.CatalogEntry> catalog = InformationModel.catalog(information,
                 access, person, now, groupAccess(snap), roleBoards(snap));
-        if ("visible-version-v1".equals(manifest.dataVersions().get("catalog-read-receipts"))) {
-            catalog = withOwnCatalogReadTimes(catalog, information, person, now);
-        }
         Map<String, Integer> ordinals = readingOrdinals(information, person);
         List<RoleView.Experience> observations = new ArrayList<>();
         if (recall == null) {
@@ -6504,24 +6517,6 @@ public final class WorldRuntime implements AutoCloseable {
                 List.of(RoleView.TOOL_CATALOG, RoleView.TOOL_START_READ, RoleView.TOOL_CITE),
                 recall == null ? null : new RoleView.RecallMetadata(recall.budgetTruncated()),
                 cognition);
-    }
-
-    private static List<InformationModel.CatalogEntry> withOwnCatalogReadTimes(
-            List<InformationModel.CatalogEntry> catalog, InformationModel.State information,
-            String person, long now) {
-        Map<String, InformationModel.CatalogEntry> visible = new LinkedHashMap<>();
-        catalog.forEach(entry -> visible.put(entry.docId(), entry));
-        for (var read : information.closed()) {
-            if (!person.equals(read.personPartyId()) || read.reason() != InformationModel.CloseReason.COMPLETED
-                    || read.closedAt() > now) continue;
-            var entry = visible.get(read.docId());
-            if (entry != null && entry.version() == read.version()
-                    && (entry.lastReadAtMillis() == null || entry.lastReadAtMillis() < read.closedAt())) {
-                visible.put(entry.docId(), new InformationModel.CatalogEntry(entry.docId(), entry.version(),
-                        entry.title(), entry.publisherPartyId(), entry.publishedAt(), read.closedAt()));
-            }
-        }
-        return List.copyOf(visible.values());
     }
 
     /**
@@ -7346,7 +7341,7 @@ public final class WorldRuntime implements AutoCloseable {
                             ? groupsInput(state, state.information() == null ? null
                                     : state.information().information(), request.personPartyId(),
                                     cutoffTime)
-                            : null);
+                            : null, ownVisibleReadTimes(state, view));
             if (decisionConfig.live()
                     && informationConfig != null && informationConfig.recallPolicy() != null) {
                 // 新档：先量实际字符/字节，超限在构造 ProviderPlan 之前就明确失败，整批不提交
@@ -10179,7 +10174,7 @@ public final class WorldRuntime implements AutoCloseable {
                             ? groupsInput(previous, previous.information() == null ? null
                                     : previous.information().information(), request.personPartyId(),
                                     cutoffTime)
-                            : null);
+                            : null, ownVisibleReadTimes(previous, view));
             DecisionModel.Decision historical = DecisionModel.decision(historicalDecisions.state(),
                     request.actionId()).orElseThrow(() -> new IOException("历史决定缺失：" + request.actionId()));
             legacyInputs.add(new LegacyOperatingReportOrder.InputPair(input, historical.inputText()));
@@ -10589,7 +10584,7 @@ public final class WorldRuntime implements AutoCloseable {
                         ? groupsInput(previous, previous.information() == null ? null
                                 : previous.information().information(),
                                 decision.personPartyId(), decision.cutoffTimeMillis())
-                        : null);
+                        : null, ownVisibleReadTimes(previous, view));
         regenerated = historicalDecisionInput(regenerated, decision.inputText(), decision.cutoffPosition());
         if (!regenerated.equals(decision.inputText())) {
             throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());

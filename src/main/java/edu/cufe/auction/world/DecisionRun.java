@@ -396,6 +396,15 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                                    com.fasterxml.jackson.databind.JsonNode interview,
                                    com.fasterxml.jackson.databind.JsonNode engineering,
                                    com.fasterxml.jackson.databind.JsonNode groups) {
+        return inputText(view, wakeReason, cutoffTimeMillis, pending, tools, config, toolContractVersion,
+                interview, engineering, groups, Map.of());
+    }
+
+    static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
+                            List<PendingAction> pending, List<String> tools, DecisionModel.Config config,
+                            String toolContractVersion, com.fasterxml.jackson.databind.JsonNode interview,
+                            com.fasterxml.jackson.databind.JsonNode engineering, com.fasterxml.jackson.databind.JsonNode groups,
+                            Map<String, Long> ownVisibleReadTimes) {
         Objects.requireNonNull(view, "观察视图");
         Objects.requireNonNull(config, "冻结配置");
         Objects.requireNonNull(toolContractVersion, "工具合同版本");
@@ -471,7 +480,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("docId", entry.docId());
             node.put("version", entry.version());
             node.put("title", entry.title());
-            if (entry.lastReadAtMillis() != null) node.put("lastReadAtMillis", entry.lastReadAtMillis());
+            Long lastRead = ownVisibleReadTimes.get(entry.docId());
+            if (lastRead != null) node.put("lastReadAtMillis", lastRead);
         }
         ArrayNode observations = profile.putArray("readExperiences");
         for (RoleView.Experience experience
