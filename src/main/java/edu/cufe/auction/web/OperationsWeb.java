@@ -163,7 +163,10 @@ final class OperationsWeb {
                 var board=world.boardOfCompany(id).orElseThrow().board();long period=snapshot.timeMillis()/edu.cufe.auction.world.ManufacturingTemplateModel.PERIOD_MILLIS;
                 var category=edu.cufe.auction.world.BoardModel.BudgetCategory.PRODUCTION_LABOR;
                 BigDecimal budget=board.budget(period,category)==null?null:edu.cufe.auction.world.BoardModel.availableBudget(board,period,category);
-                var bank=world.bankOf().orElseThrow().decode(snapshot.accounts());var plan=edu.cufe.auction.world.AgedDecisionTools.observation(company,new edu.cufe.auction.world.bank.FundState(snapshot.accounts(),bank.state(),bank.book()),snapshot.timeMillis(),reports,budget);
+                var bank=world.bankOf().orElseThrow().decode(snapshot.accounts());
+                var plan = edu.cufe.auction.world.AgedDecisionTools.observation(company,
+                        new edu.cufe.auction.world.bank.FundState(snapshot.accounts(),bank.state(),bank.book()),
+                        snapshot.timeMillis(), reports, budget, world.profile().manifest());
                 List<String> actions=new ArrayList<>();plan.path("actionFields").fieldNames().forEachRemaining(actions::add);
                 Map<String,Object> row=new LinkedHashMap<>();row.put("kind","AGED");row.put("companyId",id);row.put("name","陈酿公司");row.put("actions",manager?actions:List.of());row.put("plan",plan);
                 row.put("financial",JSON.valueToTree(ComposedCompanyReport.of(world,id)));row.put("reports",JSON.valueToTree(reports));

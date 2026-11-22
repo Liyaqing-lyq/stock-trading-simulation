@@ -193,6 +193,9 @@ public final class RoleEvidenceDocuments {
             var hydro = run.hydro();
             body.set("openingOperations", HydroDecisionTools.observation(hydro, board,
                     world.snapshot().accounts().get(hydro.config().model().companyAccountId()).cash(), List.of()));
+        } else if (run != null && run.aged() != null && company.equals(run.aged().companyPartyId())
+                && AgedDecisionTools.showsOrderTerms(world.profile().manifest())) {
+            body.set("orderTerms", AgedDecisionTools.orderTerms(run.aged().config().model()));
         } else {
             body.put("operatingEvidenceLimit", "此文件仅含开局资金与业务简介；详细行业履约条件须另读取，不能据缺项编造预算或经营计划");
         }

@@ -30,6 +30,8 @@ import java.util.Set;
  */
 public final class AgedInventoryModel {
 
+    static final int RAW_ORDER_LEAD_PERIODS = 1;
+
     /** 本实现使用的实验参数标识；换参数即换实验，不能与旧结果合并。 */
     public static final String EXP_LABEL = "EXP-AGED-2";
 
@@ -728,7 +730,7 @@ public final class AgedInventoryModel {
         }
         List<PurchaseOrder> orders = new ArrayList<>(state.orders());
         orders.add(new PurchaseOrder(orderId, units, money(state.config().rawUnitCost()),
-                period, period + 1));
+                period, period + RAW_ORDER_LEAD_PERIODS));
         State candidate = copy(state).orders(orders).report(period, "ORDER_RAW", actor, orderId);
         return accepted(candidate, accounts, "ORDER_RAW", orderId, context);
     }

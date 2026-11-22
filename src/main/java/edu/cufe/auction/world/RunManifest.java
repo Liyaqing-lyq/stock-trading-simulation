@@ -59,9 +59,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 董事与在任经理可查本公司本期、下期已实施预算的经营档标识。 */
     public static final String FORWARD_BUDGET_RUN_ID = "web-forward-budget-operating-v1";
 
+    /** 岚醴的董事与经理可查采购到货、付款及熟成时点的经营档标识。 */
+    public static final String AGED_ORDER_RUN_ID = "web-aged-order-operating-v1";
+
+    /** 判断运行是否沿用本期及下期预算、本人阅读和基金岗位投影。 */
+    public static boolean usesForwardBudgetRules(String runId) {
+        return FORWARD_BUDGET_RUN_ID.equals(runId) || AGED_ORDER_RUN_ID.equals(runId);
+    }
+
     /** 判断开局是否继承发行人登记资料及研发资料可见范围。 */
     public static boolean usesCompanyInformationRules(String runId) {
-        return COMPANY_INFORMATION_RUN_ID.equals(runId) || FORWARD_BUDGET_RUN_ID.equals(runId);
+        return COMPANY_INFORMATION_RUN_ID.equals(runId) || usesForwardBudgetRules(runId);
     }
 
     /** 判断运行是否使用同一套工程客户、数字履约和研发可用现金规则。 */
@@ -1095,7 +1103,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
-            if (FORWARD_BUDGET_RUN_ID.equals(runId)) {
+            if (AGED_ORDER_RUN_ID.equals(runId)) {
+                expectedData.put("aged-order-terms", "next-period-v1");
+            }
+            if (usesForwardBudgetRules(runId)) {
                 expectedData.put("forward-budget-view", "period-window-v1");
                 expectedData.put("institutional-objectives", "product-office-v1");
                 expectedData.put("catalog-read-receipts", "visible-version-v1");

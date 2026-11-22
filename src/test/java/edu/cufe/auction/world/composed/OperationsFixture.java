@@ -39,6 +39,18 @@ final class OperationsFixture {
      */
     static long grantBudgetAndAppoint(WorldRuntime world, String company, List<String> directors,
             String manager, String prefix, List<Long> periods) throws Exception {
+        List<BoardModel.BudgetLine> lines = new ArrayList<>();
+        for (long period : periods) {
+            lines.add(new BoardModel.BudgetLine(period, BoardModel.BudgetCategory.PROCUREMENT,
+                    new BigDecimal("1000000.00")));
+            lines.add(new BoardModel.BudgetLine(period, BoardModel.BudgetCategory.PRODUCTION_LABOR,
+                    new BigDecimal("1000000.00")));
+        }
+        return grantLinesAndAppoint(world, company, directors, manager, prefix, lines);
+    }
+
+    static long grantLinesAndAppoint(WorldRuntime world, String company, List<String> directors,
+            String manager, String prefix, List<BoardModel.BudgetLine> lines) throws Exception {
         long now = Math.max(world.snapshot().timeMillis(), 1L);
         String budgetDoc = prefix + "-budget-doc";
         String appointmentDoc = prefix + "-appt-doc";
@@ -71,13 +83,6 @@ final class OperationsFixture {
         }
         world.scheduleCompanyBoardMaterial(prefix + "-bm", prefix + "-bm-task", convene + 30L,
                 company, directors.get(0), prefix + "-budget-meeting", "m1", budgetDoc, 1L);
-        List<BoardModel.BudgetLine> lines = new ArrayList<>();
-        for (long period : periods) {
-            lines.add(new BoardModel.BudgetLine(period, BoardModel.BudgetCategory.PROCUREMENT,
-                    new BigDecimal("1000000.00")));
-            lines.add(new BoardModel.BudgetLine(period, BoardModel.BudgetCategory.PRODUCTION_LABOR,
-                    new BigDecimal("1000000.00")));
-        }
         world.scheduleCompanyBoardBudgetProposal(prefix + "-bp", prefix + "-bp-task",
                 convene + 40L, company, directors.get(0), prefix + "-budget-meeting", lines);
         for (int i = 0; i < voters.size(); i++) {

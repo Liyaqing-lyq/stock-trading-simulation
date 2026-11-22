@@ -29154,7 +29154,9 @@ public final class WorldRuntime implements AutoCloseable {
                 long period=now/ManufacturingTemplateModel.PERIOD_MILLIS;
                 BigDecimal budget=board.budget(period,BoardModel.BudgetCategory.PRODUCTION_LABOR)==null ? null : BoardModel.availableBudget(board,period,BoardModel.BudgetCategory.PRODUCTION_LABOR);
                 var reports=CompanyOperationsDecisionTools.reports(snap.companyOperations(), company.companyPartyId(), positionOrderedOperationsReports());
-                root.set("agedOperations",AgedDecisionTools.observation(company,new edu.cufe.auction.world.bank.FundState(snap.accounts(),bank.state(),bank.book()),now,reports,budget));
+                root.set("agedOperations", AgedDecisionTools.observation(company,
+                        new edu.cufe.auction.world.bank.FundState(snap.accounts(), bank.state(), bank.book()),
+                        now, reports, budget, manifest));
             }
         }
         if (hydroDecisionEnabled() && snap.companyOperations() != null && snap.companyOperations().hydro() != null) {
