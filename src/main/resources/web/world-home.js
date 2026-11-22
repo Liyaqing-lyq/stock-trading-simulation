@@ -55,8 +55,10 @@ window.WorldHome = (() => {
     for(const r of valid) if(!priceMode||r.trades){const dot=add("circle",{cx:x(r.day),cy:y(r[field]),r:priceMode?3.2:1.8,class:"world-dot"});const title=document.createElementNS(ns,"title");title.textContent=`第${r.day}日 · ${money(r[field])}`+(priceMode?` · ${r.trades}笔 / ${r.volume}股`:"");dot.append(title);}
     wrap.append(svg);
   }
-  let autonomyTimer=null;
+  let autonomyTimer=null, autonomyRevision=0;
   function renderAutonomy(data) {
+    const revision=++autonomyRevision;
+    clearTimeout(autonomyTimer);
     $("world-autonomy").hidden=!data?.available;
     if(!data?.available)return;
     const reasons={NOT_STARTED:"本进程尚未开始（历史记录保留）",RUNNING:"持续运行中",PAUSED:"已暂停处理",STOPPED:"已停止新调用，在途调用继续结算",TARGET_REACHED:"已到达目标时点",BUDGET_EXHAUSTED:"调用预算不足，已停止",TECHNICAL_FAILED:"模型调用或回执失败，已停止",ROLE_DISPATCH_REJECTED:"角色无法派发，已停止；请查看模型决定记录",CONFIGURATION_CHANGED:"模型配置变化，已停止",WORLD_FAULT:"世界运行故障，已停止",UNRESOLVED_BARRIER:"尚有未解决的决定，已停止",NO_ELIGIBLE_ROLES:"当前没有可运行角色"};
@@ -64,10 +66,22 @@ window.WorldHome = (() => {
     $("world-autonomy-status").textContent=(reasons[data.reason]||data.reason)+" · 本次唤醒范围涉及 "+data.companies+" 家公司 / "+data.persons+" 人 · "+data.calls+" 次调用 / "+(data.failures||0)+" 次失败 · 已推进 "+data.cycles+" 个时间节点 · 世界第 "+(Number(data.timeMillis)/86400000).toFixed(2)+" 日";
     $("world-autonomy-start").disabled=data.running;
     $("world-autonomy-stop").disabled=!data.running;
-    clearTimeout(autonomyTimer);
-    if(data.running){const current=generation;autonomyTimer=setTimeout(async()=>{
-      try {const next=await api.onAutonomy?.("status");if(current!==generation)return;renderAutonomy(next);if(!next?.running)await api.onRefresh?.();}
-      catch(error){if(current===generation)$("world-autonomy-status").textContent="无法读取运行状态："+error.message+"。服务端可能仍在运行，请刷新核对。";}
+    if(data.running){const current=generation, outdated=()=>current!==generation||revision!==autonomyRevision;autonomyTimer=setTimeout(async()=>{
+      try {
+        const next=await api.onAutonomy?.("status");
+        if(outdated())return;
+        if(next?.running && next.position!==view.position && api.onOverview){
+          const latest=await api.onOverview();
+          if(outdated())return;
+          if(latest?.runId===view.runId && BigInt(latest.position)>=BigInt(view.position)){
+            api.render(latest);
+            return;
+          }
+        }
+        renderAutonomy(next);
+        if(!next?.running)await api.onRefresh?.();
+      }
+      catch(error){if(!outdated())$("world-autonomy-status").textContent="无法读取运行状态："+error.message+"。服务端可能仍在运行，请刷新核对。";}
     },2000);}
   }
   async function controlAutonomy(action) {
@@ -80,9 +94,17 @@ window.WorldHome = (() => {
     const exp=view.experiment,days=exp?.days||[],trades=view.companies.reduce((a,c)=>a+c.trades,0);
     $("world-day").textContent="第 "+Math.floor(Number(view.timeMillis)/86400000)+" 个实验日";
     $("world-hero-note").textContent=exp?"已完成一个季度。查看公司的真实经营、市场成交和人物任职。":"从公司的经营开始，观察信息、人物和交易如何相互影响。";
-    $("world-metrics").replaceChildren(metric("公司",view.companies.length,"经营与财务分别记账"),metric("真实成交",trades,"来自实际撮合"),view.connected?.enabled?metric("实际阅读",view.connected.linkCounts?.readings??0,"消息读完后才进入判断"):view.behavior?.enabled?metric("交易行为","待整改","本轮验证制造经营闭环"):metric("有成交的日子",days.filter(d=>d.trades>0).length+" / "+days.length,"无成交日不补造价格"),metric("人物",view.people.filter(p=>!p.system).length,"另有研发试验系统"));
-    table("world-company-list",["公司","最近成交价","累计成交量","现金 / 准备金","累计损益","查看"],view.companies.map(c=>[
-      button(c.name,()=>choose(c.id,"world-companies")),c.lastPrice==null?"尚无成交（参考 "+money(c.referencePrice)+"）":money(c.lastPrice),c.volume+" 股",money(c.cash),element("span",money(c.profit),sign(c.profit)),button("股价与成交",()=>choose(c.id,"world-market"))]));
+    $("world-metrics").replaceChildren(metric("公司",view.companies.length,"经营与财务分别记账"),metric("真实成交",trades,"来自实际撮合"),view.connected?.enabled?metric("实际阅读",view.connected.linkCounts?.readings??0,"消息读完后才进入判断"):view.behavior?.enabled?metric("交易行为","待整改","本轮验证制造经营闭环"):view.modelAttempts!=null?metric("累计模型调用",view.modelAttempts,"已结算，含失败尝试"):metric("有成交的日子",days.filter(d=>d.trades>0).length+" / "+days.length,"无成交日不补造价格"),metric("人物",view.people.filter(p=>!p.system).length,"另有研发试验系统"));
+    const showGovernance=view.companies.some(c=>c.governance);
+    const governanceCell=c=>{
+      if(!c.governance)return "—";
+      const g=c.governance, box=element("div");
+      box.append(element("div",(g.managers.length?"经理："+g.managers.map(personName).join("、"):"经理空缺")+" · "+g.meetings+" 场会议 · "+g.budgetLines+" 项已批预算"),
+        button("查看治理",()=>api.onGovernance?.(c.id)));
+      return box;
+    };
+    table("world-company-list",["公司","最近成交价","累计成交量","现金 / 准备金","累计损益",...(showGovernance?["公司治理"]:[]),"查看"],view.companies.map(c=>[
+      button(c.name,()=>choose(c.id,"world-companies")),c.lastPrice==null?"尚无成交（参考 "+money(c.referencePrice)+"）":money(c.lastPrice),c.volume+" 股",money(c.cash),element("span",money(c.profit),sign(c.profit)),...(showGovernance?[governanceCell(c)]:[]),button("股价与成交",()=>choose(c.id,"world-market"))]));
     $("world-run-note").textContent=exp?.note||"当前公司状态来自同一已确认世界时点。";
     $("world-behavior").hidden=!view.behavior?.enabled||!!view.connected?.enabled;
     if(view.behavior?.enabled&&!view.connected?.enabled){
@@ -235,7 +257,7 @@ window.WorldHome = (() => {
     for(const id of ["world-market-select","world-company-select"]){const select=$(id);select.replaceChildren();for(const c of view.companies){const o=element("option",c.name);o.value=c.id;select.append(o);}select.value=selected;}
     renderOverview();renderMarket();renderCompany();renderPeople();
   }
-  const api={onPage:null,onPerson:null,onAdvance:null,onAutonomy:null,onRefresh:null,
+  const api={onPage:null,onPerson:null,onGovernance:null,onOverview:null,onAdvance:null,onAutonomy:null,onRefresh:null,
     render(value){
       if(view?.runId&&value?.runId&&view.runId!==value.runId){generation++;stepping=false;stopRunning();selectedSource="";}
       view=value?.available?value:null;document.querySelectorAll("[data-world-nav]").forEach(n=>n.hidden=!view);

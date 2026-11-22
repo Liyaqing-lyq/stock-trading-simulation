@@ -80,6 +80,29 @@ nodes.get('world-feed-company').value='';context.window.WorldHome.render(connect
 const home=context.window.WorldHome;
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
+  const live={available:true,runId:'active-governance',timeMillis:'1',position:'40',people:[],names:{director:'林知微'},
+    companies:[{...company,governance:{meetings:2,budgetLines:0,managers:['director']}}],
+    modelAttempts:71,autonomy:{available:true,running:true,reason:'RUNNING',cycles:1,calls:1,companies:1,persons:1,timeMillis:'1',position:'40'}};
+  home.render(live);
+  assert(content(nodes.get('world-company-list')).includes('林知微'),'active manager must come from the current snapshot');
+  assert(content(nodes.get('world-company-list')).includes('2 场会议'));
+  assert(content(nodes.get('world-metrics')).includes('71'),'restored run retains cumulative model attempts');
+  let selectedCompany;
+  home.onGovernance=id=>selectedCompany=id;
+  findButton(nodes.get('world-company-list'),'查看治理')[0].handlers.click();
+  assert.equal(selectedCompany,'one','governance link opens the selected company');
+  home.onAutonomy=async()=>({...live.autonomy,position:'41'});
+  home.onOverview=async()=>({...live,position:'41',autonomy:{...live.autonomy,position:'41'},companies:[{...company,governance:{meetings:3,budgetLines:1,managers:[]}}]});
+  const [pollId,poll]=[...timers.entries()][0];timers.delete(pollId);await poll();
+  assert(content(nodes.get('world-company-list')).includes('3 场会议'),'running snapshot refreshes before the run stops');
+  assert(content(nodes.get('world-company-list')).includes('经理空缺'));
+  const [lateId,latePoll]=[...timers.entries()][0];timers.delete(lateId);
+  let resolveView;
+  home.onAutonomy=async()=>({...live.autonomy,position:'42'});
+  home.onOverview=()=>new Promise(resolve=>resolveView=resolve);
+  const stale=latePoll();await flush();home.clear();resolveView(live);await stale;
+  assert.equal(content(nodes.get('world-company-list')).trim(),'','late poll cannot display admin data after leaving');
+  home.render(connectedView);
   let calls=0,finish;
   home.onAdvance=target=>{calls++;return new Promise(resolve=>{finish=()=>{home.render({...connectedView,timeMillis:target});resolve();};});};
   nodes.get('world-connected-toggle').handlers.click();

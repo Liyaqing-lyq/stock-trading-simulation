@@ -21,6 +21,8 @@ final class WorldOverviewView {
         registry.parties().forEach(p->names.put(p.partyId(),NAMES.getOrDefault(p.partyId(),p.name())));
         snapshot.accounts().forEach((id,a)->names.put(id,a.ownerId().equals("fund-a")?"机构投资账户":names.getOrDefault(a.ownerId(),a.ownerId())+"的账户"));
         var roles=new TreeMap<String,List<String>>();
+        var managers=new TreeMap<String,List<String>>();
+        boolean autonomous=world.profile().manifest().dataVersions().containsKey("autonomy-driver");
         for(var a:snapshot.roles().orElseThrow().access().appointments()) if(a.activeAt(snapshot.timeMillis())) {
             String role=switch(a.role().name()) {
                 case "RESEARCHER" -> "研究员"; case "PORTFOLIO_MANAGER" -> "投资经理";
@@ -28,6 +30,8 @@ final class WorldOverviewView {
                 case "JOURNALIST" -> "记者"; case "EDITOR" -> "编辑"; case "COMPANY_MANAGER" -> "总经理";
                 default -> "任职成员";
             };
+            if (autonomous && a.role()==RoleAccess.Role.COMPANY_MANAGER)
+                managers.computeIfAbsent(a.organizationPartyId(),k->new ArrayList<>()).add(a.personPartyId());
             roles.computeIfAbsent(a.personPartyId(),k->new ArrayList<>()).add(names.get(a.organizationPartyId())+" · "+role);
         }
         var companies=new ArrayList<Map<String,Object>>();
@@ -37,6 +41,9 @@ final class WorldOverviewView {
             if(board!=null)for(var seat:board.board().charter().seats())
                 roles.computeIfAbsent(seat.partyId(),k->new ArrayList<>()).add(names.get(id)+" · 董事");
             var row=new LinkedHashMap<String,Object>();row.put("id",id);row.put("symbol",security.symbol());
+            if (autonomous && board!=null) row.put("governance", Map.of(
+                    "meetings",board.board().meetings().size(), "budgetLines",board.board().budgets().size(),
+                    "managers",managers.getOrDefault(id,List.of())));
             row.put("name",names.get(id));row.put("business",prototype.business());
             row.put("prototype",prototype.prototype());row.put("boundary",prototype.boundary());
             row.put("referencePrice",security.initialReferencePrice().toPlainString());
@@ -68,6 +75,7 @@ final class WorldOverviewView {
                 "timeMillis",Long.toString(snapshot.timeMillis()),"companies",companies,"people",people,"names",names,
                 "behavior", Map.of("enabled", ManufacturingBehaviorLoop.enabled(world), "decisions",
                         ManufacturingBehaviorLoop.enabled(world) ? ManufacturingBehaviorLoop.audit(world) : List.of())));
+        if (autonomous) snapshot.decisions().ifPresent(d->result.put("modelAttempts",d.state().runUsage().attempts()));
         ConnectedWorldView.append(result,world,companies);
         return result;
     }

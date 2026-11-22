@@ -3532,6 +3532,19 @@ $("media-story-select").addEventListener("change", () => guard(loadMediaStory())
 
 if (globalThis.WorldHome) {
   globalThis.WorldHome.onPage = selectPage;
+  globalThis.WorldHome.onGovernance = companyId => {
+    state.engineeringCompany = companyId;
+    selectPage("engineering");
+  };
+  globalThis.WorldHome.onOverview = async () => {
+    if (state.mode !== "admin" || !["overview","world-market","world-companies","world-people"].includes(state.page)) return null;
+    const generation = state.generation;
+    const result = await request("GET", "/api/admin/world");
+    if (!isCurrent(generation) || state.mode !== "admin") return null;
+    if (result.status === 401 || result.status === 403) { sessionLost(); return null; }
+    if (result.status !== 200) throw new Error("首页读取失败（" + result.status + "）");
+    return result.payload;
+  };
   globalThis.WorldHome.onPerson = personId => guard(switchPerson(personId));
   globalThis.WorldHome.onRefresh = refreshAdmin;
   globalThis.WorldHome.onAutonomy = async (action, days) => {
