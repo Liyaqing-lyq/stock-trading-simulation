@@ -22,10 +22,15 @@ final class StateDeltaCodec {
     static String encode(String runId, long position, String previous, String next) throws IOException {
         JsonNode before = previous == null ? NullNode.instance : canonical(JSON.readTree(previous));
         JsonNode after = canonical(JSON.readTree(next));
+        return encodeCanonical(runId, position, before, after, digest(before));
+    }
+
+    private static String encodeCanonical(String runId, long position, JsonNode before,
+                                          JsonNode after, String baseDigest) throws IOException {
         ObjectNode record = JSON.createObjectNode();
         record.put("version", VERSION); record.put("runId", runId);
         record.put("basePosition", position - 1); record.put("position", position);
-        record.put("baseDigest", digest(before)); record.put("resultDigest", digest(after));
+        record.put("baseDigest", baseDigest); record.put("resultDigest", digest(after));
         record.set("patch", diff(before, after));
         return JSON.writeValueAsString(record);
     }
@@ -34,16 +39,17 @@ final class StateDeltaCodec {
         try {
             JsonNode record = JSON.readTree(payload);
             JsonNode before = previous == null ? NullNode.instance : canonical(JSON.readTree(previous));
+            String baseDigest = digest(before);
             if (!VERSION.equals(record.path("version").asText()) || !runId.equals(record.path("runId").asText())
                     || !record.path("position").isIntegralNumber() || record.path("position").longValue() != position
                     || !record.path("basePosition").isIntegralNumber() || record.path("basePosition").longValue() != position - 1
                     || (previous == null && position != 1)
-                    || !digest(before).equals(record.path("baseDigest").asText()))
+                    || !baseDigest.equals(record.path("baseDigest").asText()))
                 throw new IOException("状态差量版本、运行或基准不匹配");
             JsonNode after = patch(before, record.get("patch"));
             String result = JSON.writeValueAsString(after);
             // 重建唯一规范记录，拒绝多余字段、重复/缺失操作、错误结果摘要及非规范操作形态。
-            if (!JSON.readTree(encode(runId, position, previous, result)).equals(record))
+            if (!JSON.readTree(encodeCanonical(runId, position, before, canonical(after), baseDigest)).equals(record))
                 throw new IOException("状态差量结果摘要或规范操作不匹配");
             return result;
         } catch (RuntimeException invalid) { throw new IOException("状态差量结构不合法", invalid); }
@@ -73,7 +79,10 @@ final class StateDeltaCodec {
             if (before.size() == after.size() && changes.isEmpty()) return JSON.createObjectNode().put("kind", "same");
             return result;
         }
-        return before.toString().equals(after.toString()) ? JSON.createObjectNode().put("kind", "same") : replacement(after);
+        // 数字逐字比较以保留金额的小数位；日常未变的文本不需反复转义序列化。
+        boolean same = before == after || (!before.isNumber() && before.equals(after))
+                || before.toString().equals(after.toString());
+        return same ? JSON.createObjectNode().put("kind", "same") : replacement(after);
     }
 
     private static boolean unchanged(JsonNode change) {
@@ -92,7 +101,8 @@ final class StateDeltaCodec {
                 return change.get("value");
             case "object": {
                 if (!before.isObject() || !change.path("changes").isObject() || !change.path("removed").isArray()) throw new IOException("对象差量类型不符");
-                ObjectNode result = before.deepCopy();
+                // 后续递归逐层新建被修改的容器，未变的子树只读共享。
+                ObjectNode result = JSON.createObjectNode().setAll((ObjectNode) before);
                 for (JsonNode name : change.get("removed")) {
                     if (!name.isTextual() || !result.has(name.textValue())) throw new IOException("删除字段不存在");
                     result.remove(name.textValue());

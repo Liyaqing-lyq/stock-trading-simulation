@@ -708,11 +708,7 @@ public record Clue(String name, String url, String doc) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(text.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
+            return java.util.HexFormat.of().formatHex(hash);
         } catch (NoSuchAlgorithmException failure) {
             throw new IllegalStateException("缺少 SHA-256", failure);
         }
