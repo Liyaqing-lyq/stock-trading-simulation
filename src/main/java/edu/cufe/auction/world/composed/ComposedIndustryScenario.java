@@ -334,6 +334,16 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.HYDRO_SETTLEMENT_RUN_ID);
     }
 
+    /**
+     * 开启继承水电结算视图并向个人交易者说明限价申报资格的经营档。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 运行档或日志不相容
+     */
+    public static WorldRuntime openPersonalLimitOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.PERSONAL_LIMIT_RUN_ID);
+    }
+
     private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
         return open(journal, true, true, true, true, false, false, true, true,
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true,
@@ -508,7 +518,10 @@ public final class ComposedIndustryScenario {
                 data.put("belief-company-scope", "manufacturing-orders-v1");
                 data.put("research-manager-view", "project-state-v1");
             }
-            if (RunManifest.HYDRO_SETTLEMENT_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.PERSONAL_LIMIT_RUN_ID.equals(thinkingRunId)) {
+                data.put(PersonalMarket.LIMIT_RULES, PersonalMarket.LIMIT_RULES_VERSION);
+            }
+            if (RunManifest.usesHydroSettlementView(thinkingRunId)) {
                 data.put(HydroDecisionTools.SETTLEMENT_POLICY, HydroDecisionTools.SETTLEMENT_VERSION);
             }
             if (RunManifest.usesRoleTables(thinkingRunId)) {

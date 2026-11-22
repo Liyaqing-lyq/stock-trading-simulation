@@ -86,6 +86,34 @@ class PersonalMarketTest {
         assertThrows(Exception.class,()->ComposedIndustryScenario.openFundedThinkingOperating(file));
     }
 
+    @Test void firstPersonalLimitOrderNeedsOnlyOwnAvailableAssetsOnAnEmptyBook() throws Exception {
+        Path file = dir.resolve("personal-limit.journal");
+        WorldRuntime.Snapshot saved;
+        try (var w = ComposedIndustryScenario.openPersonalLimitOperating(file)) {
+            var investor = w.autonomyRoleObservation("investor");
+            assertTrue(tool(investor, PersonalMarket.SUBMIT));
+            assertTrue(investor.at("/engineering/personalMarket/contract").asText().contains("申报不要求已有报价、成交价或基金产品授权"));
+            assertTrue(exchange(w).orders().isEmpty());
+            assertTrue(exchange(w).trades().isEmpty());
+            var action = decide(w, "investor", "first-order", PersonalMarket.SUBMIT, limit("INV", symbol(w), "BUY", 3, "9.50"));
+            assertNotNull(action);
+            w.advanceTo(action.dueMillis());
+            assertEquals("ACTIVE", feedback(w,"investor").path("orderStatus").asText());
+            assertEquals(new BigDecimal("28.50"), WorldExchange.frozenCash(exchange(w), "INV"));
+            assertEquals(new BigDecimal("10000.00"), cash(w, "INV"));
+            assertTrue(exchange(w).trades().isEmpty());
+            assertEquals(1,openOrders(w,"investor").size());
+            var trader = w.autonomyRoleObservation("dave");
+            assertFalse(tool(trader, PersonalMarket.SUBMIT));
+            assertFalse(trader.path("engineering").has("personalMarket"));
+            assertTrue(tool(trader, RoleTradingView.TOOL_CHILD_SUBMIT));
+            saved=w.snapshot();
+        }
+        try (var reopened=ComposedIndustryScenario.openPersonalLimitOperating(file)) {
+            assertEquals(saved,reopened.snapshot());
+        }
+    }
+
     @Test void reservedBuyAndRejectedExecutionAndForgedRepliesHaveIndependentReceipts() throws Exception {
         var file=dir.resolve("buy.journal");
         WorldRuntime.Snapshot saved;

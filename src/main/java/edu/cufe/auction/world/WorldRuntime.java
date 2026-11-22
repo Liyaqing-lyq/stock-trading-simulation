@@ -29367,7 +29367,8 @@ public final class WorldRuntime implements AutoCloseable {
             GroupActionFeedback.append(root, person, snap.decisions(), snap.pending(), snap.groups(),
                     snap.position(), snap.timeMillis(), commitSource::nonSnapshotCommitAt, this::groupFeedbackIdentity);
         if (PersonalMarket.VERSION.equals(manifest.dataVersions().get(PersonalMarket.POLICY)))
-            PersonalMarket.append(root, PersonalMarket.accounts(snap.roles(), person), snap.exchange(), snap.decisions(), person, snap.position());
+            PersonalMarket.append(root, PersonalMarket.accounts(snap.roles(), person), snap.exchange(), snap.decisions(), person, snap.position(),
+                    PersonalMarket.LIMIT_RULES_VERSION.equals(manifest.dataVersions().get(PersonalMarket.LIMIT_RULES)));
         if (RoleDeliberation.CONTEXTUAL_VERSION.equals(roleContext))
             RoleGovernanceOutcomeContext.append(root, person, now, snap.decisions(), snap.engineering(), snap.roles(), company -> {
                 BoardRun board = PeriodicWorldEngine.boardOf(snap.engineering(), snap.governance(), company);

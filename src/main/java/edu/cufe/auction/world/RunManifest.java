@@ -74,9 +74,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 明确区分水电累计物量、已结电费与应收的经营档。 */
     public static final String HYDRO_SETTLEMENT_RUN_ID = "web-hydro-settlement-operating-v1";
 
+    /** 明示本人自有账户空簿限价申报条件的经营档。 */
+    public static final String PERSONAL_LIMIT_RUN_ID = "web-personal-limit-operating-v1";
+
+    /** 判断本档是否区分水电累计物量与已结电费。 */
+    public static boolean usesHydroSettlementView(String runId) {
+        return HYDRO_SETTLEMENT_RUN_ID.equals(runId) || PERSONAL_LIMIT_RUN_ID.equals(runId);
+    }
+
     /** 判断本档是否沿用超限时的角色输入紧凑表格。 */
     public static boolean usesRoleTables(String runId) {
-        return ROLE_TABLE_RUN_ID.equals(runId) || HYDRO_SETTLEMENT_RUN_ID.equals(runId);
+        return ROLE_TABLE_RUN_ID.equals(runId) || usesHydroSettlementView(runId);
     }
 
     /** 判断该档是否公开带发行人及实际签发人的财报版本。 */
@@ -1135,7 +1143,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
-            if (HYDRO_SETTLEMENT_RUN_ID.equals(runId)) {
+            if (PERSONAL_LIMIT_RUN_ID.equals(runId)) {
+                expectedData.put(PersonalMarket.LIMIT_RULES, PersonalMarket.LIMIT_RULES_VERSION);
+            }
+            if (usesHydroSettlementView(runId)) {
                 expectedData.put(HydroDecisionTools.SETTLEMENT_POLICY, HydroDecisionTools.SETTLEMENT_VERSION);
             }
             if (usesRoleTables(runId)) {

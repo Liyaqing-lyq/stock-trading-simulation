@@ -14,6 +14,9 @@ public final class PersonalMarket {
     public static final String RUN_ID = "web-personal-market-operating-v1";
     /** 冻结清单中的政策键和版本。 */
     public static final String POLICY = "personal-market-policy", VERSION = "v1";
+    /** 登记本人在空簿也可申报自定限价的观察合同。 */
+    public static final String LIMIT_RULES = "personal-limit-view", LIMIT_RULES_VERSION = "self-funded-v1";
+
     /** 本人限价报单与本人现存挂单撤销。 */
     public static final String SUBMIT = "personal.order.limit", CANCEL = "personal.order.cancel";
 
@@ -56,11 +59,13 @@ public final class PersonalMarket {
     }
 
     static void append(ObjectNode root, List<String> accounts, WorldExchange.State exchange,
-                       DecisionRun run, String person, long position) {
+                       DecisionRun run, String person, long position, boolean explicitLimitRules) {
         if (accounts.isEmpty()) return;
         var market = root.putObject("personalMarket");
         market.put("policy", VERSION);
-        market.put("contract", "可用个人账户的可用现金或可卖持仓申报限价单。价格相容的真实对手单可成交。未成交余量留簿冻结，直至成交、本人撤销或收盘。撤单需本人活动单引用，结果以执行回报为准。");
+        market.put("contract", explicitLimitRules
+                ? "你可用本人自有账户申报限价买单或卖单，也可等待。申报不要求已有报价、成交价或基金产品授权。限价与数量由你自行决定。买单需足额可用现金，卖单需足额可卖持仓。只有价格相容的真实对手单才能成交。未成交余量留簿，买单按限价冻结现金，卖单冻结对应持仓，直至成交、本人撤销或收盘。撤单需引用本人有效挂单，结果以执行回报为准。"
+                : "可用个人账户的可用现金或可卖持仓申报限价单。价格相容的真实对手单可成交。未成交余量留簿冻结，直至成交、本人撤销或收盘。撤单需本人活动单引用，结果以执行回报为准。");
         var open = market.putArray("openOrders");
         for (String account : accounts) ownOrders(exchange, account).forEach((ref, order) -> {
             if (order.status() == WorldExchange.OrderStatus.ACTIVE)
