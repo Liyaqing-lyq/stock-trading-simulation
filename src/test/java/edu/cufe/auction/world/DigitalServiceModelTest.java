@@ -173,6 +173,26 @@ class DigitalServiceModelTest {
     // ---------------------------------------------------------------- 1 普通
 
     @Test
+    void deliveryRoomReflectsSharedCashBudgetCapacityAndOutstandingCurrentPeriodDemand() {
+        World w = ready(new Cfg());
+        assertTrue(w.sign(15 * DAY, "K1", 100, "0").accepted());
+        assertTrue(w.sign(15 * DAY, "K2", 95, "0").accepted());
+        assertTrue(w.deliver(16 * DAY, "K1", 25, "one").accepted());
+        var room = DigitalDecisionTools.deliveryRoom(w.state, 16 * DAY, money("15.59"), money("8.99"));
+        assertEquals(175,room.path("remainingCapacityUnits").asLong());
+        assertEquals(105,room.path("uncommittedCurrentDemandUnits").asLong());
+        assertEquals(14,room.path("cashBudgetCapacityUnits").asLong());
+        assertEquals("15.59",room.path("freeCompanyCash").asText());
+        assertEquals(2,DigitalDecisionTools.deliveryRoom(w.state,16 * DAY,money("1.21"),money("125")).path("cashBudgetCapacityUnits").asLong());
+        assertEquals(0,DigitalDecisionTools.deliveryRoom(w.state,16 * DAY,money("100"),null).path("cashBudgetCapacityUnits").asLong());
+        assertEquals(175,DigitalDecisionTools.deliveryRoom(w.state,16 * DAY,money("1E+25"),money("1E+24")).path("cashBudgetCapacityUnits").asLong());
+        assertEquals(300,DigitalDecisionTools.deliveryRoom(w.state,31 * DAY,money("10"),money("10")).path("uncommittedCurrentDemandUnits").asLong());
+        Cfg noCost=new Cfg();
+        noCost.unitCost=money("0");
+        assertEquals(200,DigitalDecisionTools.deliveryRoom(world(noCost).state,0,money("0"),null).path("cashBudgetCapacityUnits").asLong());
+    }
+
+    @Test
     void pilotExpensedValidationCapitalisedSignedThenDelivered() {
         World w = world(new Cfg());
         Report opening = w.report();

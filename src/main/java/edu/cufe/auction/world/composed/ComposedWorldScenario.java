@@ -3,6 +3,7 @@ package edu.cufe.auction.world.composed;
 import edu.cufe.auction.web.WorldWebScenario;
 import edu.cufe.auction.world.CashLedger;
 import edu.cufe.auction.world.EngineeringRun;
+import edu.cufe.auction.world.EngineeringCustomerPolicy;
 import edu.cufe.auction.world.InformationRun;
 import edu.cufe.auction.world.OpeningRegistry;
 import edu.cufe.auction.world.RoleAccess;
@@ -295,6 +296,7 @@ public final class ComposedWorldScenario {
         readers.addAll(WorldWebScenario.MEDIA_PERSONS);
         readers.addAll(WorldWebScenario.SOCIAL_PERSONS);
         readers.addAll(extras.readers());
+        if (EngineeringCustomerPolicy.RUN_ID.equals(manifest.runId())) readers.add(EngineeringCustomerPolicy.REPRESENTATIVE);
         if (manifest.hasResearch()) {
             readers.add(WorldWebScenario.RESEARCH_SYSTEM_PUBLISHER);
         }
@@ -304,6 +306,7 @@ public final class ComposedWorldScenario {
         EngineeringRun.Config engineering = PrototypeCompanies.PROFILE.equals(
                 manifest.dataVersions().get("profile")) ? PrototypeCompanies.engineering()
                 : baseline ? baselineEngineering() : engineeringConfigWithAcceptance();
+        if (EngineeringCustomerPolicy.RUN_ID.equals(manifest.runId())) engineering = new EngineeringRun.Config(engineering.paramSource(), engineering.companies(), Map.of(), EngineeringCustomerPolicy.MANDATE);
         Map<String, edu.cufe.auction.world.BoardModel.Charter> governed =
                 extras.charters().isEmpty() ? charters()
                         : new TreeMap<>(extras.charters());

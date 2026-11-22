@@ -260,6 +260,17 @@ public final class ComposedIndustryScenario {
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, PersonalMarket.RUN_ID);
     }
 
+    /**
+     * 打开按经理申请与工程客户到期义务复核的经营档。
+     * @param journal 新版工程经营日志
+     * @return 新建或严格重开的世界
+     * @throws Exception 开局、日志或版本核验失败
+     */
+    public static WorldRuntime openEngineeringCustomerOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, EngineeringCustomerPolicy.RUN_ID);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating) throws Exception {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous,
                 eventDriven, roleContext, operating, compact, informedOperating, null);
@@ -305,6 +316,11 @@ public final class ComposedIndustryScenario {
         }
         if (operating) parties.put(ExternalDemandOpening.OWNER_ID, new BankingProfile.PartyRef(
                 ExternalDemandOpening.OWNER_ID, ExternalDemandOpening.OWNER_ID, ExternalDemandOpening.ACCOUNT_ID, null));
+        if (EngineeringCustomerPolicy.RUN_ID.equals(thinkingRunId)) {
+            var customer = parties.get(EngineeringCustomerPolicy.OWNER);
+            parties.put(customer.ownerId(), new BankingProfile.PartyRef(EngineeringCustomerPolicy.CUSTOMER,
+                    customer.ownerId(), customer.cashAccountId(), customer.depositGl()));
+        }
         var profile = new BankingProfile(original.banks(), parties, original.custodians(), buckets, original.groups(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::loanGl).distinct().sorted().toList() : original.loanAccounts(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
@@ -335,7 +351,7 @@ public final class ComposedIndustryScenario {
         if (thinking) {
             var limits = decisions.limits();
             var timings = new TreeMap<>(decisions.actionMillisByTool());
-            if (PersonalMarket.RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
                 timings.put(PersonalMarket.SUBMIT, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
                 timings.put(PersonalMarket.CANCEL, timings.get(RoleTradingView.TOOL_CHILD_CANCEL));
             }
@@ -358,6 +374,7 @@ public final class ComposedIndustryScenario {
             externalOwners.add(new OpeningRegistry.PropertyOwner(ExternalDemandOpening.OWNER_ID, OpeningRegistry.OwnerKind.ORGANIZATION, ExternalDemandOpening.OWNER_ID));
             openingRegistry = new OpeningRegistry(externalParties, externalOwners, openingRegistry.securities(), openingRegistry.allocations());
         }
+        if (EngineeringCustomerPolicy.RUN_ID.equals(thinkingRunId)) openingRegistry = EngineeringCustomerPolicy.register(openingRegistry);
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -417,10 +434,15 @@ public final class ComposedIndustryScenario {
         }
         if (thinking) {
             var data = new TreeMap<>(runManifest.dataVersions()); data.put("provider-policy", "deepseek-thinking-high-v1");
-            if (PersonalMarket.RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
                 data.put(PersonalMarket.POLICY, PersonalMarket.VERSION);
                 data.put("belief-company-scope", "manufacturing-orders-v1");
                 data.put("research-manager-view", "project-state-v1");
+            }
+            if (EngineeringCustomerPolicy.RUN_ID.equals(thinkingRunId)) {
+                data.put(EngineeringCustomerPolicy.KEY, EngineeringCustomerPolicy.VERSION);
+                data.put("digital-delivery-view", "shared-period-limits-v1");
+                data.put("research-funding", "free-cash-v1");
             }
             if (RunManifest.usesFundedOperatingRules(thinkingRunId)) {
                 data.put("customer-contract-policy", RunManifest.FUNDED_CONTRACT_POLICY);

@@ -380,6 +380,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> adminView(exchange));
                 return;
             }
+            if ("/api/admin/period-statement".equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> periodStatement(exchange));
+                return;
+            }
             if (DETAIL_PATHS.contains(path) && "GET".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> adminDetails(exchange, path));
                 return;
@@ -622,6 +626,7 @@ public final class WorldWebServer implements AutoCloseable {
     }
 
     private boolean knownRoute(String path, String method) {
+        if ("/api/admin/period-statement".equals(path) && "POST".equals(method)) return true;
         if ("/api/admin/world".equals(path) && "GET".equals(method)) return true;
         if (("/api/admin/media".equals(path) || "/api/admin/capabilities".equals(path))
                 && "GET".equals(method)) return true;
@@ -961,6 +966,25 @@ public final class WorldWebServer implements AutoCloseable {
             throw new WorldIoFailure();
         }
         send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    private void periodStatement(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        JsonNode body = jsonBody(exchange, Set.of("companyId", "period"));
+        Long period = strictLong(body.get("period"));
+        if (!body.path("companyId").isTextual() || period == null || period < 1) {
+            send(exchange, 400, error("INVALID", "请选择公司和已采样的账期"));
+            return;
+        }
+        try {
+            var result = host.companyPeriodStatement(body.get("companyId").textValue(), period);
+            send(exchange, 200, mapper.writeValueAsString(result));
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalArgumentException missing) {
+            send(exchange, 404, error("NOT_FOUND", "该公司尚无所选期间的期末采样"));
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
     }
 
     /** POST /api/admin/market-history：只读当前 cut 的真实成交 OHLC。 */

@@ -16,6 +16,27 @@ import static org.junit.jupiter.api.Assertions.*;
 class CompanyPublicationViewTest {
     @TempDir Path dir;
 
+    @Test void privateMonthEndCanBeVerifiedBeforeAnyPublicRelease() throws Exception {
+        try(var world=ComposedIndustryScenario.openPersonalMarketOperating(dir.resolve("monthly.journal"))) {
+            assertThrows(IllegalArgumentException.class,()->world.confirmedPeriodStatement("mfg-tech",1));
+            world.advanceTo(30L*86_400_000+1);
+            long current=world.snapshot().position();
+            for (String company : List.of("mfg-tech","eng-a","pharma","north")) {
+                var history=world.periodicOf(company).orElseThrow();
+                assertTrue(history.releases().isEmpty());
+                var stored=history.snapshots().get(0);
+                var report=world.confirmedPeriodStatement(company,1);
+                var sha=java.security.MessageDigest.getInstance("SHA-256");
+                assertEquals(stored.statementDigest(),java.util.HexFormat.of().formatHex(
+                        sha.digest(report.body().getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+                assertEquals(stored.position(),report.position());
+                assertEquals(30L*86_400_000,report.capturedAt());
+                assertThrows(IllegalArgumentException.class,()->world.confirmedPeriodStatement(company,2));
+            }
+            assertEquals(current,world.snapshot().position());
+        }
+    }
+
     @Test void publicSourceKeepsItsCompanyVersionAndActualReadersOnReopen() throws Exception {
         Path journal=dir.resolve("company.journal");
         JsonNode finalRows;

@@ -21,20 +21,30 @@ final class ProbeProviderEvidence {
     private int completed, recorded, missingIdentity;
     private volatile boolean failed;
     private final boolean thinking;
+    private final MeasuredLengthPolicy measuredLength;
     private volatile String stopReason;
     static final String TECHNICAL_FAILURE = "PROBE_PROVIDER_TECHNICAL_FAILURE";
     static final String UNKNOWN_EVIDENCE = "PROBE_PROVIDER_EVIDENCE_UNKNOWN";
 
     ProbeProviderEvidence(Path out) { this(out, false); }
 
-    ProbeProviderEvidence(Path out, boolean thinking) { this.out = out; this.thinking = thinking; }
+    ProbeProviderEvidence(Path out, boolean thinking) { this(out, thinking, null); }
+
+    ProbeProviderEvidence(Path out, boolean thinking, MeasuredLengthPolicy measuredLength) {
+        this.out = out;
+        this.thinking = thinking;
+        this.measuredLength = measuredLength;
+    }
 
     static ObjectNode policy() { return policy(false); }
 
-    static ObjectNode policy(boolean thinking) {
+    static ObjectNode policy(boolean thinking) { return policy(thinking, false); }
+
+    private static ObjectNode policy(boolean thinking, boolean measured) {
         var result = JSON.createObjectNode().put("schema", thinking ? LiveDecisionProvider.THINKING_PROVENANCE_SCHEMA : LiveDecisionProvider.PROVENANCE_SCHEMA)
                 .put("identityScope", "PROVIDER_DECLARED_ONLY").put("underlyingModelVersion", "UNKNOWN");
         if (thinking) result.put("providerPolicy", DeepSeekClient.THINKING_HIGH_POLICY);
+        if (measured) result.put("technicalFailurePolicy", MeasuredLengthPolicy.VERSION);
         return result;
     }
 
@@ -43,7 +53,36 @@ final class ProbeProviderEvidence {
     }
 
     static void freezePolicy(Path out, boolean thinking) throws IOException {
-        JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve(POLICY_FILE).toFile(), policy(thinking));
+        freezePolicy(out, thinking, false);
+    }
+
+    static void freezePolicy(Path out, boolean thinking, boolean measured) throws IOException {
+        JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve(POLICY_FILE).toFile(), policy(thinking, measured));
+    }
+
+    void settleMeasuredLengths(String nextActionId, long timeoutMillis) {
+        if (measuredLength == null || stopRequested()) return;
+        try {
+            if (!measuredLength.confirmBefore(nextActionId, timeoutMillis)) stopReason = UNKNOWN_EVIDENCE;
+        } catch (RuntimeException inconsistent) {
+            stopReason = UNKNOWN_EVIDENCE;
+        }
+    }
+
+    int allocate(java.util.concurrent.atomic.AtomicInteger issued, String actionId, long timeoutMillis) {
+        if (measuredLength == null) return issued.incrementAndGet();
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (!stopRequested()) {
+            long left = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+            settleMeasuredLengths(actionId, Math.max(0, left));
+            // 与 evaluate 中登记新截断共用锁。获得序号的调用已获派发，执行中的调用可以原样结算。
+            synchronized (this) {
+                if (stopRequested()) return 0;
+                if (!measuredLength.awaitingSettlement()) return issued.incrementAndGet();
+                if (left <= 0) { stopReason = UNKNOWN_EVIDENCE; return 0; }
+            }
+        }
+        return 0;
     }
 
     boolean failed() { return failed; }
@@ -66,7 +105,10 @@ final class ProbeProviderEvidence {
             completed++;
             count(audited.provenance());
             if (thinking && stopReason == null) {
-                if (!audited.completion().businessReply()) stopReason = TECHNICAL_FAILURE;
+                if (!audited.completion().businessReply()) {
+                    if (measuredLength == null || !MeasuredLengthPolicy.matches(call, audited.completion(), audited.provenance())
+                            || !measuredLength.remember(call, audited.completion().reply())) stopReason = TECHNICAL_FAILURE;
+                }
                 else if (!completeMetadata(audited.provenance(), audited.completion())) stopReason = UNKNOWN_EVIDENCE;
             }
         }
@@ -103,8 +145,12 @@ final class ProbeProviderEvidence {
     static void validateSeed(Path seed, JsonNode result) throws IOException { validateSeed(seed, result, false); }
 
     static void validateSeed(Path seed, JsonNode result, boolean thinking) throws IOException {
+        validateSeed(seed, result, thinking, false);
+    }
+
+    static void validateSeed(Path seed, JsonNode result, boolean thinking, boolean measured) throws IOException {
         if (!Files.isRegularFile(seed.resolve(POLICY_FILE))
-                || !policy(thinking).equals(JSON.readTree(seed.resolve(POLICY_FILE).toFile())))
+                || !policy(thinking, measured).equals(JSON.readTree(seed.resolve(POLICY_FILE).toFile())))
             throw invalid();
         JsonNode calls = result.path("httpCalls");
         if (!calls.isIntegralNumber() || !calls.canConvertToInt() || calls.intValue() < 0 || calls.intValue() > 3000)
@@ -141,6 +187,8 @@ final class ProbeProviderEvidence {
                 if (!edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION.equals(
                         JSON.readTree(frozenCall.inputText()).path("engineering").path("roleContextVersion").asText())) throw invalid();
                 validateInvocation(provenance, frozenCall, completion);
+                if (measured && !completion.businessReply() && !MeasuredLengthPolicy.matches(frozenCall, completion, provenance))
+                    throw invalid();
             }
             else if (provenance.invocation() != null) throw invalid();
             var identity = JSON.createObjectNode();

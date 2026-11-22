@@ -153,6 +153,25 @@ assert.equal(nodes.get('world-report-period').value,'current','unavailable archi
 assert(!nodes.get('world-cash-summary').textContent.includes('9,991'),'autonomous company must only use this run');home.clear();
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
+  const cut={period:"6",capturedAt:"15552000000",position:"91",digest:"frozen-six"};
+  const archive={...connectedView,connected:null,runId:"period-test",marketOrders:{},
+    companies:[{...company,frozenPeriods:[cut]}]};
+  const response={companyPartyId:company.id,period:6,capturedAt:15552000000,position:91,statementDigest:"frozen-six",body:"本期实际现金=9168.00"};
+  home.render(archive);
+  assert.equal(nodes.get("world-report-period").hidden,true);
+  let release;
+  home.onPeriodStatement=()=>new Promise(resolve=>release=resolve);
+  const lateRead=findButton(nodes.get("world-report-sources"),"查看期末报表")[0].handlers.click();
+  home.clear();release(response);await lateRead;
+  assert.equal(content(nodes.get("world-report-sources")).trim(),"");
+  home.render(archive);
+  home.onPeriodStatement=async()=>({...response,statementDigest:"other"});
+  await findButton(nodes.get("world-report-sources"),"查看期末报表")[0].handlers.click();
+  assert(!content(nodes.get("world-report-sources")).includes("9168.00"));
+  home.onPeriodStatement=async()=>response;
+  await findButton(nodes.get("world-report-sources"),"查看期末报表")[0].handlers.click();
+  assert(content(nodes.get("world-report-sources")).includes("本期实际现金=9168.00"));
+  home.clear();
   const live={available:true,runId:'active-governance',timeMillis:'1',position:'40',people:[],names:{director:'林知微'},
     companies:[{...company,governance:{meetings:2,budgetLines:0,managers:['director']}}],
     modelAttempts:71,autonomy:{available:true,running:true,reason:'RUNNING',cycles:1,calls:1,companies:1,persons:1,timeMillis:'1',position:'40'}};

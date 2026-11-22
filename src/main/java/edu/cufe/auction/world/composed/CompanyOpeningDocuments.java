@@ -83,6 +83,10 @@ public final class CompanyOpeningDocuments {
         if (PrototypeCompanies.PROFILE.equals(world.profile().manifest().dataVersions().get("profile"))) {
             for (var spec : world.snapshot().engineering().orElseThrow().config().companies()) {
                 for (var plan : spec.contracts()) {
+                    if (edu.cufe.auction.world.EngineeringCustomerPolicy.RUN_ID.equals(world.profile().manifest().runId())) {
+                        world.scheduleOpeningEngineeringOpportunity(plan.contractId());
+                        continue;
+                    }
                     String doc = "engineering-opportunity:" + plan.contractId();
                     String body = "EXP虚构工程机会：" + plan.contractId() + "；每单位价格=" + plan.unitPrice()
                             + "；单位成本=" + plan.unitCost() + "；分段工作量=" + plan.trancheUnits()

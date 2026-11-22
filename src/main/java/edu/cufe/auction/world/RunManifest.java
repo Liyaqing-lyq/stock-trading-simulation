@@ -55,7 +55,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** 判断运行是否继承客户签约资金约束、董事权限及披露资料合同。 */
     public static boolean usesFundedOperatingRules(String runId) {
-        return FUNDED_THINKING_RUN_ID.equals(runId) || PersonalMarket.RUN_ID.equals(runId);
+        return FUNDED_THINKING_RUN_ID.equals(runId) || usesPersonalMarketRules(runId);
+    }
+
+    /** 继承本人限价交易、公司事实归属和药研经理进度投影的档案。 */
+    public static boolean usesPersonalMarketRules(String runId) {
+        return PersonalMarket.RUN_ID.equals(runId) || EngineeringCustomerPolicy.RUN_ID.equals(runId);
     }
 
     /** 现金 + 登记 + 证券 + 撮合 + 制造 + 治理（M3b.2 新增的明确组合，model=none）。 */
@@ -941,7 +946,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
-        boolean personalMarket = PersonalMarket.RUN_ID.equals(runId);
+        boolean engineeringCustomer = EngineeringCustomerPolicy.RUN_ID.equals(runId);
+        if ((engineeringCustomer || dataVersions != null && dataVersions.containsKey(EngineeringCustomerPolicy.KEY))
+                && (!engineeringCustomer || dataVersions == null || !EngineeringCustomerPolicy.VERSION.equals(dataVersions.get(EngineeringCustomerPolicy.KEY))))
+            throw new IllegalArgumentException("工程客户复核必须显式绑定独立经营档及版本");
+        boolean personalMarket = usesPersonalMarketRules(runId);
         if ((personalMarket || dataVersions != null && (dataVersions.containsKey(PersonalMarket.POLICY)
                 || dataVersions.containsKey("belief-company-scope") || dataVersions.containsKey("research-manager-view")))
                 && (!personalMarket || dataVersions == null || !PersonalMarket.VERSION.equals(dataVersions.get(PersonalMarket.POLICY))
@@ -1070,6 +1079,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
+            if (engineeringCustomer) {
+                expectedData.put(EngineeringCustomerPolicy.KEY, EngineeringCustomerPolicy.VERSION);
+                expectedData.put("digital-delivery-view", "shared-period-limits-v1");
+                expectedData.put("research-funding", "free-cash-v1");
+            }
             if (personalMarket) {
                 expectedData.put(PersonalMarket.POLICY, PersonalMarket.VERSION);
                 expectedData.put("belief-company-scope", "manufacturing-orders-v1");

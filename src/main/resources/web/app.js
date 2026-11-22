@@ -3550,6 +3550,15 @@ if (globalThis.WorldHome) {
     if (result.status !== 200) throw new Error("首页读取失败（" + result.status + "）");
     return result.payload;
   };
+  globalThis.WorldHome.onPeriodStatement = async (companyId, period) => {
+    if(state.mode!=="admin")throw new Error("期末采样需要管理员会话");
+    const generation=state.generation;
+    const result=await request("POST","/api/admin/period-statement",{companyId,period:String(period)});
+    if(!isCurrent(generation)||state.mode!=="admin")return null;
+    if(result.status===401||result.status===403){sessionLost();return null;}
+    if(result.status!==200)throw new Error(result.payload?.message||"期末报表读取失败，请重试");
+    return result.payload;
+  };
   globalThis.WorldHome.onPerson = personId => guard(switchPerson(personId));
   globalThis.WorldHome.onRefresh = refreshAdmin;
   globalThis.WorldHome.onAutonomy = async (action, days) => {
@@ -5624,6 +5633,20 @@ function fillPersonalEngineeringCompanies(companies) {
     const head = document.createElement("h3");
     head.textContent = (company.companyName || company.companyId) + " · " + company.companyId;
     card.appendChild(head);
+    if (company.customerMandate) {
+      const mandate = company.customerMandate;
+      const facts = document.createElement("dl");
+      facts.className = "grid";
+      dlPairs(facts, [["授权代表", mandate.representative], ["承包方", mandate.contractor],
+        ["付款账户", mandate.account], ["账户余额", mandate.cash], ["可用现金", mandate.freeCash]]);
+      card.appendChild(facts);
+      card.appendChild(engineeringTable("收到的合同申请", ["合同", "期次", "申请", "请求编号", "答复事件"],
+        mandate.requests.map(r => [r.contractId, r.trancheIndex, r.kind, r.requestId, r.answeredByEventId || "待复核"])));
+      card.appendChild(engineeringTable("复核及实际付款", ["合同", "期次", "请求编号", "结果", "实付", "进度未付", "质保未付"],
+        mandate.responses.map(r => [r.contractId, r.trancheIndex, r.requestId, r.outcome, r.amount, r.currentOutstanding, r.retentionOutstanding])));
+      container.appendChild(card);
+      continue;
+    }
     const roleBits = [];
     if (company.manager) roleBits.push("现任经理");
     if (company.seatId) roleBits.push("董事席位 " + company.seatId + (company.chair ? "（主席）" : ""));

@@ -153,6 +153,18 @@ class WorldHistoryWebHttpTest {
     }
 
     @Test
+    void companyPeriodOriginalRequiresAnAdministratorAndAnActualSample() throws Exception {
+        String path = "/api/admin/period-statement";
+        String sample = "{\"companyId\":\"eng-a\",\"period\":\"6\"}";
+        assertEquals(401, rawPost(path, sample, null).statusCode());
+        loginAdmin();
+        assertEquals(404, post(path, sample).statusCode());
+        assertEquals(400, post(path, "{\"companyId\":\"eng-a\",\"period\":0}").statusCode());
+        personAt("bob");
+        assertEquals(403, post(path, sample).statusCode());
+    }
+
+    @Test
     @DisplayName("未登录 401、人物 403：普通身份拿不到 God 历史与核验")
     void personCannotUseHistory() throws Exception {
         assertEquals(401, rawGet("/api/admin/history?limit=1").statusCode());

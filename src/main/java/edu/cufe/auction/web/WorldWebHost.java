@@ -403,12 +403,29 @@ public final class WorldWebHost implements AutoCloseable {
             if (accountableAutonomy() && failedOnSameFacts(person, input)) continue;
             boolean finishedWork = autonomy.busy.remove(person);
             Long last = autonomy.lastWake.get(person);
-            if (last == null || finishedWork || now >= runtime.autonomyNextReviewAt(person, last + 86_400_000L)
-                    || !wakeFacts(input).equals(autonomy.observed.get(person))) ready.add(person);
+            if (last == null || finishedWork) {
+                ready.add(person);
+                continue;
+            }
+            long review = runtime.autonomyNextReviewAt(person, last + 86_400_000L);
+            if (now >= review) {
+                ready.add(person);
+                continue;
+            }
+            if (newFactsRequireWake(input,autonomy.observed.get(person),last,review)) ready.add(person);
         }
         return roster.stream().map(g -> new WakeGroup(g.scene(), g.company(),
                         g.persons().stream().filter(ready::contains).toList()))
                 .filter(g -> !g.persons().isEmpty()).toList();
+    }
+
+    private boolean newFactsRequireWake(com.fasterxml.jackson.databind.JsonNode input, com.fasterxml.jackson.databind.JsonNode previous,
+                                        long last, long review) {
+        var facts = wakeFacts(input);
+        if (facts.equals(previous)) return false;
+        return !edu.cufe.auction.world.EngineeringCustomerPolicy.VERSION.equals(
+                runtime.profile().manifest().dataVersions().get(edu.cufe.auction.world.EngineeringCustomerPolicy.KEY))
+                || !BoardWaitBroadcast.defer(previous, facts, input, last, review);
     }
 
     private boolean failedOnSameFacts(String person, com.fasterxml.jackson.databind.JsonNode input) throws IOException {
@@ -2014,6 +2031,17 @@ public final class WorldWebHost implements AutoCloseable {
             view.put("autonomy", autonomyStatusOnWriter());
             return view;
         });
+    }
+
+    /**
+     * 读取一份已采样的公司期末原件。
+     * @param companyId 公司
+     * @param period 已结束并采样的期间
+     * @return 经采样摘要核验的正文
+     * @throws Exception 日志读取或摘要校验失败
+     */
+    public WorldRuntime.ConfirmedPeriodStatement companyPeriodStatement(String companyId, long period) throws Exception {
+        return call(() -> readyNow().confirmedPeriodStatement(companyId, period));
     }
 
     /**
@@ -7729,6 +7757,11 @@ public final class WorldWebHost implements AutoCloseable {
             return new PersonEngineeringView(personPartyId, position, time, captured, false,
                     ENGINEERING_DISABLED_NOTE, List.of(), List.of(ENGINEERING_DISABLED_NOTE));
         }
+        current.engineeringCustomerMandateView(personPartyId).ifPresent(mandate -> {
+            String organization = mandate.path("organization").asText();
+            companies.add(Map.of("companyId", organization, "companyName", partyName(registry, organization),
+                    "template", "ENGINEERING_CUSTOMER", "customerMandate", mandate, "tools", List.of()));
+        });
         // 章程公司（制造）与工程公司共用同一周期状态；旧选择器只遍历工程公司会把制造周期挡掉。
         String manufacturingCompany = snapshot.governance()
                 .map(board -> board.board().charter().companyPartyId()).orElse(null);

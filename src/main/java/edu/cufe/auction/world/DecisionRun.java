@@ -747,6 +747,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             }
         }
         RolePlanningContext.append(root, wakeReason, config);
+        EngineeringManagerHistory.project(root);
         try {
             return MAPPER.writeValueAsString(root);
         } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {

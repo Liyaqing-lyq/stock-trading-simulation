@@ -61,6 +61,10 @@ final class WorldOverviewView {
             else if (world.engineeringStateOf(id).isPresent()) row.put("operationsPage","engineering");
             else if (id.equals("north") && world.bankOf().isPresent()) row.put("operationsPage","bank");
             row.put("publications",publications.getOrDefault(id,List.of()));
+            if (autonomous) world.periodicOf(id).ifPresent(history -> row.put("frozenPeriods",
+                    history.snapshots().stream().map(cut -> Map.of("period",Long.toString(cut.period()),
+                            "capturedAt",Long.toString(cut.capturedAt()), "position",Long.toString(cut.position()),
+                            "digest",cut.statementDigest())).toList()));
             row.put("name",names.get(id));row.put("business",prototype.business());
             row.put("prototype",prototype.prototype());row.put("boundary",prototype.boundary());
             row.put("referencePrice",security.initialReferencePrice().toPlainString());

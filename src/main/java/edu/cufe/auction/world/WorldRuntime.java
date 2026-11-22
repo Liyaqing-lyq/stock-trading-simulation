@@ -4222,6 +4222,9 @@ public final class WorldRuntime implements AutoCloseable {
                                                        List<String> internalSourceIds)
             throws IOException {
         requireRoleReadingEnabled();
+        if (engineeringCustomerEnabled() && (EngineeringCustomerPolicy.REPRESENTATIVE.equals(publisherPartyId)
+                || docId != null && docId.startsWith(EngineeringCustomerPolicy.PREFIX)))
+            throw new IllegalArgumentException("工程客户代表发布的机会必须取自冻结的真实委托");
         if (ConnectedWorldLoop.enabled(this) && docId != null && docId.startsWith(ConnectedWorldLoop.PREFIX))
             throw new IllegalArgumentException("互通决策空间由冻结规则保留");
         if (RoleDeliberation.hasEvidence(manifest.dataVersions().get("role-context")) && docId != null && docId.startsWith("role-evidence:"))
@@ -4244,6 +4247,34 @@ public final class WorldRuntime implements AutoCloseable {
                 internalSourceIds == null ? List.of() : List.copyOf(internalSourceIds));
         return schedulePublish(commandId, taskId, dueTimeMillis, payload,
                 PendingTask.INFORMATION_PUBLISH_V1);
+    }
+
+    private boolean engineeringCustomerEnabled() {
+        return EngineeringCustomerPolicy.RUN_ID.equals(manifest.runId());
+    }
+
+    /**
+     * 由实名客户代表按本客户冻结委托发布既有工程机会，条款与合同共用一份模板。
+     * @param contractId 本客户已登记的合同机会标识
+     * @return 已持久化的发布排程回报
+     * @throws IOException 持久化失败
+     */
+    public synchronized String scheduleOpeningEngineeringOpportunity(String contractId) throws IOException {
+        if (!engineeringCustomerEnabled() || state.timeMillis() != 0L)
+            throw new IllegalStateException("工程机会只能在机构授权的新档开局发布");
+        var spec = engineeringConfig.specOf(EngineeringCustomerPolicy.COMPANY);
+        var plan = spec.contracts().stream().filter(c -> c.contractId().equals(contractId))
+                .findFirst().orElseThrow(() -> new IllegalArgumentException("客户未委托该工程机会"));
+        String doc = EngineeringCustomerPolicy.PREFIX + contractId;
+        String body = "EXP 栖构项目业主委托的工程机会：" + contractId + "；每单位价格=" + plan.unitPrice()
+                + "；单位成本=" + plan.unitCost() + "；分段工作量=" + plan.trancheUnits()
+                + "；作业单位毫秒=" + spec.unitMillis() + "；开票后账期天数=" + plan.netDays()
+                + "；质保账期天数=" + plan.retentionNetDays() + "；质保基点=" + plan.retentionBp()
+                + "。实际签约后按合同及客观完工申请复核；发票到期可申请收款，到账取决于可用资金。";
+        String command = "opening-" + doc;
+        var payload = new PublishPayload(command, doc, EngineeringCustomerPolicy.REPRESENTATIVE, "PUBLIC", "",
+                "栖构工程：" + contractId + "机会（EXP）", body, "栖构项目业主授权代表提交的冻结机会", 1000L, List.of());
+        return schedulePublish(command, "opening-task-" + doc, 1L, payload, PendingTask.INFORMATION_PUBLISH_V1);
     }
 
     /** 仅供同包开局资料生成器调用；普通人物发表路径不能选取公司专属受众。 */
@@ -4327,6 +4358,8 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         requireRoleReadingEnabled();
         requireText(docId, "资料标识");
+        if (engineeringCustomerEnabled() && docId.startsWith(EngineeringCustomerPolicy.PREFIX))
+            throw new IllegalArgumentException("工程客户已发布的冻结委托不能改写");
         if (RoleDeliberation.hasEvidence(manifest.dataVersions().get("role-context")) && docId.startsWith("role-evidence:"))
             throw new IllegalArgumentException("冻结角色开局资料不可改写");
         if (ConnectedWorldLoop.enabled(this) && docId.startsWith(ConnectedWorldLoop.PREFIX)) throw new IllegalArgumentException("互通决策记录不可改写");
@@ -6083,6 +6116,22 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         return List.copyOf(companies);
+    }
+
+    /**
+     * 从当前世界读取本客户代表的委托及已发生的往来明细。
+     * @param personPartyId 已认证人物
+     * @return 本人受权的客户账，其他人物或未启用该规则时为空
+     */
+    public synchronized Optional<JsonNode> engineeringCustomerMandateView(String personPartyId) {
+        return Optional.ofNullable(customerMandateView(state, personPartyId));
+    }
+
+    private JsonNode customerMandateView(WorldState base, String person) {
+        if (!engineeringCustomerEnabled() || !EngineeringCustomerPolicy.REPRESENTATIVE.equals(person)) return null;
+        var result = mapper.createObjectNode();
+        EngineeringCustomerPolicy.customerView(mapper, result, base.engineering(), base.accounts(), base.exchange());
+        return result;
     }
 
     /**
@@ -8788,6 +8837,8 @@ public final class WorldRuntime implements AutoCloseable {
                         strict(WorldRoleSession.ForecastDraft.class, args);
                 // 预测稿是普通发表：不得占用群帖/平台帖保留空间
                 requireNotReservedDocId(draft.docId());
+                if (engineeringCustomerEnabled() && draft.docId().startsWith(EngineeringCustomerPolicy.PREFIX))
+                    throw new IllegalArgumentException("工程机会编号已由客户委托保留");
                 body = draft;
             }
             case RoleTradingView.TOOL_COMPANY_REPORT_ORDERS -> {
@@ -13450,6 +13501,29 @@ public final class WorldRuntime implements AutoCloseable {
      * @throws IOException 日志帧不可读
      */
     public String periodicStatementForTest(String companyPartyId, long period) throws IOException {
+        return confirmedPeriodStatement(companyPartyId, period).body();
+    }
+
+    /**
+     * 管理员可核对的期末报表。
+     * @param companyPartyId 公司
+     * @param period 从 1 开始的 30 日账期
+     * @param capturedAt 采样时点
+     * @param position 确认记录
+     * @param statementDigest 采样时登记的正文摘要
+     * @param body 由该记录复算并通过摘要校验的原文
+     */
+    public record ConfirmedPeriodStatement(String companyPartyId, long period, long capturedAt,
+                                           long position, String statementDigest, String body) { }
+
+    /**
+     * 用公司实际采样的历史帧重算期末报表。此操作只供管理员核账，不产生角色披露或阅读。
+     * @param companyPartyId 公司
+     * @param period 已有期末采样的期间
+     * @return 带采样来源的报表正文
+     * @throws IOException 原始帧不可读或正文与采样摘要不符
+     */
+    public synchronized ConfirmedPeriodStatement confirmedPeriodStatement(String companyPartyId, long period) throws IOException {
         Optional<PeriodicModel.CompanyPeriods> periods = periodicOf(companyPartyId);
         if (periods.isEmpty()) {
             throw new IllegalArgumentException("没有周期状态：" + companyPartyId);
@@ -13464,14 +13538,17 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("没有该期快照：" + period);
         }
         WorldState frame = frameFromJournal(snapshot.position());
-        if (frame.research() != null && companyPartyId.equals(frame.research().companyPartyId())
-                && researchIsExtraCompany(frame, companyPartyId)) {
-            return researchCompanyPeriodicStatement(frame, frame.research(), companyPartyId,
-                    period, snapshot.capturedAt());
+        String body;
+        if (frame.companyGovernance() != null && frame.companyGovernance().has(companyPartyId)) {
+            body = companyPeriodicStatement(frame, companyPartyId, period, snapshot.capturedAt(), frame.research());
+        } else {
+            body = periodicStatement(frame.engineering(), frame.governance(), frame.manufacturing(),
+                    frame.dividends(), frame.accounts(), companyPartyId, period, snapshot.capturedAt(), frame.research());
         }
-        return periodicStatement(frame.engineering(), frame.governance(), frame.manufacturing(),
-                frame.dividends(), frame.accounts(), companyPartyId, period,
-                snapshot.capturedAt(), frame.research());
+        if (!sha256Hex(body).equals(snapshot.statementDigest()))
+            throw new IOException("报表正文与期末采样摘要不符");
+        return new ConfirmedPeriodStatement(companyPartyId, period, snapshot.capturedAt(), snapshot.position(),
+                snapshot.statementDigest(), body);
     }
 
     /** 时间加法溢出时返回 -1，调用方按不可用处理。 */
@@ -13501,6 +13578,22 @@ public final class WorldRuntime implements AutoCloseable {
     private List<PendingTask> engineeringActionChildren(EngineeringRun run,
             EngineeringActionPayload payload, boolean accepted) throws IOException {
         List<PendingTask> children = new ArrayList<>();
+        if (engineeringCustomerEnabled() && accepted && run != null) {
+            String requestKind = switch (payload.action()) {
+                case "REQUEST_ACCEPTANCE" -> "ACCEPTANCE";
+                case "REQUEST_PAYMENT" -> "PAYMENT";
+                case "REQUEST_RETENTION" -> "RETENTION";
+                default -> "";
+            };
+            if (!requestKind.isEmpty()) {
+                var request = run.customer().openRequest(payload.companyPartyId(), payload.contractId(), payload.trancheIndex(), requestKind);
+                String id = EngineeringCustomerPolicy.REVIEW + request.requestId();
+                var review = new CustomerEventPayload(id, request.companyPartyId(), request.contractId(),
+                        request.trancheIndex(), "REVIEW", 0L, ZERO, EngineeringCustomerPolicy.ACCOUNT, request.requestId(), requestKind);
+                return List.of(new PendingTask(id, Math.addExact(request.atMillis(), EngineeringCustomerPolicy.REVIEW_MILLIS),
+                        WorldScheduler.Phase.COMPLETION, PendingTask.CUSTOMER_EVENT_V1, mapper.writeValueAsString(review)));
+            }
+        }
         if (!"START_WORK".equals(payload.action()) || !accepted || run == null) {
             return children;
         }
@@ -13526,8 +13619,8 @@ public final class WorldRuntime implements AutoCloseable {
     private void completeCustomerEvent(PendingTask task) throws IOException {
         CustomerEventPayload payload = mapper.readValue(task.payload(),
                 CustomerEventPayload.class);
-        EngineeringActionApplied applied = applyCustomerEvent(state.engineering(),
-                state.accounts(), task.dueTimeMillis(), payload);
+        EngineeringActionApplied applied = resolveCustomerEvent(state.engineering(), state.accounts(), state.exchange(),
+                task.dueTimeMillis(), payload);
         finishEngineeringTask(task, "system:customer:" + payload.eventId(),
                 payload.companyPartyId(), applied.run(), state.roles(), applied.accounts(),
                 task.dueTimeMillis(), applied.accepted(), applied.reason(), List.of());
@@ -13920,15 +14013,52 @@ public final class WorldRuntime implements AutoCloseable {
                 outcome.reason());
     }
 
+    /** 旧档按冻结日历执行；新档只处理原请求，按复核时的客观进度、发票及可用现金作答。 */
+    private EngineeringActionApplied resolveCustomerEvent(EngineeringRun run, Map<String, CashLedger.CashAccount> accounts,
+            WorldExchange.State exchange, long now, CustomerEventPayload p) {
+        if (!engineeringCustomerEnabled()) return applyCustomerEvent(run, accounts, now, p, null);
+        var request = run.customer().openRequest(p.companyPartyId(), p.contractId(), p.trancheIndex(), p.requestKind());
+        if (!"REVIEW".equals(p.kind()) || request == null || !request.requestId().equals(p.evidenceRef())
+                || !p.eventId().equals(EngineeringCustomerPolicy.REVIEW + request.requestId())
+                || now != Math.addExact(request.atMillis(), EngineeringCustomerPolicy.REVIEW_MILLIS)
+                || !EngineeringCustomerPolicy.COMPANY.equals(p.companyPartyId()) || !EngineeringCustomerPolicy.ACCOUNT.equals(p.payerAccountId()))
+            throw new IllegalArgumentException("工程客户待办没有绑定到原始申请与授权账户");
+        var contract = run.stateOf(p.companyPartyId()).contracts().get(p.contractId());
+        var invoice = invoiceOf(contract, p.trancheIndex());
+        boolean accept = "ACCEPTANCE".equals(request.kind());
+        boolean retention = "RETENTION".equals(request.kind());
+        String kind = accept ? "ACCEPT" : retention ? "RETENTION_PAY" : "PAY";
+        BigDecimal owed = invoice == null ? ZERO : retention ? invoice.retentionOutstanding() : invoice.currentOutstanding();
+        long units = contract.terms().trancheUnits()[p.trancheIndex()];
+        var response = new CustomerEventPayload(p.eventId(), p.companyPartyId(), p.contractId(), p.trancheIndex(),
+                kind, units, owed, p.payerAccountId(), p.evidenceRef(), p.requestKind());
+        BigDecimal free = WorldExchange.freeCash(exchange, accounts, p.payerAccountId());
+        String reason = null;
+        if (contract.status() != EngineeringModel.ContractStatus.ACTIVE) reason = "CONTRACT_NOT_ACTIVE";
+        else if (accept && (contract.appliedByTranche().size() != p.trancheIndex()
+                || contract.completedUnits() - contract.acceptedUnits() < units)) reason = "NOT_COMPLETED";
+        else if (!accept && invoice == null) reason = "NOT_INVOICED";
+        else if (!accept && now < (retention ? invoice.retentionDueAt() : invoice.dueAt())) reason = "NOT_DUE";
+        else if (!accept && owed.signum() <= 0) reason = "NO_OUTSTANDING";
+        else if (!accept && free.signum() == 0)
+            reason = accounts.get(p.payerAccountId()).cash().signum() == 0 ? "CUSTOMER_CASH_EXHAUSTED" : "CUSTOMER_CASH_FROZEN";
+        if (reason != null) {
+            String code = accept ? "REJECTED" : "CUSTOMER_CASH_FROZEN".equals(reason) ? "DELAYED" : "REJECTED_PAYMENT";
+            var next = answerResponse(run.customer(), response, contract, request, code, reason, now);
+            return new EngineeringActionApplied(run.withCustomer(next), null, accounts, false, reason);
+        }
+        return applyCustomerEvent(run, accounts, now, response, free);
+    }
+
     /**
-     * 客户事件：只由冻结计划驱动，经理请求不能保证验收或付款。
+     * 客户事件：只由冻结计划或已复核的真实义务驱动，经理请求不能保证验收或付款。
      *
      * <p>带 {@code requestKind} 的事件必须绑定一条未被回答的经理请求且不得早于请求；
      * 未绑定的事件是客户自发动作（旧冻结档语义）。付款一律受唯一客户账户现金与该期间
      * 剩余预算限制，允许部分支付并显式记账；拒绝/延迟/逾期只记录阶段与未清义务。</p>
      */
     private EngineeringActionApplied applyCustomerEvent(EngineeringRun run,
-            Map<String, CashLedger.CashAccount> accounts, long now, CustomerEventPayload p) {
+            Map<String, CashLedger.CashAccount> accounts, long now, CustomerEventPayload p, BigDecimal freeLimit) {
         EngineeringRun.CompanySpec spec = engineeringConfig.specOf(p.companyPartyId());
         if (spec == null || run == null) {
             return new EngineeringActionApplied(run, null, accounts, false, "UNKNOWN_COMPANY");
@@ -14005,7 +14135,7 @@ public final class WorldRuntime implements AutoCloseable {
                         .divide(BigDecimal.valueOf(10000), 2, java.math.RoundingMode.HALF_UP));
                 BigDecimal room = CashLedger.money(cap.subtract(contract.advanceReceived()));
                 BigDecimal wanted = p.amount().min(room);
-                BigDecimal available = customerAvailable(run, spec, accounts, now);
+                BigDecimal available = customerAvailable(run, spec, accounts, now, freeLimit);
                 BigDecimal effective = wanted.min(available);
                 if (effective.signum() <= 0) {
                     // 客户“现在没钱/预算用完”是真实回应：回答已匹配请求，钱与预算一律不动。
@@ -14041,7 +14171,7 @@ public final class WorldRuntime implements AutoCloseable {
                             false, "NOT_DUE");
                 }
                 BigDecimal wanted = p.amount().min(invoice.currentOutstanding());
-                BigDecimal available = customerAvailable(run, spec, accounts, now);
+                BigDecimal available = customerAvailable(run, spec, accounts, now, freeLimit);
                 BigDecimal effective = wanted.min(available);
                 if (effective.signum() <= 0) {
                     EngineeringRun.Customer next = answerResponse(customer, p, contract, request,
@@ -14076,7 +14206,7 @@ public final class WorldRuntime implements AutoCloseable {
                             false, "NOT_DUE");
                 }
                 BigDecimal wanted = p.amount().min(invoice.retentionOutstanding());
-                BigDecimal available = customerAvailable(run, spec, accounts, now);
+                BigDecimal available = customerAvailable(run, spec, accounts, now, freeLimit);
                 BigDecimal effective = wanted.min(available);
                 if (effective.signum() <= 0) {
                     EngineeringRun.Customer next = answerResponse(customer, p, contract, request,
@@ -14158,10 +14288,11 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 客户账户当期可用额：期间剩余预算（未声明池则不限）与账户真实现金取小。 */
     private BigDecimal customerAvailable(EngineeringRun run, EngineeringRun.CompanySpec spec,
-            Map<String, CashLedger.CashAccount> accounts, long now) {
+            Map<String, CashLedger.CashAccount> accounts, long now, BigDecimal freeLimit) {
         CustomerBudget budget = customerBudget(run, spec, now);
         CashLedger.CashAccount account = accounts.get(spec.customerAccountId());
         BigDecimal cash = account == null ? ZERO : account.cash();
+        if (freeLimit != null) cash = cash.min(freeLimit);
         if (budget.left() == null) {
             return cash;
         }
@@ -16795,7 +16926,9 @@ public final class WorldRuntime implements AutoCloseable {
                 PublishPayload body = readIntentBody(commit, intent, PublishPayload.class,
                         "资料发表");
                 if (PendingTask.INFORMATION_PUBLISH_V1.equals(task.kind())) {
-                    if (ConnectedWorldLoop.enabled(this) && body.docId().startsWith(ConnectedWorldLoop.PREFIX)) {
+                    if (engineeringCustomerEnabled() && body.docId().startsWith(EngineeringCustomerPolicy.PREFIX)) {
+                        scheduleOpeningEngineeringOpportunity(body.docId().substring(EngineeringCustomerPolicy.PREFIX.length()));
+                    } else if (ConnectedWorldLoop.enabled(this) && body.docId().startsWith(ConnectedWorldLoop.PREFIX)) {
                         recordConnectedDecision(mapper.readValue(body.body(), ConnectedWorldLoop.Decision.class));
                     } else if (ManufacturingBehaviorLoop.enabled(this) && body.docId().startsWith("behavior-v1:")) {
                         recordManufacturingDecision(mapper.readValue(body.body(), ManufacturingBehaviorLoop.Decision.class));
@@ -23592,7 +23725,7 @@ public final class WorldRuntime implements AutoCloseable {
             } else {
                 CustomerEventPayload payload = mapper.readValue(task.payload(),
                         CustomerEventPayload.class);
-                EngineeringActionApplied applied = applyCustomerEvent(run, accounts, now, payload);
+                EngineeringActionApplied applied = resolveCustomerEvent(run, accounts, previous.exchange(), now, payload);
                 run = applied.run();
                 accounts = applied.accounts();
                 accepted = applied.accepted();
@@ -25840,6 +25973,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         // 先按纯核同一入口校验公司、账户、owner、章程、金额与冻结合同
         EngineeringRun.open(engineeringConfig, accounts, registry);
+        if (engineeringCustomerEnabled()) EngineeringCustomerPolicy.validate(registry, engineeringConfig, accounts, informationConfig.readers());
+        else if (engineeringConfig.customerMandate() != null) throw new IllegalArgumentException("本经营档未启用工程客户委托");
         String manufacturingCompany = charter == null ? "" : charter.companyPartyId();
         ManufacturingModel.Opening accounting = manufacturingConfig == null ? null : manufacturingConfig.accounting();
         Set<String> companyAccounts = new LinkedHashSet<>();
@@ -28575,6 +28710,8 @@ public final class WorldRuntime implements AutoCloseable {
                 && activeManager(snap.roles(), person, manufacturingCompanyParty(), now)) {
             tools.add(ManufacturingDecisionTools.ACT);
         }
+        if (engineeringCustomerEnabled() && EngineeringCustomerPolicy.REPRESENTATIVE.equals(person))
+            tools.retainAll(List.of(RoleTradingView.TOOL_READING_START, RoleTradingView.TOOL_READING_CANCEL, RoleTradingView.TOOL_CITE));
         tools = new ArrayList<>(new java.util.LinkedHashSet<>(tools));
         SocialRun.SocialView socialView = manifest.hasSocial() && snap.social() != null
                 ? socialViewAt(snap, person, now) : null;
@@ -28700,6 +28837,10 @@ public final class WorldRuntime implements AutoCloseable {
         var root = mapper.createObjectNode();
         var directorships = root.putArray("directorships");
         var managerships = root.putArray("managerships");
+        if (engineeringCustomerEnabled() && activeManager(snap.roles(), person, EngineeringCustomerPolicy.COMPANY, now))
+            root.put("engineeringCustomerPolicy", EngineeringCustomerPolicy.VERSION);
+        JsonNode customerMandate = customerMandateView(snap, person);
+        if (customerMandate != null) root.set("customerMandate", customerMandate);
         List<String> companies = new ArrayList<>(snap.engineering().companyIds());
         if (snap.governance() != null) {
             // 章程公司（制造 cufe）与工程公司共用同一周期状态；这里把它的唯一董事会也纳入
@@ -28938,6 +29079,10 @@ public final class WorldRuntime implements AutoCloseable {
                         stage.put("lastResponse", last == null ? "" : last.kind());
                         stage.put("lastOutcome", last == null ? "" : last.outcome());
                         stage.put("lastResponseAt", last == null ? 0L : last.atMillis());
+                        if (engineeringCustomerEnabled() && last != null) {
+                            stage.put("lastRequestId", last.requestId()).put("lastReason", last.reason());
+                            stage.put("lastAmount", money(last.amount()));
+                        }
                     }
                 }
             }
@@ -28949,7 +29094,14 @@ public final class WorldRuntime implements AutoCloseable {
                 long period=now/ManufacturingTemplateModel.PERIOD_MILLIS;
                 BigDecimal budget=board.budget(period,BoardModel.BudgetCategory.PRODUCTION_LABOR)==null ? null : BoardModel.availableBudget(board,period,BoardModel.BudgetCategory.PRODUCTION_LABOR);
                 var reports=CompanyOperationsDecisionTools.reports(snap.companyOperations(), company.companyPartyId(), positionOrderedOperationsReports());
-                root.set("digitalOperations",DigitalDecisionTools.observation(company,now,snap.accounts().get(company.config().model().companyAccountId()).cash(),reports,budget));
+                String account = company.config().model().companyAccountId();
+                var operating = (com.fasterxml.jackson.databind.node.ObjectNode) DigitalDecisionTools.observation(
+                        company, now, snap.accounts().get(account).cash(), reports, budget);
+                if (engineeringCustomerEnabled()) {
+                    var availableCash = WorldExchange.freeCash(snap.exchange(), snap.accounts(), account);
+                    operating.set("deliveryRoom", DigitalDecisionTools.deliveryRoom(company.ledger(), now, availableCash, budget));
+                }
+                root.set("digitalOperations", operating);
             }
         }
         if(agedDecisionEnabled() && snap.companyOperations()!=null && snap.companyOperations().aged()!=null) {
@@ -29322,6 +29474,13 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(clientCommandId, "命令标识");
         requireText(clientTaskId, "任务标识");
         Objects.requireNonNull(body, "动作参数");
+        if (engineeringCustomerEnabled()) {
+            if (EngineeringCustomerPolicy.REPRESENTATIVE.equals(session.personPartyId())
+                    && !PendingTask.ROLE_TRADING_READ_V1.equals(kind) && !PendingTask.ROLE_TRADING_UNREAD_V1.equals(kind))
+                throw new IllegalArgumentException("该工程委托没有授予代表个人交易或另行发布的权限");
+            if (body instanceof WorldRoleSession.ForecastDraft draft && draft.docId().startsWith(EngineeringCustomerPolicy.PREFIX))
+                throw new IllegalArgumentException("工程机会编号已由客户委托保留");
+        }
         if (manifest.hasMedia() && PendingTask.ROLE_TRADING_READ_V1.equals(kind)
                 && !mediaPendingOf(session.personPartyId(), state.pending()).isEmpty()) {
             throw new IllegalArgumentException("本人还有未完成的媒体工作，不能同时开始阅读");
@@ -36097,8 +36256,23 @@ public final class WorldRuntime implements AutoCloseable {
             return ResearchRuntime.register(run, board, p.commandId(), spec, now,
                     state.accounts());
         }
-        return ResearchRuntime.begin(run, board, p.commandId(), p.projectId(),
-                ResearchModel.Stage.valueOf(p.stage()), now, state.accounts());
+        return beginResearchOn(run, board, p, now, state.exchange(), state.accounts());
+    }
+
+    private ResearchRuntime.Applied beginResearchOn(ResearchRun run, BoardRun board,
+            ResearchActionPayload action, long now, WorldExchange.State exchange,
+            Map<String, CashLedger.CashAccount> accounts) {
+        ResearchRuntime.Applied next = ResearchRuntime.begin(run, board, action.commandId(),
+                action.projectId(), ResearchModel.Stage.valueOf(action.stage()), now, accounts);
+        if (next.accepted() && "free-cash-v1".equals(manifest.dataVersions().get("research-funding"))) {
+            String payer = run.state().config().companyAccountId();
+            BigDecimal payment = accounts.get(payer).cash().subtract(next.accounts().get(payer).cash());
+            if (payment.compareTo(WorldExchange.freeCash(exchange, accounts, payer)) > 0) {
+                return ResearchRuntime.Applied.rejected(run, board, null, accounts,
+                        ResearchModel.REASON_INSUFFICIENT_CASH);
+            }
+        }
+        return next;
     }
 
     private void finishResearchTask(PendingTask task, ResearchRuntime.Applied applied,
@@ -36624,9 +36798,8 @@ public final class WorldRuntime implements AutoCloseable {
                             : ResearchRuntime.register(run, board, p.commandId(), spec,
                             task.dueTimeMillis(), accounts);
                 } else {
-                    applied = ResearchRuntime.begin(run, board, p.commandId(), p.projectId(),
-                            ResearchModel.Stage.valueOf(p.stage()), task.dueTimeMillis(),
-                            accounts);
+                    applied = beginResearchOn(run, board, p, task.dueTimeMillis(),
+                            previous.exchange(), accounts);
                 }
                 if (PendingTask.RESEARCH_BEGIN_V1.equals(task.kind()) && applied.accepted()) {
                     expected.add(researchResultChild(applied.run(), task, p));

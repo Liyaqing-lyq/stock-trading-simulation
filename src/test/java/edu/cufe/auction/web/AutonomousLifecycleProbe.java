@@ -17,7 +17,7 @@ public final class AutonomousLifecycleProbe {
                          long stepMillis, String seed, String sourceCommit) {
         /** 约束试跑边界，额度是上限，不是调用承诺或经营验收。 */
         public Config {
-            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING").contains(mode)
+            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING").contains(mode)
                     || maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
                     || stepMillis != 3_600_000
@@ -35,19 +35,23 @@ public final class AutonomousLifecycleProbe {
         Files.writeString(out.resolve("system-prompt.txt"), systemPrompt(config));
         boolean informed = informedMode(config.mode());
         boolean thinking = thinkingMode(config.mode());
-        if (informed) ProbeProviderEvidence.freezePolicy(out, thinking);
+        boolean measured = "ENGINEERING_CUSTOMER_OPERATING".equals(config.mode());
+        if (informed) ProbeProviderEvidence.freezePolicy(out, thinking, measured);
         if (seed != null) {
             Files.copy(seed.resolve("world.journal"), out.resolve("world.journal"));
             Files.copy(seed.resolve(SceneRoutes.FILE_NAME), out.resolve(SceneRoutes.FILE_NAME));
         }
         var provider = new LiveDecisionProvider(KeySlots.load(Path.of(args[1])));
         var issued = new AtomicInteger();
-        var evidence = informed ? new ProbeProviderEvidence(out, thinking) : null;
+        var openWorld = new java.util.concurrent.atomic.AtomicReference<edu.cufe.auction.world.WorldRuntime>();
+        var lengthPolicy = measured ? new MeasuredLengthPolicy(() -> openWorld.get().snapshot().decisions().orElseThrow()) : null;
+        var evidence = informed ? new ProbeProviderEvidence(out, thinking, lengthPolicy) : null;
         var activeHost = new java.util.concurrent.atomic.AtomicReference<WorldWebHost>();
         try (var routes = SceneRoutes.open(out)) {
             if (seed == null && routes.view().revision() == 0) routes.replace(0, probeRoutes(routes.view(), config.mode()));
             try (var host = new WorldWebHost(() -> {
                 var world = openWorld(config.mode(), out.resolve("world.journal"));
+                openWorld.set(world);
                 return new WorldWebHost.Opened(world, world.profile().manifest().runId());
             }, routes, (call, timeout) -> {
                 if (evidence != null) return evaluateEvidence(config, evidence, issued, call, timeout, provider, () -> {
@@ -66,6 +70,9 @@ public final class AutonomousLifecycleProbe {
             })) {
                 activeHost.set(host);
                 var initial = host.autonomyStatus();
+                if (lengthPolicy != null && seed != null) {
+                    lengthPolicy.restore(seed);
+                }
                 host.startAutonomy(Long.parseLong(initial.position()), routes.view().revision(), config.targetMillis(), config.stepMillis());
                 long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(config.wallMinutes());
                 while (host.autonomyStatus().running() && issued.get() < config.maxHttpCalls()
@@ -80,6 +87,7 @@ public final class AutonomousLifecycleProbe {
                 if (host.autonomyStatus().running()) host.stopAutonomy();
                 long drain = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
                 while (host.liveStatus().physicalInFlight() > 0 && System.nanoTime() < drain) Thread.sleep(100);
+                if (lengthPolicy != null) evidence.settleMeasuredLengths(null, 1000);
                 if (evidence != null && (thinking ? evidence.stopRequested() : evidence.failed())) {
                     stop = evidence.stopReason();
                     System.err.println(stop);
@@ -104,6 +112,7 @@ public final class AutonomousLifecycleProbe {
                 System.out.println("finished=" + host.autonomyStatus().reason() + " http=" + Math.min(issued.get(), config.maxHttpCalls()));
             }
         }
+        if (measured) MeasuredLengthEvidence.seal(out, seed);
     }
 
     /** 先检查证据停止边界再分配真实调用序号；已入途结果始终原样返回。 */
@@ -112,7 +121,8 @@ public final class AutonomousLifecycleProbe {
             LiveDecisionProvider provider, Runnable stopScheduling) {
         boolean thinking = thinkingMode(config.mode());
         if (thinking ? evidence.stopRequested() : evidence.failed()) return limitFailure(call, "PROBE_EVIDENCE_STOP");
-        int index = issued.incrementAndGet();
+        int index = evidence.allocate(issued, call.actionId(), timeout);
+        if (index == 0) return limitFailure(call, "PROBE_EVIDENCE_STOP");
         if (index > config.maxHttpCalls()) return limitFailure(call, "PROBE_CALL_LIMIT");
         var completion = evidence.evaluate(index, call, timeout, provider);
         // The host registers this immutable completion only after evaluate returns. Never
@@ -131,6 +141,7 @@ public final class AutonomousLifecycleProbe {
 
     static edu.cufe.auction.world.WorldRuntime openWorld(String mode, Path journal) throws Exception {
         return switch (mode) {
+            case "ENGINEERING_CUSTOMER_OPERATING" -> ComposedIndustryScenario.openEngineeringCustomerOperating(journal);
             case "PERSONAL_MARKET_OPERATING" -> ComposedIndustryScenario.openPersonalMarketOperating(journal);
             case "FUNDED_THINKING_OPERATING" -> ComposedIndustryScenario.openFundedThinkingOperating(journal);
             case "THINKING_INFORMED_OPERATING" -> ComposedIndustryScenario.openThinkingInformedOperating(journal);
@@ -147,7 +158,7 @@ public final class AutonomousLifecycleProbe {
         return mode.equals("INFORMED_OPERATING") || mode.equals("CONTEXTUAL_INFORMED_OPERATING") || thinkingMode(mode);
     }
 
-    static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING") || mode.equals("FUNDED_THINKING_OPERATING") || mode.equals("PERSONAL_MARKET_OPERATING"); }
+    static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING") || mode.equals("FUNDED_THINKING_OPERATING") || mode.equals("PERSONAL_MARKET_OPERATING") || mode.equals("ENGINEERING_CUSTOMER_OPERATING"); }
 
     static java.util.List<SceneRoutes.Route> probeRoutes(SceneRoutes.Snapshot original, String mode) {
         boolean thinking = thinkingMode(mode);
@@ -188,7 +199,8 @@ public final class AutonomousLifecycleProbe {
                     if (!Files.isRegularFile(seed.resolve(call.getFileName().toString().replace("call-", "reply-"))))
                         throw new IllegalArgumentException("种子存在结果未知的请求");
             }
-            if (informedMode(requested.mode())) ProbeProviderEvidence.validateSeed(seed, result, thinkingMode(requested.mode()));
+            if (informedMode(requested.mode())) ProbeProviderEvidence.validateSeed(seed, result, thinkingMode(requested.mode()),
+                    "ENGINEERING_CUSTOMER_OPERATING".equals(requested.mode()));
             if (thinkingMode(requested.mode())) {
                 try (var routes = SceneRoutes.open(seed)) {
                     if (!routes.view().routes().equals(probeRoutes(routes.view(), requested.mode())))

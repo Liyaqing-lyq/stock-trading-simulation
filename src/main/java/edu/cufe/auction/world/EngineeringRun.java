@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -673,9 +674,16 @@ public record EngineeringRun(Config config, Map<String, EngineeringModel.State> 
      * @param paramSource    参数来源说明，必须非空
      * @param companies      每公司一份模板；公司、owner、经营账户必须唯一，外部池可跨公司共享
      * @param customerEvents 按公司冻结的有限客户响应计划；旧档为空表
+     * @param customerMandate 机构授权代表、承包方与实际付款账户，仅新工程客户档冻结
      */
     public record Config(String paramSource, List<CompanySpec> companies,
-                         Map<String, List<CustomerEventPlan>> customerEvents) {
+                         Map<String, List<CustomerEventPlan>> customerEvents,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) EngineeringCustomerPolicy.Mandate customerMandate) {
+
+        /** 既有日历档没有客户代表委托，保持冻结字段和重放内容。 */
+        public Config(String paramSource, List<CompanySpec> companies, Map<String,List<CustomerEventPlan>> customerEvents) {
+            this(paramSource, companies, customerEvents, null);
+        }
 
         /** 旧二参构造：没有冻结客户计划。 */
         public Config(String paramSource, List<CompanySpec> companies) {

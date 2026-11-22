@@ -36,6 +36,29 @@ public final class DigitalDecisionTools {
     /** 管理工时；阶段完成与关期另有真实到期时点。 */
     public static final long ACTION_MILLIS = 1_000;
 
+    /** 同一期间各合同共用的公司资源与公开需求，金额只使用可支配现金及获批预算。 */
+    static JsonNode deliveryRoom(DigitalServiceModel.State ledger, long now, BigDecimal freeCash,
+                                 BigDecimal remainingBudget) {
+        long period = now / DigitalServiceModel.PERIOD_MILLIS;
+        long delivered = ledger.deliveredIn(period);
+        long capacity = ledger.config().serviceCapacityUnitsPerPeriod() - delivered;
+        long demand = ledger.config().customerDemandUnitsPerPeriod() - delivered;
+        long uncommittedDemand = Math.max(0, demand - ledger.reservedIn(period));
+        BigDecimal unitCost = ledger.config().serviceUnitCost();
+        long covered = capacity;
+        if (unitCost.signum() > 0) {
+            BigDecimal spending = freeCash.min(remainingBudget == null ? BigDecimal.ZERO : remainingBudget);
+            covered = spending.max(BigDecimal.ZERO).divideToIntegralValue(unitCost)
+                    .min(BigDecimal.valueOf(capacity)).longValueExact();
+        }
+        return JSON.createObjectNode().put("freeCompanyCash", freeCash.toPlainString())
+                .put("remainingCapacityUnits", Long.toString(capacity))
+                .put("cashBudgetCapacityUnits", Long.toString(covered))
+                .put("uncommittedCurrentDemandUnits", Long.toString(uncommittedDemand))
+                .put("scope", "各合同共用以上额度。可按合同未交量分批履约，每批单独确认收入和应收。"
+                        + "往期合同还受本期未占用需求约束，每次执行按当时合同、预算、资金和客户条件重新核对。");
+    }
+
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .registerModule(new SimpleModule()

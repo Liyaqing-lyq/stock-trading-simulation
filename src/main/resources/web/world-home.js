@@ -2,6 +2,7 @@
 window.WorldHome = (() => {
   let view = null, selected = "", initialized = false, running = false, stepping = false, runTimer = null, generation = 0;
   let selectedSource = "";
+  let periodSelection = null;
   const $ = id => document.getElementById(id);
   const element = (tag, value, className) => { const n=document.createElement(tag); if(value!=null)n.textContent=String(value); if(className)n.className=className; return n; };
   const money = value => value == null ? "暂无成交" : Number(value).toLocaleString("zh-CN", {minimumFractionDigits:2,maximumFractionDigits:2});
@@ -28,7 +29,7 @@ window.WorldHome = (() => {
       if(key.startsWith(prefix)){const id=key.slice(prefix.length);return (view?.names?.[id]||({"eng-a-cus":"工程客户","eng-a-sup":"工程供应商","eng-a-ops":"工程作业方"})[id]||id)+" · "+suffix;}
     return key;
   }
-  function choose(id, page) { selected=id; paint(); if(page) api.onPage?.(page); }
+  function choose(id, page) { if(selected!==id) periodSelection=null; selected=id; paint(); if(page) api.onPage?.(page); }
   function button(label, action) {const n=element("button",label,"world-link");n.type="button";n.addEventListener("click",action);return n;}
   function metric(label,value,extra="") {const n=element("div",null,"world-metric");n.append(element("span",label),element("strong",value),element("small",extra));return n;}
   function table(target, columns, rows) {
@@ -216,9 +217,58 @@ window.WorldHome = (() => {
     const box=element("section",null,"world-statement-section");box.append(element("h3",title));
     const dl=element("dl");for(const [key,value] of Object.entries(values||{})){const label=accountLabel(key);dl.append(element("dt",period?label.replace(/（累计）$/,"（本期）"):label),element("dd",money(value)));}box.append(dl);return box;
   }
+  function renderPeriodSources(parent, c) {
+    const periods=c.frozenPeriods;
+    if(!periods?.length)return;
+    const box=element("section"), label=element("label","期末采样原件 "), select=element("select");
+    if(periodSelection?.company===c.id && !periods.some(p=>p.period===periodSelection.cut.period
+        && p.position===periodSelection.cut.position && p.digest===periodSelection.cut.digest)) periodSelection=null;
+    const saved=periodSelection?.company===c.id ? periodSelection : null;
+    for(const row of periods){
+      const day=Math.floor(Number(row.capturedAt)/86400000);
+      const option=element("option",`第${row.period}期 · 第${day}日`);
+      option.value=row.period;select.append(option);
+    }
+    select.value=saved?.cut.period || periods[periods.length-1].period;
+    select.addEventListener("change",()=>{
+      const cut=periods.find(p=>p.period===select.value);
+      if(cut){periodSelection={company:c.id,cut};renderCompany();}
+    });
+    const inspect=button("查看期末报表",async()=>{
+      const cut=periods.find(p=>p.period===select.value);
+      if(!cut)return;
+      const request={company:c.id,cut,loading:true};
+      periodSelection=request; renderCompany();
+      try {
+        const response=await api.onPeriodStatement?.(c.id,cut.period);
+        if(periodSelection!==request || selected!==c.id || !view)return;
+        if(!response || response.companyPartyId!==c.id || String(response.period)!==cut.period
+            || String(response.position)!==cut.position || String(response.capturedAt)!==cut.capturedAt
+            || response.statementDigest!==cut.digest || typeof response.body!=="string")
+          throw new Error("返回的报表与所选采样记录不符");
+        request.body=response.body;
+      } catch(failure) {
+        if(periodSelection!==request || selected!==c.id || !view)return;
+        request.error=failure.message;
+      }
+      request.loading=false;renderCompany();
+    });
+    label.append(select);box.append(label,inspect);
+    if(saved){
+      if(saved.loading)box.append(element("p","正在读取采样时的公司账簿。"));
+      else if(saved.error)box.append(element("p",saved.error));
+      else if(typeof saved.body==="string"){
+        box.append(element("h3",`第${saved.cut.period}期期末报表`),element("p",`确认记录 ${saved.cut.position} · 第${Math.floor(Number(saved.cut.capturedAt)/86400000)}日 · 已核对采样摘要`,"world-note"));
+        for(const line of saved.body.split("\n"))box.append(element("p",line));
+      }
+    }
+    parent.append(box);
+  }
+
   function renderCompanyEvidence(c) {
     const links=$("world-report-links"), sources=$("world-report-sources");
     links.replaceChildren();sources.replaceChildren();
+    renderPeriodSources(sources,c);
     if(c.operationsPage){
       const operating=button(({research:"研发项目",engineering:"工程合同与回款",bank:"银行账务",operations:"产品、订单与回款"})[c.operationsPage],
         ()=>c.operationsPage==="operations"?api.onOperations?.(c.id):c.operationsPage==="engineering"?api.onGovernance?.(c.id):api.onPage?.(c.operationsPage));
@@ -248,6 +298,9 @@ window.WorldHome = (() => {
       if(select.value!=="current"&&!periods.some(p=>String(p.period)===select.value))select.value="current";
     } else for(const option of $("world-report-period").children)option.disabled=false;
     const c=company(),d=detail(),period=$("world-report-period").value;
+    const liveSource=Array.isArray(c.frozenPeriods)&&!d?.periods?.length;
+    $("world-report-period").hidden=liveSource;
+    $("world-report-period-label").hidden=liveSource;
     const item=period==="current"?null:d?.periods.find(p=>String(p.period)===period);
     const report=item?.statement||(period==="current"?c.statement:null);
     renderCompanyEvidence(c);
@@ -287,9 +340,9 @@ window.WorldHome = (() => {
     for(const id of ["world-market-select","world-company-select"]){const select=$(id);select.replaceChildren();for(const c of view.companies){const o=element("option",c.name);o.value=c.id;select.append(o);}select.value=selected;}
     renderOverview();renderMarket();renderCompany();renderPeople();
   }
-  const api={onPage:null,onPerson:null,onGovernance:null,onOperations:null,onOverview:null,onAdvance:null,onAutonomy:null,onRefresh:null,
+  const api={onPage:null,onPerson:null,onGovernance:null,onOperations:null,onPeriodStatement:null,onOverview:null,onAdvance:null,onAutonomy:null,onRefresh:null,
     render(value){
-      if(view?.runId&&value?.runId&&view.runId!==value.runId){generation++;stepping=false;stopRunning();selectedSource="";}
+      if(view?.runId&&value?.runId&&view.runId!==value.runId){generation++;stepping=false;stopRunning();selectedSource="";periodSelection=null;}
       view=value?.available?value:null;document.querySelectorAll("[data-world-nav]").forEach(n=>n.hidden=!view);
       $("world-home").hidden=!view;
       if(!view){api.clear();return;}
@@ -302,7 +355,7 @@ window.WorldHome = (() => {
     clear(){
       clearTimeout(autonomyTimer);autonomyTimer=null;$("world-autonomy").hidden=true;
       generation++;running=false;stepping=false;clearTimeout(runTimer);runTimer=null;
-      view=null;selected="";initialized=false;selectedSource="";
+      view=null;selected="";initialized=false;selectedSource="";periodSelection=null;
       $("world-connected").hidden=true;$("world-orders-panel").hidden=true;
       for(const id of ["world-connections","world-activities","world-news","world-orders","world-feed-company"])$(id).replaceChildren();
       for(const id of ["world-connected-status","world-orders-note","world-connected-toggle"])$(id).textContent="";
