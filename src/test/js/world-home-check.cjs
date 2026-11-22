@@ -127,6 +127,30 @@ assert(content(nodes.get('world-price-chart')).includes('尚无实际成交'));
 assert.equal(nodes.get('world-trade-days').children[1].children.length,0);
 assert(content(nodes.get('world-quote')).includes('暂无成交'));
 const home=context.window.WorldHome;
+const read={person:'alice',at:'21'},judgment={person:'alice',id:'private-judgment',at:'22',rationale:'读后预期'};
+home.render({...connectedView,companies:[{...company,id:'one',symbol:'ONE',operationsPage:'operations',publications:[{
+  kind:'订单公告',title:'第一份订单披露',docId:'report-one',version:1,time:'19',body:'原文',publisher:'alice',reads:[read],beliefs:[judgment]}]},
+  {...company,id:'two',symbol:'TWO',operationsPage:'operations',publications:[]}]});
+let opened='';
+home.onOperations=id=>opened=id;
+findButton(nodes.get('world-report-links'),'产品、订单与回款')[0].handlers.click();
+assert.equal(opened,'one');
+assert(content(nodes.get('world-report-sources')).includes('private-judgment'));
+nodes.get('world-company-select').handlers.change({target:{value:'two'}});
+assert(!content(nodes.get('world-report-sources')).includes('report-one'));
+findButton(nodes.get('world-report-links'),'产品、订单与回款')[0].handlers.click();
+assert.equal(opened,'two');
+home.onPage=page=>opened=page;
+findButton(nodes.get('world-report-links'),'TWO · 委托与成交')[0].handlers.click();
+assert.equal(opened,'world-market');
+home.clear();
+assert.equal(content(nodes.get('world-report-sources')).trim(),'');
+nodes.get('world-report-period').value='1';
+home.render({...connectedView,connected:null,marketOrders:{one:{rows:[],total:0}},
+  liveDetails:{one:{days:[],periods:[],openingCash:null,cashChange:null}},
+  experiment:{details:{one:{days:[],periods:[{period:1,day:30,statement}],openingCash:'9991',cashChange:'9981'}}}});
+assert.equal(nodes.get('world-report-period').value,'current','unavailable archived periods are not presented as real');
+assert(!nodes.get('world-cash-summary').textContent.includes('9,991'),'autonomous company must only use this run');home.clear();
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
   const live={available:true,runId:'active-governance',timeMillis:'1',position:'40',people:[],names:{director:'林知微'},

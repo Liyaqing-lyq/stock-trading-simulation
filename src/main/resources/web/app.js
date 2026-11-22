@@ -38,6 +38,7 @@ const state = {
   personEvidence: null,
   engineering: null,
   engineeringCompany: "",
+  operationsRequestedCompany: "",
   engineeringRequest: 0,
   history: null,
   branch: null,
@@ -3532,6 +3533,10 @@ $("media-story-select").addEventListener("change", () => guard(loadMediaStory())
 
 if (globalThis.WorldHome) {
   globalThis.WorldHome.onPage = selectPage;
+  globalThis.WorldHome.onOperations = companyId => {
+    state.operationsRequestedCompany = companyId;
+    selectPage("operations");
+  };
   globalThis.WorldHome.onGovernance = companyId => {
     state.engineeringCompany = companyId;
     selectPage("engineering");

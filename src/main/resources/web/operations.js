@@ -28,6 +28,7 @@ const OPERATIONS_LABELS = { approvalId:"客户技术准入编号", quantityUnits
 
 function clearOperationsDom() {
   state.operationsView = null;
+  state.operationsRequestedCompany = "";
   for (const id of ["operations-company", "operations-action", "operations-fields", "operations-financial", "operations-records"]) {
     if ($(id)) $(id).replaceChildren();
   }
@@ -59,20 +60,22 @@ function operationsOption(label, value) {
   const option = document.createElement("option"); option.textContent = label; option.value = value; return option;
 }
 function operationsCompany() {
-  return state.operationsView?.companies?.find(c => c.companyId === $("operations-company").value)
-    || state.operationsView?.companies?.[0];
+  return state.operationsView?.companies?.find(c => c.companyId === $("operations-company").value);
 }
 function renderOperations(view) {
-  const selected = $("operations-company").value;
+  const requested = state.operationsRequestedCompany;
+  const selected = requested || $("operations-company").value;
+  state.operationsRequestedCompany = "";
   state.operationsView = view;
   const panel = document.querySelector('[data-panel="operations"]');
   const host = state.mode === "person" ? $("person") : $("admin");
   if (panel && host && panel.parentElement !== host) host.appendChild(panel);
   if (panel) panel.hidden = state.mode === "person" ? !view.enabled : state.page !== "operations";
   $("operations-note").textContent = view.note || "";
-  $("operations-cut").textContent = "记录 " + view.position + " · 世界时点 " + view.timeMillis;
+  $("operations-cut").textContent = "记录 " + view.position + " · 世界时点 " + view.timeMillis + " 毫秒";
   $("operations-company").replaceChildren(...(view.companies || []).map(c => operationsOption(c.name, c.companyId)));
   if ((view.companies || []).some(c => c.companyId === selected)) $("operations-company").value = selected;
+  else if (requested) $("operations-company").selectedIndex = -1;
   renderOperationsCompany();
 }
 function operationsTable(parent, title, rows, columns) {
@@ -84,8 +87,9 @@ function operationsTable(parent, title, rows, columns) {
   head.appendChild(tr); table.appendChild(head);
   const body = document.createElement("tbody");
   for (const row of rows) { const line = document.createElement("tr"); for (const [key] of columns) {
-    const cell = document.createElement("td"); const statuses = { ORDERED:"待到货", RECEIVED:"已到货", FAILED_NO_CASH:"资金不足", IN_PROGRESS:"进行中", COMPLETED:"已完成", RUNNING:"进行中", ABORTED:"已终止", BUILDING:"建设中", ONLINE:"已投产", ACTIVE:"有效", PASSED:"通过", FAILED:"未通过", DELIVERED:"已交付", PAID:"已回款", WRITTEN_OFF:"已核销", CANCELLED:"已取消", OVERDUE:"已逾期" };
+    const cell = document.createElement("td"); const statuses = { FULFILLED:"已履约", COLLECTED:"已收款", FINISHED:"已完工", ORDERED:"待到货", RECEIVED:"已到货", FAILED_NO_CASH:"资金不足", IN_PROGRESS:"进行中", COMPLETED:"已完成", RUNNING:"进行中", ABORTED:"已终止", BUILDING:"建设中", ONLINE:"已投产", ACTIVE:"有效", PASSED:"通过", FAILED:"未通过", DELIVERED:"已交付", PAID:"已回款", WRITTEN_OFF:"已核销", CANCELLED:"已取消", OVERDUE:"已逾期" };
     const value = row[key];
+    if (key === "status" && value === "OPEN" && row.receivableId) statuses.OPEN = "待收款";
     cell.textContent = key === "status" ? (statuses[value] || String(value ?? "—")) : key === "accepted" ? (value ? "是" : "否") : key === "action" ? (OPERATIONS_ACTIONS[value]?.[0] || String(value ?? "—")) : String(value ?? "—"); line.appendChild(cell);
   } body.appendChild(line); }
   table.appendChild(body); wrap.appendChild(table); details.appendChild(wrap); parent.appendChild(details);
@@ -139,12 +143,14 @@ function renderOperationsCompany() {
   operationsLine(records, "可见材料报价：" + (company.plan.visibleQuotes || []).map(q => q.materialId + " " + q.price + " 元").join("，"));
   operationsTable(records, "原材料库存", entries(company.materials), [["id", "材料"], ["quantity", "数量"], ["amount", "成本（元）"]]);
   operationsTable(records, "采购单", entries(company.purchases), [["id", "编号"], ["materialId", "材料"], ["quantity", "数量"], ["status", "状态"], ["arrivalAt", "到货时点"]]);
-  operationsTable(records, "生产批次", entries(company.batches), [["id", "编号"], ["productId", "产品"], ["quantity", "数量"], ["status", "状态"], ["completesAt", "完工时点"]]);
-  operationsTable(records, "销售合同", entries(company.contracts), [["id", "编号"], ["customerId", "客户"], ["quantity", "数量"], ["status", "状态"]]);
-  operationsTable(records, "应收货款", entries(company.receivables), [["id", "编号"], ["customerId", "客户"], ["amount", "金额"], ["dueAt", "到期时点"], ["status", "状态"]]);
+  operationsLine(records, "生产按产品和代际入库。交付凭证通过合同编号关联应收。");
+  operationsTable(records, "生产批次（按产品入库）", entries(company.batches), [["id", "批次编号"], ["productId", "产品"], ["generation", "代际"], ["quantity", "数量"], ["startedAt", "开工时点"], ["completesAt", "完工时点"], ["status", "状态"]]);
+  operationsTable(records, "销售合同", entries(company.contracts), [["id", "合同编号"], ["customerId", "客户"], ["productId", "产品"], ["generation", "代际"], ["quantity", "签约数量"], ["unitPrice", "单价（元）"], ["signedAt", "签约时点"], ["promisedAt", "承诺交付时点"], ["delivered", "已交数量"], ["status", "状态"]]);
+  operationsTable(records, "应收货款", entries(company.receivables), [["id", "应收编号"], ["contractId", "合同编号"], ["quantity", "交付数量"], ["recognizedAt", "交付确认时点"], ["amount", "确认金额（元）"], ["outstanding", "未收（元）"], ["dueAt", "到期时点"], ["status", "状态"]]);
   operationsTable(records, "认证与扩产", [...entries(company.trials), ...entries(company.expansions)], [["id", "编号"], ["status", "状态"], ["finishAt", "认证时点"], ["completesAt", "扩产时点"]]);
   }
-  operationsTable(records, "实际执行回报", company.reports || [], [["action", "动作"], ["accepted", "是否受理"], ["reason", "结果"], ["amount", "资金变化（元）"]]);
+  const reports=(company.reports||[]).slice().sort((a,b)=>b.position-a.position||b.timeMillis-a.timeMillis);
+  operationsTable(records, "实际执行回报", reports, [["position", "确认记录"], ["timeMillis", "执行时点"], ["action", "动作"], ["businessId", "业务单号"], ["accepted", "是否受理"], ["reason", "结果"], ["amount", "实际划款额（元）"]]);
   const actions = company.actions || [], selected = $("operations-action").value;
   $("operations-action").replaceChildren(...actions.filter(a => OPERATIONS_ACTIONS[a]).map(a => operationsOption(OPERATIONS_ACTIONS[a][0], a)));
   if (actions.includes(selected)) $("operations-action").value = selected;

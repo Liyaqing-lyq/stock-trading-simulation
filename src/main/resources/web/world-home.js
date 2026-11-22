@@ -5,7 +5,7 @@ window.WorldHome = (() => {
   const $ = id => document.getElementById(id);
   const element = (tag, value, className) => { const n=document.createElement(tag); if(value!=null)n.textContent=String(value); if(className)n.className=className; return n; };
   const money = value => value == null ? "暂无成交" : Number(value).toLocaleString("zh-CN", {minimumFractionDigits:2,maximumFractionDigits:2});
-  const detail = () => view?.connected?.enabled ? view?.liveDetails?.[selected] : (view?.experiment?.details?.[selected] || view?.liveDetails?.[selected]);
+  const detail = () => view?.connected?.enabled || view?.marketOrders ? view?.liveDetails?.[selected] : (view?.experiment?.details?.[selected] || view?.liveDetails?.[selected]);
   const company = () => view?.companies.find(c=>c.id===selected);
   const personName = id => view?.names?.[id] || id || "世界";
   const companyName = id => view?.companies.find(c=>c.id===id)?.name || id || "市场";
@@ -216,14 +216,41 @@ window.WorldHome = (() => {
     const box=element("section",null,"world-statement-section");box.append(element("h3",title));
     const dl=element("dl");for(const [key,value] of Object.entries(values||{})){const label=accountLabel(key);dl.append(element("dt",period?label.replace(/（累计）$/,"（本期）"):label),element("dd",money(value)));}box.append(dl);return box;
   }
+  function renderCompanyEvidence(c) {
+    const links=$("world-report-links"), sources=$("world-report-sources");
+    links.replaceChildren();sources.replaceChildren();
+    if(c.operationsPage){
+      const operating=button(({research:"研发项目",engineering:"工程合同与回款",bank:"银行账务",operations:"产品、订单与回款"})[c.operationsPage],
+        ()=>c.operationsPage==="operations"?api.onOperations?.(c.id):c.operationsPage==="engineering"?api.onGovernance?.(c.id):api.onPage?.(c.operationsPage));
+      operating.setAttribute("data-destination",c.operationsPage);links.append(operating);
+    }
+    if(c.governance&&c.operationsPage!=="engineering"){
+      const governance=button("董事会与定期材料",()=>api.onGovernance?.(c.id));
+      governance.setAttribute("data-destination","governance");links.append(governance);
+    }
+    const market=button(c.symbol+" · 委托与成交",()=>choose(c.id,"world-market"));
+    market.setAttribute("data-destination","market");links.append(market);
+    if(view.position!=null)sources.append(element("p","经营与资料截至确认记录 "+view.position+" · 模拟时点 "+view.timeMillis+" 毫秒","world-note"));
+    const documents=c.publications||[];
+    if(!documents.length)sources.append(element("p","本公司尚无已登记的订单公告、公开预测或定期披露。","world-note"));
+    for(const item of documents){
+      const card=element("details"),summary=element("summary");
+      summary.textContent=item.kind+" · "+item.title+" · "+item.docId+" v"+item.version;
+      card.append(summary,element("p",personName(item.publisher)+" · 发布时点 "+item.time+" 毫秒"),element("p",item.body));
+      for(const read of item.reads)card.append(element("p",personName(read.person)+" · 已读完 · "+read.at+" 毫秒"));
+      for(const belief of item.beliefs)card.append(element("p",personName(belief.person)+" · 判断 "+belief.id+" · "+belief.at+" 毫秒 · "+(belief.rationale||"")));
+      sources.append(card);
+    }
+  }
   function renderCompany() {
-    if(view.connected?.enabled){const select=$("world-report-period"),periods=detail()?.periods||[];
+    if(view.connected?.enabled||view.marketOrders){const select=$("world-report-period"),periods=detail()?.periods||[];
       for(const option of select.children)option.disabled=option.value!=="current"&&!periods.some(p=>String(p.period)===option.value);
       if(select.value!=="current"&&!periods.some(p=>String(p.period)===select.value))select.value="current";
     } else for(const option of $("world-report-period").children)option.disabled=false;
     const c=company(),d=detail(),period=$("world-report-period").value;
     const item=period==="current"?null:d?.periods.find(p=>String(p.period)===period);
     const report=item?.statement||(period==="current"?c.statement:null);
+    renderCompanyEvidence(c);
     $("world-report-name").textContent=c.name;$("world-report-description").textContent=c.business+" · 机制原型："+c.prototype;
     $("world-report-cut").textContent=item?`第${item.period}期 · 第${item.day}日末；利润表为本期发生额，资产负债表为期末余额。`:"当前已确认状态 · 利润表为从开局至今的累计额。";
     if((view.behavior?.enabled||view.connected?.enabled)&&!item&&c.id.startsWith("mfg-"))$("world-report-cut").textContent+=" 本模型固定费用按30日关期入账，期中利润尚未包含本期固定费用；客户报价和成本规模仍为未校准实验值。";
@@ -260,7 +287,7 @@ window.WorldHome = (() => {
     for(const id of ["world-market-select","world-company-select"]){const select=$(id);select.replaceChildren();for(const c of view.companies){const o=element("option",c.name);o.value=c.id;select.append(o);}select.value=selected;}
     renderOverview();renderMarket();renderCompany();renderPeople();
   }
-  const api={onPage:null,onPerson:null,onGovernance:null,onOverview:null,onAdvance:null,onAutonomy:null,onRefresh:null,
+  const api={onPage:null,onPerson:null,onGovernance:null,onOperations:null,onOverview:null,onAdvance:null,onAutonomy:null,onRefresh:null,
     render(value){
       if(view?.runId&&value?.runId&&view.runId!==value.runId){generation++;stepping=false;stopRunning();selectedSource="";}
       view=value?.available?value:null;document.querySelectorAll("[data-world-nav]").forEach(n=>n.hidden=!view);
@@ -280,7 +307,7 @@ window.WorldHome = (() => {
       for(const id of ["world-connections","world-activities","world-news","world-orders","world-feed-company"])$(id).replaceChildren();
       for(const id of ["world-connected-status","world-orders-note","world-connected-toggle"])$(id).textContent="";
       $("world-behavior-decisions").replaceChildren();$("world-behavior-note").textContent="";$("world-behavior").hidden=true;
-      for(const id of ["world-company-list","world-person-cards","world-balance","world-income","world-price-chart","world-trade-days","world-cash-chart","world-report-metrics","world-metrics","world-quote","world-boundaries","world-market-select","world-company-select"])$(id)?.replaceChildren();
+      for(const id of ["world-report-links","world-report-sources","world-company-list","world-person-cards","world-balance","world-income","world-price-chart","world-trade-days","world-cash-chart","world-report-metrics","world-metrics","world-quote","world-boundaries","world-market-select","world-company-select"])$(id)?.replaceChildren();
       for(const id of ["world-run-note","world-price-note","world-day","world-hero-note","world-report-name","world-report-description","world-report-cut","world-cash-summary","world-person-count","world-market-name","world-market-business"])if($(id))$(id).textContent="";
       $("world-person-search").value="";$("world-home").hidden=true;
       document.querySelectorAll("[data-world-nav]").forEach(n=>n.hidden=true);

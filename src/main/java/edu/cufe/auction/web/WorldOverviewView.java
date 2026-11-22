@@ -36,6 +36,16 @@ final class WorldOverviewView {
                 managers.computeIfAbsent(a.organizationPartyId(),k->new ArrayList<>()).add(a.personPartyId());
             roles.computeIfAbsent(a.personPartyId(),k->new ArrayList<>()).add(names.get(a.organizationPartyId())+" · "+role);
         }
+        var operationIds = new HashSet<String>();
+        snapshot.companyOperations().ifPresent(run -> {
+            operationIds.addAll(run.companyIds());
+            if (run.resource()!=null) operationIds.add(run.resource().companyPartyId());
+            if (run.hydro()!=null) operationIds.add(run.hydro().companyPartyId());
+            if (run.digital()!=null) operationIds.add(run.digital().companyPartyId());
+            if (run.aged()!=null) operationIds.add(run.aged().companyPartyId());
+        });
+        var publications = CompanyPublications.of(world,snapshot.information().map(InformationRun::information).orElse(null),
+                registry.securities().stream().map(OpeningRegistry.Security::issuerOrganizationId).toList());
         var companies=new ArrayList<Map<String,Object>>();
         for(var security:registry.securities()) {
             String id=security.issuerOrganizationId();var prototype=PrototypeCompanies.find(id);
@@ -46,6 +56,11 @@ final class WorldOverviewView {
             if (autonomous && board!=null) row.put("governance", Map.of(
                     "meetings",board.board().meetings().size(), "budgetLines",board.board().budgets().size(),
                     "managers",managers.getOrDefault(id,List.of())));
+            if (operationIds.contains(id)) row.put("operationsPage","operations");
+            else if (world.researchRun().filter(run->run.companyPartyId().equals(id)).isPresent()) row.put("operationsPage","research");
+            else if (world.engineeringStateOf(id).isPresent()) row.put("operationsPage","engineering");
+            else if (id.equals("north") && world.bankOf().isPresent()) row.put("operationsPage","bank");
+            row.put("publications",publications.getOrDefault(id,List.of()));
             row.put("name",names.get(id));row.put("business",prototype.business());
             row.put("prototype",prototype.prototype());row.put("boundary",prototype.boundary());
             row.put("referencePrice",security.initialReferencePrice().toPlainString());

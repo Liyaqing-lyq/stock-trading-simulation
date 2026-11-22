@@ -6656,6 +6656,11 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
+    /** @return 当前已确认的信念与声明账，用于管理员按公司核对公开资料和引用 */
+    public synchronized Optional<BeliefRun> beliefRun() {
+        return Optional.ofNullable(state.beliefs());
+    }
+
     /**
      * 按人物读取同一确认 cut 的信念审计。
      *
