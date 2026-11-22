@@ -397,14 +397,14 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                                    com.fasterxml.jackson.databind.JsonNode engineering,
                                    com.fasterxml.jackson.databind.JsonNode groups) {
         return inputText(view, wakeReason, cutoffTimeMillis, pending, tools, config, toolContractVersion,
-                interview, engineering, groups, Map.of());
+                interview, engineering, groups, Map.of(), null);
     }
 
     static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
                             List<PendingAction> pending, List<String> tools, DecisionModel.Config config,
                             String toolContractVersion, com.fasterxml.jackson.databind.JsonNode interview,
                             com.fasterxml.jackson.databind.JsonNode engineering, com.fasterxml.jackson.databind.JsonNode groups,
-                            Map<String, Long> ownVisibleReadTimes) {
+                            Map<String, Long> ownVisibleReadTimes, String boardProcedureView) {
         Objects.requireNonNull(view, "观察视图");
         Objects.requireNonNull(config, "冻结配置");
         Objects.requireNonNull(toolContractVersion, "工具合同版本");
@@ -759,6 +759,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
         RolePlanningContext.append(root, wakeReason, config);
         EngineeringManagerHistory.project(root);
+        if (BoardProcedureView.VERSION.equals(boardProcedureView)) BoardProcedureView.project(root);
         try {
             return MAPPER.writeValueAsString(root);
         } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {

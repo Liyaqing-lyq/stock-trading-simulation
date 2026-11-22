@@ -347,6 +347,9 @@ public final class WorldRuntime implements AutoCloseable {
     private volatile boolean paused;
     private volatile String commitFailureCode;
     private WorldState deltaReadCursor;
+    /** 最近两次已完整核验的期末边界，各保留该边界第一帧供同实例的历史差量读取。 */
+    private WorldState currentPeriodAnchor;
+    private WorldState priorPeriodAnchor;
     /** 每个固定 CommitSource 生命周期独占的轻量身份，不保留源对象图。 */
     private final Object historicalInformationSource = new Object();
     private final HistoricalInformationCache historicalInformationCache =
@@ -6182,7 +6185,11 @@ public final class WorldRuntime implements AutoCloseable {
                 pendingActionsAt(state, requireDecisions(), personPartyId), allowedToolsOf(view), decisionConfig,
                 toolContractVersion(), manifest.hasDialogue() ? interviewInput(state, personPartyId, state.timeMillis()) : null,
                 engineeringInput(state, personPartyId, state.timeMillis()), manifest.hasGroups()
-                        ? groupsInput(state, state.information().information(), personPartyId, state.timeMillis()) : null, ownVisibleReadTimes(state, view));
+                        ? groupsInput(state, state.information().information(), personPartyId, state.timeMillis()) : null, ownVisibleReadTimes(state, view), boardProcedureViewVersion());
+    }
+
+    private String boardProcedureViewVersion() {
+        return manifest.dataVersions().get("board-procedure-view");
     }
 
     private Map<String, Long> ownVisibleReadTimes(WorldState snapshot, RoleTradingView view) {
@@ -7341,7 +7348,7 @@ public final class WorldRuntime implements AutoCloseable {
                             ? groupsInput(state, state.information() == null ? null
                                     : state.information().information(), request.personPartyId(),
                                     cutoffTime)
-                            : null, ownVisibleReadTimes(state, view));
+                            : null, ownVisibleReadTimes(state, view), boardProcedureViewVersion());
             if (decisionConfig.live()
                     && informationConfig != null && informationConfig.recallPolicy() != null) {
                 // 新档：先量实际字符/字节，超限在构造 ProviderPlan 之前就明确失败，整批不提交
@@ -10174,7 +10181,7 @@ public final class WorldRuntime implements AutoCloseable {
                             ? groupsInput(previous, previous.information() == null ? null
                                     : previous.information().information(), request.personPartyId(),
                                     cutoffTime)
-                            : null, ownVisibleReadTimes(previous, view));
+                            : null, ownVisibleReadTimes(previous, view), boardProcedureViewVersion());
             DecisionModel.Decision historical = DecisionModel.decision(historicalDecisions.state(),
                     request.actionId()).orElseThrow(() -> new IOException("历史决定缺失：" + request.actionId()));
             legacyInputs.add(new LegacyOperatingReportOrder.InputPair(input, historical.inputText()));
@@ -10584,7 +10591,7 @@ public final class WorldRuntime implements AutoCloseable {
                         ? groupsInput(previous, previous.information() == null ? null
                                 : previous.information().information(),
                                 decision.personPartyId(), decision.cutoffTimeMillis())
-                        : null, ownVisibleReadTimes(previous, view));
+                        : null, ownVisibleReadTimes(previous, view), boardProcedureViewVersion());
         regenerated = historicalDecisionInput(regenerated, decision.inputText(), decision.cutoffPosition());
         if (!regenerated.equals(decision.inputText())) {
             throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());
@@ -13582,7 +13589,18 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("观察位置不存在：" + position);
         }
         var confirmed = commitSource.commitAt(position);
-        if (confirmed.isPresent()) return decodeSnapshot(confirmed.orElseThrow());
+        if (confirmed.isPresent()) {
+            WorldCommit target = confirmed.orElseThrow();
+            // 只在同一已核验日志中向前解码；更早或未命中的帧沿用完整重建。
+            WorldState anchor = currentPeriodAnchor != null && currentPeriodAnchor.position() <= position
+                    ? currentPeriodAnchor : priorPeriodAnchor;
+            if (anchor != null && anchor.runId().equals(target.runId()) && anchor.position() <= position
+                    && (deltaReadCursor == null || deltaReadCursor.position() > position
+                    || deltaReadCursor.position() < anchor.position())) {
+                deltaReadCursor = anchor;
+            }
+            return decodeSnapshot(target);
+        }
         throw new IllegalArgumentException("观察位置不存在：" + position);
     }
 
@@ -30946,6 +30964,11 @@ public final class WorldRuntime implements AutoCloseable {
         if (!compactState() || capturing || commit.position() != verifiedInformationPosition + 1
                 || frame.position() != commit.position() || !frame.runId().equals(commit.runId())) return;
         verifiedInformationPosition = commit.position();
+        if (WorldScheduler.Phase.PERIOD_BOUNDARY_CAPTURE.name().equals(frame.lastPhase())
+                && (currentPeriodAnchor == null || currentPeriodAnchor.timeMillis() != frame.timeMillis())) {
+            priorPeriodAnchor = currentPeriodAnchor;
+            currentPeriodAnchor = frame;
+        }
         historicalInformationCache.remember(historicalInformationSource, commit,
                 frame.information() == null ? null : frame.information().information(), frame.timeMillis());
     }

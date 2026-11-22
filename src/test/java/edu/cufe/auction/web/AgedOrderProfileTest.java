@@ -49,4 +49,28 @@ class AgedOrderProfileTest {
         assertThrows(Exception.class, () -> AutonomousLifecycleProbe.openWorld("FORWARD_BUDGET_OPERATING", current));
         assertArrayEquals(created, Files.readAllBytes(current));
     }
+
+    @Test void sharedBoardRulesAndRegisteredTermClockAreBoundToTheNewProfile() throws Exception {
+        Path previous = dir.resolve("aged.journal");
+        Map<String, String> previousRules;
+        try (var world = AutonomousLifecycleProbe.openWorld("AGED_ORDER_OPERATING", previous)) {
+            previousRules = world.profile().manifest().dataVersions();
+        }
+        byte[] previousBytes = Files.readAllBytes(previous);
+        assertThrows(Exception.class, () -> AutonomousLifecycleProbe.openWorld("BOARD_PROCEDURE_OPERATING", previous));
+        assertArrayEquals(previousBytes, Files.readAllBytes(previous));
+
+        Path next = dir.resolve("board.journal");
+        try (var world = AutonomousLifecycleProbe.openWorld("BOARD_PROCEDURE_OPERATING", next)) {
+            var manifest = world.profile().manifest();
+            assertEquals(RunManifest.BOARD_PROCEDURE_RUN_ID, manifest.runId());
+            var rules = new TreeMap<>(manifest.dataVersions());
+            assertEquals("shared-rules-v1", rules.remove("board-procedure-view"));
+            assertEquals("registered-boundaries-v1", rules.remove("manager-term-clock"));
+            assertEquals(previousRules, rules);
+        }
+        byte[] nextBytes = Files.readAllBytes(next);
+        assertThrows(Exception.class, () -> AutonomousLifecycleProbe.openWorld("AGED_ORDER_OPERATING", next));
+        assertArrayEquals(nextBytes, Files.readAllBytes(next));
+    }
 }

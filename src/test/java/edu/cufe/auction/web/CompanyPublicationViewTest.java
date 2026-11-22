@@ -37,6 +37,31 @@ class CompanyPublicationViewTest {
         }
     }
 
+    @Test void recentAndOlderBankAndResearchStatementsKeepTheirFrozenValuesOnReopen() throws Exception {
+        Path journal = dir.resolve("three-months.journal");
+        var statements = new java.util.HashMap<String, String>();
+        var companies = List.of("north", "pharma");
+        try (var world = ComposedIndustryScenario.openPersonalMarketOperating(journal)) {
+            for (int period = 1; period <= 3; period++) {
+                world.advanceTo(period * 30L * 86_400_000);
+                for (String company : companies) {
+                    statements.put(company + period, world.confirmedPeriodStatement(company, period).body());
+                }
+            }
+        }
+        byte[] before = java.nio.file.Files.readAllBytes(journal);
+        try (var world = ComposedIndustryScenario.openPersonalMarketOperating(journal)) {
+            long finalPosition = world.snapshot().position();
+            for (int period : List.of(3, 1, 2, 3)) {
+                for (String company : companies) {
+                    assertEquals(statements.get(company + period), world.confirmedPeriodStatement(company, period).body());
+                }
+            }
+            assertEquals(finalPosition, world.snapshot().position());
+        }
+        assertArrayEquals(before, java.nio.file.Files.readAllBytes(journal));
+    }
+
     @Test void publicSourceKeepsItsCompanyVersionAndActualReadersOnReopen() throws Exception {
         Path journal=dir.resolve("company.journal");
         JsonNode finalRows;

@@ -440,15 +440,31 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     private long nextAutonomyTime() {
-        long now = runtime.snapshot().timeMillis();
+        var snapshot = runtime.snapshot();
+        long now = snapshot.timeMillis();
         long target = Math.min(autonomy.target, now + autonomy.step);
         if (eventAutonomy()) {
-            for (PendingTask task : runtime.snapshot().pending())
+            for (PendingTask task : snapshot.pending())
                 if (task.dueTimeMillis() > now) target = Math.min(target, task.dueTimeMillis());
+            if ("registered-boundaries-v1".equals(runtime.profile().manifest().dataVersions().get("manager-term-clock"))
+                    && snapshot.roles().isPresent()) {
+                target = nextManagerTermBoundary(snapshot.roles().get().access().appointments(), now, target);
+            }
             for (var entry : autonomy.lastWake.entrySet()) {
                 long review = runtime.autonomyNextReviewAt(entry.getKey(), entry.getValue() + 86_400_000L);
                 if (review > now) target = Math.min(target, review);
             }
+        }
+        return target;
+    }
+
+    /** 失效或已结束的任期不产生时钟事件；当前时刻的权限由既有角色名单读取。 */
+    static long nextManagerTermBoundary(List<RoleAccess.Appointment> appointments, long now, long target) {
+        for (var appointment : appointments) {
+            long end = appointment.effectiveEnd();
+            if (appointment.role() != RoleAccess.Role.COMPANY_MANAGER || appointment.startsAt() >= end) continue;
+            if (appointment.startsAt() > now) target = Math.min(target, appointment.startsAt());
+            if (end > now) target = Math.min(target, end);
         }
         return target;
     }

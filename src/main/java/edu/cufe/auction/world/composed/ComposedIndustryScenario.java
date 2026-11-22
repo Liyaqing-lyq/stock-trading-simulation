@@ -299,6 +299,16 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.AGED_ORDER_RUN_ID);
     }
 
+    /**
+     * 打开在同一董事输入中共享相同议事规则的经营档。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 运行档或日志不相容
+     */
+    public static WorldRuntime openBoardProcedureOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.BOARD_PROCEDURE_RUN_ID);
+    }
+
     private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
         return open(journal, true, true, true, true, false, false, true, true,
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true,
@@ -473,7 +483,11 @@ public final class ComposedIndustryScenario {
                 data.put("belief-company-scope", "manufacturing-orders-v1");
                 data.put("research-manager-view", "project-state-v1");
             }
-            if (RunManifest.AGED_ORDER_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.BOARD_PROCEDURE_RUN_ID.equals(thinkingRunId)) {
+                data.put("board-procedure-view", "shared-rules-v1");
+                data.put("manager-term-clock", "registered-boundaries-v1");
+            }
+            if (RunManifest.usesAgedOrderRules(thinkingRunId)) {
                 data.put("aged-order-terms", "next-period-v1");
             }
             if (RunManifest.usesForwardBudgetRules(thinkingRunId)) {
