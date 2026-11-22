@@ -17,7 +17,7 @@ public final class AutonomousLifecycleProbe {
                          long stepMillis, String seed, String sourceCommit) {
         /** 约束试跑边界，额度是上限，不是调用承诺或经营验收。 */
         public Config {
-            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING").contains(mode)
+            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING", "COMPANY_INFORMATION_OPERATING").contains(mode)
                     || maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
                     || stepMillis != 3_600_000
@@ -35,7 +35,7 @@ public final class AutonomousLifecycleProbe {
         Files.writeString(out.resolve("system-prompt.txt"), systemPrompt(config));
         boolean informed = informedMode(config.mode());
         boolean thinking = thinkingMode(config.mode());
-        boolean measured = "ENGINEERING_CUSTOMER_OPERATING".equals(config.mode());
+        boolean measured = usesMeasuredLength(config.mode());
         if (informed) ProbeProviderEvidence.freezePolicy(out, thinking, measured);
         if (seed != null) {
             Files.copy(seed.resolve("world.journal"), out.resolve("world.journal"));
@@ -141,6 +141,7 @@ public final class AutonomousLifecycleProbe {
 
     static edu.cufe.auction.world.WorldRuntime openWorld(String mode, Path journal) throws Exception {
         return switch (mode) {
+            case "COMPANY_INFORMATION_OPERATING" -> ComposedIndustryScenario.openCompanyInformationOperating(journal);
             case "ENGINEERING_CUSTOMER_OPERATING" -> ComposedIndustryScenario.openEngineeringCustomerOperating(journal);
             case "PERSONAL_MARKET_OPERATING" -> ComposedIndustryScenario.openPersonalMarketOperating(journal);
             case "FUNDED_THINKING_OPERATING" -> ComposedIndustryScenario.openFundedThinkingOperating(journal);
@@ -158,7 +159,11 @@ public final class AutonomousLifecycleProbe {
         return mode.equals("INFORMED_OPERATING") || mode.equals("CONTEXTUAL_INFORMED_OPERATING") || thinkingMode(mode);
     }
 
-    static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING") || mode.equals("FUNDED_THINKING_OPERATING") || mode.equals("PERSONAL_MARKET_OPERATING") || mode.equals("ENGINEERING_CUSTOMER_OPERATING"); }
+    static boolean usesMeasuredLength(String mode) {
+        return "ENGINEERING_CUSTOMER_OPERATING".equals(mode) || "COMPANY_INFORMATION_OPERATING".equals(mode);
+    }
+
+    static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING") || mode.equals("FUNDED_THINKING_OPERATING") || mode.equals("PERSONAL_MARKET_OPERATING") || usesMeasuredLength(mode); }
 
     static java.util.List<SceneRoutes.Route> probeRoutes(SceneRoutes.Snapshot original, String mode) {
         boolean thinking = thinkingMode(mode);
@@ -200,7 +205,7 @@ public final class AutonomousLifecycleProbe {
                         throw new IllegalArgumentException("种子存在结果未知的请求");
             }
             if (informedMode(requested.mode())) ProbeProviderEvidence.validateSeed(seed, result, thinkingMode(requested.mode()),
-                    "ENGINEERING_CUSTOMER_OPERATING".equals(requested.mode()));
+                    usesMeasuredLength(requested.mode()));
             if (thinkingMode(requested.mode())) {
                 try (var routes = SceneRoutes.open(seed)) {
                     if (!routes.view().routes().equals(probeRoutes(routes.view(), requested.mode())))

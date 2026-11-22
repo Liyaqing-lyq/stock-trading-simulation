@@ -4250,7 +4250,7 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private boolean engineeringCustomerEnabled() {
-        return EngineeringCustomerPolicy.RUN_ID.equals(manifest.runId());
+        return RunManifest.usesEngineeringCustomerRules(manifest.runId());
     }
 
     /**
@@ -29156,9 +29156,20 @@ public final class WorldRuntime implements AutoCloseable {
             String company = snap.research().companyPartyId();
             BoardRun researchBoard = PeriodicWorldEngine.boardOf(snap.engineering(), snap.governance(), company);
             if (researchBoard == null && snap.companyGovernance() != null) researchBoard = snap.companyGovernance().boardOf(company);
+            Map<String, String> funds = null;
+            if ("available-v1".equals(manifest.dataVersions().get("research-cash-view"))) {
+                String payer = snap.research().state().config().companyAccountId();
+                BigDecimal total = snap.accounts().get(payer).cash();
+                BigDecimal available = WorldExchange.freeCash(snap.exchange(), snap.accounts(), payer);
+                funds = new TreeMap<>();
+                funds.put("companyCash", total.toPlainString());
+                funds.put("frozenCash", total.subtract(available).toPlainString());
+                funds.put("availableCash", available.toPlainString());
+            }
             root.set("researchOperations", mapper.valueToTree(ResearchDecisionTools.observation(snap.research(),
                     researchBoard, now, "project-state-v1".equals(manifest.dataVersions().get("research-manager-view"))
-                            ? docId -> recalledFor(snap.information().information(), person, docId, 1L, now) : null)));
+                            ? docId -> recalledFor(snap.information().information(), person, docId, 1L, now) : null,
+                    readerGatedResearchEvidence(), funds)));
         }
         if (manufacturingDecisionEnabled() && snap.manufacturing() != null
                 && activeManager(snap.roles(), person, manufacturingCompanyParty(), now)) {
@@ -29239,6 +29250,10 @@ public final class WorldRuntime implements AutoCloseable {
     private boolean operationsDecisionEnabled() {
         return "v1".equals(manifest.dataVersions().get("operations-decision")) && decisionConfig != null
                 && decisionConfig.actionMillisByTool().containsKey(CompanyOperationsDecisionTools.ACT);
+    }
+
+    private boolean readerGatedResearchEvidence() {
+        return "reader-gated-v1".equals(manifest.dataVersions().get("research-evidence"));
     }
 
     private boolean researchDecisionEnabled() {
@@ -36162,7 +36177,8 @@ public final class WorldRuntime implements AutoCloseable {
         ResearchRuntime.Applied applied = ResearchRuntime.result(manifest.seed(),
                 state.research(), researchBoard(state, state.research().companyPartyId()),
                 state.information(), p.projectId(),
-                ResearchModel.Stage.valueOf(p.stage()), task.dueTimeMillis(), state.accounts(), companyDecisionsEnabled());
+                ResearchModel.Stage.valueOf(p.stage()), task.dueTimeMillis(), state.accounts(),
+                companyDecisionsEnabled(), readerGatedResearchEvidence());
         finishResearchTask(task, applied, List.of());
     }
 
@@ -36785,7 +36801,7 @@ public final class WorldRuntime implements AutoCloseable {
                 if (PendingTask.RESEARCH_RESULT_V1.equals(task.kind())) {
                     applied = ResearchRuntime.result(manifest.seed(), run, board, information,
                             p.projectId(), ResearchModel.Stage.valueOf(p.stage()),
-                            task.dueTimeMillis(), accounts, companyDecisionsEnabled());
+                            task.dueTimeMillis(), accounts, companyDecisionsEnabled(), readerGatedResearchEvidence());
                 } else if (!activeAppointment(previous.roles(), p.appointmentId(),
                         p.personPartyId(), p.companyPartyId(), task.dueTimeMillis())) {
                     applied = ResearchRuntime.Applied.rejected(run, board, information, accounts,

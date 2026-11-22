@@ -38,17 +38,21 @@ final class MeasuredLengthEvidence {
         var attempts = new HashSet<LiveCompletionInbox.AttemptKey>();
         Path child = null;
         String source = null;
+        String mode = null;
         for (Path path = initial.toRealPath(); path != null; ) {
             if (!visited.add(path)) throw invalid();
             var result = JSON.readTree(path.resolve("result.json").toFile());
             var config = JSON.readTree(path.resolve("config.json").toFile());
             var cfg = JSON.treeToValue(config, AutonomousLifecycleProbe.Config.class);
-            if (!config.equals(result.path("config")) || !"ENGINEERING_CUSTOMER_OPERATING".equals(cfg.mode())
+            if (!config.equals(result.path("config")) || !AutonomousLifecycleProbe.usesMeasuredLength(cfg.mode())
                     || !result.at("/live/physicalInFlight").isIntegralNumber()
                     || result.at("/live/physicalInFlight").longValue() != 0
                     || !result.at("/providerProvenance/evidenceComplete").asBoolean()) throw invalid();
-            if (source == null) source = cfg.sourceCommit();
-            if (!source.equals(cfg.sourceCommit())) throw invalid();
+            if (source == null) {
+                source = cfg.sourceCommit();
+                mode = cfg.mode();
+            }
+            if (!source.equals(cfg.sourceCommit()) || !mode.equals(cfg.mode())) throw invalid();
             Path parent = cfg.seed() == null ? null : Path.of(cfg.seed()).toRealPath();
             int calls = result.path("httpCalls").intValue();
             var observed = JSON.readValue(path.resolve(FILE).toFile(), Seal.class);

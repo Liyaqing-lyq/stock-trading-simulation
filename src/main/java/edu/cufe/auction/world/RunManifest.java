@@ -53,6 +53,14 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 显式启用签约资金约束的思考经营运行标识。 */
     public static final String FUNDED_THINKING_RUN_ID = "web-thinking-operating-v2";
 
+    /** 分开记录发行人公开资料与经理本人财务资料的新经营档标识。 */
+    public static final String COMPANY_INFORMATION_RUN_ID = "web-company-information-operating-v1";
+
+    /** 判断运行是否使用同一套工程客户、数字履约和研发可用现金规则。 */
+    public static boolean usesEngineeringCustomerRules(String runId) {
+        return EngineeringCustomerPolicy.RUN_ID.equals(runId) || COMPANY_INFORMATION_RUN_ID.equals(runId);
+    }
+
     /** 判断运行是否继承客户签约资金约束、董事权限及披露资料合同。 */
     public static boolean usesFundedOperatingRules(String runId) {
         return FUNDED_THINKING_RUN_ID.equals(runId) || usesPersonalMarketRules(runId);
@@ -60,7 +68,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** 继承本人限价交易、公司事实归属和药研经理进度投影的档案。 */
     public static boolean usesPersonalMarketRules(String runId) {
-        return PersonalMarket.RUN_ID.equals(runId) || EngineeringCustomerPolicy.RUN_ID.equals(runId);
+        return PersonalMarket.RUN_ID.equals(runId) || usesEngineeringCustomerRules(runId);
     }
 
     /** 现金 + 登记 + 证券 + 撮合 + 制造 + 治理（M3b.2 新增的明确组合，model=none）。 */
@@ -946,7 +954,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
-        boolean engineeringCustomer = EngineeringCustomerPolicy.RUN_ID.equals(runId);
+        boolean engineeringCustomer = usesEngineeringCustomerRules(runId);
         if ((engineeringCustomer || dataVersions != null && dataVersions.containsKey(EngineeringCustomerPolicy.KEY))
                 && (!engineeringCustomer || dataVersions == null || !EngineeringCustomerPolicy.VERSION.equals(dataVersions.get(EngineeringCustomerPolicy.KEY))))
             throw new IllegalArgumentException("工程客户复核必须显式绑定独立经营档及版本");
@@ -1079,6 +1087,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
+            if (COMPANY_INFORMATION_RUN_ID.equals(runId)) {
+                expectedData.put("listing-disclosure", "opening-register-v1");
+                expectedData.put("research-evidence", "reader-gated-v1");
+                expectedData.put("research-cash-view", "available-v1");
+            }
             if (engineeringCustomer) {
                 expectedData.put(EngineeringCustomerPolicy.KEY, EngineeringCustomerPolicy.VERSION);
                 expectedData.put("digital-delivery-view", "shared-period-limits-v1");

@@ -271,6 +271,17 @@ public final class ComposedIndustryScenario {
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, EngineeringCustomerPolicy.RUN_ID);
     }
 
+    /** 打开在各发行人开局公开资料中披露证券登记事实的经营档。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 开局或冻结合同不匹配
+     */
+    public static WorldRuntime openCompanyInformationOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true,
+                RunManifest.COMPANY_INFORMATION_RUN_ID);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating) throws Exception {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous,
                 eventDriven, roleContext, operating, compact, informedOperating, null);
@@ -316,7 +327,7 @@ public final class ComposedIndustryScenario {
         }
         if (operating) parties.put(ExternalDemandOpening.OWNER_ID, new BankingProfile.PartyRef(
                 ExternalDemandOpening.OWNER_ID, ExternalDemandOpening.OWNER_ID, ExternalDemandOpening.ACCOUNT_ID, null));
-        if (EngineeringCustomerPolicy.RUN_ID.equals(thinkingRunId)) {
+        if (RunManifest.usesEngineeringCustomerRules(thinkingRunId)) {
             var customer = parties.get(EngineeringCustomerPolicy.OWNER);
             parties.put(customer.ownerId(), new BankingProfile.PartyRef(EngineeringCustomerPolicy.CUSTOMER,
                     customer.ownerId(), customer.cashAccountId(), customer.depositGl()));
@@ -374,7 +385,7 @@ public final class ComposedIndustryScenario {
             externalOwners.add(new OpeningRegistry.PropertyOwner(ExternalDemandOpening.OWNER_ID, OpeningRegistry.OwnerKind.ORGANIZATION, ExternalDemandOpening.OWNER_ID));
             openingRegistry = new OpeningRegistry(externalParties, externalOwners, openingRegistry.securities(), openingRegistry.allocations());
         }
-        if (EngineeringCustomerPolicy.RUN_ID.equals(thinkingRunId)) openingRegistry = EngineeringCustomerPolicy.register(openingRegistry);
+        if (RunManifest.usesEngineeringCustomerRules(thinkingRunId)) openingRegistry = EngineeringCustomerPolicy.register(openingRegistry);
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -439,7 +450,12 @@ public final class ComposedIndustryScenario {
                 data.put("belief-company-scope", "manufacturing-orders-v1");
                 data.put("research-manager-view", "project-state-v1");
             }
-            if (EngineeringCustomerPolicy.RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.COMPANY_INFORMATION_RUN_ID.equals(thinkingRunId)) {
+                data.put("listing-disclosure", "opening-register-v1");
+                data.put("research-evidence", "reader-gated-v1");
+                data.put("research-cash-view", "available-v1");
+            }
+            if (RunManifest.usesEngineeringCustomerRules(thinkingRunId)) {
                 data.put(EngineeringCustomerPolicy.KEY, EngineeringCustomerPolicy.VERSION);
                 data.put("digital-delivery-view", "shared-period-limits-v1");
                 data.put("research-funding", "free-cash-v1");

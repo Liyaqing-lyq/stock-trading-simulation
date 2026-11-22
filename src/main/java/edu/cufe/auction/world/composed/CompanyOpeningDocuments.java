@@ -4,6 +4,7 @@ import edu.cufe.auction.web.WorldWebScenario;
 import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.OpeningRegistry;
+import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.WorldRuntime;
 
 import java.util.List;
@@ -57,6 +58,16 @@ public final class CompanyOpeningDocuments {
                 if (identity != null) body.append(identity.publicDescription()).append('\n');
             }
             body.append("公司=").append(company).append("（").append(parties.get(company).name()).append("）\n");
+            if (RunManifest.COMPANY_INFORMATION_RUN_ID.equals(world.profile().manifest().runId())) {
+                for (var security : registry.securities()) {
+                    if (company.equals(security.issuerOrganizationId())) {
+                        body.append("开局证券登记（实验时点 0）：代码=").append(security.symbol())
+                                .append("，已发行股数=").append(security.issuedShares())
+                                .append("，每股开局参考估值=").append(security.initialReferencePrice().toPlainString())
+                                .append(" 元。报价和成交另见交易所记录。\n");
+                    }
+                }
+            }
             TreeSet<String> candidates = new TreeSet<>(extraCandidates.getOrDefault(company, List.of()));
             body.append("章程席位：\n");
             for (BoardModel.Seat seat : charter.seats()) {
@@ -83,7 +94,7 @@ public final class CompanyOpeningDocuments {
         if (PrototypeCompanies.PROFILE.equals(world.profile().manifest().dataVersions().get("profile"))) {
             for (var spec : world.snapshot().engineering().orElseThrow().config().companies()) {
                 for (var plan : spec.contracts()) {
-                    if (edu.cufe.auction.world.EngineeringCustomerPolicy.RUN_ID.equals(world.profile().manifest().runId())) {
+                    if (RunManifest.usesEngineeringCustomerRules(world.profile().manifest().runId())) {
                         world.scheduleOpeningEngineeringOpportunity(plan.contractId());
                         continue;
                     }
