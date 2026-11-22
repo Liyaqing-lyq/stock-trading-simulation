@@ -8543,6 +8543,39 @@ public final class WorldRuntime implements AutoCloseable {
         String kind;
         Object body;
         switch (tool) {
+            case PersonalMarket.SUBMIT, PersonalMarket.CANCEL -> {
+                if (!PersonalMarket.VERSION.equals(manifest.dataVersions().get(PersonalMarket.POLICY)))
+                    throw new IOException("当前档案没有个人交易合同");
+                String command = DecisionRun.actionCommandId(recorded.actionId());
+                String accountId = args.path("accountId").asText("");
+                var observed = mapper.readTree(recorded.inputText());
+                var account = base.accounts().get(accountId);
+                var owner = account == null ? null : registry.owner(account.ownerId());
+                if (!PersonalMarket.observedAccount(observed, accountId) || owner == null || owner.kind() != OpeningRegistry.OwnerKind.PERSON
+                        || !binding.personPartyId().equals(owner.partyId())
+                        || RoleAccess.canReadPersonalAccount(base.roles().access(), binding.personPartyId(), accountId) != RoleAccess.Decision.ALLOW)
+                    throw new IOException("个人账户未获授权");
+                if (PersonalMarket.SUBMIT.equals(tool)) {
+                    var draft = strict(PersonalMarket.Submit.class, args);
+                    BigDecimal price = CashLedger.money(draft.limitPrice());
+                    if (draft.quantity() <= 0 || price.signum() <= 0 || draft.side() == null || registry.security(draft.symbol()) == null)
+                        throw new IOException("限价委托参数错误");
+                    kind = PendingTask.EXCHANGE_ORDER_V1;
+                    body = new OrderPayload(command, owner.ownerId(), accountId, draft.symbol(), draft.side(),
+                            OrderType.LIMIT, price, draft.quantity(), null);
+                } else {
+                    var draft = strict(PersonalMarket.Cancel.class, args);
+                    if (draft.orderRef() == null || !PersonalMarket.observed(observed, accountId, draft.orderRef()))
+                        throw new IOException("该引用不在本人观察时的活动挂单中");
+                    var order = PersonalMarket.ownOrders(base.exchange(), accountId).get(draft.orderRef());
+                    if (order == null) throw new IOException("本人订单不存在");
+                    kind = PendingTask.EXCHANGE_CANCEL_V1;
+                    body = new CancelOrderPayload(command, owner.ownerId(), order.orderId());
+                }
+                String taskId = forcedTaskId != null ? forcedTaskId : freeTaskId(base, DecisionRun.actionTaskId(recorded.actionId()));
+                long due = DecisionModel.actionDueMillis(model, recorded.actionId());
+                return new PlacedAction(recorded.actionId(), tool, kind, taskId, command, due, mapper.writeValueAsString(body), null, null);
+            }
             case ResourceDecisionTools.ACT -> {
                 if (!resourceDecisionEnabled() || base.companyOperations() == null || base.companyOperations().resource() == null) throw new IOException("当前档案未启用资源决定");
                 var request = ResourceDecisionTools.request(strict(ResourceDecisionTools.Draft.class, args));
@@ -9628,6 +9661,15 @@ public final class WorldRuntime implements AutoCloseable {
                     || !replanned.payloadJson().equals(candidate.commandContents().get(replanned.commandId()))
                     || !("SCHEDULED:" + ref.actionId()).equals(candidate.commandOutcomes().get(replanned.commandId()))) {
                 throw new IOException("动作引用或原命令与决定原文不一致：" + ref.actionId());
+            }
+            if (PersonalMarket.SUBMIT.equals(ref.tool()) || PersonalMarket.CANCEL.equals(ref.tool())) {
+                var exchangeReport = candidate.exchange().reports().get(ref.taskId());
+                if (task == null ? !PersonalMarket.matches(ref, exchangeReport, candidate.position())
+                        : exchangeReport != null || !replanned.kind().equals(task.kind())
+                            || ref.dueMillis() != task.dueTimeMillis() || !replanned.payloadJson().equals(task.payload())) {
+                    throw new IOException("本人交易决定缺少匹配的待办或交易所回报：" + ref.actionId());
+                }
+                continue;
             }
             RoleTradingRun.Report report = candidate.trading().report(ref.taskId());
             if (task != null) {
@@ -21586,7 +21628,8 @@ public final class WorldRuntime implements AutoCloseable {
                     requireBeliefActionReport(candidate, task, payload, false, "NO_OBSERVATION", draft.beliefId());
                     return base;
                 }
-                if (charter == null || !draft.companyId().equals(charter.companyPartyId())) {
+                BoardModel.Charter verifier = orderPredictionCharter(previous, draft.companyId());
+                if (verifier == null) {
                     requireBeliefActionReport(candidate, task, payload, false, "UNKNOWN_COMPANY", draft.beliefId());
                     return base;
                 }
@@ -21603,7 +21646,7 @@ public final class WorldRuntime implements AutoCloseable {
                         informationConfig.beliefPolicy(), informationConfig.recallPolicy(), now,
                         new BeliefModel.FormRequest(draft.beliefId(), payload.personPartyId(),
                                 draft.companyId(), draft.comparator(), draft.threshold(),
-                                draft.targetAsOfMillis(), chairPersonOf(charter), draft.evidence(),
+                                draft.targetAsOfMillis(), chairPersonOf(verifier), draft.evidence(),
                                 draft.adoptedClaimId(), draft.rationale()));
                 requireBeliefActionReport(candidate, task, payload, formed.accepted(), formed.reason(), draft.beliefId());
                 return formed.accepted() ? base.withBeliefs(formed.state()) : base;
@@ -21612,8 +21655,8 @@ public final class WorldRuntime implements AutoCloseable {
                 RoleActionPayload payload = mapper.readValue(task.payload(), RoleActionPayload.class);
                 WorldRoleSession.ForecastDraft draft = mapper.readValue(payload.body(),
                         WorldRoleSession.ForecastDraft.class);
-                if (!manifest.hasBelief() || charter == null
-                        || !draft.companyId().equals(charter.companyPartyId())) {
+                BoardModel.Charter verifier = orderPredictionCharter(previous, draft.companyId());
+                if (!manifest.hasBelief() || verifier == null) {
                     requireBeliefActionReport(candidate, task, payload, false, "UNKNOWN_COMPANY", draft.claimId());
                     return base;
                 }
@@ -21626,7 +21669,7 @@ public final class WorldRuntime implements AutoCloseable {
                     BeliefRun result = base.withSourceClaim(new BeliefModel.SourceClaim(draft.claimId(),
                             draft.docId(), 1, payload.personPartyId(), draft.companyId(),
                             BeliefModel.METRIC_ORDERS_CONFIRMED, draft.comparator(), draft.threshold(),
-                            draft.targetAsOfMillis(), chairPersonOf(charter)));
+                            draft.targetAsOfMillis(), chairPersonOf(verifier)));
                     requireBeliefInformation(candidate, published);
                     requireBeliefActionReport(candidate, task, payload, true, "OK", draft.claimId());
                     return result;
@@ -28420,6 +28463,12 @@ public final class WorldRuntime implements AutoCloseable {
         List<String> tools = new ArrayList<>(roleTools(appointments, manifest.hasBelief(), offerOrderReport,
                 manifest.hasMedia(), manifest.hasInterviews(), manifest.hasEvidence(),
                 manifest.hasSocial(), manifest.hasGroups()));
+        if (PersonalMarket.VERSION.equals(manifest.dataVersions().get(PersonalMarket.POLICY))) {
+            var personal = PersonalMarket.accounts(snap.roles(), person);
+            if (!personal.isEmpty()) tools.add(PersonalMarket.SUBMIT);
+            if (snap.exchange().liveOrders().stream().anyMatch(order -> personal.contains(order.accountId())))
+                tools.add(PersonalMarket.CANCEL);
+        }
         if (manifest.hasDialogue() && isDialogueParticipant(snap, person)) {
             tools.add(RoleTradingView.TOOL_INTERVIEW_SPEAK);
         }
@@ -28951,7 +29000,8 @@ public final class WorldRuntime implements AutoCloseable {
             BoardRun researchBoard = PeriodicWorldEngine.boardOf(snap.engineering(), snap.governance(), company);
             if (researchBoard == null && snap.companyGovernance() != null) researchBoard = snap.companyGovernance().boardOf(company);
             root.set("researchOperations", mapper.valueToTree(ResearchDecisionTools.observation(snap.research(),
-                    researchBoard, now)));
+                    researchBoard, now, "project-state-v1".equals(manifest.dataVersions().get("research-manager-view"))
+                            ? docId -> recalledFor(snap.information().information(), person, docId, 1L, now) : null)));
         }
         if (manufacturingDecisionEnabled() && snap.manufacturing() != null
                 && activeManager(snap.roles(), person, manufacturingCompanyParty(), now)) {
@@ -29005,6 +29055,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (RoleDeliberation.isAccountable(roleContext))
             GroupActionFeedback.append(root, person, snap.decisions(), snap.pending(), snap.groups(),
                     snap.position(), snap.timeMillis(), commitSource::nonSnapshotCommitAt, this::groupFeedbackIdentity);
+        if (PersonalMarket.VERSION.equals(manifest.dataVersions().get(PersonalMarket.POLICY)))
+            PersonalMarket.append(root, PersonalMarket.accounts(snap.roles(), person), snap.exchange(), snap.decisions(), person, snap.position());
         if (RoleDeliberation.CONTEXTUAL_VERSION.equals(roleContext))
             RoleGovernanceOutcomeContext.append(root, person, now, snap.decisions(), snap.engineering(), snap.roles(), company -> {
                 BoardRun board = PeriodicWorldEngine.boardOf(snap.engineering(), snap.governance(), company);
@@ -31207,7 +31259,8 @@ public final class WorldRuntime implements AutoCloseable {
                     reason = "NO_OBSERVATION";
                     break;
                 }
-                if (charter == null || !draft.companyId().equals(charter.companyPartyId())) {
+                BoardModel.Charter verifier = orderPredictionCharter(state, draft.companyId());
+                if (verifier == null) {
                     reason = "UNKNOWN_COMPANY";
                     break;
                 }
@@ -31222,7 +31275,7 @@ public final class WorldRuntime implements AutoCloseable {
                         informationConfig.recallPolicy(), now,
                         new BeliefModel.FormRequest(draft.beliefId(), payload.personPartyId(),
                                 draft.companyId(), draft.comparator(), draft.threshold(),
-                                draft.targetAsOfMillis(), chairPersonOf(charter), draft.evidence(),
+                                draft.targetAsOfMillis(), chairPersonOf(verifier), draft.evidence(),
                                 draft.adoptedClaimId(), draft.rationale()));
                 accepted = formed.accepted();
                 reason = formed.reason();
@@ -31234,8 +31287,8 @@ public final class WorldRuntime implements AutoCloseable {
                 WorldRoleSession.ForecastDraft draft = mapper.readValue(payload.body(),
                         WorldRoleSession.ForecastDraft.class);
                 subject = draft.claimId();
-                if (!manifest.hasBelief() || charter == null
-                        || !draft.companyId().equals(charter.companyPartyId())) {
+                BoardModel.Charter verifier = orderPredictionCharter(state, draft.companyId());
+                if (!manifest.hasBelief() || verifier == null) {
                     reason = "UNKNOWN_COMPANY";
                     break;
                 }
@@ -31251,7 +31304,7 @@ public final class WorldRuntime implements AutoCloseable {
                             draft.claimId(), draft.docId(), 1, payload.personPartyId(),
                             draft.companyId(), BeliefModel.METRIC_ORDERS_CONFIRMED,
                             draft.comparator(), draft.threshold(), draft.targetAsOfMillis(),
-                            chairPersonOf(charter)));
+                            chairPersonOf(verifier)));
                     informationAfter = published;
                     beliefsAfter = withClaim;
                     accepted = true;
@@ -31488,7 +31541,15 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private boolean scopedManufacturingReports() {
-        return RunManifest.FUNDED_THINKING_RUN_ID.equals(manifest.runId());
+        return RunManifest.usesFundedOperatingRules(manifest.runId());
+    }
+
+    /** 对订单数的预测使用有权披露该公司合同的主席作为核验来源。 */
+    private BoardModel.Charter orderPredictionCharter(WorldState base, String companyId) {
+        if ("manufacturing-orders-v1".equals(manifest.dataVersions().get("belief-company-scope"))) {
+            return orderReportCharter(base, companyId);
+        }
+        return charter != null && companyId.equals(charter.companyPartyId()) ? charter : null;
     }
 
     private BoardModel.Charter orderReportCharter(WorldState base, String companyId) {

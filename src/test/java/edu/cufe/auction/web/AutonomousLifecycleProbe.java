@@ -17,7 +17,7 @@ public final class AutonomousLifecycleProbe {
                          long stepMillis, String seed, String sourceCommit) {
         /** 约束试跑边界，额度是上限，不是调用承诺或经营验收。 */
         public Config {
-            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING").contains(mode)
+            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING").contains(mode)
                     || maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
                     || stepMillis != 3_600_000
@@ -131,6 +131,7 @@ public final class AutonomousLifecycleProbe {
 
     static edu.cufe.auction.world.WorldRuntime openWorld(String mode, Path journal) throws Exception {
         return switch (mode) {
+            case "PERSONAL_MARKET_OPERATING" -> ComposedIndustryScenario.openPersonalMarketOperating(journal);
             case "FUNDED_THINKING_OPERATING" -> ComposedIndustryScenario.openFundedThinkingOperating(journal);
             case "THINKING_INFORMED_OPERATING" -> ComposedIndustryScenario.openThinkingInformedOperating(journal);
             case "CONTEXTUAL_INFORMED_OPERATING" -> ComposedIndustryScenario.openContextualInformedOperating(journal);
@@ -146,7 +147,7 @@ public final class AutonomousLifecycleProbe {
         return mode.equals("INFORMED_OPERATING") || mode.equals("CONTEXTUAL_INFORMED_OPERATING") || thinkingMode(mode);
     }
 
-    static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING") || mode.equals("FUNDED_THINKING_OPERATING"); }
+    static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING") || mode.equals("FUNDED_THINKING_OPERATING") || mode.equals("PERSONAL_MARKET_OPERATING"); }
 
     static java.util.List<SceneRoutes.Route> probeRoutes(SceneRoutes.Snapshot original, String mode) {
         boolean thinking = thinkingMode(mode);

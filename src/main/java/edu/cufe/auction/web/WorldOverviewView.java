@@ -7,6 +7,8 @@ import java.util.*;
 
 /** 本机世界首页的中文只读投影；显示名不修改身份、任职、历史或模型输入。 */
 final class WorldOverviewView {
+    private static final long DAY=86_400_000L;
+    private static final int RECENT_ORDERS=40;
     private static final Map<String,String> NAMES = names();
     private WorldOverviewView() { }
 
@@ -77,7 +79,93 @@ final class WorldOverviewView {
                         ManufacturingBehaviorLoop.enabled(world) ? ManufacturingBehaviorLoop.audit(world) : List.of())));
         if (autonomous) snapshot.decisions().ifPresent(d->result.put("modelAttempts",d.state().runUsage().attempts()));
         ConnectedWorldView.append(result,world,companies);
+        if (autonomous && snapshot.exchange().isPresent()) {
+            // 自主档同样只有一个已确认快照：成交与委托都由 snapshot.exchange 一次性派生，不重开世界。
+            result.put("marketOrders", marketOrders(snapshot, companies));
+            if (!result.containsKey("liveDetails")) result.put("liveDetails", marketDetails(snapshot, companies));
+        }
         return result;
+    }
+
+    /**
+     * 从同一快照的成交明细派生逐日行情：撮合日 = floor(time/DAY)+1。
+     * 收盘价只取当日末笔成交；无成交日 close 为空、lastPrice 仅延续上一笔成交价。
+     * 未知逐日现金写 null，不补零，也不把开局参考价写成收盘价。
+     */
+    private static Map<String,Object> marketDetails(WorldRuntime.Snapshot snapshot,List<Map<String,Object>> companies) {
+        var bySymbol=new HashMap<String,Map<Integer,DayTrades>>();
+        for(var trade:snapshot.exchange().orElseThrow().trades())
+            bySymbol.computeIfAbsent(trade.symbol(),k->new TreeMap<>())
+                    .computeIfAbsent((int)(trade.timeMillis()/DAY)+1,k->new DayTrades()).add(trade);
+        int days=(int)(snapshot.timeMillis()/DAY)+1;
+        var result=new LinkedHashMap<String,Object>();
+        for(var company:companies) {
+            String id=(String)company.get("id"),symbol=(String)company.get("symbol");
+            var byDay=bySymbol.getOrDefault(symbol,Map.of());
+            BigDecimal carried=null;
+            var rows=new ArrayList<Map<String,Object>>(days);
+            for(int day=1;day<=days;day++) {
+                var tradeDay=byDay.get(day);
+                if(tradeDay!=null) carried=tradeDay.close;
+                var row=new LinkedHashMap<String,Object>();
+                row.put("day",day);
+                row.put("lastPrice",carried==null?null:carried.toPlainString());
+                row.put("close",tradeDay==null?null:tradeDay.close.toPlainString());
+                row.put("trades",tradeDay==null?0L:tradeDay.count);
+                row.put("volume",tradeDay==null?0L:tradeDay.volume);
+                row.put("turnover",(tradeDay==null?BigDecimal.ZERO.setScale(2):tradeDay.turnover).toPlainString());
+                row.put("cash",null);
+                rows.add(row);
+            }
+            var entry=new LinkedHashMap<String,Object>();
+            entry.put("days",rows);entry.put("openingCash",null);entry.put("cashChange",null);
+            entry.put("periods",List.of());
+            result.put(id,entry);
+        }
+        return result;
+    }
+
+    /**
+     * 从同一快照的订单表按证券派生最近 {@value #RECENT_ORDERS} 条委托，并保留总数。
+     * 市价单 limitPrice 为 null，原样保留为空，不伪造价格；只进管理员首页投影。
+     */
+    private static Map<String,Object> marketOrders(WorldRuntime.Snapshot snapshot,List<Map<String,Object>> companies) {
+        var bySymbol=new HashMap<String,OrderRollup>();
+        for(var order:snapshot.exchange().orElseThrow().orders()) {
+            var row=new LinkedHashMap<String,Object>();
+            row.put("orderId",order.orderId());row.put("symbol",order.symbol());
+            row.put("accountId",order.accountId());row.put("side",order.side().name());
+            row.put("type",order.type().name());
+            row.put("price",order.limitPrice()==null?null:order.limitPrice().toPlainString());
+            row.put("quantity",order.quantity());row.put("filled",order.filled());
+            row.put("status",order.status().name());row.put("acceptedAtMillis",order.acceptedAtMillis());
+            var rollup=bySymbol.computeIfAbsent(order.symbol(),k->new OrderRollup());
+            rollup.total++;rollup.rows.add(row);
+            if(rollup.rows.size()>RECENT_ORDERS) rollup.rows.remove(0);
+        }
+        var result=new LinkedHashMap<String,Object>();
+        for(var company:companies) {
+            var rollup=bySymbol.get((String)company.get("symbol"));
+            var entry=new LinkedHashMap<String,Object>();
+            entry.put("total",rollup==null?0:rollup.total);
+            entry.put("rows",rollup==null?List.of():rollup.rows);
+            result.put((String)company.get("id"),entry);
+        }
+        return result;
+    }
+
+    private static final class DayTrades {
+        private long count,volume,closeMillis=-1L;
+        private BigDecimal turnover=BigDecimal.ZERO.setScale(2),close;
+        private void add(WorldExchange.Trade trade) {
+            count++;volume+=trade.quantity();turnover=turnover.add(trade.amount());
+            if(trade.timeMillis()>=closeMillis){closeMillis=trade.timeMillis();close=trade.price();}
+        }
+    }
+
+    private static final class OrderRollup {
+        private int total;
+        private final List<Map<String,Object>> rows=new ArrayList<>();
     }
 
     private static Map<String,Object> statement(Map<String,BigDecimal> assets,Map<String,BigDecimal> contra,

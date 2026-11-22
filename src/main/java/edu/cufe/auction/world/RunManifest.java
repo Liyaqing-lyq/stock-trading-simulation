@@ -53,6 +53,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 显式启用签约资金约束的思考经营运行标识。 */
     public static final String FUNDED_THINKING_RUN_ID = "web-thinking-operating-v2";
 
+    /** 判断运行是否继承客户签约资金约束、董事权限及披露资料合同。 */
+    public static boolean usesFundedOperatingRules(String runId) {
+        return FUNDED_THINKING_RUN_ID.equals(runId) || PersonalMarket.RUN_ID.equals(runId);
+    }
+
     /** 现金 + 登记 + 证券 + 撮合 + 制造 + 治理（M3b.2 新增的明确组合，model=none）。 */
     public static final String RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1 =
             "governed-stock-company-experiment-v1";
@@ -936,7 +941,14 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
-        boolean fundedThinking = FUNDED_THINKING_RUN_ID.equals(runId);
+        boolean personalMarket = PersonalMarket.RUN_ID.equals(runId);
+        if ((personalMarket || dataVersions != null && (dataVersions.containsKey(PersonalMarket.POLICY)
+                || dataVersions.containsKey("belief-company-scope") || dataVersions.containsKey("research-manager-view")))
+                && (!personalMarket || dataVersions == null || !PersonalMarket.VERSION.equals(dataVersions.get(PersonalMarket.POLICY))
+                    || !"manufacturing-orders-v1".equals(dataVersions.get("belief-company-scope"))
+                    || !"project-state-v1".equals(dataVersions.get("research-manager-view"))))
+            throw new IllegalArgumentException("个人交易工具必须绑定独立经营档与明确版本");
+        boolean fundedThinking = usesFundedOperatingRules(runId);
         if ((fundedThinking || dataVersions != null && (dataVersions.containsKey("customer-contract-policy")
                 || dataVersions.containsKey("board-tool-scope")))
                 && (!fundedThinking || dataVersions == null || !FUNDED_CONTRACT_POLICY.equals(dataVersions.get("customer-contract-policy"))
@@ -1058,6 +1070,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
+            if (personalMarket) {
+                expectedData.put(PersonalMarket.POLICY, PersonalMarket.VERSION);
+                expectedData.put("belief-company-scope", "manufacturing-orders-v1");
+                expectedData.put("research-manager-view", "project-state-v1");
+            }
             if (fundedThinking) {
                 expectedData.put("customer-contract-policy", FUNDED_CONTRACT_POLICY);
                 expectedData.put("board-tool-scope", "charter-chair-v1");

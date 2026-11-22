@@ -30,6 +30,7 @@ import edu.cufe.auction.world.ManufacturingRun;
 import edu.cufe.auction.world.MediaModel;
 import edu.cufe.auction.world.MediaRun;
 import edu.cufe.auction.world.OpeningRegistry;
+import edu.cufe.auction.world.PersonalMarket;
 import edu.cufe.auction.world.PendingTask;
 import edu.cufe.auction.world.PerformanceModel;
 import edu.cufe.auction.world.PeriodicActionPayload;
@@ -4143,6 +4144,16 @@ public final class WorldWebHost implements AutoCloseable {
                         livePersonOf(registry, appointment.personPartyId(), "media"));
             }
         }
+        if (registry != null && snapshot.roles().isPresent()
+                && PersonalMarket.VERSION.equals(runtime.profile().manifest().dataVersions().get(PersonalMarket.POLICY))) {
+            for (var registered : snapshot.roles().orElseThrow().access().personAccounts()) {
+                var account = snapshot.accounts().get(registered.accountId());
+                var owner = account == null ? null : registry.owner(account.ownerId());
+                if (owner != null && owner.kind() == OpeningRegistry.OwnerKind.PERSON
+                        && registered.personPartyId().equals(owner.partyId()))
+                    people.putIfAbsent(owner.partyId(), livePersonOf(registry, owner.partyId(), "trading"));
+            }
+        }
         // schema15：已配置联系目标与真实预约参与者（含尚未接受）走 media 技术路由；
         // 仅自然人，不授予媒体任职或媒体工具，既有 research/trading 路由优先。
         var interviews = runtime.interviews();
@@ -4181,7 +4192,7 @@ public final class WorldWebHost implements AutoCloseable {
     private void addSocialPerson(Map<String, LivePerson> people, OpeningRegistry registry,
                                  String person, String channel) {
         // 在职董事和经理已有治理路由，董事会工作信函不构成媒体任职或采访活动。
-        if (RunManifest.FUNDED_THINKING_RUN_ID.equals(runtime.profile().manifest().runId())
+        if (RunManifest.usesFundedOperatingRules(runtime.profile().manifest().runId())
                 && RoleEvidenceDocuments.CHAIR_CONTACT_CHANNEL.equals(channel)
                 && !runtime.governanceCompanies(person).isEmpty()) {
             return;

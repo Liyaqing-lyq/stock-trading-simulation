@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.function.Predicate;
 
 /** 研发经理的有限动作与方案观察；不向模型输出随机结果或未读证据。 */
 public final class ResearchDecisionTools {
@@ -37,8 +38,11 @@ public final class ResearchDecisionTools {
                 base.thinkMillisByWake(), actions, base.limits(), base.budget(), base.profile());
     }
 
-    /** @param run 研发运行 @param board 本公司董事会 @param now 世界时点 @return 方案与已批准预算；结果沿真实阅读输入 */
-    static Map<String, Object> observation(ResearchRun run, BoardRun board, long now) {
+    /** @param run 研发运行 @param board 本公司董事会 @param now 世界时点
+     * @param recalledEvidence 检查本人此时能回忆的证据，旧版投影传 null
+     * @return 方案、已批准预算及当前版本可见的项目进度 */
+    static Map<String, Object> observation(ResearchRun run, BoardRun board, long now,
+                                           Predicate<String> recalledEvidence) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("companyId", run.companyPartyId());
         view.put("actions", List.of("REGISTER", "BEGIN", "APPROVE"));
@@ -53,8 +57,41 @@ public final class ResearchDecisionTools {
             view.put("approvedBudgetCap", budget.cap().toPlainString());
             view.put("remainingBudget", BoardModel.availableBudget(board.board(), period, category).toPlainString());
         }
+        if (recalledEvidence != null) {
+            view.put("registeredProjects", new TreeMap<>(run.state().projects()).values().stream()
+                    .map(project -> projectView(project, board, recalledEvidence)).toList());
+        }
         view.put("rules", "这里只列可选方案；不代表已立项或已通过。立项需真实预算，阶段支出和工时必须实际发生。"
                 + "阶段结果证据必须通过资料工具阅读，不能猜测成功。商业化必须引用本公司真实决议；批准不产生销售收入。未用字段留空，可观望。");
         return view;
+    }
+
+    private static Map<String, Object> projectView(ResearchModel.Project project, BoardRun board,
+                                                  Predicate<String> recalledEvidence) {
+        Map<String, Object> row = new TreeMap<>();
+        row.put("projectId", project.projectId());
+        row.put("registeredAt", project.registeredAt());
+        row.put("committedBudget", project.budget().toPlainString());
+        row.put("remainingCommitment", BoardModel.outstandingCommitment(board.board(),
+                ResearchRuntime.commitmentId(project.projectId())).toPlainString());
+        row.put("paid", project.paid().toPlainString());
+        var stage = project.stages().get(0);
+        for (var record : project.stages()) {
+            if (record.paid()) stage = record;
+        }
+        row.put("currentStage", stage.stage().name());
+        if (stage.paid()) row.put("beganAt", stage.beganAt());
+        if (stage.status() == ResearchModel.StageStatus.IN_PROGRESS) row.put("nextResultAt", stage.completesAt());
+        var evidence = stage.evidence();
+        if (evidence != null && !recalledEvidence.test(evidence.reference())) {
+            row.put("stageStatus", "RESULT_RECORDED");
+        } else {
+            row.put("stageStatus", stage.status().name());
+            if (evidence != null) row.put("evidenceDocId", evidence.reference());
+            if (stage.status() == ResearchModel.StageStatus.COMPLETED && project.nextStage() != null)
+                row.put("nextStage", project.nextStage().name());
+        }
+        if (project.approvedAt() >= 0) row.put("approvedAt", project.approvedAt());
+        return row;
     }
 }

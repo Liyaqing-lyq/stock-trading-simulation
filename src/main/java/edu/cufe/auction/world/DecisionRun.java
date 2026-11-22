@@ -847,6 +847,14 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         if (TOOL_CONTRACT_VERSION_V6.equals(version)) {
             // 只声明模型可选的业务对象；actor/seat 由运行层按本人真实任职派生，不能自授
             switch (tool) {
+                case PersonalMarket.SUBMIT -> {
+                    return List.of(new String[]{"accountId", "string"}, new String[]{"symbol", "string"},
+                            new String[]{"side", "BUY|SELL"}, new String[]{"limitPrice", "decimal"},
+                            new String[]{"quantity", "long"});
+                }
+                case PersonalMarket.CANCEL -> {
+                    return List.of(new String[]{"accountId", "string"}, new String[]{"orderRef", "string"});
+                }
                 case RoleTradingView.TOOL_GROUP_JOIN -> {
                     return List.<String[]>of(new String[]{"groupId", "string"});
                 }

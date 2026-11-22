@@ -315,7 +315,7 @@ public final class ComposedWorldScenario {
         }
         // 只在冻结的核验客户资金的思考经营新档登记主席工作联系入口：入口与角色依据正文同源于真实章程，
         // 未真实读完不可用；旧档不获得新渠道。
-        if (RunManifest.FUNDED_THINKING_RUN_ID.equals(manifest.runId())) {
+        if (RunManifest.usesFundedOperatingRules(manifest.runId())) {
             contacts.addAll(RoleEvidenceDocuments.fundedChairContacts(engineering, governed,
                     registry));
             // 与 SocialRun 的冻结顺序一致：冻结字段逐字相等才允许开局与重开。

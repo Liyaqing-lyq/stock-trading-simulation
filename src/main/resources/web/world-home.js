@@ -5,7 +5,7 @@ window.WorldHome = (() => {
   const $ = id => document.getElementById(id);
   const element = (tag, value, className) => { const n=document.createElement(tag); if(value!=null)n.textContent=String(value); if(className)n.className=className; return n; };
   const money = value => value == null ? "暂无成交" : Number(value).toLocaleString("zh-CN", {minimumFractionDigits:2,maximumFractionDigits:2});
-  const detail = () => view?.liveDetails?.[selected] || view?.experiment?.details?.[selected];
+  const detail = () => view?.connected?.enabled ? view?.liveDetails?.[selected] : (view?.experiment?.details?.[selected] || view?.liveDetails?.[selected]);
   const company = () => view?.companies.find(c=>c.id===selected);
   const personName = id => view?.names?.[id] || id || "世界";
   const companyName = id => view?.companies.find(c=>c.id===id)?.name || id || "市场";
@@ -198,16 +198,19 @@ window.WorldHome = (() => {
       card.append(summary,element("p",item.body,"world-news-body"));box.append(card);}
   }
   function renderMarket() {
-    const c=company(),d=detail();$("world-market-name").textContent=c.name;$("world-market-business").textContent=c.business;
+    const c=company(),d=view.marketOrders ? view.liveDetails?.[selected] : detail();
+    $("world-market-name").textContent=c.name;$("world-market-business").textContent=c.business;
     const change=c.lastPrice==null?null:(Number(c.lastPrice)/Number(c.referencePrice)-1)*100;
     $("world-quote").replaceChildren(metric("最近成交价",money(c.lastPrice),"开局参考价 "+money(c.referencePrice)),metric("相对开局参考",change==null?"—":(change>=0?"+":"")+change.toFixed(2)+"%","不代表实际投资收益"),metric("累计成交量",c.volume+" 股",c.trades+" 笔成交"));
     chart("world-price-chart",d?.days||[],"lastPrice",true);
-    $("world-price-note").textContent=d?"当前世界实际记录。圆点是有实际成交的日子；虚线延续上次成交价，不代表当日成交。第一笔成交前不画价格。":"当前运行尚无行情记录；不会使用其他世界的季度数据补图。";
+    $("world-price-note").textContent=d?((d.days||[]).some(r=>r.trades>0)?"当前世界实际记录。圆点是有实际成交的日子；虚线延续上次成交价，不代表当日成交。第一笔成交前不画价格。":"当前世界尚无实际成交；参考价不是收盘价，不生成价格曲线。"):"当前运行尚无行情记录；不会使用其他世界的季度数据补图。";
     table("world-trade-days",["实验日","收盘成交价","成交笔数","成交量","成交额"],(d?.days||[]).filter(r=>r.trades>0).map(r=>["第"+r.day+"日",money(r.close),r.trades,r.volume+" 股",money(r.turnover)]));
-    $("world-orders-panel").hidden=!view.connected?.enabled;
-    const orders=(view.connected?.orders||[]).filter(o=>o.symbol===c.symbol);
-    table("world-orders",["账户","方向","限价","委托数量","已成交","状态"],orders.slice(-40).reverse().map(o=>[personName(o.accountId),o.side==="BUY"?"买入":o.side==="SELL"?"卖出":o.side,o.price==null?"市价":money(o.price),o.quantity+" 股",o.filled+" 股",statusName(o.status)]));
-    $("world-orders-note").textContent=orders.length?"此股票 "+orders.length+" 条委托记录，显示最近40条。":"这只股票尚无委托。可在世界动态中查看人物的判断与等待原因。";
+    const market=view.marketOrders?.[selected],orders=market?.rows||(view.connected?.orders||[]).filter(o=>o.symbol===c.symbol),total=market?.total??orders.length;
+    $("world-orders-panel").hidden=!orders.length&&!view.connected?.enabled;
+    table("world-orders",["账户","方向","价格","委托数量","已成交","状态"],orders.slice(-40).reverse().map(o=>[personName(o.accountId),
+      o.side==="BUY"?"买入":o.side==="SELL"?"卖出":o.side||"—",
+      o.type==="MARKET"||o.price==null?"市价":money(o.price),o.quantity+" 股",o.filled+" 股",statusName(o.status)]));
+    $("world-orders-note").textContent=orders.length?"此股票共 "+total+" 条委托记录，显示最近 "+Math.min(total,40)+" 条。":"这只股票尚无委托。可在世界动态中查看人物的判断与等待原因。";
   }
   function section(title,values,period=false) {
     const box=element("section",null,"world-statement-section");box.append(element("h3",title));
@@ -233,7 +236,7 @@ window.WorldHome = (() => {
     if(Object.keys(report.contra||{}).length)$("world-balance").append(section("减：资产减值准备",report.contra));
     $("world-balance").append(section("负债",report.liabilities),section("所有者权益",report.equity));
     $("world-income").append(section("收入",item?report.incomePeriod:report.income,!!item),section("费用",item?report.expensePeriod:report.expense,!!item),section(item?"本期结果":"累计结果",{"利润":profit}));
-    $("world-cash-summary").textContent=d?"开局现金 / 准备金 "+money(d.openingCash)+" → 当前 "+money(c.cash)+"，净变动 "+money(d.cashChange)+"。图中为实际记录的现金观察点；现金变化不等于利润。":"当前现金 / 准备金 "+money(c.cash);
+    $("world-cash-summary").textContent=d?(d.openingCash!=null?"开局现金 / 准备金 "+money(d.openingCash)+" → 当前 "+money(c.cash)+"，净变动 "+money(d.cashChange)+"。图中为实际记录的现金观察点；现金变化不等于利润。":"当前现金 / 准备金 "+money(c.cash)+"；本档尚无按日现金观察记录，不补零。"):"当前现金 / 准备金 "+money(c.cash);
     chart("world-cash-chart",d?.days||[],"cash",false);
     $("world-boundaries").replaceChildren(element("p",c.boundary));(c.notes||[]).forEach(n=>$("world-boundaries").append(element("p",n)));
   }

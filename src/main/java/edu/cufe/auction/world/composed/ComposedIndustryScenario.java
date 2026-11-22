@@ -249,6 +249,17 @@ public final class ComposedIndustryScenario {
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, RunManifest.FUNDED_THINKING_RUN_ID);
     }
 
+    /**
+     * 打开继承制造资金约束并允许本人限价交易的独立经营档。
+     * @param journal 新版运行日志
+     * @return 严格恢复或新建的世界
+     * @throws Exception 档案与冻结规则不符或开局失败
+     */
+    public static WorldRuntime openPersonalMarketOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, PersonalMarket.RUN_ID);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating) throws Exception {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous,
                 eventDriven, roleContext, operating, compact, informedOperating, null);
@@ -323,8 +334,13 @@ public final class ComposedIndustryScenario {
             decisions=edu.cufe.auction.world.RoleDeliberation.lifecycleBudget(decisions);
         if (thinking) {
             var limits = decisions.limits();
+            var timings = new TreeMap<>(decisions.actionMillisByTool());
+            if (PersonalMarket.RUN_ID.equals(thinkingRunId)) {
+                timings.put(PersonalMarket.SUBMIT, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
+                timings.put(PersonalMarket.CANCEL, timings.get(RoleTradingView.TOOL_CHILD_CANCEL));
+            }
             decisions = new DecisionModel.Config(decisions.providerKind(), decisions.providerId(), decisions.pricingVersion(),
-                    decisions.thinkMillisByWake(), decisions.actionMillisByTool(),
+                    decisions.thinkMillisByWake(), timings,
                     new DecisionModel.Limits(limits.maxAttemptsPerDecision(), limits.maxInputChars(), limits.maxReplyChars(),
                             limits.perCallInputTokens(), limits.perCallOutputTokens(), limits.queueCapacity(), limits.maxInFlight(), 60_000L),
                     decisions.budget(), decisions.profile());
@@ -401,7 +417,12 @@ public final class ComposedIndustryScenario {
         }
         if (thinking) {
             var data = new TreeMap<>(runManifest.dataVersions()); data.put("provider-policy", "deepseek-thinking-high-v1");
-            if (RunManifest.FUNDED_THINKING_RUN_ID.equals(thinkingRunId)) {
+            if (PersonalMarket.RUN_ID.equals(thinkingRunId)) {
+                data.put(PersonalMarket.POLICY, PersonalMarket.VERSION);
+                data.put("belief-company-scope", "manufacturing-orders-v1");
+                data.put("research-manager-view", "project-state-v1");
+            }
+            if (RunManifest.usesFundedOperatingRules(thinkingRunId)) {
                 data.put("customer-contract-policy", RunManifest.FUNDED_CONTRACT_POLICY);
                 data.put("board-tool-scope", "charter-chair-v1");
             }

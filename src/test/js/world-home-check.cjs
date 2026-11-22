@@ -77,6 +77,55 @@ assert(!content(nodes.get('world-activities')).includes('其他公司委托'));
 findButton(nodes.get('world-activities'),'查看研究引用原文')[0].handlers.click();
 assert.equal(nodes.get('world-news').children[0].open,true);
 nodes.get('world-feed-company').value='';context.window.WorldHome.render(connectedView);
+// Autonomous world: the same snapshot exchange must feed the market page without connected rules.
+const autonomousDays=[
+  {day:1,cash:null,lastPrice:null,close:null,trades:0,volume:0,turnover:'0.00'},
+  {day:2,cash:null,lastPrice:'9.50',close:'9.50',trades:1,volume:5,turnover:'47.50'},
+  {day:3,cash:null,lastPrice:'9.50',close:null,trades:0,volume:0,turnover:'0.00'}];
+const manyOrders=[];
+for(let i=1;i<=45;i++)manyOrders.push({orderId:i,symbol:'ONE',side:i%2?'SELL':'BUY',
+  type:i===45?'MARKET':'LIMIT',price:i===45?null:'9.50',quantity:i===45?5:1,
+  filled:i===44?0:1,status:i===45?'ACTIVE':i===44?'CANCELLED':'FILLED',accountId:'acc-one'});
+const autonomousView={available:true,runId:'autonomy-market',timeMillis:'172800000',
+  companies:[{...company,symbol:'ONE',lastPrice:'9.50',trades:1,volume:5}],people:[],
+  names:{'acc-one':'机构投资账户'},
+  liveDetails:{one:{openingCash:null,cashChange:null,days:autonomousDays,periods:[]}},
+  marketOrders:{one:{total:45,rows:manyOrders.slice(-40)}}};
+context.window.WorldHome.render(autonomousView);
+assert.equal(nodes.get('world-orders-panel').hidden,false,'orders are visible without connected rules');
+const autonomousRows=nodes.get('world-orders').children[1].children;
+assert.equal(autonomousRows.length,40,'only the most recent 40 orders are shown');
+assert.equal(autonomousRows[0].children[0].textContent,'机构投资账户','account is shown for each order');
+assert.equal(autonomousRows[0].children[2].textContent,'市价','market orders show 市价 without inventing a price');
+assert(nodes.get('world-orders-note').textContent.includes('45'),'total order count is visible');
+assert(nodes.get('world-orders-note').textContent.includes('40'));
+assert(content(nodes.get('world-orders')).includes('已撤销'),'cancelled orders remain visible');
+assert(content(nodes.get('world-trade-days')).includes('47.50'),'turnover shows the real 5 × 9.50');
+assert(content(nodes.get('world-trade-days')).includes('5 股'),'volume shows the real filled quantity');
+assert.equal(nodes.get('world-trade-days').children[1].children.length,1,'blank days are not listed as trade days');
+assert.equal(nodes.get('world-price-chart').children[0].children.filter(n=>n.tag==='circle').length,1,'blank days do not get price dots');
+assert(nodes.get('world-price-note').textContent.includes('虚线'),'carried price is explained');
+assert(!nodes.get('world-price-note').textContent.includes('季度'));
+assert(nodes.get('world-cash-summary').textContent.includes('当前现金'),'unknown opening cash is not zero-filled');
+assert(!nodes.get('world-cash-summary').textContent.includes('开局现金'));
+// An older attachment can supply historical cash observations while the live exchange owns current trades.
+context.window.WorldHome.render({...autonomousView,experiment:{days:[],details:{
+  one:{openingCash:'10.00',cashChange:'0.00',days:[],periods:[]}}}});
+assert(content(nodes.get('world-trade-days')).includes('47.50'));
+assert(nodes.get('world-cash-summary').textContent.includes('10.00'));
+// No trades but a real open order: the order table must stay visible and the chart must stay empty.
+const noTradeView={...autonomousView,runId:'autonomy-open-orders',
+  companies:[{...company,symbol:'ONE',lastPrice:null,trades:0,volume:0}],
+  liveDetails:{one:{openingCash:null,cashChange:null,periods:[],
+    days:[{day:1,cash:null,lastPrice:null,close:null,trades:0,volume:0,turnover:'0.00'}]}},
+  marketOrders:{one:{total:1,rows:[{orderId:1,symbol:'ONE',side:'BUY',type:'LIMIT',price:'9.50',
+    quantity:5,filled:0,status:'ACTIVE',accountId:'acc-one'}]}}};
+context.window.WorldHome.render(noTradeView);
+assert.equal(nodes.get('world-orders-panel').hidden,false,'open orders keep the table visible even with no trades');
+assert.equal(nodes.get('world-price-chart').children[0].tag,'p','no trades means an empty price chart');
+assert(content(nodes.get('world-price-chart')).includes('尚无实际成交'));
+assert.equal(nodes.get('world-trade-days').children[1].children.length,0);
+assert(content(nodes.get('world-quote')).includes('暂无成交'));
 const home=context.window.WorldHome;
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{

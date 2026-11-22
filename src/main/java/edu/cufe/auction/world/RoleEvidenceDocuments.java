@@ -139,7 +139,7 @@ public final class RoleEvidenceDocuments {
         body.put("companyPartyId", company);
         body.put("asOfMillis", 0L);
         body.put("units", "金额为实验记账元（BigDecimal两位小数）；制造数量为件、物料为BOM单位；1期30实验日，1日86400000毫秒。");
-        if (RunManifest.FUNDED_THINKING_RUN_ID.equals(world.profile().manifest().runId())) {
+        if (RunManifest.usesFundedOperatingRules(world.profile().manifest().runId())) {
             // 登记表中的入口与这段正文由同一份真实章程计算，避免两处各写一套联系人。
             InterviewRun.ContactEntry binding = chairContact(company, board.board().charter());
             var contact = body.putObject("charterChairContact");

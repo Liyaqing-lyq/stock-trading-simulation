@@ -65,6 +65,26 @@ class WorldWebAppRouteDefaultsTest {
         }
     }
 
+    @Test void personalMarketModeKeepsExistingFundedArchiveAndRoutesAndOpensItsOwnJournal() throws Exception {
+        Path work=Files.createDirectory(root.resolve("personal-market"));
+        initialize(work,"world-thinking-informed-operating");
+        Path funded=work.resolve("world-thinking-informed-operating-v2.journal"), config=work.resolve(SceneRoutes.FILE_NAME);
+        byte[] fundedBytes=Files.readAllBytes(funded), routes=Files.readAllBytes(config);
+        initialize(work,"world-personal-market-operating");
+        assertArrayEquals(fundedBytes,Files.readAllBytes(funded));
+        assertArrayEquals(routes,Files.readAllBytes(config));
+        try(var world=AutonomousLifecycleProbe.openWorld("PERSONAL_MARKET_OPERATING",work.resolve("world-personal-market-operating-v1.journal"))) {
+            assertEquals(edu.cufe.auction.world.PersonalMarket.RUN_ID,world.profile().manifest().runId());
+        }
+        Path fresh=Files.createDirectory(root.resolve("personal-fresh"));
+        initialize(fresh,"world-personal-market-operating");
+        assertFalse(Files.exists(fresh.resolve("world-thinking-informed-operating-v2.journal")));
+        try(var sceneRoutes=SceneRoutes.open(fresh)) {
+            assertTrue(sceneRoutes.view().routes().stream().allMatch(r->!r.enabled()
+                    && "deepseek-thinking-high-v1".equals(r.providerPolicy()) && r.maxOutputTokens()==8192));
+        }
+    }
+
     @Test void thinkingEntryHasSeparateJournalExplicitPolicyAndSixtySecondLimit() throws Exception {
         Path work=Files.createDirectory(root.resolve("thinking-manifest"));initialize(work,"world-thinking-informed-operating");
         Path journal=work.resolve("world-thinking-informed-operating-v2.journal");assertTrue(Files.isRegularFile(journal));
