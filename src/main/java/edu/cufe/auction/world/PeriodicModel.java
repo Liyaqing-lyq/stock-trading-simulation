@@ -959,6 +959,16 @@ public final class PeriodicModel {
             missed = List.copyOf(missedList);
         }
 
+        /**
+         * 按本档披露证据的编号口径列出发布记录。新档按实际发布时刻，旧档保留原编号。
+         * @param chronological 是否按实际公开时刻编号
+         * @return 已发布记录
+         */
+        public List<Release> releasesForEvidence(boolean chronological) {
+            return chronological ? releases.stream().sorted(Comparator.comparingLong(Release::publishedAt)).toList()
+                    : releases;
+        }
+
         CompanyPeriods withSnapshots(List<Snapshot> next) {
             return new CompanyPeriods(companyPartyId, policy, next, ballots, scores, drafts,
                     approvals, authorizations, releases, missed);

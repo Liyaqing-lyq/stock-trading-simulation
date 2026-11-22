@@ -137,7 +137,7 @@ final class PeriodicWorldEngine {
                            Map<String, CashLedger.CashAccount> accounts,
                            long manufacturingClosedPeriods, PeriodicCapturePayload payload,
                            String statementBody, String basisBody, List<String> baseRefs,
-                           long now, long position) {
+                           long now, long position, boolean issuerReports) {
         String company = payload.companyPartyId();
         Optional<PeriodicModel.CompanyPeriods> found = run.periodicOf(company);
         if (found.isEmpty()) {
@@ -191,7 +191,7 @@ final class PeriodicWorldEngine {
         String materialSource = materialSourceRef(company, payload.period());
         Set<String> refs = new TreeSet<>(baseRefs);
         refs.add(materialSource);
-        refs.addAll(disclosureRefs(periods, company, payload.period(), capturedAt));
+        refs.addAll(disclosureRefs(periods, company, payload.period(), capturedAt, issuerReports));
         PeriodicModel.Snapshot snapshot = new PeriodicModel.Snapshot(company, payload.period(),
                 meetingId, capturedAt, position, sha256(basisBody), sha256(statementBody),
                 materialDocId(company, payload.period()), 1L, materialSource, List.copyOf(refs));
@@ -279,20 +279,20 @@ final class PeriodicWorldEngine {
     static Applied action(EngineeringRun run, BoardRun governance, RoleRun roles,
                           InformationRun information, CognitionRecall.Policy recall,
                           PeriodicActionPayload payload, String statementBody, long now,
-                          long position) {
+                          long position, boolean issuerReports) {
         return switch (payload.action()) {
             case "ATTEND" -> attend(run, governance, roles, information, recall, payload, now,
                     position);
             case "PREPARE" -> prepare(run, governance, roles, information, recall, payload,
-                    statementBody, now, position);
+                    statementBody, now, position, issuerReports);
             case "SCORE" -> score(run, governance, roles, information, recall, payload, now,
-                    position);
+                    position, issuerReports);
             case "APPROVE" -> approve(run, governance, roles, information, recall, payload, now,
                     position);
             case "AUTHORIZE" -> authorize(run, governance, roles, information, recall, payload,
                     now, position);
             case "PUBLISH" -> publish(run, governance, roles, information, recall, payload, now,
-                    position);
+                    position, issuerReports);
             default -> Applied.rejected(run, governance, information, "UNKNOWN_ACTION");
         };
     }
@@ -337,7 +337,7 @@ final class PeriodicWorldEngine {
     private static Applied prepare(EngineeringRun run, BoardRun governance, RoleRun roles,
                                    InformationRun information, CognitionRecall.Policy recall,
                                    PeriodicActionPayload payload, String statementBody, long now,
-                                   long position) {
+                                   long position, boolean issuerReports) {
         String company = payload.companyPartyId();
         Optional<PeriodicModel.CompanyPeriods> found = run.periodicOf(company);
         if (found.isEmpty()) {
@@ -374,12 +374,16 @@ final class PeriodicWorldEngine {
         String docId = draftDocId(company, payload.period(), index);
         String body = payload.note().isBlank() ? statementBody
                 : statementBody + "\n更正说明：" + payload.note();
+        if (issuerReports && matchesLatestRelease(periods, payload.period(), sha256(body))) {
+            return Applied.rejected(run, governance, information, PeriodicModel.REASON_DRAFT_UNCHANGED);
+        }
         String title = "周期材料 " + company + " 第" + payload.period() + "期";
         InformationModel.State info = information.information();
         if (InformationModel.version(info, docId, 1L).isPresent()) {
             return Applied.rejected(run, governance, information, REASON_MATERIAL_EXISTS);
         }
-        InformationModel.VersionDraft version = new InformationModel.VersionDraft(title, body, "",
+        InformationModel.VersionDraft version = new InformationModel.VersionDraft(title, body,
+                issuerReports ? reportSource(payload) : "",
                 now, MATERIAL_READ_MILLIS, List.of(snapshot.materialSourceRef()));
         InformationModel.State published = InformationModel.publish(info, docId,
                 payload.personPartyId(), InformationModel.Audience.board(company), version);
@@ -415,7 +419,7 @@ final class PeriodicWorldEngine {
 
     private static Applied score(EngineeringRun run, BoardRun governance, RoleRun roles,
                                  InformationRun information, CognitionRecall.Policy recall,
-                                 PeriodicActionPayload payload, long now, long position) {
+                                 PeriodicActionPayload payload, long now, long position, boolean issuerReports) {
         String company = payload.companyPartyId();
         Optional<PeriodicModel.CompanyPeriods> found = run.periodicOf(company);
         if (found.isEmpty() || information == null) {
@@ -448,7 +452,7 @@ final class PeriodicWorldEngine {
                 return Applied.rejected(run, governance, information, "UNKNOWN_DIMENSION");
             }
             String problem = dimensionProblem(dimension, metric.sourceRef(), metric.asOf(),
-                    snapshot, periods);
+                    snapshot, periods, issuerReports);
             if (problem != null) {
                 return Applied.rejected(run, governance, information, problem);
             }
@@ -476,7 +480,7 @@ final class PeriodicWorldEngine {
      */
     static String dimensionProblem(BoardModel.Dimension dimension, String ref, long asOf,
                                            PeriodicModel.Snapshot snapshot,
-                                           PeriodicModel.CompanyPeriods periods) {
+                                           PeriodicModel.CompanyPeriods periods, boolean issuerReports) {
         if (!snapshot.evidenceRefs().contains(ref) || ref.startsWith("periodic-source:")) {
             return REASON_EVIDENCE_NOT_ELIGIBLE;
         }
@@ -487,7 +491,7 @@ final class PeriodicWorldEngine {
                     : REASON_EVIDENCE_NOT_ELIGIBLE;
             case RISK -> ref.startsWith("contract:") || ref.startsWith("invoice:") ? null
                     : REASON_EVIDENCE_NOT_ELIGIBLE;
-            case DISCLOSURE -> disclosureMatches(ref, asOf, periods, snapshot.companyPartyId())
+            case DISCLOSURE -> disclosureMatches(ref, asOf, periods, snapshot.companyPartyId(), issuerReports)
                     ? null : REASON_EVIDENCE_NOT_ELIGIBLE;
             case LONG_TERM_INVESTMENT -> ref.startsWith("longterm:")
                     ? null : REASON_DIMENSION_NOT_AVAILABLE;
@@ -497,7 +501,7 @@ final class PeriodicWorldEngine {
     /** 披露维只认截止前真实的发布/错过事实，且时点必须逐字一致。 */
     private static boolean disclosureMatches(String ref, long asOf,
                                              PeriodicModel.CompanyPeriods periods,
-                                             String company) {
+                                             String company, boolean issuerReports) {
         String prefix = "disclosure:" + company + ":";
         if (!ref.startsWith(prefix)) {
             return false;
@@ -525,7 +529,7 @@ final class PeriodicWorldEngine {
             long period = Long.parseLong(rest.substring(0, releaseIndex));
             long version = Long.parseLong(rest.substring(releaseIndex + ":release:".length()));
             long order = 1L;
-            for (PeriodicModel.Release release : periods.releases()) {
+            for (PeriodicModel.Release release : periods.releasesForEvidence(issuerReports)) {
                 if (release.period() != period) {
                     continue;
                 }
@@ -623,7 +627,7 @@ final class PeriodicWorldEngine {
 
     private static Applied publish(EngineeringRun run, BoardRun governance, RoleRun roles,
                                    InformationRun information, CognitionRecall.Policy recall,
-                                   PeriodicActionPayload payload, long now, long position) {
+                                   PeriodicActionPayload payload, long now, long position, boolean issuerReports) {
         String company = payload.companyPartyId();
         Optional<PeriodicModel.CompanyPeriods> found = run.periodicOf(company);
         if (found.isEmpty() || information == null) {
@@ -664,6 +668,9 @@ final class PeriodicWorldEngine {
         if (!published.accepted()) {
             return Applied.rejected(run, governance, information, published.reason());
         }
+        if (issuerReports && matchesLatestRelease(periods, payload.period(), draft.bodyDigest())) {
+            return Applied.rejected(run, governance, information, PeriodicModel.REASON_DRAFT_UNCHANGED);
+        }
         long publicVersion = 1L;
         for (PeriodicModel.Release existing : periods.releases()) {
             if (existing.period() == payload.period()) {
@@ -674,8 +681,11 @@ final class PeriodicWorldEngine {
         InformationModel.State info = information.information();
         InformationModel.VersionDraft version = new InformationModel.VersionDraft(
                 "周期财报 " + company + " 第" + payload.period() + "期 v" + publicVersion,
-                material.get().body(), "", now, MATERIAL_READ_MILLIS,
+                material.get().body(), issuerReports ? reportSource(payload) : "", now, MATERIAL_READ_MILLIS,
                 List.of(draft.docId() + "@" + draft.version()));
+        if (issuerReports && !canAppendPublicVersion(info, publicDocId, publicVersion)) {
+            return Applied.rejected(run, governance, information, "PUBLIC_VERSION_MISMATCH");
+        }
         InformationModel.State nextInfo;
         try {
             nextInfo = InformationModel.version(info, publicDocId, 1L).isPresent()
@@ -801,21 +811,13 @@ final class PeriodicWorldEngine {
 
     /** 披露维唯一合格引用：截止前真实的发布版本或错过事实。 */
     private static List<String> disclosureRefs(PeriodicModel.CompanyPeriods periods,
-                                               String company, long period, long capturedAt) {
+                                               String company, long period, long capturedAt, boolean issuerReports) {
         Set<String> refs = new TreeSet<>();
-        for (PeriodicModel.Release release : periods.releases()) {
-            if (release.period() >= period || release.publishedAt() > capturedAt) {
-                continue;
-            }
-            long order = 1L;
-            for (PeriodicModel.Release each : periods.releases()) {
-                if (each.period() == release.period()) {
-                    if (each.equals(release)) {
-                        refs.add("disclosure:" + company + ":" + release.period() + ":release:"
-                                + order);
-                    }
-                    order++;
-                }
+        Map<Long, Integer> counts = new java.util.HashMap<>();
+        for (PeriodicModel.Release release : periods.releasesForEvidence(issuerReports)) {
+            int order = counts.merge(release.period(), 1, Integer::sum);
+            if (release.period() < period && release.publishedAt() <= capturedAt) {
+                refs.add("disclosure:" + company + ":" + release.period() + ":release:" + order);
             }
         }
         for (PeriodicModel.Missed marker : periods.missed()) {
@@ -836,6 +838,24 @@ final class PeriodicWorldEngine {
 
     static String materialSourceRef(String company, long period) {
         return "periodic-source:" + company + ":" + period;
+    }
+
+    /** 各版注明实际公司及本次编制或签发人。 */
+    static String reportSource(PeriodicActionPayload action) {
+        String role = "PREPARE".equals(action.action()) ? "编制人" : "签发人";
+        return "发行人 " + action.companyPartyId() + " 第" + action.period() + "期，"
+                + role + " " + action.personPartyId();
+    }
+
+    static boolean matchesLatestRelease(PeriodicModel.CompanyPeriods periods, long period, String digest) {
+        return periods.releases().stream().filter(release -> release.period() == period)
+                .max(Comparator.comparingLong(PeriodicModel.Release::publishedAt))
+                .map(release -> release.bodyDigest().equals(digest)).orElse(false);
+    }
+
+    static boolean canAppendPublicVersion(InformationModel.State info, String doc, long version) {
+        return InformationModel.version(info, doc, version).isEmpty()
+                && (version == 1 || InformationModel.version(info, doc, version - 1).isPresent());
     }
 
     static String publicDocId(String company, long period) {

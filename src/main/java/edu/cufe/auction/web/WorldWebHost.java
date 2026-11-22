@@ -7203,7 +7203,7 @@ public final class WorldWebHost implements AutoCloseable {
             }
 
             Map<String, Long> asOfByRef = periodicEvidenceAsOf(periods, companyPartyId, period,
-                    snapshotRow.capturedAt());
+                    snapshotRow.capturedAt(), current.usesIssuerReportVersions());
             List<Map<String, Object>> evidence = new ArrayList<>();
             for (Map<String, Object> entry : evidenceByPeriod.getOrDefault(period, List.of())) {
                 Object refValue = entry.get("ref");
@@ -7493,7 +7493,7 @@ public final class WorldWebHost implements AutoCloseable {
             PeriodicModel.Release latestRelease = null;
             Long latestPublicVersion = null;
             String releaseDocId = publicDocByPeriod.get(period);
-            for (PeriodicModel.Release release : periods.releases()) {
+            for (PeriodicModel.Release release : periods.releasesForEvidence(true)) {
                 if (release.period() != period) {
                     continue;
                 }
@@ -7537,8 +7537,10 @@ public final class WorldWebHost implements AutoCloseable {
                     releaseView.put("requiresReading", !recallable);
                 }
                 releaseRows.add(releaseView);
-                latestRelease = release;
-                latestPublicVersion = publicVersion;
+                if (publicVersion != null) {
+                    latestRelease = release;
+                    latestPublicVersion = publicVersion;
+                }
             }
             row.put("releases", releaseRows);
             Map<String, Object> publication = new LinkedHashMap<>();
@@ -7694,10 +7696,10 @@ public final class WorldWebHost implements AutoCloseable {
      * 调用方不得猜历史。
      */
     private static Map<String, Long> periodicEvidenceAsOf(PeriodicModel.CompanyPeriods periods,
-            String companyPartyId, long period, long capturedAt) {
+            String companyPartyId, long period, long capturedAt, boolean issuerReports) {
         Map<String, Long> times = new LinkedHashMap<>();
         Map<Long, Integer> order = new LinkedHashMap<>();
-        for (PeriodicModel.Release release : periods.releases()) {
+        for (PeriodicModel.Release release : periods.releasesForEvidence(issuerReports)) {
             int index = order.merge(release.period(), 1, Integer::sum);
             if (release.period() < period && release.publishedAt() <= capturedAt) {
                 times.put("disclosure:" + companyPartyId + ":" + release.period()
@@ -8407,7 +8409,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (periods == null || capturedAt < 0) {
                 throw new IllegalArgumentException("没有该期采样，不能提交评分：第 " + period + " 期");
             }
-            Map<String, Long> asOfByRef = periodicEvidenceAsOf(periods, company, period, capturedAt);
+            Map<String, Long> asOfByRef = periodicEvidenceAsOf(periods, company, period, capturedAt, current.usesIssuerReportVersions());
             for (PeriodicMetricInput input : command.metrics()) {
                 String dimension = input.dimension() == null ? "" : input.dimension();
                 try {
