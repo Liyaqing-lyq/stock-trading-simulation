@@ -5993,8 +5993,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         List<String> tools = new ArrayList<>();
         if (director) {
-            tools.addAll(List.of(RoleTradingView.TOOL_BOARD_CONVENE,
-                    RoleTradingView.TOOL_BOARD_ATTEND, RoleTradingView.TOOL_BOARD_MATERIAL,
+            addConveneIfEligible(tools, spec.charter(), personPartyId);
+            tools.addAll(List.of(RoleTradingView.TOOL_BOARD_ATTEND, RoleTradingView.TOOL_BOARD_MATERIAL,
                     RoleTradingView.TOOL_BOARD_VOTE, RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET,
                     RoleTradingView.TOOL_BOARD_PROPOSE_APPOINTMENT,
                     RoleTradingView.TOOL_BOARD_PROPOSE_WAIVER,
@@ -6025,6 +6025,14 @@ public final class WorldRuntime implements AutoCloseable {
         return Optional.of(new CompanyRoleView(personPartyId, companyPartyId, manager,
                 List.copyOf(tools), report.companyCash(), report.arCurrent(), report.payable(),
                 List.copyOf(state.contracts().keySet())));
+    }
+
+    /** 新经营档按本人在这家公司的章程席位提供召集工具。 */
+    private void addConveneIfEligible(List<String> tools, BoardModel.Charter charter, String person) {
+        if (!"charter-chair-v1".equals(manifest.dataVersions().get("board-tool-scope"))
+                || charter.chairSeatId().equals(charter.seatOf(person))) {
+            tools.add(RoleTradingView.TOOL_BOARD_CONVENE);
+        }
     }
 
     /** 角色可见公司视图。 */
@@ -28419,8 +28427,8 @@ public final class WorldRuntime implements AutoCloseable {
             for (String company : snap.engineering().companyIds()) {
                 EngineeringRun.CompanySpec spec = engineeringConfig.specOf(company);
                 if (spec != null && spec.charter().seatOf(person) != null) {
-                    tools.addAll(List.of(RoleTradingView.TOOL_BOARD_CONVENE,
-                            RoleTradingView.TOOL_BOARD_ATTEND,
+                    addConveneIfEligible(tools, spec.charter(), person);
+                    tools.addAll(List.of(RoleTradingView.TOOL_BOARD_ATTEND,
                             RoleTradingView.TOOL_BOARD_MATERIAL,
                             RoleTradingView.TOOL_BOARD_VOTE,
                             RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET,
@@ -28470,8 +28478,8 @@ public final class WorldRuntime implements AutoCloseable {
             for (String company : snap.companyGovernance().companies()) {
                 BoardModel.Charter own = snap.companyGovernance().boardOf(company).board().charter();
                 if (own.seatOf(person) != null) {
-                    tools.addAll(List.of(RoleTradingView.TOOL_BOARD_CONVENE,
-                            RoleTradingView.TOOL_BOARD_ATTEND, RoleTradingView.TOOL_BOARD_MATERIAL,
+                    addConveneIfEligible(tools, own, person);
+                    tools.addAll(List.of(RoleTradingView.TOOL_BOARD_ATTEND, RoleTradingView.TOOL_BOARD_MATERIAL,
                             RoleTradingView.TOOL_BOARD_VOTE, RoleTradingView.TOOL_BOARD_PROPOSE_APPOINTMENT,
                             RoleTradingView.TOOL_BOARD_IMPLEMENT, RoleTradingView.TOOL_PERIODIC_SCORE,
                             RoleTradingView.TOOL_PERIODIC_APPROVE, RoleTradingView.TOOL_PERIODIC_PUBLISH));

@@ -35,6 +35,8 @@ import edu.cufe.auction.world.PerformanceModel;
 import edu.cufe.auction.world.PeriodicActionPayload;
 import edu.cufe.auction.world.PeriodicModel;
 import edu.cufe.auction.world.RoleAccess;
+import edu.cufe.auction.world.RoleEvidenceDocuments;
+import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.RoleRun;
 import edu.cufe.auction.world.RoleTradingView;
 import edu.cufe.auction.world.RoleView;
@@ -4166,14 +4168,25 @@ public final class WorldWebHost implements AutoCloseable {
         SocialRun social = snapshot.social().orElse(null);
         if (social != null) {
             for (InterviewRun.ContactEntry entry : social.contacts()) {
-                addDialoguePerson(people, registry, entry.targetPartyId());
+                addSocialPerson(people, registry, entry.targetPartyId(), entry.channel());
             }
             for (SocialMessageModel.Message message : social.state().messages()) {
-                addDialoguePerson(people, registry, message.from());
-                addDialoguePerson(people, registry, message.to());
+                addSocialPerson(people, registry, message.from(), message.channel());
+                addSocialPerson(people, registry, message.to(), message.channel());
             }
         }
         return List.copyOf(people.values());
+    }
+
+    private void addSocialPerson(Map<String, LivePerson> people, OpeningRegistry registry,
+                                 String person, String channel) {
+        // 在职董事和经理已有治理路由，董事会工作信函不构成媒体任职或采访活动。
+        if (RunManifest.FUNDED_THINKING_RUN_ID.equals(runtime.profile().manifest().runId())
+                && RoleEvidenceDocuments.CHAIR_CONTACT_CHANNEL.equals(channel)
+                && !runtime.governanceCompanies(person).isEmpty()) {
+            return;
+        }
+        addDialoguePerson(people, registry, person);
     }
 
     private void addDialoguePerson(Map<String, LivePerson> people, OpeningRegistry registry,

@@ -9,6 +9,7 @@ import edu.cufe.auction.world.composed.ComposedManufacturingThreeScenario;
 import edu.cufe.auction.world.composed.ComposedPharmaScenario;
 import edu.cufe.auction.world.composed.HydroIndustryConfig;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -20,6 +21,8 @@ import java.util.TreeSet;
  */
 public final class RoleEvidenceDocuments {
     static final String SOURCE = "role-context/evidence-v1；冻结实验自述+唯一开局账本；截至0ms；非授权文件";
+    /** 核验客户资金的思考经营新档里登记的主席工作联系渠道名。 */
+    public static final String CHAIR_CONTACT_CHANNEL = "董事会工作联系";
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
     private static final Map<String, List<String>> CANDIDATES_V1 = Map.of(
@@ -35,6 +38,74 @@ public final class RoleEvidenceDocuments {
 
     /** @param company 公司标识 @return 新版资料的稳定标识 */
     public static String documentId(String company) { return "role-evidence:" + company + ":1"; }
+
+    /**
+     * 从真实章程的主席席位构造唯一工作联系入口：正文与登记的同一来源。
+     *
+     * @param company 公司组织标识
+     * @param charter 本公司当前真实章程
+     * @return 指向主席的工作联系入口
+     */
+    static InterviewRun.ContactEntry chairContact(String company, BoardModel.Charter charter) {
+        String chair = null;
+        for (BoardModel.Seat seat : charter.seats()) {
+            if (seat.seatId().equals(charter.chairSeatId())) {
+                chair = seat.partyId();
+                break;
+            }
+        }
+        if (chair == null) {
+            throw new IllegalArgumentException("章程主席席位没有绑定人物：" + company);
+        }
+        return new InterviewRun.ContactEntry(CHAIR_CONTACT_CHANNEL, chair,
+                "本公司当前真实章程的主席席位 " + charter.chairSeatId() + "（" + chair
+                        + "）；只有真实读完本资料后该工作联系入口才可用，回复仍须本人实际阅读来信",
+                documentId(company), 1L);
+    }
+
+    /**
+     * 核验客户资金的思考经营新档的主席入口清单：只覆盖实际发行且有真实章程的公司。
+     *
+     * <p>章程按运行时的同一优先级取值（工程公司在前、其余治理公司其次）；没有真实章程的
+     * 发行公司不生成入口，也不补造席位。主席必须是在册自然人。</p>
+     *
+     * @param engineering 本档真实工程配置，可为空
+     * @param charters    本档真实治理章程表
+     * @param registry    开局登记
+     * @return 排序后的主席工作联系入口
+     */
+    public static List<InterviewRun.ContactEntry> fundedChairContacts(
+            EngineeringRun.Config engineering, Map<String, BoardModel.Charter> charters,
+            OpeningRegistry registry) {
+        Map<String, BoardModel.Charter> effective = new TreeMap<>();
+        if (engineering != null) {
+            for (EngineeringRun.CompanySpec spec : engineering.companies()) {
+                effective.put(spec.companyPartyId(), spec.charter());
+            }
+        }
+        if (charters != null) {
+            for (var entry : charters.entrySet()) {
+                effective.putIfAbsent(entry.getKey(), entry.getValue());
+            }
+        }
+        Map<String, OpeningRegistry.PartyKind> kinds = new TreeMap<>();
+        registry.parties().forEach(party -> kinds.put(party.partyId(), party.kind()));
+        TreeSet<String> issuers = new TreeSet<>();
+        registry.securities().forEach(security -> issuers.add(security.issuerOrganizationId()));
+        List<InterviewRun.ContactEntry> contacts = new ArrayList<>();
+        for (String company : issuers) {
+            BoardModel.Charter charter = effective.get(company);
+            if (charter == null) {
+                continue;
+            }
+            InterviewRun.ContactEntry entry = chairContact(company, charter);
+            if (kinds.get(entry.targetPartyId()) != OpeningRegistry.PartyKind.PERSON) {
+                throw new IllegalStateException("章程主席不是在册自然人：" + company);
+            }
+            contacts.add(entry);
+        }
+        return List.copyOf(contacts);
+    }
 
     /**
      * 新档时点0登记本公司董事及未来有效经理可读的资料；保留真实阅读耗时。
@@ -68,6 +139,19 @@ public final class RoleEvidenceDocuments {
         body.put("companyPartyId", company);
         body.put("asOfMillis", 0L);
         body.put("units", "金额为实验记账元（BigDecimal两位小数）；制造数量为件、物料为BOM单位；1期30实验日，1日86400000毫秒。");
+        if (RunManifest.FUNDED_THINKING_RUN_ID.equals(world.profile().manifest().runId())) {
+            // 登记表中的入口与这段正文由同一份真实章程计算，避免两处各写一套联系人。
+            InterviewRun.ContactEntry binding = chairContact(company, board.board().charter());
+            var contact = body.putObject("charterChairContact");
+            contact.put("companyPartyId", company);
+            contact.put("seatId", board.board().charter().chairSeatId());
+            contact.put("personPartyId", binding.targetPartyId());
+            contact.put("channel", binding.channel());
+            contact.put("description", binding.description());
+            contact.put("docId", binding.docId());
+            contact.put("version", binding.version());
+            contact.put("basis", "本公司当前真实章程的主席席位；读完本资料后入口才可用，回信仍走原有规则");
+        }
         var identity = PrototypeCompanies.find(company);
         if (identity != null) body.put("business", identity.publicDescription());
         var dossiers = body.putArray("candidateDossiers");

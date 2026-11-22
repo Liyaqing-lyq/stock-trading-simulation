@@ -6,6 +6,7 @@ import edu.cufe.auction.world.EngineeringRun;
 import edu.cufe.auction.world.InformationRun;
 import edu.cufe.auction.world.OpeningRegistry;
 import edu.cufe.auction.world.RoleAccess;
+import edu.cufe.auction.world.RoleEvidenceDocuments;
 import edu.cufe.auction.world.RoleRun;
 import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.WorldRuntime;
@@ -300,15 +301,30 @@ public final class ComposedWorldScenario {
         InformationRun.Config info = new InformationRun.Config(readers,
                 WorldWebScenario.COGNITION_POLICY,
                 new edu.cufe.auction.world.BeliefModel.Policy(200, 8, end, 20, 200, 3, end));
+        EngineeringRun.Config engineering = PrototypeCompanies.PROFILE.equals(
+                manifest.dataVersions().get("profile")) ? PrototypeCompanies.engineering()
+                : baseline ? baselineEngineering() : engineeringConfigWithAcceptance();
+        Map<String, edu.cufe.auction.world.BoardModel.Charter> governed =
+                extras.charters().isEmpty() ? charters()
+                        : new TreeMap<>(extras.charters());
         List<edu.cufe.auction.world.InterviewRun.ContactEntry> contacts =
                 new ArrayList<>(WorldWebScenario.interviewConfig().contacts());
         for (String person : WorldWebScenario.SOCIAL_PERSONS) {
             contacts.add(new edu.cufe.auction.world.InterviewRun.ContactEntry("私信", person,
                     "公开联系说明：可一对一私人消息", WorldWebScenario.SOCIAL_CONTACT_DOC, 1L));
         }
-        Map<String, edu.cufe.auction.world.BoardModel.Charter> governed =
-                extras.charters().isEmpty() ? charters()
-                        : new TreeMap<>(extras.charters());
+        // 只在冻结的核验客户资金的思考经营新档登记主席工作联系入口：入口与角色依据正文同源于真实章程，
+        // 未真实读完不可用；旧档不获得新渠道。
+        if (RunManifest.FUNDED_THINKING_RUN_ID.equals(manifest.runId())) {
+            contacts.addAll(RoleEvidenceDocuments.fundedChairContacts(engineering, governed,
+                    registry));
+            // 与 SocialRun 的冻结顺序一致：冻结字段逐字相等才允许开局与重开。
+            contacts.sort(java.util.Comparator
+                    .comparing(edu.cufe.auction.world.InterviewRun.ContactEntry::targetPartyId)
+                    .thenComparing(edu.cufe.auction.world.InterviewRun.ContactEntry::channel)
+                    .thenComparing(edu.cufe.auction.world.InterviewRun.ContactEntry::docId)
+                    .thenComparingLong(edu.cufe.auction.world.InterviewRun.ContactEntry::version));
+        }
         appointments.addAll(extras.appointments());
         return new WorldRuntime(journal, manifest, openings, registry,
                 baseline ? null : new edu.cufe.auction.world.ManufacturingRun.Config(
@@ -322,7 +338,7 @@ public final class ComposedWorldScenario {
                 WorldWebScenario.mediaConfig(), WorldWebScenario.interviewConfig(),
                 WorldWebScenario.dialogueConfig(), WorldWebScenario.evidenceConfig(),
                 WorldWebScenario.socialConfig(), WorldWebScenario.SOCIAL_BLOCK_MILLIS,
-                contacts, PrototypeCompanies.PROFILE.equals(manifest.dataVersions().get("profile")) ? PrototypeCompanies.engineering() : baseline ? baselineEngineering() : engineeringConfigWithAcceptance(),
+                contacts, engineering,
                 WorldWebScenario.groupsConfig(), WorldWebScenario.groupsPlatformConfig(),
                 WorldWebScenario.GROUPS_FEED_LIMIT, WorldWebScenario.GROUPS_READ_MILLIS,
                 governed, bankOpening, manifest.hasManufacturingFunding()
