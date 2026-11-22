@@ -1250,6 +1250,13 @@ cases.push({ name: "operations-god-person-late-response", body: async () => {
   world.context.renderOperations(secret);
   assert.ok(world.$("operations-financial").children.some(c => c.textContent.includes("9007199254740993.01")));
   assert.ok(world.$("operations-financial").children.some(c => c.textContent.includes("未批准")));
+  assert.equal(world.$("operations-company").value, "mfg-tech");
+  world.state.operationsRequestedCompany = "mfg-struct";
+  world.context.renderOperations(secret);
+  assert.equal(world.$("operations-company").value, "");
+  assert.equal(world.$("operations-financial").children.length, 0);
+  world.context.renderOperations(secret);
+  assert.equal(world.$("operations-company").value, "mfg-tech");
   const pending = world.context.loadOperations(world.state.generation, world.state.pageVersion);
   await waitFor(() => !!resolve, "三制造God请求已发出");
   world.context.showMode("person");

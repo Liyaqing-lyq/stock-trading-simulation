@@ -73,9 +73,11 @@ function renderOperations(view) {
   if (panel) panel.hidden = state.mode === "person" ? !view.enabled : state.page !== "operations";
   $("operations-note").textContent = view.note || "";
   $("operations-cut").textContent = "记录 " + view.position + " · 世界时点 " + view.timeMillis + " 毫秒";
-  $("operations-company").replaceChildren(...(view.companies || []).map(c => operationsOption(c.name, c.companyId)));
-  if ((view.companies || []).some(c => c.companyId === selected)) $("operations-company").value = selected;
-  else if (requested) $("operations-company").selectedIndex = -1;
+  const companies = view.companies || [];
+  const select = $("operations-company");
+  select.replaceChildren(...companies.map(c => operationsOption(c.name, c.companyId)));
+  const wanted = companies.find(c => c.companyId === selected);
+  select.value = wanted?.companyId || (requested ? "" : companies[0]?.companyId || "");
   renderOperationsCompany();
 }
 function operationsTable(parent, title, rows, columns) {
