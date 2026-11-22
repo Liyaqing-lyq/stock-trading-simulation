@@ -42,17 +42,6 @@ final class ManufacturingCustomerOffers {
         var offers = view.putArray("customerOffers");
         for (var customer : spec.customers()) {
             String account = ledger.accounts().customerAccounts().get(customer.customerId());
-            BigDecimal obligations = BigDecimal.ZERO;
-            for (var other : run.companies()) {
-                for (var c : other.ledger().contracts().values()) {
-                    if (account.equals(other.ledger().accounts().customerAccounts().get(c.customerId())))
-                        obligations = obligations.add(c.unitPrice().multiply(BigDecimal.valueOf(c.reserved())));
-                }
-                for (var ar : other.ledger().receivables().values()) {
-                    if (account.equals(other.ledger().accounts().customerAccounts().get(ar.customerId())))
-                        obligations = obligations.add(ar.outstanding());
-                }
-            }
             long occupied = 0;
             BigDecimal spent = BigDecimal.ZERO;
             for (var c : ledger.contracts().values()) if (c.customerId().equals(customer.customerId()) && c.period() == period) {
@@ -60,12 +49,28 @@ final class ManufacturingCustomerOffers {
                 occupied += committed;
                 spent = spent.add(c.unitPrice().multiply(BigDecimal.valueOf(committed)));
             }
-            BigDecimal available = cash.get(account).cash().subtract(obligations).min(customer.budgetPerPeriod().subtract(spent)).max(BigDecimal.ZERO);
+            BigDecimal available = uncommittedCash(run, account, cash).min(customer.budgetPerPeriod().subtract(spent)).max(BigDecimal.ZERO);
             long quantity = customer.allows(period) ? Math.min(Math.max(0, customer.demandPerPeriod() - occupied),
                     available.divide(spec.priceCap(), 0, RoundingMode.DOWN).longValueExact()) : 0;
             offers.addObject().put("customerId", customer.customerId()).put("quantity", quantity)
                     .put("unitPrice", spec.priceCap().toPlainString())
                     .put("basis", "EXP有限客户报价；已扣除未付货款与未交合同承诺；本版本无外生补款");
         }
+    }
+
+    /** 扣除同一付款账户在各制造公司的未交合同承诺、已交未收款。跨期不清零。 */
+    static BigDecimal uncommittedCash(CompanyOperationsRun run, String account, Map<String, CashLedger.CashAccount> cash) {
+        BigDecimal available = cash.get(account).cash();
+        for (var company : run.companies()) {
+            var ledger = company.ledger();
+            var payers = ledger.accounts().customerAccounts();
+            for (var contract : ledger.contracts().values())
+                if (account.equals(payers.get(contract.customerId())))
+                    available = available.subtract(contract.unitPrice().multiply(BigDecimal.valueOf(contract.reserved())));
+            for (var receivable : ledger.receivables().values())
+                if (account.equals(payers.get(receivable.customerId())))
+                    available = available.subtract(receivable.outstanding());
+        }
+        return available;
     }
 }

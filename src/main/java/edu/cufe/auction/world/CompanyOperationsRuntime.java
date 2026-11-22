@@ -143,12 +143,13 @@ final class CompanyOperationsRuntime {
      * @param now            执行时点
      * @param funds          当前资金三态（不得复用旧结果）
      * @param payer          为本次资金腿绑定的付款人；不动钱的动作可为 null
+     * @param requireFundedContract 是否按冻结规则在签订新合同时检查客户未承诺现金
      * @return 候选结果
      */
     static Applied apply(CompanyOperationsRun run, BoardRun board, InformationRun information,
                          String companyPartyId, CompanyOperationsRun.Action action,
                          CompanyOperationsRun.Fields fields, String commandId, String personPartyId,
-                         String actor, long now, FundState funds, FundPayer payer) {
+                         String actor, long now, FundState funds, FundPayer payer, boolean requireFundedContract) {
         if (run == null) {
             return Applied.reject(null, board, null, "OPERATIONS_NOT_READY");
         }
@@ -251,6 +252,16 @@ final class CompanyOperationsRuntime {
                         CashLedger.money(BigDecimal.ZERO), List.of());
             }
             return Applied.reject(run, board, outcome.funds(), outcome.reason());
+        }
+
+        // 签约只核承诺，不冻结现金；已签合同的收款仍取决于到期时客户是否实际有钱。
+        if (requireFundedContract && action == CompanyOperationsRun.Action.SIGN_CONTRACT
+                && !ledger.contracts().containsKey(fields.contractId())) {
+            var contract = outcome.ledger().contracts().get(fields.contractId());
+            String account = ledger.accounts().customerAccounts().get(contract.customerId());
+            BigDecimal value = contract.unitPrice().multiply(BigDecimal.valueOf(contract.quantity()));
+            if (ManufacturingCustomerOffers.uncommittedCash(run, account, base).compareTo(value) < 0)
+                return Applied.reject(run, board, funds, "CUSTOMER_AVAILABLE_CASH_INSUFFICIENT");
         }
 
         // 3) 到货把采购承诺转已花（金额以采购单锁定单价为准，不用当前报价重估）。

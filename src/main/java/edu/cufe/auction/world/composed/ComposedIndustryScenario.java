@@ -236,15 +236,26 @@ public final class ComposedIndustryScenario {
      */
     public static WorldRuntime openThinkingInformedOperating(Path journal) throws Exception {
         return open(journal, true, true, true, true, false, false, true, true,
-                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, true);
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, "web-thinking-operating-v1");
+    }
+
+    /** 打开在签约时复核制造客户可承诺现金的思考经营档。
+     * @param journal 新版运行日志
+     * @return 严格恢复或新建的世界
+     * @throws Exception 档案与冻结规则不符或开局失败
+     */
+    public static WorldRuntime openFundedThinkingOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, RunManifest.FUNDED_THINKING_RUN_ID);
     }
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating) throws Exception {
         return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous,
-                eventDriven, roleContext, operating, compact, informedOperating, false);
+                eventDriven, roleContext, operating, compact, informedOperating, null);
     }
 
-    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating, boolean thinking) throws Exception {
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating, String thinkingRunId) throws Exception {
+        boolean thinking = thinkingRunId != null;
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -390,7 +401,11 @@ public final class ComposedIndustryScenario {
         }
         if (thinking) {
             var data = new TreeMap<>(runManifest.dataVersions()); data.put("provider-policy", "deepseek-thinking-high-v1");
-            runManifest = new RunManifest("web-thinking-operating-v1", runManifest.seed(), runManifest.rulesVersion(),
+            if (RunManifest.FUNDED_THINKING_RUN_ID.equals(thinkingRunId)) {
+                data.put("customer-contract-policy", RunManifest.FUNDED_CONTRACT_POLICY);
+                data.put("board-tool-scope", "charter-chair-v1");
+            }
+            runManifest = new RunManifest(thinkingRunId, runManifest.seed(), runManifest.rulesVersion(),
                     runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,

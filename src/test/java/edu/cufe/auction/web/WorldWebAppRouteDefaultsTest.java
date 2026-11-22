@@ -67,7 +67,7 @@ class WorldWebAppRouteDefaultsTest {
 
     @Test void thinkingEntryHasSeparateJournalExplicitPolicyAndSixtySecondLimit() throws Exception {
         Path work=Files.createDirectory(root.resolve("thinking-manifest"));initialize(work,"world-thinking-informed-operating");
-        Path journal=work.resolve("world-thinking-informed-operating-v1.journal");assertTrue(Files.isRegularFile(journal));
+        Path journal=work.resolve("world-thinking-informed-operating-v2.journal");assertTrue(Files.isRegularFile(journal));
         assertFalse(Files.exists(work.resolve("world-contextual-informed-operating-v2.journal")));
         try(var routes=SceneRoutes.open(work)) {
             for(var route:routes.view().routes()) {
@@ -75,10 +75,22 @@ class WorldWebAppRouteDefaultsTest {
                 assertEquals(2500,route.maxCalls());assertEquals(35000000,route.maxTotalTokens());assertEquals(8192,route.maxOutputTokens());assertEquals(4,route.maxConcurrency());
             }
         }
-        try(var world=edu.cufe.auction.world.composed.ComposedIndustryScenario.openThinkingInformedOperating(journal)) {
-            assertEquals("web-thinking-operating-v1",world.profile().manifest().runId());assertEquals("deepseek-thinking-high-v1",world.profile().manifest().dataVersions().get("provider-policy"));
+        try(var world=AutonomousLifecycleProbe.openWorld("FUNDED_THINKING_OPERATING",journal)) {
+            assertEquals("web-thinking-operating-v2",world.profile().manifest().runId());assertEquals("deepseek-thinking-high-v1",world.profile().manifest().dataVersions().get("provider-policy"));
             assertEquals(60000,world.profile().decisions().limits().wallTimeoutMillis());assertEquals(2,world.profile().decisions().limits().maxInFlight());
         }
+    }
+
+    @Test void thinkingEntryReopensExistingV1JournalWithoutChangingItsContract() throws Exception {
+        Path work=Files.createDirectory(root.resolve("legacy-thinking"));
+        Path journal=work.resolve("world-thinking-informed-operating-v1.journal");
+        try(var old=AutonomousLifecycleProbe.openWorld("THINKING_INFORMED_OPERATING",journal)) {
+            assertFalse(old.profile().manifest().dataVersions().containsKey("customer-contract-policy"));
+        }
+        byte[] before=Files.readAllBytes(journal);
+        initialize(work,"world-thinking-informed-operating");
+        assertArrayEquals(before,Files.readAllBytes(journal));
+        assertFalse(Files.exists(work.resolve("world-thinking-informed-operating-v2.journal")));
     }
 
     @Test void ordinaryModeKeepsLegacyDefaults() throws Exception {

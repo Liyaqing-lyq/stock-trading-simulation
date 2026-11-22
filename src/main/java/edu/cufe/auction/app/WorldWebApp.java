@@ -7,6 +7,8 @@ import edu.cufe.auction.web.SceneRoutes;
 import edu.cufe.auction.web.WorldWebHost;
 import edu.cufe.auction.web.WorldWebScenario;
 import edu.cufe.auction.web.WorldWebServer;
+import edu.cufe.auction.world.WorldRuntime;
+import edu.cufe.auction.world.composed.ComposedIndustryScenario;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -133,7 +135,7 @@ public final class WorldWebApp {
         }
         WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode))
                 ? new WorldWebHost(() -> {
-                    var runtime=thinkingInformedOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openThinkingInformedOperating(workDir.resolve("world-thinking-informed-operating-v1.journal"))
+                    var runtime=thinkingInformedOperatingMode ? openThinkingOperating(workDir)
                             : contextualInformedOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openContextualInformedOperating(workDir.resolve("world-contextual-informed-operating-v2.journal"))
                             : informedOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openInformedOperating(workDir.resolve("world-informed-operating-v1.journal"))
                             : planningOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openPlanningOperating(workDir.resolve("world-planning-operating-v4.journal"))
@@ -383,6 +385,16 @@ public final class WorldWebApp {
             // 取不到代码位置时只用已有 classpath；子进程启动失败会给出真实原因
         }
         return String.join(java.io.File.pathSeparator, parts);
+    }
+
+    private static WorldRuntime openThinkingOperating(Path workDir) throws Exception {
+        Path legacy = workDir.resolve("world-thinking-informed-operating-v1.journal");
+        Path funded = workDir.resolve("world-thinking-informed-operating-v2.journal");
+        if (Files.exists(legacy) && Files.size(legacy) > 0) {
+            if (Files.exists(funded)) throw new IOException("工作目录内存在两版思考经营档案，请分别打开");
+            return ComposedIndustryScenario.openThinkingInformedOperating(legacy);
+        }
+        return ComposedIndustryScenario.openFundedThinkingOperating(funded);
     }
 
     private static String newBootstrap() {

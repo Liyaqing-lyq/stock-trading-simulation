@@ -48,6 +48,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 现金 + 登记 + 证券 + 撮合 + 制造经营（M3a.2 新增的明确组合，model=none）。 */
     public static final String RULES_STOCK_COMPANY_EXPERIMENT_V1 = "stock-company-experiment-v1";
 
+    /** 三制造客户按签约执行时的未承诺现金承担新订单。 */
+    public static final String FUNDED_CONTRACT_POLICY = "available-customer-cash-v1";
+    /** 显式启用签约资金约束的思考经营运行标识。 */
+    public static final String FUNDED_THINKING_RUN_ID = "web-thinking-operating-v2";
+
     /** 现金 + 登记 + 证券 + 撮合 + 制造 + 治理（M3b.2 新增的明确组合，model=none）。 */
     public static final String RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1 =
             "governed-stock-company-experiment-v1";
@@ -931,9 +936,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
-        if (("web-thinking-operating-v1".equals(runId) || dataVersions != null && dataVersions.containsKey("provider-policy"))
+        boolean fundedThinking = FUNDED_THINKING_RUN_ID.equals(runId);
+        if ((fundedThinking || dataVersions != null && (dataVersions.containsKey("customer-contract-policy")
+                || dataVersions.containsKey("board-tool-scope")))
+                && (!fundedThinking || dataVersions == null || !FUNDED_CONTRACT_POLICY.equals(dataVersions.get("customer-contract-policy"))
+                || !"charter-chair-v1".equals(dataVersions.get("board-tool-scope"))))
+            throw new IllegalArgumentException("客户签约资金和董事会工具权限规则必须与经营档版本一致");
+        if ((fundedThinking || "web-thinking-operating-v1".equals(runId) || dataVersions != null && dataVersions.containsKey("provider-policy"))
                 && (dataVersions == null || !"deepseek-thinking-high-v1".equals(dataVersions.get("provider-policy"))
-                    || !"web-thinking-operating-v1".equals(runId)
+                    || !(fundedThinking || "web-thinking-operating-v1".equals(runId))
                     || !RoleDeliberation.CONTEXTUAL_VERSION.equals(dataVersions.get("role-context"))
                     || !"manager-v1".equals(dataVersions.get("operating-information"))
                     || !"bounded-history-v1".equals(dataVersions.get("role-input-policy"))
@@ -1047,6 +1058,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
+            if (fundedThinking) {
+                expectedData.put("customer-contract-policy", FUNDED_CONTRACT_POLICY);
+                expectedData.put("board-tool-scope", "charter-chair-v1");
+            }
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData
                         + "，收到 " + data);

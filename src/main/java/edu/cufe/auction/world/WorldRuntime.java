@@ -21639,8 +21639,7 @@ public final class WorldRuntime implements AutoCloseable {
             case PendingTask.ROLE_TRADING_COMPANY_FACT_CAPTURE_V1 -> {
                 FactCaptureBody body = mapper.readValue(task.payload(), FactCaptureBody.class);
                 String rejection = null;
-                if (charter == null || !body.companyId().equals(charter.companyPartyId())
-                        || !body.publisherPartyId().equals(chairPersonOf(charter))) {
+                if (!isOrderReportChair(previous, body.companyId(), body.publisherPartyId())) {
                     rejection = "NOT_AUTHORIZED";
                 } else if (body.asOfMillis() != now) {
                     rejection = "ASOF_MISMATCH";
@@ -21649,13 +21648,7 @@ public final class WorldRuntime implements AutoCloseable {
                     return base.withReport(reportFor(task, body.publisherPartyId(), body.companyId(),
                             false, rejection, commit.position()));
                 }
-                long value = previous.manufacturing() == null
-                        || previous.manufacturing().ledger() == null ? 0L
-                        : previous.manufacturing().ledger().contracts().size();
-                BeliefRun withCaptured = base.withCaptured(new BeliefRun.CapturedFact(
-                        body.captureTaskId(), body.publisherPartyId(), body.companyId(),
-                        BeliefModel.METRIC_ORDERS_CONFIRMED, now, commit.position(), value,
-                        "FACT-" + body.captureTaskId(), "belief-orders-" + now));
+                BeliefRun withCaptured = base.withCaptured(captureOrderFact(previous, body, commit.position()));
                 return withCaptured.withReport(reportFor(task, body.publisherPartyId(),
                         body.companyId(), true, "CAPTURED", commit.position()));
             }
@@ -21665,8 +21658,7 @@ public final class WorldRuntime implements AutoCloseable {
                 if (captured == null) {
                     return base;
                 }
-                if (charter == null
-                        || !captured.publisherPartyId().equals(chairPersonOf(charter))) {
+                if (!isOrderReportChair(previous, captured.companyId(), captured.publisherPartyId())) {
                     return base.withReport(reportFor(task, captured.publisherPartyId(),
                             captured.factId(), false, "NOT_AUTHORIZED", commit.position()));
                 }
@@ -21674,9 +21666,7 @@ public final class WorldRuntime implements AutoCloseable {
                     InformationModel.State information = InformationModel.publish(
                             previous.information().information(), captured.docId(), captured.publisherPartyId(),
                             InformationModel.Audience.publicAudience(),
-                            new InformationModel.VersionDraft("订单进展公告",
-                                    "截至模拟时点 " + captured.asOfMillis() + "，公司已确认订单 "
-                                            + captured.value() + " 笔。", "公司公告", now, 1L, List.of()));
+                            orderReportDocument(captured, now));
                     BeliefRun published = base.withFactClaim(new BeliefModel.FactClaim(
                             captured.factId(), captured.docId(), 1, captured.companyId(),
                             BeliefModel.METRIC_ORDERS_CONFIRMED, captured.asOfMillis(),
@@ -28417,7 +28407,9 @@ public final class WorldRuntime implements AutoCloseable {
                 }
             }
         }
-        List<String> tools = new ArrayList<>(roleTools(appointments, manifest.hasBelief(),
+        boolean offerOrderReport = !scopedManufacturingReports() || snap.companyOperations() != null
+                && snap.companyOperations().companies().stream().anyMatch(c -> isOrderReportChair(snap, c.companyPartyId(), person));
+        List<String> tools = new ArrayList<>(roleTools(appointments, manifest.hasBelief(), offerOrderReport,
                 manifest.hasMedia(), manifest.hasInterviews(), manifest.hasEvidence(),
                 manifest.hasSocial(), manifest.hasGroups()));
         if (manifest.hasDialogue() && isDialogueParticipant(snap, person)) {
@@ -29126,7 +29118,7 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private static List<String> roleTools(List<RoleTradingView.Appointment> appointments,
-                                          boolean beliefEnabled, boolean mediaEnabled,
+                                          boolean beliefEnabled, boolean offerOrderReport, boolean mediaEnabled,
                                           boolean interviewEnabled, boolean evidenceEnabled,
                                           boolean socialEnabled, boolean groupsEnabled) {
         boolean researcher = false;
@@ -29170,7 +29162,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (beliefEnabled) {
             tools.add(RoleTradingView.TOOL_BELIEF_ASSERT);
             tools.add(RoleTradingView.TOOL_FORECAST_PUBLISH);
-            tools.add(RoleTradingView.TOOL_COMPANY_REPORT_ORDERS);
+            if (offerOrderReport) tools.add(RoleTradingView.TOOL_COMPANY_REPORT_ORDERS);
         }
         if (mediaEnabled) {
             if (journalist) {
@@ -31324,21 +31316,14 @@ public final class WorldRuntime implements AutoCloseable {
         BeliefRun beliefsAfter = run;
         boolean accepted;
         String reason;
-        if (charter == null || !body.companyId().equals(charter.companyPartyId())
-                || !body.publisherPartyId().equals(chairPersonOf(charter))) {
+        if (!isOrderReportChair(state, body.companyId(), body.publisherPartyId())) {
             accepted = false;
             reason = "NOT_AUTHORIZED";
         } else if (body.asOfMillis() != now) {
             accepted = false;
             reason = "ASOF_MISMATCH";
         } else {
-            long value = manufacturingContractCount();
-            String factId = "FACT-" + body.captureTaskId();
-            String docId = "belief-orders-" + now;
-            beliefsAfter = run.withCaptured(new BeliefRun.CapturedFact(body.captureTaskId(),
-                    body.publisherPartyId(), body.companyId(),
-                    BeliefModel.METRIC_ORDERS_CONFIRMED, now, state.position() + 1, value,
-                    factId, docId));
+            beliefsAfter = run.withCaptured(captureOrderFact(state, body, state.position() + 1));
             accepted = true;
             reason = "CAPTURED";
         }
@@ -31386,8 +31371,7 @@ public final class WorldRuntime implements AutoCloseable {
         String reason = accepted ? "PUBLISHED" : "NOT_FOUND";
         InformationModel.State informationAfter = state.information() == null ? null
                 : state.information().information();
-        if (accepted && (charter == null
-                || !captured.publisherPartyId().equals(chairPersonOf(charter)))) {
+        if (accepted && !isOrderReportChair(state, captured.companyId(), captured.publisherPartyId())) {
             accepted = false;
             reason = "NOT_AUTHORIZED";
             beliefsAfter = run.withReport(new BeliefRun.Report(task.taskId(),
@@ -31399,10 +31383,7 @@ public final class WorldRuntime implements AutoCloseable {
                 InformationModel.State published = InformationModel.publish(informationAfter,
                         captured.docId(), captured.publisherPartyId(),
                         InformationModel.Audience.publicAudience(),
-                        new InformationModel.VersionDraft("订单进展公告",
-                                "截至模拟时点 " + captured.asOfMillis() + "，公司已确认订单 "
-                                        + captured.value() + " 笔。",
-                                "公司公告", now, 1L, List.of()));
+                        orderReportDocument(captured, now));
                 BeliefModel.FactClaim fact = new BeliefModel.FactClaim(captured.factId(),
                         captured.docId(), 1, captured.companyId(),
                         BeliefModel.METRIC_ORDERS_CONFIRMED, captured.asOfMillis(),
@@ -31447,10 +31428,11 @@ public final class WorldRuntime implements AutoCloseable {
     /** 执行与恢复共用报告资格及后续任务生成，防止两个入口漂移。 */
     private String reportRejection(WorldState base, RoleActionPayload payload,
                                    WorldRoleSession.ReportDraft draft, long now) {
-        if (!manifest.hasBelief() || charter == null || !draft.companyId().equals(charter.companyPartyId())) {
+        BoardModel.Charter authority = orderReportCharter(base, draft.companyId());
+        if (!manifest.hasBelief() || authority == null) {
             return "UNKNOWN_COMPANY";
         }
-        if (!payload.personPartyId().equals(chairPersonOf(charter))) return "NOT_AUTHORIZED";
+        if (!payload.personPartyId().equals(chairPersonOf(authority))) return "NOT_AUTHORIZED";
         if (draft.asOfMillis() <= now) return "PAST_ASOF";
         if (draft.asOfMillis() == Long.MAX_VALUE) return "TIME_OVERFLOW";
         return factRequestExists(base, draft.companyId(), draft.asOfMillis()) ? "DUPLICATE_REQUEST" : null;
@@ -31497,12 +31479,47 @@ public final class WorldRuntime implements AutoCloseable {
         return false;
     }
 
-    /** @return 当前制造台账中已确认销售合同数量（合同台账存在即已签署）。 */
-    private long manufacturingContractCount() {
-        if (state.manufacturing() == null || state.manufacturing().ledger() == null) {
-            return 0L;
+    private boolean scopedManufacturingReports() {
+        return RunManifest.FUNDED_THINKING_RUN_ID.equals(manifest.runId());
+    }
+
+    private BoardModel.Charter orderReportCharter(WorldState base, String companyId) {
+        if (scopedManufacturingReports())
+            return base.companyOperations() != null && base.companyOperations().company(companyId) != null
+                    ? companyCharters.get(companyId) : null;
+        return charter != null && companyId.equals(charter.companyPartyId()) ? charter : null;
+    }
+
+    private boolean isOrderReportChair(WorldState base, String companyId, String person) {
+        BoardModel.Charter authority = orderReportCharter(base, companyId);
+        return authority != null && chairPersonOf(authority).equals(person);
+    }
+
+    /** 按已授权的公司在截止帧累计已签销售合同；实跑和严格重演共用同一计算。 */
+    private BeliefRun.CapturedFact captureOrderFact(WorldState base, FactCaptureBody body, long position) {
+        long count;
+        String docId;
+        if (scopedManufacturingReports()) {
+            count = base.companyOperations().company(body.companyId()).ledger().contracts().size();
+            docId = "belief-orders-" + body.companyId() + "-" + body.asOfMillis();
+        } else {
+            count = base.manufacturing() == null || base.manufacturing().ledger() == null ? 0L
+                    : base.manufacturing().ledger().contracts().size();
+            docId = "belief-orders-" + body.asOfMillis();
         }
-        return state.manufacturing().ledger().contracts().size();
+        return new BeliefRun.CapturedFact(body.captureTaskId(), body.publisherPartyId(), body.companyId(),
+                BeliefModel.METRIC_ORDERS_CONFIRMED, body.asOfMillis(), position, count, "FACT-" + body.captureTaskId(), docId);
+    }
+
+    private InformationModel.VersionDraft orderReportDocument(BeliefRun.CapturedFact fact, long now) {
+        if (scopedManufacturingReports()) {
+            String company = registry.parties().stream().filter(p -> p.partyId().equals(fact.companyId()))
+                    .findFirst().orElseThrow().name();
+            return new InformationModel.VersionDraft(company + "销售合同公告", "截至模拟时点 " + fact.asOfMillis()
+                    + "，" + company + "累计签订销售合同 " + fact.value() + " 笔。", "公司公告", now, 1L, List.of());
+        }
+        return new InformationModel.VersionDraft("订单进展公告", "截至模拟时点 " + fact.asOfMillis()
+                + "，公司已确认订单 " + fact.value() + " 笔。", "公司公告", now, 1L, List.of());
     }
 
     /** 系统扫描：撤不相容旧单；撤净后 UPDATING 重建基点，其余阶段只停新单。 */
@@ -35483,7 +35500,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         CompanyOperationsRuntime.Applied applied = CompanyOperationsRuntime.apply(run, board,
                 base.information(), companyPartyId, action, fields, commandId, person,
-                company.ledger().accounts().companyOwnerId(), now, funds, payer);
+                company.ledger().accounts().companyOwnerId(), now, funds, payer,
+                RunManifest.FUNDED_CONTRACT_POLICY.equals(manifest.dataVersions().get("customer-contract-policy")));
         CompanyGovernanceRun next = container;
         if (applied.board() != null && applied.board().board() != board.board()) {
             next = container.withBoard(companyPartyId, applied.board());
