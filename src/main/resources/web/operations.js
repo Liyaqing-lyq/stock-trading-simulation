@@ -147,7 +147,15 @@ function renderOperationsCompany() {
   operationsTable(records, "采购单", entries(company.purchases), [["id", "编号"], ["materialId", "材料"], ["quantity", "数量"], ["status", "状态"], ["arrivalAt", "到货时点"]]);
   operationsLine(records, "生产按产品和代际入库。交付凭证通过合同编号关联应收。");
   operationsTable(records, "生产批次（按产品入库）", entries(company.batches), [["id", "批次编号"], ["productId", "产品"], ["generation", "代际"], ["quantity", "数量"], ["startedAt", "开工时点"], ["completesAt", "完工时点"], ["status", "状态"]]);
-  operationsTable(records, "销售合同", entries(company.contracts), [["id", "合同编号"], ["customerId", "客户"], ["productId", "产品"], ["generation", "代际"], ["quantity", "签约数量"], ["unitPrice", "单价（元）"], ["signedAt", "签约时点"], ["promisedAt", "承诺交付时点"], ["delivered", "已交数量"], ["status", "状态"]]);
+  const contracts = entries(company.contracts).map(contract => {
+    if (contract.status === "OVERDUE") return { ...contract, status: "已登记逾期" };
+    if (contract.status === "ACTIVE" && /^\d+$/.test(contract.expiresAt)
+        && BigInt(state.operationsView.timeMillis) > BigInt(contract.expiresAt)) {
+      return { ...contract, status: "账载有效，已过最迟交付时点（待登记逾期）" };
+    }
+    return contract;
+  });
+  operationsTable(records, "销售合同", contracts, [["id", "合同编号"], ["customerId", "客户"], ["productId", "产品"], ["generation", "代际"], ["quantity", "签约数量"], ["unitPrice", "单价（元）"], ["signedAt", "签约时点"], ["promisedAt", "承诺交付时点"], ["expiresAt", "最迟交付时点"], ["delivered", "已交数量"], ["status", "状态"]]);
   operationsTable(records, "应收货款", entries(company.receivables), [["id", "应收编号"], ["contractId", "合同编号"], ["quantity", "交付数量"], ["recognizedAt", "交付确认时点"], ["amount", "确认金额（元）"], ["outstanding", "未收（元）"], ["dueAt", "到期时点"], ["status", "状态"]]);
   operationsTable(records, "认证与扩产", [...entries(company.trials), ...entries(company.expansions)], [["id", "编号"], ["status", "状态"], ["finishAt", "认证时点"], ["completesAt", "扩产时点"]]);
   }

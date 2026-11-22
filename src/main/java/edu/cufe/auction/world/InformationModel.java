@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -405,10 +406,25 @@ public final class InformationModel {
      * @param version          最新已发布版本
      * @param title            该版本标题
      * @param publisherPartyId 公开可见的发布者
+     * @param lastReadAtMillis 本人读完此版本的最近时刻；仅在支持此标记的角色目录中提供
      * @param publishedAt      该版本发布时刻
      */
     public record CatalogEntry(String docId, long version, String title, String publisherPartyId,
-                               long publishedAt) {
+                               long publishedAt,
+                               @JsonInclude(JsonInclude.Include.NON_NULL) Long lastReadAtMillis) {
+
+        /**
+         * 构造不附带个人阅读时刻的目录项。
+         * @param docId 资料标识
+         * @param version 当前可见版本
+         * @param title 版本标题
+         * @param publisherPartyId 发布者
+         * @param publishedAt 版本发布时刻
+         */
+        public CatalogEntry(String docId, long version, String title, String publisherPartyId,
+                            long publishedAt) {
+            this(docId, version, title, publisherPartyId, publishedAt, null);
+        }
 
         /** 校验字段。 */
         public CatalogEntry {
@@ -419,6 +435,9 @@ public final class InformationModel {
                 throw new IllegalArgumentException("目录版本必须从 1 开始：" + version);
             }
             requireNonNegative(publishedAt, "发布时刻");
+            if (lastReadAtMillis != null && lastReadAtMillis < publishedAt) {
+                throw new IllegalArgumentException("阅读完成早于资料发布");
+            }
         }
     }
 

@@ -116,6 +116,35 @@ public final class RoleDeliberation {
         }
     }
 
+    /** 将本人现行投研任职与其机构已经获得的产品授权加入决策依据。 */
+    static void appendInvestmentObjectives(ObjectNode engineering, RoleAccess.State access,
+                                           String person, long now) {
+        var objectives = engineering.withObject("/deliberation").withArray("objectives");
+        for (var office : access.appointments()) {
+            if (!office.personPartyId().equals(person) || !office.activeAt(now)) continue;
+            String purpose = switch (office.role()) {
+                case RESEARCHER -> "依据可引用的资料评估授权产品相关证券，记录研究判断及不确定性。";
+                case PORTFOLIO_MANAGER -> "结合账户资产、研究与风险约束，评估授权产品的目标持仓或维持现有配置。";
+                case RISK_OFFICER -> "检查授权产品的实际风险敞口与约束，评估是否需要采取岗位权限内的风险措施。";
+                case EXECUTION_TRADER -> "核对授权产品的目标、可用资产与盘口，评估目标范围内的委托、撤单或等待。";
+                default -> null;
+            };
+            if (purpose == null) continue;
+            var products = access.mandates().stream()
+                    .filter(m -> m.organizationPartyId().equals(office.organizationPartyId()))
+                    .map(RoleAccess.ProductMandate::productOwnerId).toList();
+            if (products.isEmpty()) continue;
+            var goal = objectives.addObject();
+            goal.put("id", "appointment:" + office.id());
+            goal.put("appointmentId", office.id());
+            goal.put("organizationPartyId", office.organizationPartyId());
+            goal.put("role", office.role().name());
+            var ids = goal.putArray("productOwnerIds");
+            products.forEach(ids::add);
+            goal.put("purpose", purpose);
+        }
+    }
+
     /**
      * 新版只验证决定声明合同并剥离元数据供原工具外壳验证；原回执仍原样持久保存。
      * @param inputText 冻结的程序输入，不能取资料正文作为版本开关

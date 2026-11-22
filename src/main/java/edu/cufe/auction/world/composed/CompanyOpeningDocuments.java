@@ -58,7 +58,7 @@ public final class CompanyOpeningDocuments {
                 if (identity != null) body.append(identity.publicDescription()).append('\n');
             }
             body.append("公司=").append(company).append("（").append(parties.get(company).name()).append("）\n");
-            if (RunManifest.COMPANY_INFORMATION_RUN_ID.equals(world.profile().manifest().runId())) {
+            if (RunManifest.usesCompanyInformationRules(world.profile().manifest().runId())) {
                 for (var security : registry.securities()) {
                     if (company.equals(security.issuerOrganizationId())) {
                         body.append("开局证券登记（实验时点 0）：代码=").append(security.symbol())

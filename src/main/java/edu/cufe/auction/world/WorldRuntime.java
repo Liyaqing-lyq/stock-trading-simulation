@@ -6444,6 +6444,9 @@ public final class WorldRuntime implements AutoCloseable {
         List<RoleView.Market> market = marketOf(snap);
         List<InformationModel.CatalogEntry> catalog = InformationModel.catalog(information,
                 access, person, now, groupAccess(snap), roleBoards(snap));
+        if ("visible-version-v1".equals(manifest.dataVersions().get("catalog-read-receipts"))) {
+            catalog = withOwnCatalogReadTimes(catalog, information, person, now);
+        }
         Map<String, Integer> ordinals = readingOrdinals(information, person);
         List<RoleView.Experience> observations = new ArrayList<>();
         if (recall == null) {
@@ -6501,6 +6504,24 @@ public final class WorldRuntime implements AutoCloseable {
                 List.of(RoleView.TOOL_CATALOG, RoleView.TOOL_START_READ, RoleView.TOOL_CITE),
                 recall == null ? null : new RoleView.RecallMetadata(recall.budgetTruncated()),
                 cognition);
+    }
+
+    private static List<InformationModel.CatalogEntry> withOwnCatalogReadTimes(
+            List<InformationModel.CatalogEntry> catalog, InformationModel.State information,
+            String person, long now) {
+        Map<String, InformationModel.CatalogEntry> visible = new LinkedHashMap<>();
+        catalog.forEach(entry -> visible.put(entry.docId(), entry));
+        for (var read : information.closed()) {
+            if (!person.equals(read.personPartyId()) || read.reason() != InformationModel.CloseReason.COMPLETED
+                    || read.closedAt() > now) continue;
+            var entry = visible.get(read.docId());
+            if (entry != null && entry.version() == read.version()
+                    && (entry.lastReadAtMillis() == null || entry.lastReadAtMillis() < read.closedAt())) {
+                visible.put(entry.docId(), new InformationModel.CatalogEntry(entry.docId(), entry.version(),
+                        entry.title(), entry.publisherPartyId(), entry.publishedAt(), read.closedAt()));
+            }
+        }
+        return List.copyOf(visible.values());
     }
 
     /**
@@ -25577,10 +25598,12 @@ public final class WorldRuntime implements AutoCloseable {
                 if (compactState()) {
                     if (previous != null && (previous.position() != commit.position() - 1 || !previous.runId().equals(commit.runId())))
                         throw new IOException("状态差量基准位置或运行不符");
-                    payload = StateDeltaCodec.apply(manifest.runId(), commit.position(),
+                    JsonNode checked = StateDeltaCodec.checkedTree(manifest.runId(), commit.position(),
                             previous == null ? null : stateCanonical().writeValueAsString(previous), payload);
+                    found = snapshotMapper.treeToValue(checked, WorldState.class);
+                } else {
+                    found = snapshotMapper.readValue(payload, WorldState.class);
                 }
-                found = snapshotMapper.readValue(payload, WorldState.class);
             } else if ("SECURITIES_REPORT_V1".equals(event.type())) {
                 reported.add(mapper.readValue(event.payload(), ActionReport.class));
             } else if ("EXCHANGE_ORDER_REPORT_V1".equals(event.type())) {
@@ -28830,6 +28853,28 @@ public final class WorldRuntime implements AutoCloseable {
         return snap.engineering().periodicOf(company);
     }
 
+    private void addBudgetWindow(com.fasterxml.jackson.databind.node.ObjectNode role, BoardModel.State board, long now) {
+        if (!"period-window-v1".equals(manifest.dataVersions().get("forward-budget-view"))) return;
+        long duration = ManufacturingTemplateModel.PERIOD_MILLIS;
+        long current = now / duration;
+        var window = role.putObject("budgetWindow");
+        window.put("source", "本公司董事会已实施的预算。期间内未列的类别尚无授权额度。");
+        var periods = window.putArray("periods");
+        for (long period = current; period <= current + 1; period++) {
+            var row = periods.addObject();
+            row.put("period", period);
+            row.put("startsAtMillis", period * duration);
+            row.put("endsAtExclusiveMillis", (period + 1) * duration);
+            var lines = row.putArray("lines");
+            for (var budget : board.budgets()) {
+                if (budget.period() != period) continue;
+                lines.addObject().put("category", budget.category().name())
+                        .put("cap", money(budget.cap()))
+                        .put("available", money(BoardModel.availableBudget(board, period, budget.category())));
+            }
+        }
+    }
+
     private JsonNode engineeringInput(WorldState snap, String person, long now) {
         if (!manifest.hasEngineering() || snap.engineering() == null || engineeringConfig == null) {
             return null;
@@ -28869,6 +28914,7 @@ public final class WorldRuntime implements AutoCloseable {
             if (seat != null) {
                 var node = directorships.addObject();
                 node.put("companyPartyId", company);
+                addBudgetWindow(node, boardRun.board(), now);
                 node.put("seatId", seat);
                 node.put("chair", seat.equals(charter.chairSeatId()));
                 if (RoleDeliberation.hasEvidence(manifest.dataVersions().get("role-context"))) {
@@ -28950,6 +28996,7 @@ public final class WorldRuntime implements AutoCloseable {
                 // 章程公司经理没有工程经营状态：只给本公司周期行（准备/授权/发布的依据）。
                 var node = managerships.addObject();
                 node.put("companyPartyId", company);
+                addBudgetWindow(node, boardRun.board(), now);
                 if (ManagerOperatingInformation.VERSION.equals(manifest.dataVersions().get("operating-information")))
                     ManagerOperatingInformation.addOpeningReference(node, company);
                 java.util.Optional<PeriodicModel.CompanyPeriods> periodicState =
@@ -28963,6 +29010,7 @@ public final class WorldRuntime implements AutoCloseable {
                 EngineeringModel.State state = snap.engineering().stateOf(company);
                 var node = managerships.addObject();
                 node.put("companyPartyId", company);
+                addBudgetWindow(node, boardRun.board(), now);
                 if (ManagerOperatingInformation.VERSION.equals(manifest.dataVersions().get("operating-information")))
                     ManagerOperatingInformation.addOpeningReference(node, company);
                 java.util.Optional<PeriodicModel.CompanyPeriods> periodicState =
@@ -29217,6 +29265,10 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (RoleDeliberation.isDeliberative(roleContext))
             RoleDeliberation.append(root, person, now, snap.decisions(), snap.pending());
+        if ("product-office-v1".equals(manifest.dataVersions().get("institutional-objectives"))
+                && snap.roles() != null) {
+            RoleDeliberation.appendInvestmentObjectives(root, snap.roles().access(), person, now);
+        }
         if (RoleDeliberation.isAccountable(roleContext))
             RoleActionFeedback.append(root, person, snap.decisions(), snap.pending(),
                     snap.engineering(), snap.companyOperations(), snap.information(), snap.trading());

@@ -31,6 +31,10 @@ public final class BankPersistence {
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .enable(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN);
 
+    private record ConfigRead(String json, BankConfig config) { }
+    // 相邻世界帧通常携带完全相同的冻结规则。单槽只复用已校验的规则，逐帧账簿仍独立解码。
+    private static volatile ConfigRead lastConfig;
+
     private BankPersistence() {
     }
 
@@ -57,6 +61,8 @@ public final class BankPersistence {
      */
     public static BankConfig readConfig(String json) {
         Objects.requireNonNull(json, "json");
+        ConfigRead last = lastConfig;
+        if (last != null && last.json().equals(json)) return last.config();
         BankConfigSnapshot snapshot;
         try {
             snapshot = MAPPER.readValue(json, BankConfigSnapshot.class);
@@ -64,7 +70,9 @@ public final class BankPersistence {
             throw new IllegalArgumentException("CONFIG_JSON_INVALID", failure);
         }
         try {
-            return snapshot.toConfig();
+            BankConfig config = snapshot.toConfig();
+            lastConfig = new ConfigRead(json, config);
+            return config;
         } catch (RuntimeException failure) {
             throw new IllegalArgumentException("CONFIG_INVALID:" + failure.getMessage(), failure);
         }

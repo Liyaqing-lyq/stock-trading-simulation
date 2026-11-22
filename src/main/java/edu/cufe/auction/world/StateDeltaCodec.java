@@ -36,6 +36,11 @@ final class StateDeltaCodec {
     }
 
     static String apply(String runId, long position, String previous, String payload) throws IOException {
+        return JSON.writeValueAsString(checkedTree(runId, position, previous, payload));
+    }
+
+    /** 已逐项校验的结果树可直接供强类型快照读取，避免再次转成整份文本。 */
+    static JsonNode checkedTree(String runId, long position, String previous, String payload) throws IOException {
         try {
             JsonNode record = JSON.readTree(payload);
             JsonNode before = previous == null ? NullNode.instance : canonical(JSON.readTree(previous));
@@ -47,11 +52,10 @@ final class StateDeltaCodec {
                     || !baseDigest.equals(record.path("baseDigest").asText()))
                 throw new IOException("状态差量版本、运行或基准不匹配");
             JsonNode after = patch(before, record.get("patch"));
-            String result = JSON.writeValueAsString(after);
             // 重建唯一规范记录，拒绝多余字段、重复/缺失操作、错误结果摘要及非规范操作形态。
             if (!JSON.readTree(encodeCanonical(runId, position, before, canonical(after), baseDigest)).equals(record))
                 throw new IOException("状态差量结果摘要或规范操作不匹配");
-            return result;
+            return after;
         } catch (RuntimeException invalid) { throw new IOException("状态差量结构不合法", invalid); }
     }
 

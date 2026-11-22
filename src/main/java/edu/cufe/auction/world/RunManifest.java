@@ -56,9 +56,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 分开记录发行人公开资料与经理本人财务资料的新经营档标识。 */
     public static final String COMPANY_INFORMATION_RUN_ID = "web-company-information-operating-v1";
 
+    /** 董事与在任经理可查本公司本期、下期已实施预算的经营档标识。 */
+    public static final String FORWARD_BUDGET_RUN_ID = "web-forward-budget-operating-v1";
+
+    /** 判断开局是否继承发行人登记资料及研发资料可见范围。 */
+    public static boolean usesCompanyInformationRules(String runId) {
+        return COMPANY_INFORMATION_RUN_ID.equals(runId) || FORWARD_BUDGET_RUN_ID.equals(runId);
+    }
+
     /** 判断运行是否使用同一套工程客户、数字履约和研发可用现金规则。 */
     public static boolean usesEngineeringCustomerRules(String runId) {
-        return EngineeringCustomerPolicy.RUN_ID.equals(runId) || COMPANY_INFORMATION_RUN_ID.equals(runId);
+        return EngineeringCustomerPolicy.RUN_ID.equals(runId) || usesCompanyInformationRules(runId);
     }
 
     /** 判断运行是否继承客户签约资金约束、董事权限及披露资料合同。 */
@@ -1087,7 +1095,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
-            if (COMPANY_INFORMATION_RUN_ID.equals(runId)) {
+            if (FORWARD_BUDGET_RUN_ID.equals(runId)) {
+                expectedData.put("forward-budget-view", "period-window-v1");
+                expectedData.put("institutional-objectives", "product-office-v1");
+                expectedData.put("catalog-read-receipts", "visible-version-v1");
+            }
+            if (usesCompanyInformationRules(runId)) {
                 expectedData.put("listing-disclosure", "opening-register-v1");
                 expectedData.put("research-evidence", "reader-gated-v1");
                 expectedData.put("research-cash-view", "available-v1");

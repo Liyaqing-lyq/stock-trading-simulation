@@ -471,6 +471,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("docId", entry.docId());
             node.put("version", entry.version());
             node.put("title", entry.title());
+            if (entry.lastReadAtMillis() != null) node.put("lastReadAtMillis", entry.lastReadAtMillis());
         }
         ArrayNode observations = profile.putArray("readExperiences");
         for (RoleView.Experience experience

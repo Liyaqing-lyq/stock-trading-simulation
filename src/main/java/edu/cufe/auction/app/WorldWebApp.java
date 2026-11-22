@@ -69,7 +69,8 @@ public final class WorldWebApp {
         }
 
         String mode = args.length > 3 ? args[3] : "live";
-        boolean companyInformationMode = mode.equals("world-company-information-operating");
+        boolean forwardBudgetMode = mode.equals("world-forward-budget-operating");
+        boolean companyInformationMode = mode.equals("world-company-information-operating") || forwardBudgetMode;
         boolean engineeringCustomerMode = mode.equals("world-engineering-customer-operating") || companyInformationMode;
         boolean personalMarketMode = mode.equals("world-personal-market-operating") || engineeringCustomerMode;
         boolean thinkingInformedOperatingMode = mode.equals("world-thinking-informed-operating") || personalMarketMode;
@@ -138,7 +139,8 @@ public final class WorldWebApp {
         }
         WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode))
                 ? new WorldWebHost(() -> {
-                    var runtime=companyInformationMode ? ComposedIndustryScenario.openCompanyInformationOperating(workDir.resolve("world-company-information-operating-v1.journal"))
+                    var runtime=forwardBudgetMode ? ComposedIndustryScenario.openForwardBudgetOperating(workDir.resolve("world-forward-budget-operating-v1.journal"))
+                            : companyInformationMode ? ComposedIndustryScenario.openCompanyInformationOperating(workDir.resolve("world-company-information-operating-v1.journal"))
                             : engineeringCustomerMode ? ComposedIndustryScenario.openEngineeringCustomerOperating(workDir.resolve("world-engineering-customer-operating-v1.journal"))
                             : personalMarketMode ? ComposedIndustryScenario.openPersonalMarketOperating(workDir.resolve("world-personal-market-operating-v1.journal"))
                             : thinkingInformedOperatingMode ? openThinkingOperating(workDir)

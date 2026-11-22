@@ -277,9 +277,22 @@ public final class ComposedIndustryScenario {
      * @throws Exception 开局或冻结合同不匹配
      */
     public static WorldRuntime openCompanyInformationOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.COMPANY_INFORMATION_RUN_ID);
+    }
+
+    /** 打开董事与在任经理可查询跨期预算的经营档。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 开局或冻结合同不匹配
+     */
+    public static WorldRuntime openForwardBudgetOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.FORWARD_BUDGET_RUN_ID);
+    }
+
+    private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
         return open(journal, true, true, true, true, false, false, true, true,
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true,
-                RunManifest.COMPANY_INFORMATION_RUN_ID);
+                runId);
     }
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating) throws Exception {
@@ -450,7 +463,12 @@ public final class ComposedIndustryScenario {
                 data.put("belief-company-scope", "manufacturing-orders-v1");
                 data.put("research-manager-view", "project-state-v1");
             }
-            if (RunManifest.COMPANY_INFORMATION_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.FORWARD_BUDGET_RUN_ID.equals(thinkingRunId)) {
+                data.put("forward-budget-view", "period-window-v1");
+                data.put("institutional-objectives", "product-office-v1");
+                data.put("catalog-read-receipts", "visible-version-v1");
+            }
+            if (RunManifest.usesCompanyInformationRules(thinkingRunId)) {
                 data.put("listing-disclosure", "opening-register-v1");
                 data.put("research-evidence", "reader-gated-v1");
                 data.put("research-cash-view", "available-v1");

@@ -292,6 +292,7 @@ public record Clue(String name, String url, String doc) {
     }
 
     private static final List<String> ALL_ACTIONS = BankRules.ENFORCEMENT_ACTIONS;
+    private volatile String fingerprint;
     private final String archiveId;
     private final int version;
     private final String label;
@@ -630,6 +631,15 @@ public record Clue(String name, String url, String doc) {
      * @return SHA-256 十六进制
      */
     public String fingerprint() {
+        String existing = fingerprint;
+        if (existing == null) {
+            existing = computeFingerprint();
+            fingerprint = existing;
+        }
+        return existing;
+    }
+
+    private String computeFingerprint() {
         StringBuilder sb = new StringBuilder();
         sb.append("id=").append(archiveId).append("|v=").append(version)
                 .append("|label=").append(label).append('\n');
