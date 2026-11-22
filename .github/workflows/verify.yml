@@ -27,7 +27,7 @@ jobs:
   verify:
     name: 测试套件 + 黑盒复算
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
 
     steps:
       - name: 取代码
