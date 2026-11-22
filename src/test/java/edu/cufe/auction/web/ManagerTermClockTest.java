@@ -52,6 +52,55 @@ class ManagerTermClockTest {
         assertEquals(300, WorldWebHost.nextManagerTermBoundary(appointments, 130, 300));
     }
 
+    @Test void meetingShowsFiledAppointmentAndRevocationSeparatelyFromActiveOffice() throws Exception {
+        var runtime = new AtomicReference<WorldRuntime>();
+        try (var host = new WorldWebHost(() -> {
+            var world = open(dir.resolve("proposal.journal"), true);
+            runtime.set(world);
+            return new WorldWebHost.Opened(world, world.profile().manifest().runId());
+        })) {
+            host.adminSnapshot();
+            host.call(() -> {
+                register(runtime.get(), START + 30_000);
+                assertFalse(runtime.get().isActiveManager(COMPANY, MANAGER, 30_000));
+                return null;
+            });
+            JsonNode company = JSON.valueToTree(host.engineeringView(COMPANY).meetings().rows().get(0));
+            JsonNode proposal = company.path("appointmentRequest");
+            assertEquals("APPOINT", proposal.path("action").asText());
+            assertEquals(MANAGER, proposal.path("personPartyId").asText());
+            assertEquals("100000", proposal.path("effectiveAt").textValue());
+            assertEquals("130000", proposal.path("endsAt").textValue());
+            JsonNode chair = JSON.valueToTree(host.personEngineering("aged-company-director-1").companies());
+            assertEquals(proposal, chair.findValue("appointmentRequest"));
+            JsonNode outsider = JSON.valueToTree(host.personEngineering("investor").companies());
+            assertNull(outsider.findValue("appointmentRequest"));
+
+            host.call(() -> {
+                var world = runtime.get();
+                String meeting = "term-revoke";
+                String chairId = BaselineIndustryConfig.directors(COMPANY).get(0);
+                world.scheduleCompanyBoardConvene("convene-revoke", "revoke-convene-task", START + 1000,
+                        COMPANY, chairId, meeting, START + 2000, START + 3000, START + 4000, true);
+                world.scheduleCompanyBoardAttend("attend-revoke", "revoke-attend-task", START + 1001,
+                        COMPANY, chairId, meeting);
+                world.scheduleCompanyBoardMaterial("revoke-material", "revoke-material-task", START + 1010,
+                        COMPANY, chairId, meeting, "m-revoke", RoleEvidenceDocuments.documentId(COMPANY), 1);
+                world.scheduleCompanyBoardAppointmentProposal("revoke-proposal", "revoke-proposal-task", START + 1020,
+                        COMPANY, chairId, meeting, new BoardModel.AppointmentRequest("term-manager", MANAGER, COMPANY,
+                        RoleAccess.Role.COMPANY_MANAGER, BoardModel.AppointmentAction.REVOKE, START + 6000, null));
+                world.advanceTo(START + 1020);
+                assertTrue(world.isActiveManager(COMPANY, MANAGER, START + 1020));
+                return null;
+            });
+            JsonNode revocation = JSON.valueToTree(host.engineeringView(COMPANY).meetings().rows().get(0));
+            assertEquals("CONVENED", revocation.path("status").asText());
+            assertEquals("REVOKE", revocation.at("/appointmentRequest/action").asText());
+            assertEquals("106000", revocation.at("/appointmentRequest/effectiveAt").textValue());
+            assertTrue(revocation.at("/appointmentRequest/endsAt").isNull());
+        }
+    }
+
     private void runWorld(String label, long duration, boolean tracked) throws Exception {
         Path runDir = Files.createDirectory(dir.resolve(label));
         Path journal = runDir.resolve("world.journal");

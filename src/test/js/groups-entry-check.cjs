@@ -46,7 +46,7 @@ for(const name of ["clearAdminDom","clearPersonDom","clearPersonalMedia","clearP
  "clearOperationsDom","placeOperationsPanel","loadOperations",
  "clearManufacturingDom","placeManufacturingPanel","loadManufacturing"]) context[name]=()=>{};
 vm.createContext(context);
-for(const name of ["showMode","enterPerson","refreshPerson"]) vm.runInContext(sourceFunction(name),context);
+for(const name of ["showMode","enterPerson","renderPersonalReports","refreshPerson"]) vm.runInContext(sourceFunction(name),context);
 vm.runInContext(fs.readFileSync(path.join(root,"groups.js"),"utf8"),context);
 (async()=>{
  await context.enterPerson("alice");

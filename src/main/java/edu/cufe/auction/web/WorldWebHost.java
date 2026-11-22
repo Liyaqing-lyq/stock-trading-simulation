@@ -1932,7 +1932,7 @@ public final class WorldWebHost implements AutoCloseable {
                     row.put("attendees", String.join(",", meeting.attendeeSeatIds()));
                     row.put("recused", String.join(",", meeting.recusedSeatIds()));
                     row.put("materialCount", Integer.toString(meeting.materials().size()));
-                    row.put("proposedLines", proposedLines(meeting.proposedLines()));
+                    putMeetingProposal(row, meeting, true);
                     row.put("ballots", ballots(meeting.ballots()));
                     row.put("failureReason", meeting.failureReason());
                     row.put("dividendSchemeId", meeting.dividendProposal() == null
@@ -7737,6 +7737,24 @@ public final class WorldWebHost implements AutoCloseable {
         return null;
     }
 
+    private static boolean showAppointmentRequest(WorldRuntime current) {
+        return "v1".equals(current.profile().manifest().dataVersions().get("role-decision-guide"));
+    }
+
+    private static void putMeetingProposal(Map<String, Object> row, BoardModel.Meeting meeting,
+                                           boolean showAppointment) {
+        row.put("proposedLines", proposedLines(meeting.proposedLines()));
+        if (!showAppointment || meeting.appointmentProposal() == null) return;
+        var request = meeting.appointmentProposal().request();
+        Map<String, Object> appointment = new LinkedHashMap<>();
+        appointment.put("appointmentId", request.appointmentId());
+        appointment.put("personPartyId", request.personPartyId());
+        appointment.put("action", request.action().name());
+        appointment.put("effectiveAt", num(request.effectiveAt()));
+        appointment.put("endsAt", request.endsAt() == null ? null : num(request.endsAt()));
+        row.put("appointmentRequest", appointment);
+    }
+
     private static Map<String, Object> meetingRow(BoardModel.Meeting meeting) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("meetingId", meeting.meetingId());
@@ -7750,7 +7768,7 @@ public final class WorldWebHost implements AutoCloseable {
         row.put("attendees", String.join(",", meeting.attendeeSeatIds()));
         row.put("recused", String.join(",", meeting.recusedSeatIds()));
         row.put("materialCount", Integer.toString(meeting.materials().size()));
-        row.put("proposedLines", proposedLines(meeting.proposedLines()));
+        putMeetingProposal(row, meeting, true);
         row.put("ballots", ballots(meeting.ballots()));
         row.put("failureReason", meeting.failureReason());
         return row;
@@ -7940,7 +7958,7 @@ public final class WorldWebHost implements AutoCloseable {
                         }
                         row.put("tally", "yes=" + yes + ",no=" + no + ",abstain=" + abstain);
                         row.put("materials", Integer.toString(meeting.materials().size()));
-                        row.put("proposedLines", proposedLines(meeting.proposedLines()));
+                        putMeetingProposal(row, meeting, showAppointmentRequest(current));
                         row.put("failureReason", meeting.failureReason());
                         meetings.add(row);
                     }
@@ -8060,7 +8078,7 @@ public final class WorldWebHost implements AutoCloseable {
             }
             row.put("tally", "yes=" + yes + ",no=" + no + ",abstain=" + abstain);
             row.put("materials", Integer.toString(meeting.materials().size()));
-            row.put("proposedLines", proposedLines(meeting.proposedLines()));
+            putMeetingProposal(row, meeting, showAppointmentRequest(current));
             row.put("failureReason", meeting.failureReason());
             meetings.add(row);
         }

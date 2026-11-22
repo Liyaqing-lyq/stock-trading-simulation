@@ -1862,7 +1862,7 @@ $("market-refresh").addEventListener("click", () => guard(loadMarketHistory()));
 // ---------------------------------------------------------------- 管理详情页（公司 / 表现 / 人物任职 / 信息阅读）
 
 const LABELS = {
-  topic: { BUDGET: "预算授权", OPERATING_REVIEW: "经营考核", DIVIDEND_AUTHORIZATION: "分红授权" },
+  topic: { MANAGER_APPOINTMENT: "经理任免", BUDGET: "预算授权", OPERATING_REVIEW: "经营考核", DIVIDEND_AUTHORIZATION: "分红授权" },
   meeting: { CONVENED: "已召集", MATERIALS_FROZEN: "材料已冻结", REVIEWED: "已评分", VOTING: "表决中",
     ADOPTED: "已通过", REJECTED: "未通过", ADJOURNED_NO_QUORUM: "不足法定人数",
     IMPLEMENTED: "已实施", IMPLEMENTATION_FAILED: "实施失败" },
@@ -2627,7 +2627,7 @@ function renderCompany(view) {
     cell(tr, (row.ballots || "").split(";").filter(Boolean)
       .map(item => { const [seat, vote] = item.split("="); return seat + "=" + label("vote", vote); })
       .join("；"));
-    cell(tr, row.proposedLines);
+    cell(tr, meetingProposalText(row));
     cell(tr, row.failureReason || row.dividendSchemeId);
   });
   fillSection("company-meetings-empty", "company-meetings-count", view.meetings);
@@ -4914,6 +4914,16 @@ const ENGINEERING_KIND_TEXT = {
   CONVENE_WAIVER: "召集豁免会", PROPOSE_WAIVER: "豁免提案"
 };
 
+function meetingProposalText(row) {
+  const request = row.appointmentRequest;
+  if (!request) return row.proposedLines || "—";
+  if (request.action === "REVOKE") {
+    return "拟撤销 " + request.personPartyId + " 的任职，生效时点 " + worldTimeText(request.effectiveAt);
+  }
+  return "拟任命 " + request.personPartyId + "，任期从 " + worldTimeText(request.effectiveAt)
+    + " 至 " + worldTimeText(request.endsAt);
+}
+
 function engineeringToolLabel(value) {
   return ENGINEERING_TOOL_LABELS[value] || value || "—";
 }
@@ -5478,7 +5488,7 @@ function renderEngineering(view) {
 
   fillTable("engineering-meetings", (view.meetings || {}).rows, (tr, row) => {
     cell(tr, row.meetingId);
-    cell(tr, engineeringTerm(row.topic, ENGINEERING_KIND_TEXT));
+    cell(tr, label("topic", row.topic));
     cell(tr, row.status);
     cell(tr, row.materialDeadline, "num");
     cell(tr, row.opensAt, "num");
@@ -5486,7 +5496,7 @@ function renderEngineering(view) {
     cell(tr, row.attendees);
     cell(tr, row.recused);
     cell(tr, row.ballots);
-    cell(tr, row.proposedLines);
+    cell(tr, meetingProposalText(row));
     cell(tr, row.failureReason);
   });
   fillSection("engineering-meetings-empty", "engineering-meetings-count", view.meetings);
@@ -5815,11 +5825,11 @@ function fillPersonalEngineeringCompanies(companies) {
 
     if (company.seatId) {
       card.appendChild(engineeringTable("我参与或召集的会议（他人选票只给计数）",
-        ["会议", "议题", "状态", "我的角色", "我的票", "计数", "材料", "预算请求", "结果"],
+        ["会议", "议题", "状态", "我的角色", "我的票", "计数", "材料", "提案", "结果"],
         (company.meetings || []).map(row => [row.meetingId,
-          engineeringTerm(row.topic, ENGINEERING_KIND_TEXT), row.status,
+          label("topic", row.topic), row.status,
           row.role === "CONVENER" ? "召集" : row.role === "RECUSED" ? "回避" : "到会",
-          row.myVote || "未投", row.tally, row.materials, row.proposedLines, row.failureReason])));
+          row.myVote || "未投", row.tally, row.materials, meetingProposalText(row), row.failureReason])));
     }
 
     const periodicHead = document.createElement("h4");
