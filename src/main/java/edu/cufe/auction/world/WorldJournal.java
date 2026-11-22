@@ -199,6 +199,13 @@ public final class WorldJournal implements AutoCloseable {
                 ? java.util.Optional.of(candidate) : java.util.Optional.empty();
     }
 
+    /** 精确读取现有非快照索引；越界为空，不读取或重建历史状态。 */
+    synchronized java.util.Optional<WorldCommit> nonSnapshotCommitAt(long position) {
+        if (position <= base || position - base > history.size()) return java.util.Optional.empty();
+        WorldCommit candidate = history.get((int) (position - base - 1));
+        return candidate.position() == position ? java.util.Optional.of(candidate) : java.util.Optional.empty();
+    }
+
     /**
      * 按位置升序读取一段已确认批次，只复制被选中的条目。须在日志打开期间调用；
      * 读取失败以 {@link java.io.UncheckedIOException} 传播。

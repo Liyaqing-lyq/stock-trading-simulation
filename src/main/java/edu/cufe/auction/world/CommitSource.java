@@ -25,6 +25,11 @@ interface CommitSource {
     /** @param position 确认位置 @return 该位置批次；不存在时为空 */
     Optional<WorldCommit> commitAt(long position);
 
+    /** 精确位置的非快照事件，不解码历史状态。 */
+    default Optional<WorldCommit> nonSnapshotCommitAt(long position) {
+        return commitAt(position).map(WorldJournal::withoutSnapshot);
+    }
+
     /**
      * @param afterPosition 严格大于该位置
      * @param limit         最多条数，必须为正
@@ -54,6 +59,9 @@ final class JournalCommitSource implements CommitSource {
 
     @Override
     public List<WorldCommit> nonSnapshotCommits() { return journal.nonSnapshotCommits(); }
+
+    @Override
+    public Optional<WorldCommit> nonSnapshotCommitAt(long position) { return journal.nonSnapshotCommitAt(position); }
 
     @Override
     public Optional<WorldCommit> commitAt(long position) {
@@ -190,6 +198,15 @@ final class BranchCommitSource implements CommitSource {
             return candidate.position() == position ? Optional.of(candidate) : Optional.empty();
         }
         return journal.commitAt(position);
+    }
+
+    @Override
+    public Optional<WorldCommit> nonSnapshotCommitAt(long position) {
+        if (position >= 1 && position <= prefix.size()) {
+            WorldCommit candidate = prefix.get((int) (position - 1));
+            return candidate.position() == position ? Optional.of(WorldJournal.withoutSnapshot(candidate)) : Optional.empty();
+        }
+        return journal.nonSnapshotCommitAt(position);
     }
 
     @Override

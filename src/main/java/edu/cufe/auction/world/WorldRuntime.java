@@ -29002,6 +29002,9 @@ public final class WorldRuntime implements AutoCloseable {
         if (RoleDeliberation.isAccountable(roleContext))
             RoleActionFeedback.append(root, person, snap.decisions(), snap.pending(),
                     snap.engineering(), snap.companyOperations(), snap.information(), snap.trading());
+        if (RoleDeliberation.isAccountable(roleContext))
+            GroupActionFeedback.append(root, person, snap.decisions(), snap.pending(), snap.groups(),
+                    snap.position(), snap.timeMillis(), commitSource::nonSnapshotCommitAt, this::groupFeedbackIdentity);
         if (RoleDeliberation.CONTEXTUAL_VERSION.equals(roleContext))
             RoleGovernanceOutcomeContext.append(root, person, now, snap.decisions(), snap.engineering(), snap.roles(), company -> {
                 BoardRun board = PeriodicWorldEngine.boardOf(snap.engineering(), snap.governance(), company);
@@ -32908,6 +32911,22 @@ public final class WorldRuntime implements AutoCloseable {
                 return null;
             }
         }
+    }
+
+    /** 沿既有群正文解析器读取身份；带角色外壳时同时核对本人原动作绑定。 */
+    private GroupActionFeedback.Identity groupFeedbackIdentity(PendingTask task, String action, String person) {
+        GroupTaskPayload body = groupBody(task);
+        if (body == null) return null;
+        try {
+            var json = mapper.readTree(task.payload());
+            if (json.has("clientCommandId") || json.has("clientTaskId") || json.has("personPartyId")) {
+                RoleActionPayload wrapper = mapper.readValue(task.payload(), RoleActionPayload.class);
+                if (!person.equals(wrapper.personPartyId()) || !action.equals(wrapper.clientCommandId())
+                        || !action.equals(wrapper.clientTaskId()) || !body.commandId().equals(wrapper.commandId())
+                        || !task.kind().equals(wrapper.kind()) || task.dueTimeMillis() != wrapper.dueMillis()) return null;
+            }
+        } catch (IOException malformed) { return null; }
+        return new GroupActionFeedback.Identity(body.person(), body.commandId(), body.action());
     }
 
     /**
