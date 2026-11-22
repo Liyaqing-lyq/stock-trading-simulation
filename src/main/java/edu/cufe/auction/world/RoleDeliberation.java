@@ -5,7 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** 显式角色目标、本人执行反馈与简短决定依据；不选择候选、选票、预算或订单。 */
@@ -24,6 +27,63 @@ public final class RoleDeliberation {
     public static boolean isPlanning(String version) { return PLANNING_VERSION.equals(version) || CONTEXTUAL_VERSION.equals(version); }
     /** @param version 冻结版本 @return 是否保留权威反馈和单人故障隔离 */
     public static boolean isAccountable(String version) { return ACCOUNTABLE_VERSION.equals(version) || isPlanning(version); }
+    // 恢复中的不同世界各有独立作用域。只保留原始输入决定的校验参数，回复始终重新验证。
+    private static final ThreadLocal<ReplayInputs> REPLAY_INPUTS = new ThreadLocal<>();
+
+    static final class ReplayInputs implements AutoCloseable {
+        private static final int MAX_INPUTS = 1024;
+        private static final int MAX_CHARACTERS = 32 * 1024 * 1024;
+        private static final int MAX_OBJECTIVES_PER_INPUT = 64;
+        private final ReplayInputs previous = REPLAY_INPUTS.get();
+        private final Map<String, InputFacts> inputs = new HashMap<>();
+        private int characters;
+
+        ReplayInputs() {
+            REPLAY_INPUTS.set(this);
+        }
+
+        private InputFacts facts(String text) {
+            InputFacts known = inputs.get(text);
+            if (known != null) return known;
+            InputFacts facts = inputFacts(text);
+            // 满额后仍完整解析。常驻较早的输入可在复查累积历史时继续使用。
+            if (inputs.size() < MAX_INPUTS && facts.objectives().size() <= MAX_OBJECTIVES_PER_INPUT) {
+                long size = text.length();
+                for (String objective : facts.objectives()) size += objective.length();
+                if (size <= MAX_CHARACTERS - characters) {
+                    inputs.put(text, facts);
+                    characters += (int) size;
+                }
+            }
+            return facts;
+        }
+
+        @Override public void close() {
+            inputs.clear();
+            characters = 0;
+            if (previous == null) REPLAY_INPUTS.remove();
+            else REPLAY_INPUTS.set(previous);
+        }
+    }
+
+    private record InputFacts(boolean deliberative, boolean planning, long time, Set<String> objectives) {
+        private static final InputFacts LEGACY = new InputFacts(false, false, 0L, Set.of());
+    }
+
+    private static InputFacts inputFacts(String text) {
+        JsonNode input;
+        try { input = JSON.readTree(text); } catch (java.io.IOException invalid) { return InputFacts.LEGACY; }
+        if (input == null) return InputFacts.LEGACY;
+        JsonNode engineering = input.path("engineering");
+        String version = engineering.path("roleContextVersion").asText();
+        if (!isDeliberative(version)) return InputFacts.LEGACY;
+        Set<String> objectives = new HashSet<>();
+        for (JsonNode goal : engineering.path("deliberation").path("objectives")) {
+            objectives.add(goal.path("id").asText());
+        }
+        return new InputFacts(true, isPlanning(version), input.path("time").asLong(), Set.copyOf(objectives));
+    }
+
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long MONTH = ManufacturingTemplateModel.PERIOD_MILLIS;
     private RoleDeliberation() { }
@@ -153,12 +213,12 @@ public final class RoleDeliberation {
      * @throws IllegalArgumentException 新版声明非法
      */
     public static JsonNode validatedAction(String inputText, JsonNode reply) {
-        JsonNode input;
-        try { input = JSON.readTree(inputText); } catch (java.io.IOException bad) { return reply; }
-        if (input == null || !isDeliberative(input.path("engineering").path("roleContextVersion").asText())) return reply;
+        var inputs = REPLAY_INPUTS.get();
+        InputFacts facts = inputs == null ? inputFacts(inputText) : inputs.facts(inputText);
+        if (!facts.deliberative()) return reply;
         if (reply == null || !reply.isObject()) throw new IllegalArgumentException("BAD_DELIBERATION");
         var statement = reply.path("decision");
-        boolean planning = isPlanning(input.path("engineering").path("roleContextVersion").asText());
+        boolean planning = facts.planning();
         String reviewField = planning ? "reviewAfterMillis" : "nextReviewAt";
         Set<String> fields = new java.util.HashSet<>(); statement.fieldNames().forEachRemaining(fields::add);
         if (!statement.isObject() || !fields.equals(Set.of("objective", "basis", reviewField))
@@ -166,10 +226,8 @@ public final class RoleDeliberation {
                 || statement.path("basis").asText().isBlank() || statement.path("basis").asText().length() > 600
                 || !statement.path(reviewField).isIntegralNumber() || !statement.path(reviewField).canConvertToLong())
             throw new IllegalArgumentException("BAD_DELIBERATION");
-        boolean own = false;
-        for (var goal : input.path("engineering").path("deliberation").path("objectives"))
-            if (goal.path("id").asText().equals(statement.path("objective").asText())) own = true;
-        long now = input.path("time").asLong(), review = statement.path(reviewField).asLong();
+        boolean own = facts.objectives().contains(statement.path("objective").asText());
+        long now = facts.time(), review = statement.path(reviewField).asLong();
         if (planning) {
             if (!own || review <= 0 || review > MONTH) throw new IllegalArgumentException("BAD_DELIBERATION");
             try { Math.addExact(now, review); } catch (ArithmeticException overflow) { throw new IllegalArgumentException("BAD_DELIBERATION", overflow); }

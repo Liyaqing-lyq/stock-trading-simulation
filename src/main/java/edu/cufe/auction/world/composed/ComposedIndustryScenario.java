@@ -329,6 +329,11 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.ROLE_TABLE_RUN_ID);
     }
 
+    /** 开启保留角色紧凑表格并区分水电已结物量与电费的新经营档。 */
+    public static WorldRuntime openHydroSettlementOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.HYDRO_SETTLEMENT_RUN_ID);
+    }
+
     private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
         return open(journal, true, true, true, true, false, false, true, true,
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true,
@@ -503,7 +508,10 @@ public final class ComposedIndustryScenario {
                 data.put("belief-company-scope", "manufacturing-orders-v1");
                 data.put("research-manager-view", "project-state-v1");
             }
-            if (RunManifest.ROLE_TABLE_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.HYDRO_SETTLEMENT_RUN_ID.equals(thinkingRunId)) {
+                data.put(HydroDecisionTools.SETTLEMENT_POLICY, HydroDecisionTools.SETTLEMENT_VERSION);
+            }
+            if (RunManifest.usesRoleTables(thinkingRunId)) {
                 data.put(edu.cufe.auction.world.RoleInputTables.POLICY, edu.cufe.auction.world.RoleInputTables.VERSION);
             }
             if (RunManifest.usesIssuerReportRules(thinkingRunId)) {

@@ -1269,12 +1269,12 @@ public final class HydroModel {
         return value.min(cost);
     }
 
-    private static BigDecimal revenue(Config config, BigDecimal deliveredKilowattHours) {
+    static BigDecimal revenue(Config config, BigDecimal deliveredKilowattHours) {
         return deliveredKilowattHours.multiply(config.contract().pricePerKilowattHour())
                 .setScale(2, RoundingMode.HALF_UP);
     }
 
-    private static BigDecimal receivable(Config config, Plant plant) {
+    static BigDecimal receivable(Config config, Plant plant) {
         return CashLedger.money(revenue(config, plant.deliveredKilowattHours())
                 .subtract(plant.collectedCash()));
     }

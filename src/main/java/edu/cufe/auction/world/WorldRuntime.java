@@ -24428,19 +24428,21 @@ public final class WorldRuntime implements AutoCloseable {
                 || !"OPENED".equals(first.result())) {
             throw new IOException("运行清单或开局现金与持久记录不一致");
         }
-        WorldState previous = null;
-        for (WorldCommit commit : commits) {
-            WorldState snapshot = decodeSnapshot(commit, previous);
-            validate(snapshot, commit, previous);
-            validateAudits(commit, snapshot, previous);
-            if (previous == null && !expectedInitial.equals(snapshot)) {
-                throw new IOException("开局快照与期望开局状态不一致（必须等于清单绑定的初始资产）："
-                        + initialDifference(expectedInitial, snapshot));
+        try (var inputs = new RoleDeliberation.ReplayInputs()) {
+            WorldState previous = null;
+            for (WorldCommit commit : commits) {
+                WorldState snapshot = decodeSnapshot(commit, previous);
+                validate(snapshot, commit, previous);
+                validateAudits(commit, snapshot, previous);
+                if (previous == null && !expectedInitial.equals(snapshot)) {
+                    throw new IOException("开局快照与期望开局状态不一致（必须等于清单绑定的初始资产）："
+                            + initialDifference(expectedInitial, snapshot));
+                }
+                rememberVerifiedInformation(commit, snapshot);
+                previous = snapshot;
             }
-            rememberVerifiedInformation(commit, snapshot);
-            previous = snapshot;
+            return previous;
         }
-        return previous;
     }
 
     /**
@@ -29248,10 +29250,15 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (hydroDecisionEnabled() && snap.companyOperations() != null && snap.companyOperations().hydro() != null) {
             var hydro=snap.companyOperations().hydro();
-            if (activeManager(snap.roles(),person,hydro.companyPartyId(),now)) root.set("hydroOperations",
-                    HydroDecisionTools.observation(hydro,snap.companyGovernance().boardOf(hydro.companyPartyId()),
-                            snap.accounts().get(hydro.config().model().companyAccountId()).cash(),
-                            CompanyOperationsDecisionTools.reports(snap.companyOperations(), hydro.companyPartyId(), positionOrderedOperationsReports())));
+            if (activeManager(snap.roles(),person,hydro.companyPartyId(),now)) {
+                var operating = (com.fasterxml.jackson.databind.node.ObjectNode) HydroDecisionTools.observation(
+                        hydro, snap.companyGovernance().boardOf(hydro.companyPartyId()),
+                        snap.accounts().get(hydro.config().model().companyAccountId()).cash(),
+                        CompanyOperationsDecisionTools.reports(snap.companyOperations(), hydro.companyPartyId(), positionOrderedOperationsReports()));
+                if (HydroDecisionTools.SETTLEMENT_VERSION.equals(manifest.dataVersions().get(HydroDecisionTools.SETTLEMENT_POLICY)))
+                    operating.set("settlement", HydroDecisionTools.settlement(hydro.ledger()));
+                root.set("hydroOperations", operating);
+            }
         }
         if (resourceDecisionEnabled() && snap.companyOperations() != null && snap.companyOperations().resource() != null) {
             var resource = snap.companyOperations().resource();
