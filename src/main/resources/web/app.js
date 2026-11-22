@@ -203,6 +203,9 @@ function clearPersonDom() {
     fillTable(id, [], () => undefined);
   }
   $("person-catalog").textContent = "";
+  $("person-public-reports").hidden = true;
+  $("person-report-versions").replaceChildren();
+  $("person-report-feedback").textContent = "";
   setMessage("person-error", "");
 }
 
@@ -631,6 +634,43 @@ async function refreshPerson() {
   await renderPersonalEvidence(generation);
   await renderPersonalSocial(generation);
   await renderPersonalEngineering(generation);
+  if (isCurrent(generation) && state.mode === "person") renderPersonalReports(view.publicReports || []);
+}
+
+function renderPersonalReports(reports) {
+  const list = $("person-report-versions");
+  list.replaceChildren();
+  $("person-public-reports").hidden = !reports.length;
+  for (const report of reports) {
+    const row = document.createElement("details");
+    const summary = document.createElement("summary");
+    const read = report.lastReadAt !== undefined;
+    summary.textContent = report.companyName + " · 第" + report.period + "期 · 公开 v" + report.version
+      + (read ? " · 已读" : " · 未读");
+    const source = document.createElement("p");
+    source.textContent = report.title + " · " + report.docId + " · 签发人 " + report.publisherName
+      + "（" + report.publisherPersonId + "） · 发布时间 " + worldTimeText(report.publishedAt);
+    row.append(summary, source);
+    if (read) {
+      const receipt = document.createElement("p");
+      receipt.textContent = "本人最后读完 " + worldTimeText(report.lastReadAt)
+        + (report.body === undefined ? " · 当前无法回忆正文" : "");
+      row.appendChild(receipt);
+    }
+    if (report.body !== undefined) {
+      const body = document.createElement("pre");
+      body.textContent = report.body;
+      row.appendChild(body);
+    } else {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = read ? "重新阅读此版本" : "阅读此版本";
+      button.addEventListener("click", () => guard(scheduleDocumentReading(report.companyId,
+        report.docId, report.version, report.title, "person-report-feedback")));
+      row.appendChild(button);
+    }
+    list.appendChild(row);
+  }
 }
 
 async function switchPerson(personId) {
@@ -6417,10 +6457,10 @@ function engineeringActionBody(tool, values) {
  * 排程一次真实阅读：只用于当前会话人物；读完与否仍由信息模块在到期时判定。
  * 传入的文档与版本必须来自本人卡片/本人投影，页面不代造标识。
  */
-async function scheduleDocumentReading(companyId, docId, version, label) {
+async function scheduleDocumentReading(companyId, docId, version, label, feedbackId) {
   const view = state.personEngineering || {};
   if (!view.position) {
-    setMessage("engineering-action-error", "当前没有可用的世界位置，请刷新后再试。");
+    setMessage(feedbackId || "engineering-action-error", "当前没有可用的世界位置，请刷新后再试。");
     return;
   }
   state.engineeringSubmitSeq = (state.engineeringSubmitSeq || 0) + 1;
@@ -6436,21 +6476,21 @@ async function scheduleDocumentReading(companyId, docId, version, label) {
       version: String(version)
     });
   } catch (failure) {
-    setMessage("engineering-action-error", failure.message);
+    setMessage(feedbackId || "engineering-action-error", failure.message);
     return;
   }
   if (result.status === 401) { sessionLost(); return; }
   if (result.status === 409) {
-    setMessage("engineering-action-error", "世界已推进到新的确认位置，请刷新后再排程阅读。");
+    setMessage(feedbackId || "engineering-action-error", "世界已推进到新的确认位置，请刷新后再排程阅读。");
     return;
   }
   if (result.status !== 200 || !result.payload) {
     const reason = result.payload && result.payload.message ? result.payload.message
       : "服务返回 " + result.status;
-    setMessage("engineering-action-error", "阅读排程被拒绝：" + reason);
+    setMessage(feedbackId || "engineering-action-error", "阅读排程被拒绝：" + reason);
     return;
   }
-  setMessage("engineering-action-result", "已排程阅读：公司 " + companyId + " · " + label
+  setMessage(feedbackId || "engineering-action-result", "已排程阅读：公司 " + companyId + " · " + label
     + " v" + version + " · 命令 " + result.payload.receipt
     + "。世界推进到阅读完成后再刷新，才会显示“本人已读完”。");
   await renderPersonalEngineering(state.generation);

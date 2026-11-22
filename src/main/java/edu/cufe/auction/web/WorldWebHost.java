@@ -330,6 +330,10 @@ public final class WorldWebHost implements AutoCloseable {
     // 比较本人可见的具体事实；世界时间或观察时点自身变化不触发全体付费调用。
     private com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
         var facts = (com.fasterxml.jackson.databind.node.ObjectNode) input.deepCopy();
+        if (edu.cufe.auction.world.RoleInputTables.VERSION.equals(runtime.profile().manifest().dataVersions()
+                .get(edu.cufe.auction.world.RoleInputTables.POLICY))) {
+            edu.cufe.auction.world.RoleInputTables.expand(facts);
+        }
         facts.remove(List.of("time", "observedAt", "wakeReason", "pendingActions"));
         if (facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
             delib.remove(List.of("reviewBounds", "recentDecisions"));
@@ -834,7 +838,8 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     /** 个人页面在同一截止取角色投影与可选采编数据；旧档案media为空。 */
-    public record PersonPage(RoleView view, Map<String, Object> media) { }
+    public record PersonPage(RoleView view, Map<String, Object> media,
+                             List<Map<String, Object>> publicReports) { }
 
     /**
      * 读取指定已验证人物的个人页面；正文仅取实际可回忆经历，不查管理端原件。
@@ -846,9 +851,10 @@ public final class WorldWebHost implements AutoCloseable {
         return call(() -> {
             WorldRuntime current = readyNow();
             var snapshot = current.snapshot();
-            if (snapshot.media().isEmpty()) return new PersonPage(current.roleView(personId), null);
-            RoleTradingView trading = current.openRoleSession(personId).view();
-            RoleView view = trading.profile();
+            RoleTradingView trading = snapshot.media().isPresent() ? current.openRoleSession(personId).view() : null;
+            RoleView view = trading == null ? current.roleView(personId) : trading.profile();
+            var publicReports = CompanyPublications.personalReports(current, snapshot, view);
+            if (trading == null) return new PersonPage(view, null, publicReports);
             List<Map<String, Object>> stories = new ArrayList<>();
             Set<String> visibleStories = new LinkedHashSet<>();
             for (RoleTradingView.MediaStory story : trading.media()) {
@@ -886,7 +892,7 @@ public final class WorldWebHost implements AutoCloseable {
             media.put("stories", bounded(stories)); media.put("reports", bounded(reports));
             media.put("documents", bounded(documents));
             media.put("tools", trading.tools());
-            return new PersonPage(view, java.util.Collections.unmodifiableMap(media));
+            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports);
         });
     }
 
@@ -7607,7 +7613,7 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     /** 登记姓名优先，没有登记时回退到稳定 partyId，不让页面出现空空白。 */
-    private static String displayName(OpeningRegistry registry, String partyId) {
+    static String displayName(OpeningRegistry registry, String partyId) {
         String name = partyName(registry, partyId);
         return name == null || name.isBlank() ? partyId : name;
     }
@@ -7664,7 +7670,7 @@ public final class WorldWebHost implements AutoCloseable {
      * 定位是精确的；再用公开版本正文与所发草稿的 Information 正文核对一次，正文对不上就不认
      * 这条映射。两者都来自真实文档记录，不读任何私有值。</p>
      */
-    private static InformationModel.DocumentVersion publicVersionOf(
+    static InformationModel.DocumentVersion publicVersionOf(
             InformationModel.State information, String publicDocId,
             PeriodicModel.Release release) {
         if (information == null || publicDocId == null || publicDocId.isBlank()
@@ -7673,7 +7679,8 @@ public final class WorldWebHost implements AutoCloseable {
         }
         String draftBody = publicBody(information, release.docId(), release.version());
         for (InformationModel.Document document : information.documents()) {
-            if (!document.docId().equals(publicDocId)) {
+            if (!document.docId().equals(publicDocId)
+                    || document.audience().kind() != InformationModel.AudienceKind.PUBLIC) {
                 continue;
             }
             for (InformationModel.DocumentVersion version : document.versions()) {

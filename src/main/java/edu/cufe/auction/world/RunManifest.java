@@ -68,9 +68,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 支持发行人署名及逐版公开更正的经营档。 */
     public static final String ISSUER_REPORT_RUN_ID = "web-issuer-report-operating-v1";
 
+    /** 在冻结的角色输入超限时使用有列名的紧凑记录。 */
+    public static final String ROLE_TABLE_RUN_ID = "web-role-table-operating-v1";
+
+    /** 判断该档是否公开带发行人及实际签发人的财报版本。 */
+    public static boolean usesIssuerReportRules(String runId) {
+        return ISSUER_REPORT_RUN_ID.equals(runId) || ROLE_TABLE_RUN_ID.equals(runId);
+    }
+
     /** 判断本档是否共用董事议事规则并登记经理任期边界。 */
     public static boolean usesBoardProcedureRules(String runId) {
-        return BOARD_PROCEDURE_RUN_ID.equals(runId) || ISSUER_REPORT_RUN_ID.equals(runId);
+        return BOARD_PROCEDURE_RUN_ID.equals(runId) || usesIssuerReportRules(runId);
     }
 
     /** 判断本档是否向陈酿公司董事和经理展示原料履约期。 */
@@ -1119,7 +1127,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
-            if (ISSUER_REPORT_RUN_ID.equals(runId)) {
+            if (ROLE_TABLE_RUN_ID.equals(runId)) {
+                expectedData.put(RoleInputTables.POLICY, RoleInputTables.VERSION);
+            }
+            if (usesIssuerReportRules(runId)) {
                 expectedData.put("issuer-period-reports", "versioned-v1");
             }
             if (usesBoardProcedureRules(runId)) {

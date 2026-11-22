@@ -386,6 +386,9 @@ class EngineeringPeriodicWebTest {
                         || alicePublished.path("releases").get(0).path("body").asText().isEmpty(),
                 "未实际读完公开版本不得返回正文");
         assertTrue(alicePublished.path("releases").get(0).path("requiresReading").asBoolean());
+        JsonNode unreadV1 = personalReport(publicDocIdV1, 1);
+        assertFalse(unreadV1.has("body"));
+        assertFalse(unreadV1.has("lastReadAt"));
 
         // 真实读完公开 v1 后，才允许看到同一公开正文；正文仍与 God 原文一致。
         long publicReadDue = personTime() + 1000;
@@ -501,6 +504,13 @@ class EngineeringPeriodicWebTest {
                 "重新阅读入口仍需真实公开版本号");
         // 未读过的公开 v2 一直是未读，不会被遗忘逻辑冒充成"读过"。
         assertFalse(forgottenRow.path("releases").get(1).path("read").asBoolean());
+        JsonNode forgottenV1 = personalReport(publicDocIdV1, 1);
+        long firstReadAt = forgottenV1.required("lastReadAt").asLong();
+        assertTrue(firstReadAt >= publicReadDue);
+        assertFalse(forgottenV1.has("body"), "已遗忘的版本保留读完凭据，正文不再返回");
+        JsonNode unreadV2 = personalReport(publicDocIdV1, 2);
+        assertFalse(unreadV2.has("body"));
+        assertFalse(unreadV2.has("lastReadAt"));
 
         long rereadDue = personTime() + 1000;
         postJson("/api/me/read", readBody(personPosition(), publicDocIdV1,
@@ -514,6 +524,9 @@ class EngineeringPeriodicWebTest {
         assertFalse(rereadRelease.path("forgotten").asBoolean());
         assertFalse(rereadRelease.path("requiresReading").asBoolean());
         assertEquals(bodyV1, rereadRelease.path("body").asText(), "重读后正文仍是同一后端原文");
+        JsonNode readAgain = personalReport(publicDocIdV1, 1);
+        assertEquals(bodyV1, readAgain.required("body").asText());
+        assertTrue(readAgain.required("lastReadAt").asLong() > firstReadAt);
 
         // 披露维 asOf：前期真实已发布的 release 才是下一期可用的成熟证据。
         loginAdmin();
@@ -710,6 +723,15 @@ class EngineeringPeriodicWebTest {
         return "{\"expectedPosition\":\"" + position + "\",\"commandId\":\"web-" + suffix
                 + "\",\"taskId\":\"web-" + suffix + "-task\",\"dueTimeMillis\":\"" + due
                 + "\",\"docId\":\"" + docId + "\",\"version\":\"" + version + "\"}";
+    }
+
+    private JsonNode personalReport(String doc, long version) throws Exception {
+        for (JsonNode row : getJson("/api/me/view").required("publicReports")) {
+            if (doc.equals(row.required("docId").asText()) && row.required("version").asLong() == version) {
+                return row;
+            }
+        }
+        throw new AssertionError("个人页未列示已公开的财报版本 " + doc + " v" + version);
     }
 
     private void loginAdmin() throws Exception {

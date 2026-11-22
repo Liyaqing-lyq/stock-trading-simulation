@@ -5508,10 +5508,7 @@ public final class WorldRuntime implements AutoCloseable {
             String company = snapshot.companyPartyId();
             String publicDoc = PeriodicWorldEngine.publicDocId(company, snapshot.period());
             if (published > 0 && documentFrame != null) {
-                if (!usesIssuerReportVersions() && documentFrame.companyGovernance() != null
-                        && documentFrame.companyGovernance().has(company)) {
-                    publicDoc = legacyCompanyPublicDocId(company, snapshot.period());
-                }
+                publicDoc = periodicPublicDocumentId(documentFrame, company, snapshot.period());
                 // 旧档曾有同一期两条发布回执对应同一份公告。人物侧只给实际可读的版本。
                 published = 0;
                 if (documentFrame.information() != null) {
@@ -6207,11 +6204,11 @@ public final class WorldRuntime implements AutoCloseable {
                 pendingActionsAt(state, requireDecisions(), personPartyId), allowedToolsOf(view), decisionConfig,
                 toolContractVersion(), manifest.hasDialogue() ? interviewInput(state, personPartyId, state.timeMillis()) : null,
                 engineeringInput(state, personPartyId, state.timeMillis()), manifest.hasGroups()
-                        ? groupsInput(state, state.information().information(), personPartyId, state.timeMillis()) : null, ownVisibleReadTimes(state, view), boardProcedureViewVersion());
+                        ? groupsInput(state, state.information().information(), personPartyId, state.timeMillis()) : null, ownVisibleReadTimes(state, view), roleInputFormat());
     }
 
-    private String boardProcedureViewVersion() {
-        return manifest.dataVersions().get("board-procedure-view");
+    private String roleInputFormat() {
+        return manifest.dataVersions().getOrDefault(RoleInputTables.POLICY, manifest.dataVersions().get("board-procedure-view"));
     }
 
     /** @return 本运行是否按实际发行人、签发时点和公开版本编号处理财报 */
@@ -7375,7 +7372,7 @@ public final class WorldRuntime implements AutoCloseable {
                             ? groupsInput(state, state.information() == null ? null
                                     : state.information().information(), request.personPartyId(),
                                     cutoffTime)
-                            : null, ownVisibleReadTimes(state, view), boardProcedureViewVersion());
+                            : null, ownVisibleReadTimes(state, view), roleInputFormat());
             if (decisionConfig.live()
                     && informationConfig != null && informationConfig.recallPolicy() != null) {
                 // 新档：先量实际字符/字节，超限在构造 ProviderPlan 之前就明确失败，整批不提交
@@ -10208,7 +10205,7 @@ public final class WorldRuntime implements AutoCloseable {
                             ? groupsInput(previous, previous.information() == null ? null
                                     : previous.information().information(), request.personPartyId(),
                                     cutoffTime)
-                            : null, ownVisibleReadTimes(previous, view), boardProcedureViewVersion());
+                            : null, ownVisibleReadTimes(previous, view), roleInputFormat());
             DecisionModel.Decision historical = DecisionModel.decision(historicalDecisions.state(),
                     request.actionId()).orElseThrow(() -> new IOException("历史决定缺失：" + request.actionId()));
             legacyInputs.add(new LegacyOperatingReportOrder.InputPair(input, historical.inputText()));
@@ -10618,7 +10615,7 @@ public final class WorldRuntime implements AutoCloseable {
                         ? groupsInput(previous, previous.information() == null ? null
                                 : previous.information().information(),
                                 decision.personPartyId(), decision.cutoffTimeMillis())
-                        : null, ownVisibleReadTimes(previous, view), boardProcedureViewVersion());
+                        : null, ownVisibleReadTimes(previous, view), roleInputFormat());
         regenerated = historicalDecisionInput(regenerated, decision.inputText(), decision.cutoffPosition());
         if (!regenerated.equals(decision.inputText())) {
             throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());
@@ -12848,6 +12845,21 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         return null;
+    }
+
+    /**
+     * 查询此运行档指定发行人和期间的公开财报文档标识。是否已发布及实际版本由资料记录确认。
+     * @param company 公司标识
+     * @param period 期间
+     * @return 本档的公开文档标识
+     */
+    public synchronized String periodicPublicDocumentId(String company, long period) {
+        return periodicPublicDocumentId(state, company, period);
+    }
+
+    private String periodicPublicDocumentId(WorldState frame, String company, long period) {
+        return !usesIssuerReportVersions() && frame.companyGovernance() != null && frame.companyGovernance().has(company)
+                ? legacyCompanyPublicDocId(company, period) : PeriodicWorldEngine.publicDocId(company, period);
     }
 
     private static String legacyCompanyPublicDocId(String company, long period) {

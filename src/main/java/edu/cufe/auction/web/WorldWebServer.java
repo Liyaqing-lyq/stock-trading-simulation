@@ -2698,6 +2698,7 @@ public final class WorldWebServer implements AutoCloseable {
             response.put("readings", view.readings().size());
             response.put("observations", view.observations().size());
             response.put("permissions", view.permissions().size());
+            response.put("publicReports", page.publicReports());
             if (page.media() != null) response.put("media", page.media());
             send(exchange, 200, mapper.writeValueAsString(response));
         } catch (WorldWebHost.BusyException busy) {

@@ -1,6 +1,8 @@
 package edu.cufe.auction.world.composed;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import edu.cufe.auction.web.WorldWebHost;
 import edu.cufe.auction.world.EngineeringRun;
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.PeriodicModel;
@@ -30,18 +32,8 @@ class IssuerReportVersionsTest {
         InformationModel.DocumentVersion original;
         String publicId;
         try (var world = ComposedIndustryScenario.openIssuerReportOperating(journal)) {
-            OperationsFixture.grantBudgetAndAppoint(world, TECH, TECH_DIRECTORS, TECH_MANAGER,
-                    "issuer", List.of(0L));
-            world.advanceTo(PeriodicModel.PERIOD_MILLIS);
-            var captured = periods(world).snapshots().get(0);
-            var statement = world.confirmedPeriodStatement(TECH, captured.period());
-            var meeting = world.boardOfCompany(TECH).orElseThrow().board().meeting(captured.meetingId());
-            for (int i = 0; i < REVIEWERS.size(); i++) {
-                String id = "attend-" + i;
-                world.scheduleEngineeringAttend(id, id, world.snapshot().timeMillis() + 2_000L + i,
-                        TECH, REVIEWERS.get(i), meeting.meetingId(), false);
-            }
-            world.advanceTo(meeting.opensAt() + 10_000L);
+            openReportingWindow(world);
+            var statement = world.confirmedPeriodStatement(TECH, 1);
 
             assertEquals("OK", act(world, TECH_MANAGER, "PREPARE", null, "", "", ""));
             var draft = periods(world).drafts().get(0);
@@ -131,6 +123,73 @@ class IssuerReportVersionsTest {
             assertTrue(readExperience(reopened, 2, publicId).required("body").asText().contains(NOTE));
         }
         assertEquals(length, Files.size(journal));
+    }
+
+    @Test void webLinksUseActualVersionsAndTheCurrentReadersCompletedCopy() throws Exception {
+        Path journal = directory.resolve("public-reports.journal");
+        String doc = "company-statement:" + TECH + ":1";
+        String firstBody;
+        long firstReadAt;
+        try (var world = ComposedIndustryScenario.openIssuerReportOperating(journal)) {
+            openReportingWindow(world);
+            assertEquals("OK", act(world, TECH_MANAGER, "PREPARE", null, "", "", ""));
+            var draft = periods(world).drafts().get(0);
+            reviewAndPublish(world, draft, REVIEWERS.get(0));
+            read(world, INVESTOR, doc, 1);
+            firstReadAt = world.snapshot().timeMillis();
+            firstBody = version(world, doc, 1).body();
+            assertEquals("OK", act(world, TECH_MANAGER, "PREPARE", null, "", "", NOTE));
+            var correction = periods(world).drafts().get(1);
+            reviewAndPublish(world, correction, REVIEWERS.get(1));
+        }
+        try (var host = new WorldWebHost(() -> {
+            var world = ComposedIndustryScenario.openIssuerReportOperating(journal);
+            return new WorldWebHost.Opened(world, world.profile().manifest().runId());
+        })) {
+            var json = new ObjectMapper();
+            var companies = json.valueToTree(host.worldOverview()).required("companies");
+            var company = java.util.stream.StreamSupport.stream(companies.spliterator(), false)
+                    .filter(c -> TECH.equals(c.required("id").asText())).findFirst().orElseThrow();
+            var publications = company.required("publications");
+            assertEquals(2, publications.size());
+            assertEquals(doc, publications.get(0).required("docId").asText());
+            assertEquals(2, publications.get(0).required("version").asInt());
+            assertEquals(REVIEWERS.get(1), publications.get(0).required("publisher").asText());
+            assertEquals(REVIEWERS.get(0), publications.get(1).required("publisher").asText());
+            assertTrue(publications.get(0).required("body").asText().contains(NOTE));
+            assertTrue(publications.get(0).required("reads").isEmpty());
+            assertEquals(INVESTOR, publications.get(1).required("reads").get(0).required("person").asText());
+            var rows = host.personPage(INVESTOR).publicReports();
+            assertEquals(2, rows.size());
+            assertEquals(doc, rows.get(0).get("docId"));
+            assertEquals(2L, rows.get(0).get("version"));
+            assertEquals(REVIEWERS.get(1), rows.get(0).get("publisherPersonId"));
+            assertFalse(rows.get(0).containsKey("body"));
+            assertFalse(rows.get(0).containsKey("lastReadAt"));
+            assertEquals(firstBody, rows.get(1).get("body"));
+            assertEquals(Long.toString(firstReadAt), rows.get(1).get("lastReadAt"));
+            var otherReader = host.personPage("nina").publicReports();
+            assertEquals(2, otherReader.size());
+            for (var row : otherReader) {
+                assertEquals(doc, row.get("docId"));
+                assertFalse(row.containsKey("lastReadAt"));
+                assertFalse(row.containsKey("body"));
+            }
+        }
+    }
+
+    private static void openReportingWindow(WorldRuntime world) throws Exception {
+        OperationsFixture.grantBudgetAndAppoint(world, TECH, TECH_DIRECTORS, TECH_MANAGER,
+                "issuer", List.of(0L));
+        world.advanceTo(PeriodicModel.PERIOD_MILLIS);
+        var captured = periods(world).snapshots().get(0);
+        var meeting = world.boardOfCompany(TECH).orElseThrow().board().meeting(captured.meetingId());
+        for (int i = 0; i < REVIEWERS.size(); i++) {
+            String id = "attend-" + i;
+            world.scheduleEngineeringAttend(id, id, world.snapshot().timeMillis() + 2_000L + i,
+                    TECH, REVIEWERS.get(i), meeting.meetingId(), false);
+        }
+        world.advanceTo(meeting.opensAt() + 10_000L);
     }
 
     private static PeriodicModel.Release reviewAndPublish(WorldRuntime world, PeriodicModel.Draft draft,

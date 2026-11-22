@@ -404,7 +404,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                             List<PendingAction> pending, List<String> tools, DecisionModel.Config config,
                             String toolContractVersion, com.fasterxml.jackson.databind.JsonNode interview,
                             com.fasterxml.jackson.databind.JsonNode engineering, com.fasterxml.jackson.databind.JsonNode groups,
-                            Map<String, Long> ownVisibleReadTimes, String boardProcedureView) {
+                            Map<String, Long> ownVisibleReadTimes, String roleInputFormat) {
         Objects.requireNonNull(view, "观察视图");
         Objects.requireNonNull(config, "冻结配置");
         Objects.requireNonNull(toolContractVersion, "工具合同版本");
@@ -759,8 +759,15 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
         RolePlanningContext.append(root, wakeReason, config);
         EngineeringManagerHistory.project(root);
-        if (BoardProcedureView.VERSION.equals(boardProcedureView)) BoardProcedureView.project(root);
+        boolean useTables = RoleInputTables.VERSION.equals(roleInputFormat);
+        if (BoardProcedureView.VERSION.equals(roleInputFormat) || useTables) BoardProcedureView.project(root);
         try {
+            String ordinary = MAPPER.writeValueAsString(root);
+            if (!useTables || (ordinary.length() <= config.limits().maxInputChars()
+                    && ordinary.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= DecisionModel.MAX_INPUT_BYTES)) {
+                return ordinary;
+            }
+            RoleInputTables.compact(root);
             return MAPPER.writeValueAsString(root);
         } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
             throw new IllegalStateException("无法生成决定输入", failure);

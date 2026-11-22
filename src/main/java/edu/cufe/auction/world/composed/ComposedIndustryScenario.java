@@ -319,6 +319,16 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.ISSUER_REPORT_RUN_ID);
     }
 
+    /**
+     * 打开在超限时用有列名的表展示本人目录、行情及持仓的经营世界。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 运行档或日志不相容
+     */
+    public static WorldRuntime openRoleTableOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.ROLE_TABLE_RUN_ID);
+    }
+
     private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
         return open(journal, true, true, true, true, false, false, true, true,
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true,
@@ -493,7 +503,10 @@ public final class ComposedIndustryScenario {
                 data.put("belief-company-scope", "manufacturing-orders-v1");
                 data.put("research-manager-view", "project-state-v1");
             }
-            if (RunManifest.ISSUER_REPORT_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.ROLE_TABLE_RUN_ID.equals(thinkingRunId)) {
+                data.put(edu.cufe.auction.world.RoleInputTables.POLICY, edu.cufe.auction.world.RoleInputTables.VERSION);
+            }
+            if (RunManifest.usesIssuerReportRules(thinkingRunId)) {
                 data.put("issuer-period-reports", "versioned-v1");
             }
             if (RunManifest.usesBoardProcedureRules(thinkingRunId)) {

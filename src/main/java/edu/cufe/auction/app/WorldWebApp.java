@@ -69,7 +69,8 @@ public final class WorldWebApp {
         }
 
         String mode = args.length > 3 ? args[3] : "live";
-        boolean issuerReportMode = mode.equals("world-issuer-report-operating");
+        boolean tableMode = mode.equals("world-role-table-operating");
+        boolean issuerReportMode = mode.equals("world-issuer-report-operating") || tableMode;
         boolean boardProcedureMode = mode.equals("world-board-procedure-operating") || issuerReportMode;
         boolean agedOrderMode = mode.equals("world-aged-order-operating") || boardProcedureMode;
         boolean forwardBudgetMode = mode.equals("world-forward-budget-operating") || agedOrderMode;
@@ -142,7 +143,8 @@ public final class WorldWebApp {
         }
         WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode))
                 ? new WorldWebHost(() -> {
-                    var runtime=issuerReportMode ? ComposedIndustryScenario.openIssuerReportOperating(workDir.resolve("world-issuer-report-operating-v1.journal"))
+                    var runtime=tableMode ? ComposedIndustryScenario.openRoleTableOperating(workDir.resolve("world-role-table-operating-v1.journal"))
+                            : issuerReportMode ? ComposedIndustryScenario.openIssuerReportOperating(workDir.resolve("world-issuer-report-operating-v1.journal"))
                             : boardProcedureMode ? ComposedIndustryScenario.openBoardProcedureOperating(workDir.resolve("world-board-procedure-operating-v1.journal"))
                             : agedOrderMode ? ComposedIndustryScenario.openAgedOrderOperating(workDir.resolve("world-aged-order-operating-v1.journal"))
                             : forwardBudgetMode ? ComposedIndustryScenario.openForwardBudgetOperating(workDir.resolve("world-forward-budget-operating-v1.journal"))
