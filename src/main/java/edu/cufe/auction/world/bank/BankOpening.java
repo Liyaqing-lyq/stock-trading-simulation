@@ -461,9 +461,12 @@ public record Result(BankState state, Map<String, CashLedger.CashAccount> accoun
                 throw new IllegalArgumentException("OPENING_DEPOSIT_BANK:" + deposit.bank());
             }
             String account = chart.depositAccountOf(deposit.holder());
-            draft.setGl(deposit.bank(), account, deposit.balance().negate());
             if (!depositKeys.add(chart.depositTermsKeyOf(deposit.bank(), deposit.holder()))) {
                 throw new IllegalArgumentException("OPENING_DEPOSIT_DUPLICATE:"
+                        + deposit.bank() + "|" + deposit.holder());
+            }
+            if (draft.gl(deposit.bank(), account).compareTo(deposit.balance().negate()) != 0) {
+                throw new IllegalArgumentException("OPENING_DEPOSIT_MISMATCH:"
                         + deposit.bank() + "|" + deposit.holder());
             }
             if (deposit.terms() != null) {
@@ -508,13 +511,6 @@ public record Result(BankState state, Map<String, CashLedger.CashAccount> accoun
         List<String> activation = BankArchiveValidator.validateActivation(config, state, accounts);
         if (!activation.isEmpty()) {
             throw new IllegalArgumentException("ACTIVATION_INVALID:" + activation.get(0));
-        }
-        for (DepositEndowment deposit : endowment.deposits()) {
-            if (state.gl(deposit.bank(), chart.depositAccountOf(deposit.holder()))
-                    .compareTo(deposit.balance().negate()) != 0) {
-                throw new IllegalArgumentException("OPENING_DEPOSIT_MISMATCH:"
-                        + deposit.bank() + "|" + deposit.holder());
-            }
         }
         return new Result(state, Map.copyOf(accounts));
     }
