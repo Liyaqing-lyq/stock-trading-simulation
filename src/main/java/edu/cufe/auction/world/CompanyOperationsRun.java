@@ -108,7 +108,14 @@ public record CompanyOperationsRun(String rulesVersion, List<Company> companies,
      * @param ledger         纯核唯一业务台账（含规格与账户绑定）
      */
     public record Company(String companyPartyId, String symbol, String templateId,
-                          ManufacturingTemplateModel.State ledger, ExpansionOffer expansionOffer) {
+                          ManufacturingTemplateModel.State ledger, ExpansionOffer expansionOffer,
+                          @JsonInclude(JsonInclude.Include.NON_NULL) String intakeVersion) {
+
+        /** 历史开局沿用原始收单规则。 */
+        public Company(String companyPartyId, String symbol, String templateId, ManufacturingTemplateModel.State ledger,
+                       ExpansionOffer expansionOffer) {
+            this(companyPartyId, symbol, templateId, ledger, expansionOffer, null);
+        }
 
         /** 校验标识与规格一致性（模板标识、公司账户属主必须与台账一致）。 */
         public Company {
@@ -116,6 +123,8 @@ public record CompanyOperationsRun(String rulesVersion, List<Company> companies,
             requireText(symbol, "证券代码");
             requireText(templateId, "模板");
             Objects.requireNonNull(ledger, "经营台账");
+            if (intakeVersion != null && !ManufacturingIntake.RUNOFF.equals(intakeVersion))
+                throw new IllegalArgumentException("未知制造收单版本：" + intakeVersion);
             if (!templateId.equals(ledger.spec().templateId())) {
                 throw new IllegalArgumentException("模板标识与台账规格不一致："
                         + templateId + " / " + ledger.spec().templateId());
@@ -132,8 +141,11 @@ public record CompanyOperationsRun(String rulesVersion, List<Company> companies,
         /** @return 用同一模板标识替换台账 */
         public Company withLedger(ManufacturingTemplateModel.State next) {
             return new Company(companyPartyId, symbol, templateId,
-                    Objects.requireNonNull(next, "候选台账"), expansionOffer);
+                    Objects.requireNonNull(next, "候选台账"), expansionOffer, intakeVersion);
         }
+
+        /** @return 此实例当前执行的接单合同版本 */
+        public String currentIntakeVersion() { return intakeVersion == null ? ManufacturingIntake.ACTIVE : intakeVersion; }
     }
 
     /**

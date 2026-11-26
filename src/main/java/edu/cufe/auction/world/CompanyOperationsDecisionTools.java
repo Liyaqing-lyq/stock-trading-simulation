@@ -92,7 +92,8 @@ public final class CompanyOperationsDecisionTools {
         fields.put("ORDER_MATERIAL", "materialId:string, quantity:long");
         fields.put("START_BATCH", "productId:string, generation:int, quantity:long");
         fields.put("REQUEST_CERT", "trialId:string, customerId:string, productId:string, generation:int, round:int, evidenceId:string(本人真实阅读标识)");
-        fields.put("SIGN_CONTRACT", "contractId:string, customerId:string, productId:string, generation:int, quantity:long, unitPrice:decimal-string, promisedAt:long, expiresAt:long");
+        if (run.company(company).intakeVersion() == null)
+            fields.put("SIGN_CONTRACT", "contractId:string, customerId:string, productId:string, generation:int, quantity:long, unitPrice:decimal-string, promisedAt:long, expiresAt:long");
         fields.put("DELIVER", "contractId:string, quantity:long, receivableId:string");
         for (String action : List.of("COLLECT", "WRITE_OFF_RECEIVABLE")) fields.put(action, "receivableId:string");
         for (String action : List.of("MARK_OVERDUE", "CANCEL_CONTRACT")) fields.put(action, "contractId:string");

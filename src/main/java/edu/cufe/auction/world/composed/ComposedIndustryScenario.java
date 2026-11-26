@@ -394,6 +394,16 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.INTEGRATED_RUN_ID);
     }
 
+    /**
+     * 打开允许受控切换三家制造公司收单规则的组合经营档。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openManufacturingLifecycleOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.MANUFACTURING_LIFECYCLE_RUN_ID);
+    }
+
     /** @param journal 独立交易时段实验档 @return 严格恢复或首次建立的交易世界 @throws Exception 建立或恢复失败 */
     public static WorldRuntime openMarketSessionsOperating(Path journal) throws Exception {
         return openCompanyInformationOperating(journal, MarketSessions.RUN_ID);
@@ -616,6 +626,11 @@ public final class ComposedIndustryScenario {
                 data.put("wait-empty-args", "allow-empty-object-v1");
             }
             if (RunManifest.usesMediaDesks(thinkingRunId)) data.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (RunManifest.usesManufacturingLifecycle(thinkingRunId)) {
+                data.put(RunManifest.MANUFACTURING_LIFECYCLE_KEY, RunManifest.MANUFACTURING_LIFECYCLE_VERSION);
+                data.put("fund-capital-policy", RunManifest.FIXED_FUND_CAPITAL);
+                data.put("role-market-valuation", RunManifest.ROLE_MARKET_VALUATION);
+            }
             if (RunManifest.usesMarketSessions(thinkingRunId)) data.put(MarketSessions.KEY, MarketSessions.VERSION);
             if (RunManifest.usesCreditDecisions(thinkingRunId)) data.put("issuer-credit-decisions", "manager-loan-v1");
             if (RunManifest.usesIssuerCredit(thinkingRunId)) data.put("issuer-credit", "separate-loan-ledgers-v1");

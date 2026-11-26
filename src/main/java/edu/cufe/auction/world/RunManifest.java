@@ -86,24 +86,48 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 合并已登记的分项能力，供同一开局的受限角色检验使用。 */
     public static final String INTEGRATED_RUN_ID = "web-integrated-operating-v1";
 
+    /** 制造公司成组停止承接新合同的实验档。 */
+    public static final String MANUFACTURING_LIFECYCLE_RUN_ID = "web-manufacturing-lifecycle-operating-v1";
+
+    /** 制造公司收单规则在本运行中的版本键。 */
+    public static final String MANUFACTURING_LIFECYCLE_KEY = "manufacturing-intake-lifecycle";
+
+    /** 三家公司在同一提交切换收单规则，继续履行旧合同。 */
+    public static final String MANUFACTURING_LIFECYCLE_VERSION = "atomic-wind-down-v1";
+
+    /** 固定资本基金的外部资金政策，证券买卖与分红仍按原有账务办理。 */
+    public static final String FIXED_FUND_CAPITAL = "fixed-capital-v1";
+
+    /** 本人行情在交易价格旁分别展示账户估值、市价来源和报价时间。 */
+    public static final String ROLE_MARKET_VALUATION = "as-of-reference-v1";
+
+    /** 是否允许制造公司在安全点成组停止新签。 */
+    public static boolean usesManufacturingLifecycle(String id) {
+        return MANUFACTURING_LIFECYCLE_RUN_ID.equals(id);
+    }
+
+    private static boolean usesIntegratedOpening(String id) {
+        return INTEGRATED_RUN_ID.equals(id) || usesManufacturingLifecycle(id);
+    }
+
     /** 是否开放借款人与银行经理的授信决定。 */
     public static boolean usesCreditDecisions(String id) {
-        return CREDIT_DECISIONS_RUN_ID.equals(id) || INTEGRATED_RUN_ID.equals(id);
+        return CREDIT_DECISIONS_RUN_ID.equals(id) || usesIntegratedOpening(id);
     }
 
     /** 是否启用八家媒体的任职和采编规则。 */
     public static boolean usesMediaDesks(String id) {
-        return MEDIA_DESKS_RUN_ID.equals(id) || INTEGRATED_RUN_ID.equals(id);
+        return MEDIA_DESKS_RUN_ID.equals(id) || usesIntegratedOpening(id);
     }
 
     /** 是否启用基金在岗人员工作地址。 */
     public static boolean usesFundContacts(String id) {
-        return FUND_CONTACTS_RUN_ID.equals(id) || FUND_ROUTING_RUN_ID.equals(id) || INTEGRATED_RUN_ID.equals(id);
+        return FUND_CONTACTS_RUN_ID.equals(id) || FUND_ROUTING_RUN_ID.equals(id) || usesIntegratedOpening(id);
     }
 
     /** 是否按实验交易时段受理申报。 */
     public static boolean usesMarketSessions(String id) {
-        return MarketSessions.RUN_ID.equals(id) || INTEGRATED_RUN_ID.equals(id);
+        return MarketSessions.RUN_ID.equals(id) || usesIntegratedOpening(id);
     }
 
     /** 有本人开局自述和实际资产对照的经营档。 */
@@ -120,7 +144,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** 新档的机构调度来自真实在岗人员。 */
     public static boolean usesFundOfficeRouting(String id) {
-        return FUND_ROUTING_RUN_ID.equals(id);
+        return FUND_ROUTING_RUN_ID.equals(id) || usesManufacturingLifecycle(id);
     }
 
     /** 是否发布机构产品的开局委托书。 */
@@ -1244,6 +1268,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("wait-empty-args", "allow-empty-object-v1");
             }
             if (usesMediaDesks(runId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (usesManufacturingLifecycle(runId)) {
+                expectedData.put(MANUFACTURING_LIFECYCLE_KEY, MANUFACTURING_LIFECYCLE_VERSION);
+                expectedData.put("fund-capital-policy", FIXED_FUND_CAPITAL);
+                expectedData.put("role-market-valuation", ROLE_MARKET_VALUATION);
+            }
             if (usesMarketSessions(runId)) expectedData.put(MarketSessions.KEY, MarketSessions.VERSION);
             if (usesCreditDecisions(runId)) expectedData.put("issuer-credit-decisions", "manager-loan-v1");
             if (usesIssuerCredit(runId)) expectedData.put("issuer-credit", "separate-loan-ledgers-v1");

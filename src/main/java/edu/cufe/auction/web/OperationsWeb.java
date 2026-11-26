@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import edu.cufe.auction.world.CompanyOperationsRun;
+import edu.cufe.auction.world.ManufacturingIntake;
+import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.WorldRuntime;
 import edu.cufe.auction.world.composed.ComposedCompanyReport;
 import java.math.BigDecimal;
@@ -77,12 +79,17 @@ final class OperationsWeb {
         result.put("timeMillis", Long.toString(snapshot.timeMillis()));
         List<Map<String, Object>> companies = new ArrayList<>();
         var run = world.operationsRun().orElse(null);
+        boolean lifecycle = RunManifest.MANUFACTURING_LIFECYCLE_VERSION.equals(
+                world.profile().manifest().dataVersions().get(RunManifest.MANUFACTURING_LIFECYCLE_KEY));
+        if (lifecycle && person == null) result.put("intakeLifecycle",
+                Map.of("fromVersion", ManufacturingIntake.ACTIVE, "toVersion", ManufacturingIntake.RUNOFF));
         if (run != null) for (var company : run.companies()) {
             String id = company.companyPartyId();
             boolean manager = person != null && world.isActiveManager(id, person, snapshot.timeMillis());
             if (person != null && !manager) continue;
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("companyId", id);
+            if (lifecycle) row.put("intakeVersion", company.currentIntakeVersion());
             row.put("name", world.openingRegistry().orElseThrow().parties().stream()
                     .filter(party -> party.partyId().equals(id)).map(party -> party.name()).findFirst().orElse(id));
             row.put("actions", manager ? world.operationsActions(id) : List.of());

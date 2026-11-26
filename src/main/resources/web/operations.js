@@ -28,6 +28,7 @@ const OPERATIONS_LABELS = { approvalId:"客户技术准入编号", quantityUnits
 
 function clearOperationsDom() {
   state.operationsView = null;
+  renderIntake({ companies: [] });
   state.operationsRequestedCompany = "";
   for (const id of ["operations-company", "operations-action", "operations-fields", "operations-financial", "operations-records"]) {
     if ($(id)) $(id).replaceChildren();
@@ -79,6 +80,42 @@ function renderOperations(view) {
   const wanted = companies.find(c => c.companyId === selected);
   select.value = wanted?.companyId || (requested ? "" : companies[0]?.companyId || "");
   renderOperationsCompany();
+  renderIntake(view);
+}
+function renderIntake(view) {
+  const section = $("operations-intake");
+  section.hidden = state.mode !== "admin" || !view.intakeLifecycle;
+  const fieldset = $("intake-companies");
+  fieldset.querySelectorAll("label").forEach(label => label.remove());
+  $("intake-apply").disabled = true;
+  $("intake-result").textContent = "";
+  if (section.hidden) return;
+  for (const company of view.companies.filter(c => c.intakeVersion)) {
+    const label = document.createElement("label"), input = document.createElement("input");
+    input.type = "checkbox"; input.value = company.companyId;
+    input.disabled = company.intakeVersion !== view.intakeLifecycle.fromVersion;
+    label.append(input, company.name + (input.disabled ? "（已停止新签）" : ""));
+    fieldset.append(label);
+  }
+}
+async function submitIntake(apply) {
+  const view = state.operationsView, generation = state.generation, fieldset = $("intake-companies");
+  const companies = () => Array.from(fieldset.querySelectorAll("input:checked"), input => input.value);
+  const ids = companies();
+  if (state.mode !== "admin" || !view?.intakeLifecycle || !ids.length) return;
+  $("intake-apply").disabled = true;
+  const body = { ...view.intakeLifecycle, expectedPosition: view.position, companyIds: ids, apply };
+  const result = await request("POST", "/api/admin/operations/intake", body);
+  if (!isCurrent(generation) || state.mode !== "admin" || state.operationsView !== view) return;
+  if (result.status === 401 || result.status === 403) { sessionLost(); return; }
+  if (result.status !== 200) { $("intake-result").textContent = result.payload?.message || "操作失败"; return; }
+  if (apply) {
+    await loadOperations(generation, null);
+    if (isCurrent(generation) && state.mode === "admin") $("intake-result").textContent = "已停止所选公司的新签业务。记录 " + result.payload.position;
+  } else if (JSON.stringify(ids) === JSON.stringify(companies())) {
+    $("intake-apply").disabled = false;
+    $("intake-result").textContent = "已校验 " + ids.length + " 家公司，请核对后确认。";
+  }
 }
 function operationsTable(parent, title, rows, columns) {
   const details = document.createElement("details"), summary = document.createElement("summary");
@@ -206,6 +243,10 @@ async function submitOperations(event) {
   } finally { if (isCurrent(generation) && state.mode === "person") $("operations-submit").disabled = false; }
 }
 document.addEventListener("DOMContentLoaded", () => {
+  $("intake-companies").addEventListener("change", () => { $("intake-apply").disabled = true; $("intake-result").textContent = ""; });
+  for (const id of ["intake-check", "intake-apply"]) $(id).addEventListener("click", () => {
+    submitIntake(id === "intake-apply").catch(error => { if (state.mode === "admin") $("intake-result").textContent = error.message; });
+  });
   $("operations-company").addEventListener("change", renderOperationsCompany);
   $("operations-action").addEventListener("change", operationsFields);
   $("operations-form").addEventListener("submit", event => {

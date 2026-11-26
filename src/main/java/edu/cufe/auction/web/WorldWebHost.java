@@ -2268,6 +2268,9 @@ public final class WorldWebHost implements AutoCloseable {
                     row.put("organizationName", partyName(registry,
                             mandate.organizationPartyId()));
                     row.put("accountIds", String.join(",", mandate.accountIds()));
+                    if (RunManifest.FIXED_FUND_CAPITAL.equals(current.profile().manifest().dataVersions().get("fund-capital-policy"))) {
+                        row.put("capitalPolicy", "固定资本，申购与赎回关闭");
+                    }
                     mandateRows.add(row);
                 }
                 for (RoleRun.Report report : roles.reports().values()) {
@@ -6507,6 +6510,16 @@ public final class WorldWebHost implements AutoCloseable {
      */
     public Map<String, Object> operationsView(String person) throws Exception {
         return call(() -> OperationsWeb.view(readyNow(), person));
+    }
+
+    /** 管理员在当前世界队列校验或提交成组收单规则变更。 */
+    long migrateManufacturingIntake(edu.cufe.auction.world.ManufacturingIntake.Migration request, boolean apply) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            long position = world.snapshot().position();
+            if (position != request.expectedPosition()) throw new PositionMismatch(position);
+            return world.migrateManufacturingIntake(request, apply);
+        });
     }
 
     /** 本人资源命令在同一世界队列核对身份、位置和真实任职。 */

@@ -17,6 +17,8 @@ import edu.cufe.auction.world.bank.BankContext;
 import edu.cufe.auction.world.bank.BankOpeningRequest;
 import edu.cufe.auction.world.bank.BankRun;
 import edu.cufe.auction.world.bank.BankState;
+import edu.cufe.auction.world.bank.Fund;
+import edu.cufe.auction.world.bank.FundState;
 import edu.cufe.auction.world.bank.Money;
 import edu.cufe.auction.world.composed.BankCompanyReport;
 
@@ -2059,6 +2061,9 @@ public final class WorldRuntime implements AutoCloseable {
                                                    String fromId, String toId, BigDecimal amount,
                                                    long receiptDelayMillis, String evidenceRef)
             throws IOException {
+        if (touchesFixedFundCapital(fromId, toId)) {
+            throw new IllegalArgumentException("基金固定资本，不受理申购、赎回或注提资本");
+        }
         requireDividend();
         requireText(evidenceRef, "资本证据");
         requireText(fromId, "来源账户");
@@ -2135,6 +2140,9 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (!state.accounts().containsKey(toId)) {
             throw new IllegalArgumentException("未知收款账户：" + toId);
+        }
+        if (capital == null && crossOwnerFixedFundTransfer(fromId, toId, state.accounts())) {
+            throw new IllegalArgumentException("固定资本基金不受理跨主体普通转账，业务款须经对应结算");
         }
         if (capital != null && state.accounts().get(toId).ownerId().equals(from.ownerId())) {
             throw new IllegalArgumentException("同一 owner 内部转移必须走普通入口：" + fromId);
@@ -6878,6 +6886,11 @@ public final class WorldRuntime implements AutoCloseable {
         if (registry == null || snap.exchange() == null) {
             return market;
         }
+        ValuationModel.PriceBook marks = null;
+        if (!manifest.hasDividend() && RunManifest.ROLE_MARKET_VALUATION.equals(manifest.dataVersions().get("role-market-valuation"))) {
+            var symbols = registry.securities().stream().map(OpeningRegistry.Security::symbol).toList();
+            marks = ValuationModel.prices(snap.position(), snap.timeMillis(), snap.exchange(), registry, symbols);
+        }
         for (OpeningRegistry.Security security : registry.securities()) {
             String symbol = security.symbol();
             WorldExchange.Trade lastTrade = null;
@@ -6912,6 +6925,8 @@ public final class WorldRuntime implements AutoCloseable {
                 reference = ValuationModel.priceOf(ValuationModel.prices(snap.position(),
                         snap.timeMillis(), snap.exchange(), registry, List.of(symbol),
                         snap.dividends()), symbol);
+            } else if (marks != null) {
+                reference = ValuationModel.priceOf(marks, symbol);
             }
             market.add(new RoleView.Market(symbol,
                     lastTrade == null ? null : lastTrade.price(),
@@ -8762,6 +8777,8 @@ public final class WorldRuntime implements AutoCloseable {
                 var fields = CompanyOperationsDecisionTools.fields(draft.fields(), action);
                 String appointment = binding.appointments().get(draft.companyId());
                 if (appointment == null || base.companyOperations().company(draft.companyId()) == null) throw new IOException("经营决定缺少本公司观察任职");
+                if (action == CompanyOperationsRun.Action.SIGN_CONTRACT && base.companyOperations().company(draft.companyId()).intakeVersion() != null)
+                    throw new IOException("此公司已停止签订新合同");
                 long due = DecisionModel.actionDueMillis(model, recorded.actionId());
                 long duration = Math.subtractExact(due, recorded.barrierAtMillis());
                 if (duration != CompanyOperationsDecisionTools.ACTION_MILLIS) throw new IOException("经营决定工时不符");
@@ -16163,6 +16180,13 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         for (PendingTask task : candidate.pending()) {
+            if (PendingTask.CASH_TRANSFER_V1.equals(task.kind())
+                    && RunManifest.FIXED_FUND_CAPITAL.equals(manifest.dataVersions().get("fund-capital-policy"))) {
+                var transfer = strictTransferPayload(task);
+                if (crossOwnerFixedFundTransfer(transfer.fromId(), transfer.toId(), candidate.accounts())) {
+                    throw new IOException("固定资本基金档包含无业务凭据的跨主体转账：" + task.taskId());
+                }
+            }
             if (!ids.add(task.taskId())) {
                 throw new IOException("状态待办重复：" + task.taskId());
             }
@@ -17849,6 +17873,10 @@ public final class WorldRuntime implements AutoCloseable {
             }
             if (outcome == null) {
                 reason = failure == null ? "BANK_ERROR:unknown" : failure;
+            } else if (outcome.accepted() && request.kind() == BankActions.Kind.PAY
+                    && RunManifest.FIXED_FUND_CAPITAL.equals(manifest.dataVersions().get("fund-capital-policy"))
+                    && crossOwnerFixedFundPayment(decoded, accounts, request)) {
+                reason = "FIXED_FUND_CAPITAL";
             } else {
                 accepted = outcome.accepted();
                 reason = outcome.reason();
@@ -19311,6 +19339,16 @@ public final class WorldRuntime implements AutoCloseable {
                     || !frameDomainEvents(commit).equals(replayed.events())) {
                 throw new IOException("研发初始化与真实入口派生不一致：" + id + " " + diff);
             }
+            return;
+        }
+        if (id.startsWith("manufacturing-intake:")) {
+            var request = readScheduleContent(commit, ManufacturingIntake.Migration.class, "制造收单规则迁移");
+            ReplayedFrame rebuilt;
+            try { rebuilt = intakeMigrationFrame(previous, request); }
+            catch (IllegalArgumentException invalid) { throw new IOException("制造收单规则迁移不符合前一帧", invalid); }
+            if (!frameDifference(rebuilt.state(), candidate).isEmpty() || !id.equals(rebuilt.commandId())
+                    || !commit.commandContent().equals(rebuilt.content()) || !commit.result().equals(rebuilt.result())
+                    || !frameDomainEvents(commit).equals(rebuilt.events())) throw new IOException("制造公司成组迁移与原批次不符");
             return;
         }
         if (id.startsWith("hydro-settle:")) {
@@ -27758,10 +27796,35 @@ public final class WorldRuntime implements AutoCloseable {
         }
     }
 
+    private boolean crossOwnerFixedFundPayment(BankRun.Decoded bank, Map<String, CashLedger.CashAccount> accounts,
+                                               BankActions.Request payment) {
+        var funds = new FundState(accounts, bank.state(), bank.book());
+        String from = funds.ownerIdOf(Fund.parse(payment.sourceToken()));
+        String to = funds.ownerIdOf(Fund.parse(payment.payeeToken()));
+        return !Objects.equals(from, to) && roleConfig.mandates().stream()
+                .anyMatch(m -> m.productOwnerId().equals(from) || m.productOwnerId().equals(to));
+    }
+
+    private boolean crossOwnerFixedFundTransfer(String fromId, String toId,
+                                                Map<String, CashLedger.CashAccount> accounts) {
+        if (!touchesFixedFundCapital(fromId, toId)) return false;
+        var from = accounts.get(fromId);
+        var to = accounts.get(toId);
+        return from == null || to == null || !from.ownerId().equals(to.ownerId());
+    }
+
+    private boolean touchesFixedFundCapital(String from, String to) {
+        return RunManifest.FIXED_FUND_CAPITAL.equals(manifest.dataVersions().get("fund-capital-policy"))
+                && roleConfig.mandates().stream().anyMatch(m -> m.accountIds().contains(from) || m.accountIds().contains(to));
+    }
+
     private void requireCapitalPayloadShape(PendingTask task, TransferPayload payload)
             throws IOException {
         if (payload.capital() == null) {
             throw new IOException("资本任务缺少元数据：" + task.taskId());
+        }
+        if (touchesFixedFundCapital(payload.fromId(), payload.toId())) {
+            throw new IOException("固定资本基金档包含未开放的资本流：" + task.taskId());
         }
         requireText(payload.commandId(), "命令标识");
         requireText(payload.actorOwnerId(), "财产主体");
@@ -29542,6 +29605,8 @@ public final class WorldRuntime implements AutoCloseable {
                     orderedOpenings, snap.accounts(), snap.exchange());
         }
         if (RunManifest.usesMarketSessions(manifest.runId())) MarketSessions.describe(root, now, snap.exchange().closed());
+        if (RunManifest.ROLE_MARKET_VALUATION.equals(manifest.dataVersions().get("role-market-valuation")))
+            root.put("marketValuationPolicy", RunManifest.ROLE_MARKET_VALUATION);
         if ("office-policy-v1".equals(manifest.dataVersions().get("media-editorial-view")) && snap.media() != null) {
             for (var office : snap.roles().access().appointments()) {
                 if (!office.personPartyId().equals(person) || !office.activeAt(now)) continue;
@@ -35531,6 +35596,8 @@ public final class WorldRuntime implements AutoCloseable {
                 state.timeMillis()) || (observedPosition != null && observedPosition > state.position())) {
             throw new IllegalArgumentException("经营任职已失效或观察位置不合法");
         }
+        if (parsed == CompanyOperationsRun.Action.SIGN_CONTRACT && run.company(companyPartyId).intakeVersion() != null)
+            throw new IllegalArgumentException("此公司已停止签订新合同");
         return scheduleExternalTask(planned, commandId, content, PendingTask.COMPANY_OPERATIONS_V1,
                 WorldScheduler.Phase.RULES, dueTimeMillis, durationMillis);
     }
@@ -35918,6 +35985,54 @@ public final class WorldRuntime implements AutoCloseable {
                 base.media(), base.interviews(), base.evidence(), base.social(), base.engineering(), applied.bank(), base.bankActions(), applied.governance(),
                 base.groups(), base.research(), run);
         return new ReplayedFrame(candidate,id,content,"HYDRO_SETTLED",List.of(new WorldEvent(id,"HYDRO_SETTLED_V1",content)),1);
+    }
+
+    /** 在一次确认边界校验或提交全部目标公司的收单规则变更。
+     * @param request 含原版本、目标版本、全部目标及所见位置的计划
+     * @param apply 为真时写一个不可分割的规则变更批次，为假时只校验
+     * @return 实际确认位置 @throws IOException 存档失败 */
+    public synchronized long migrateManufacturingIntake(ManufacturingIntake.Migration request, boolean apply) throws IOException {
+        requireOpen();
+        requireWriter();
+        requireNotPaused();
+        var frame = intakeMigrationFrame(state, request);
+        if (!apply) return state.position();
+        commitAndApply(frame.commandId(), frame.content(), frame.result(), frame.events(), frame.state());
+        return state.position();
+    }
+
+    private ReplayedFrame intakeMigrationFrame(WorldState base, ManufacturingIntake.Migration request) throws IOException {
+        if (!RunManifest.MANUFACTURING_LIFECYCLE_VERSION.equals(manifest.dataVersions().get(RunManifest.MANUFACTURING_LIFECYCLE_KEY)))
+            throw new IllegalArgumentException("此档未登记制造收单规则迁移");
+        if (base.position() != request.expectedPosition()) throw new IllegalArgumentException("运行位置已改变，请重新校验");
+        if (base.companyOperations() == null) throw new IllegalArgumentException("制造经营子集未建立");
+        var run = ManufacturingIntake.migrate(base.companyOperations(), request);
+        for (var task : base.pending()) {
+            String kind = task.kind(), body = task.payload();
+            if (PendingTask.ENGINEERING_BEGIN_V1.equals(kind)) {
+                var begin = mapper.readValue(body, EngineeringBeginPayload.class);
+                kind = begin.targetKind(); body = begin.payload();
+            }
+            if (PendingTask.COMPANY_OPERATIONS_V1.equals(kind)) {
+                var pending = mapper.readValue(body, OperationsCommand.class);
+                if (request.companyIds().contains(pending.companyPartyId()) && "SIGN_CONTRACT".equals(pending.action()))
+                    throw new IllegalArgumentException("等待已预约的新签工作完成：" + pending.companyPartyId());
+            }
+        }
+        if (base.decisions() != null) for (var decision : base.decisions().state().decisions()) {
+            if (decision.status() != DecisionModel.Status.OPEN) continue;
+            for (String company : request.companyIds())
+                if (activeManager(base.roles(), decision.personPartyId(), company, base.timeMillis()))
+                    throw new IllegalArgumentException("等待该公司经理的在途决定结束：" + company);
+        }
+        String id = "manufacturing-intake:" + (base.position() + 1);
+        String content = mapper.writeValueAsString(request);
+        var candidate = new WorldState(base.schemaVersion(), base.runId(), base.position()+1, base.timeMillis(), base.lastPhase(), base.accounts(),
+                base.pending(), base.delivered(), base.usedTaskIds(), base.commandContents(), base.commandOutcomes(), base.securities(), base.exchange(),
+                base.manufacturing(), base.governance(), base.roles(), base.information(), base.trading(), base.decisions(), base.dividends(), base.beliefs(),
+                base.media(), base.interviews(), base.evidence(), base.social(), base.engineering(), base.bank(), base.bankActions(), base.companyGovernance(),
+                base.groups(), base.research(), run);
+        return new ReplayedFrame(candidate,id,content,"INTAKE_MIGRATED",List.of(new WorldEvent(id,"MANUFACTURING_INTAKE_MIGRATED_V1",content)),1);
     }
 
     private OperationsApplied applyResourceOperations(WorldState base, ResourceOperations.Request request,
@@ -36822,6 +36937,15 @@ public final class WorldRuntime implements AutoCloseable {
         CompanyOperationsRun run = candidate.companyOperations();
         CompanyOperationsRun before = previous == null ? null : previous.companyOperations();
         if (run != null) {
+            for (var company : run.companies()) {
+                var old = before == null ? null : before.company(company.companyPartyId());
+                if (company.intakeVersion() != null && !RunManifest.MANUFACTURING_LIFECYCLE_VERSION.equals(
+                        manifest.dataVersions().get(RunManifest.MANUFACTURING_LIFECYCLE_KEY)))
+                    throw new IOException("旧档出现制造收单版本迁移");
+                if (!java.util.Objects.equals(old == null ? null : old.intakeVersion(), company.intakeVersion())
+                        && !commit.commandId().startsWith("manufacturing-intake:"))
+                    throw new IOException("制造收单版本只能经显式迁移变更");
+            }
             if (ExternalDemandOpening.enabled(manifest) != (run.externalDemand() != null))
                 throw new IOException("外部需求子账与清单声明不符");
             if (run.externalDemand() != null && (!ExternalDemandOpening.config().equals(run.externalDemand().config())

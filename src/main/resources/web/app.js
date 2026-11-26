@@ -3334,6 +3334,7 @@ function renderPeopleAdmin(view) {
     cell(tr, row.productName);
     cell(tr, row.organizationPartyId);
     cell(tr, row.accountIds);
+    cell(tr, row.capitalPolicy || "本档未登记");
   });
   fillSection("org-mandates-empty", null, view.mandates);
   fillTable("org-reports", (view.managementReports || {}).rows, (tr, row) => {

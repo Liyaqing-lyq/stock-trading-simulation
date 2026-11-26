@@ -164,6 +164,8 @@ final class CompanyOperationsRuntime {
         if (!actor.equals(ledger.accounts().companyOwnerId())) {
             return Applied.reject(run, board, funds, "ACTOR_NOT_COMPANY_OWNER");
         }
+        if (action == CompanyOperationsRun.Action.SIGN_CONTRACT && ManufacturingIntake.RUNOFF.equals(company.intakeVersion()))
+            return Applied.reject(run, board, funds, "INTAKE_RETIRED");
         if (action == CompanyOperationsRun.Action.START_EXPANSION
                 && (company.expansionOffer() == null || !company.expansionOffer().matches(fields))) {
             return Applied.reject(run, board, funds, "EXPANSION_OFFER_MISMATCH");
@@ -603,6 +605,7 @@ final class CompanyOperationsRuntime {
                     "addCapacity", offer.addCapacity()));
         }
         view.put("actions", actions(company));
+        if (company.intakeVersion() != null) view.put("intakeVersion", company.intakeVersion());
         view.put("rules", "这里只列自家公开方案、可见报价与已批预算余额；不含未来认证结果、"
                 + "客户私有预算或别家台账。认证所需的『已读』必须来自本人真实阅读。");
         return view;
@@ -620,7 +623,7 @@ final class CompanyOperationsRuntime {
                 break;
             }
         }
-        actions.add(CompanyOperationsRun.Action.SIGN_CONTRACT.name());
+        if (company.intakeVersion() == null) actions.add(CompanyOperationsRun.Action.SIGN_CONTRACT.name());
         actions.add(CompanyOperationsRun.Action.DELIVER.name());
         actions.add(CompanyOperationsRun.Action.COLLECT.name());
         actions.add(CompanyOperationsRun.Action.MARK_OVERDUE.name());

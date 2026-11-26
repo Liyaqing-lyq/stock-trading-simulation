@@ -472,6 +472,15 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("lastTradeAtMillis", quote.lastTradeAtMillis());
             node.put("bestBid", quote.bestBid() == null ? null : money(quote.bestBid()));
             node.put("bestAsk", quote.bestAsk() == null ? null : money(quote.bestAsk()));
+            if (engineering != null && RunManifest.ROLE_MARKET_VALUATION.equals(engineering.path("marketValuationPolicy").asText())) {
+                var reference = quote.reference();
+                if (reference != null) {
+                    node.put("referencePrice", reference.price() == null ? null : money(reference.price()));
+                    node.put("referenceSource", reference.source().name());
+                    node.put("referenceAtMillis", reference.asOfMillis());
+                    node.put("referenceAgeMillis", reference.ageMillis());
+                }
+            }
         }
         ArrayNode catalog = profile.putArray("catalog");
         for (InformationModel.CatalogEntry entry

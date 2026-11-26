@@ -518,6 +518,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requirePerson(exchange, session.get(), () -> manufacturingAction(exchange, session.get()));
                 return;
             }
+            if ("/api/admin/operations/intake".equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> manufacturingIntake(exchange));
+                return;
+            }
             if ("/api/admin/operations".equals(path) && "GET".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> operationsView(exchange, null));
                 return;
@@ -748,6 +752,7 @@ public final class WorldWebServer implements AutoCloseable {
         if ((("/api/admin/operations".equals(path) || "/api/me/operations".equals(path))
                 && "GET".equals(method))
                 || ("/api/me/operations/action".equals(path) && "POST".equals(method))
+                || ("/api/admin/operations/intake".equals(path) && "POST".equals(method))
                 || ("/api/me/resources/action".equals(path) && "POST".equals(method))
                 || ("/api/me/digital/action".equals(path) && "POST".equals(method))
                 || ("/api/me/aged/action".equals(path) && "POST".equals(method))
@@ -2020,6 +2025,29 @@ public final class WorldWebServer implements AutoCloseable {
         try {
             send(exchange, 200, mapper.writeValueAsString(host.operationsView(person)));
         } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
+    private void manufacturingIntake(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        JsonNode body = jsonBody(exchange, Set.of("expectedPosition", "fromVersion", "toVersion", "companyIds", "apply"));
+        try {
+            if (!body.path("apply").isBoolean() || !body.path("companyIds").isArray())
+                throw new IllegalArgumentException("请提供公司列表和是否生效");
+            var ids = new java.util.ArrayList<String>();
+            for (var value : body.path("companyIds")) {
+                if (!value.isTextual()) throw new IllegalArgumentException("公司编号必须是文本");
+                ids.add(value.textValue());
+            }
+            var plan = new edu.cufe.auction.world.ManufacturingIntake.Migration(researchInteger(body, "expectedPosition"),
+                    requiredText(body, "fromVersion"), requiredText(body, "toVersion"), ids);
+            boolean apply = body.get("apply").booleanValue();
+            long position = host.migrateManufacturingIntake(plan, apply);
+            send(exchange, 200, mapper.writeValueAsString(Map.of("position", Long.toString(position),
+                    "status", apply ? "INTAKE_MIGRATED" : "VALIDATED")));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (WorldWebHost.PositionMismatch mismatch) { send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对")); }
+        catch (IllegalArgumentException invalid) { send(exchange, 400, error("INVALID", invalid.getMessage())); }
+        catch (IllegalStateException invalid) { send(exchange, 409, error("CONFLICT", invalid.getMessage())); }
         catch (Exception failure) { throw new WorldIoFailure(); }
     }
 

@@ -106,6 +106,44 @@ class ManufacturingOperationsWebHttpTest {
         }
     }
 
+    @Test void adminCanPreviewAndCommitTwoIntakeChangesWhilePersonCannotWrite() throws Exception {
+        Path file = dir.resolve("intake.journal"), keys = dir.resolve("keys.txt");
+        Files.writeString(keys, String.join("\n", java.util.stream.IntStream.range(0,5)
+                .mapToObj(i -> "sk-unusable-fixture-" + i).toList()));
+        try (var host = new WorldWebHost(() -> {
+            var w = ComposedIndustryScenario.openManufacturingLifecycleOperating(file);
+            return new WorldWebHost.Opened(w, w.profile().manifest().runId());
+        }); var server = new WorldWebServer(host, KeySlots.load(keys), SceneRoutes.open(dir), 0,
+                "research-bootstrap", null, console::add)) {
+            server.start();
+            base = server.baseUrl();
+            String path = "/api/admin/operations/intake";
+            assertEquals(401, request("POST", path, "{}").statusCode());
+            admin();
+            var opening = JSON.readTree(request("GET", "/api/admin/operations", null).body());
+            var plan = opening.path("intakeLifecycle").deepCopy();
+            var body = (com.fasterxml.jackson.databind.node.ObjectNode) plan;
+            body.put("expectedPosition", opening.path("position").asText());
+            body.putArray("companyIds").add("mfg-tech").add("mfg-struct");
+            body.put("apply", false);
+            var preview = request("POST", path, body.toString());
+            assertEquals(200, preview.statusCode(), preview.body());
+            assertEquals("VALIDATED", JSON.readTree(preview.body()).path("status").asText());
+            body.put("apply", true);
+            person("frank");
+            assertEquals(403, request("POST", path, body.toString()).statusCode());
+            assertFalse(JSON.readTree(request("GET", "/api/me/operations", null).body()).has("intakeLifecycle"));
+            admin();
+            var applied = request("POST", path, body.toString());
+            assertEquals(200, applied.statusCode(), applied.body());
+            assertEquals(opening.path("position").asLong()+1, JSON.readTree(applied.body()).path("position").asLong());
+            assertEquals(409, request("POST", path, body.toString()).statusCode());
+            var rows = JSON.readTree(request("GET", "/api/admin/operations", null).body()).path("companies");
+            assertEquals(2, java.util.stream.StreamSupport.stream(rows.spliterator(), false)
+                    .filter(c -> ManufacturingIntake.RUNOFF.equals(c.path("intakeVersion").asText())).count());
+        }
+    }
+
     private void admin() throws Exception {
         String bootstrap = "research-bootstrap";
         for (String line : console) {

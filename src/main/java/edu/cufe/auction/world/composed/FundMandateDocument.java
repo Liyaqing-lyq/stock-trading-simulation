@@ -2,6 +2,7 @@ package edu.cufe.auction.world.composed;
 
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.RoleAccess;
+import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.WorldRuntime;
 
 /** 由开局产品委托与账户登记写入受托机构的内部资料，仅在新档创建一次。 */
@@ -21,6 +22,9 @@ final class FundMandateDocument {
             var body = new StringBuilder("EXP 开局产品委托登记\n受托组织=").append(org)
                     .append("；产品财产主体=").append(product)
                     .append("。本机构受托跟踪产品持仓、可用现金及可核实的投资依据，自行评估是否维持配置。\n");
+            if (RunManifest.FIXED_FUND_CAPITAL.equals(world.profile().manifest().dataVersions().get("fund-capital-policy"))) {
+                body.append("产品采用固定开局资本，不受理投资者申购、赎回与追加或提取资本。证券成交和分红由产品账户入账。\n");
+            }
             for (String account : mandate.accountIds()) {
                 var opening = snap.accounts().get(account);
                 body.append("开局账户=").append(account).append("；财产主体=").append(opening.ownerId())
