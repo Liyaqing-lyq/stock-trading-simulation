@@ -338,7 +338,18 @@ window.WorldHome = (() => {
       if(view.connected?.enabled){const last=view.connected.peopleActivity?.[p.id];const activity=element("div",null,"world-person-activity");
         activity.append(element("small",last?at(last.timeMillis):"当前行为"),element("strong",last?actionName(last.action):"尚无持续行为记录"),element("p",last?.reason||"此人物的后续活动以实际记录为准。"));card.append(activity);}
       const id=element("details");id.append(element("summary","查看身份编号"),element("code",p.id));card.append(id);
-      if(!p.system)card.append(button("进入人物视角",()=>api.onPerson?.(p.id)));grid.append(card);
+      if(!p.system)card.append(button("进入人物视角",()=>api.onPerson?.(p.id)));
+      if(typeof p.decisionPaused==="boolean"){
+        const status=element("p",p.decisionPaused?"新决定已暂停，已排程事务继续。":"新决定已启用。");
+        const control=button(p.decisionPaused?"恢复人物决定":"暂停人物决定",async()=>{
+          control.disabled=true;
+          try { await api.onPersonPause(p.id,!p.decisionPaused,view.position); }
+          catch(failure){status.textContent=failure.message;}
+          finally{control.disabled=false;}
+        });
+        card.append(status,control);
+      }
+      grid.append(card);
     }
   }
   function paint() {

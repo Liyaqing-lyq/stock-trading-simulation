@@ -13,9 +13,20 @@ public final class RoleInputTables {
     public static final String POLICY = "role-input-tables";
     /** 仅在超限时改变显示方式的档案版本。 */
     public static final String VERSION = "tables-on-overflow-v1";
+    /** 十公司档在原表格仍超过本人输入限额时，将会议动作的逐项条件显示成行表。 */
+    public static final String BOARD_VERSION = "board-tables-on-overflow-v2";
     private static final List<String> TABLES = List.of("catalog", "holdings", "market");
+    private static final List<String> CONDITION_FIELDS = List.of("timing", "blockers", "unknown", "status", "executorRevalidates");
+    private static final List<String> TIMING_FIELDS = List.of("actionMillis", "earliestCompletionMillis");
+    private static final List<String> BOARD_COLUMNS = List.of("tool", "timing.actionMillis", "timing.earliestCompletionMillis",
+            "blockers", "unknown", "status", "executorRevalidates");
 
     private RoleInputTables() { }
+
+    /** @return 是否启用带列名的本人数据表 */
+    public static boolean enabled(String version) {
+        return VERSION.equals(version) || BOARD_VERSION.equals(version);
+    }
 
     static void compact(ObjectNode input) {
         if (input.get("profile") instanceof ObjectNode profile) {
@@ -52,6 +63,7 @@ public final class RoleInputTables {
      * @param input 运行层生成的本人输入副本
      */
     public static void expand(ObjectNode input) {
+        expandBoardConditions(input);
         if (input.get("profile") instanceof ObjectNode profile) {
             for (String field : TABLES) {
                 if (!(profile.get(field) instanceof ObjectNode table)) continue;
@@ -69,6 +81,46 @@ public final class RoleInputTables {
             ArrayNode parameters = definition.putArray("parameters");
             types.properties().forEach(entry ->
                     parameters.addObject().put("name", entry.getKey()).set("type", entry.getValue()));
+        }
+    }
+
+    static void compactBoardConditions(ObjectNode input) {
+        for (JsonNode director : input.path("engineering").path("directorships")) {
+            for (JsonNode meeting : director.path("meetings")) {
+                if (!(meeting.get("planningPrerequisites") instanceof ObjectNode facts)) continue;
+                List<String> fields = keys(facts);
+                if (fields.size() < 4 || !fields.subList(0, 2).equals(List.of("currentPhase", "completionWindow"))) continue;
+                List<String> tools = fields.subList(2, fields.size());
+                if (!tools.stream().allMatch(tool -> tool.startsWith("board.")
+                        && keys(facts.get(tool)).equals(CONDITION_FIELDS)
+                        && keys(facts.get(tool).path("timing")).equals(TIMING_FIELDS))) continue;
+                var table = facts.putObject("actions");
+                var columns = table.putArray("columns");
+                BOARD_COLUMNS.forEach(columns::add);
+                var rows = table.putArray("rows");
+                for (String tool : tools) {
+                    JsonNode original = facts.remove(tool);
+                    var cells = rows.addArray().add(tool);
+                    TIMING_FIELDS.forEach(name -> cells.add(original.get("timing").get(name)));
+                    CONDITION_FIELDS.subList(1, CONDITION_FIELDS.size()).forEach(name -> cells.add(original.get(name)));
+                }
+            }
+        }
+    }
+
+    static void expandBoardConditions(ObjectNode input) {
+        for (JsonNode director : input.path("engineering").path("directorships")) {
+            for (JsonNode meeting : director.path("meetings")) {
+                if (!(meeting.get("planningPrerequisites") instanceof ObjectNode facts)
+                        || !(facts.get("actions") instanceof ObjectNode table)) continue;
+                facts.remove("actions");
+                for (JsonNode cells : table.required("rows")) {
+                    var original = facts.putObject(cells.required(0).textValue());
+                    var timing = original.putObject("timing");
+                    for (int i=0; i<TIMING_FIELDS.size(); i++) timing.set(TIMING_FIELDS.get(i), cells.required(i+1));
+                    for (int i=1; i<CONDITION_FIELDS.size(); i++) original.set(CONDITION_FIELDS.get(i), cells.required(i+2));
+                }
+            }
         }
     }
 

@@ -31,7 +31,7 @@ public final class AutonomousLifecycleProbe {
                     throw new IllegalArgumentException("专项人物名单须非空且没有重复");
             }
 
-            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING", "COMPANY_INFORMATION_OPERATING", "FORWARD_BUDGET_OPERATING", "AGED_ORDER_OPERATING", "BOARD_PROCEDURE_OPERATING", "ISSUER_REPORT_OPERATING", "ROLE_TABLE_OPERATING", "HYDRO_SETTLEMENT_OPERATING", "PERSONAL_LIMIT_OPERATING", "CONTINUING_ROLES_OPERATING", "ISSUER_CREDIT_OPERATING", "ISSUER_CREDIT_DECISIONS_OPERATING", "PERSONAL_PROFILES_OPERATING", "FUND_MANDATE_OPERATING", "FUND_OFFICE_CONTACTS_OPERATING", "FUND_OFFICE_ROUTING_OPERATING", "MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION").contains(mode)
+            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING", "COMPANY_INFORMATION_OPERATING", "FORWARD_BUDGET_OPERATING", "AGED_ORDER_OPERATING", "BOARD_PROCEDURE_OPERATING", "ISSUER_REPORT_OPERATING", "ROLE_TABLE_OPERATING", "HYDRO_SETTLEMENT_OPERATING", "PERSONAL_LIMIT_OPERATING", "CONTINUING_ROLES_OPERATING", "ISSUER_CREDIT_OPERATING", "ISSUER_CREDIT_DECISIONS_OPERATING", "PERSONAL_PROFILES_OPERATING", "FUND_MANDATE_OPERATING", "FUND_OFFICE_CONTACTS_OPERATING", "FUND_OFFICE_ROUTING_OPERATING", "MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY").contains(mode)
                     || maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
                     || stepMillis != 3_600_000
@@ -45,7 +45,7 @@ public final class AutonomousLifecycleProbe {
         Config config = JSON.readValue(Files.readAllBytes(Path.of(args[2])), Config.class);
         Path seed = config.seed() == null ? null : validateSeed(config);
         // 初建草稿与本次参数放在一起；接续以种子首帧冻结的草稿为准。
-        byte[] draft = java.util.Set.of("OPENING_COPIES","OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION").contains(config.mode()) && seed == null
+        byte[] draft = java.util.Set.of("OPENING_COPIES","OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE").contains(config.mode()) && seed == null
                 ? Files.readAllBytes(Path.of(args[2]).resolveSibling("opening-copies.json")) : null;
         Files.createDirectory(out);
         if (draft != null) Files.write(out.resolve("opening-copies.json"), draft);
@@ -168,6 +168,8 @@ public final class AutonomousLifecycleProbe {
             case "LOAN_PROMOTION_OPERATING" -> ComposedIndustryScenario.openLoanPromotionOperating(journal);
             case "BASELINE_PARTS_OPERATING" -> ComposedIndustryScenario.openBaselinePartsOperating(journal);
             case "UNPRICED_REFERENCE" -> ComposedIndustryScenario.openUnpricedReferenceOperating(journal, journal.resolveSibling("opening-copies.json"));
+            case "TEN_COMPANY_AUTONOMY" -> ComposedIndustryScenario.openTenCompanyAutonomy(journal);
+            case "PERSON_PAUSE" -> ComposedIndustryScenario.openPersonPauseOperating(journal, journal.resolveSibling("opening-copies.json"));
             case "ISSUER_RESOLUTION" -> ComposedIndustryScenario.openIssuerResolutionOperating(journal, journal.resolveSibling("opening-copies.json"));
             case "OWNER_BANK_VALUATION" -> ComposedIndustryScenario.openOwnerBankValuationOperating(
                     journal, journal.resolveSibling("opening-copies.json"));
@@ -209,20 +211,23 @@ public final class AutonomousLifecycleProbe {
 
     static boolean usesMeasuredLength(String mode) {
         return "ENGINEERING_CUSTOMER_OPERATING".equals(mode) || "COMPANY_INFORMATION_OPERATING".equals(mode) || "FORWARD_BUDGET_OPERATING".equals(mode) || "AGED_ORDER_OPERATING".equals(mode) || "BOARD_PROCEDURE_OPERATING".equals(mode) || "ISSUER_REPORT_OPERATING".equals(mode) || "ROLE_TABLE_OPERATING".equals(mode) || "HYDRO_SETTLEMENT_OPERATING".equals(mode) || "PERSONAL_LIMIT_OPERATING".equals(mode) || "CONTINUING_ROLES_OPERATING".equals(mode) || "ISSUER_CREDIT_OPERATING".equals(mode) || "ISSUER_CREDIT_DECISIONS_OPERATING".equals(mode) || "PERSONAL_PROFILES_OPERATING".equals(mode) || "FUND_MANDATE_OPERATING".equals(mode) || "FUND_OFFICE_CONTACTS_OPERATING".equals(mode) || "FUND_OFFICE_ROUTING_OPERATING".equals(mode)
-                || java.util.Set.of("MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION").contains(mode);
+                || java.util.Set.of("MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY").contains(mode);
     }
 
     static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING") || mode.equals("FUNDED_THINKING_OPERATING") || mode.equals("PERSONAL_MARKET_OPERATING") || usesMeasuredLength(mode); }
 
     static java.util.List<SceneRoutes.Route> probeRoutes(SceneRoutes.Snapshot original, String mode) {
         boolean thinking = thinkingMode(mode);
+        boolean longStudy = "TEN_COMPANY_AUTONOMY".equals(mode);
+        String policy = longStudy ? DecisionModel.Route.LONG_HORIZON : "lifecycle-v1";
         return original.routes().stream().map(r -> new SceneRoutes.Route(r.scene(), r.slotId(), "deepseek-flash", true,
-                2500, 35_000_000, thinking ? 8192 : 2048, 4, "lifecycle-v1",
+                longStudy ? DecisionModel.Route.callCeiling(policy) : 2500,
+                longStudy ? DecisionModel.Route.tokenCeiling(policy) : 35_000_000, thinking ? 8192 : 2048, 4, policy,
                 thinking ? DeepSeekClient.THINKING_HIGH_POLICY : null)).toList();
     }
 
     static String systemPrompt(Config config) {
-        if (java.util.Set.of("OPENING_COPIES","OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION").contains(config.mode())) return LiveDecisionProvider.DECLARED_FIELDS_SYSTEM_TEXT;
+        if (java.util.Set.of("OPENING_COPIES","OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY").contains(config.mode())) return LiveDecisionProvider.DECLARED_FIELDS_SYSTEM_TEXT;
         if (java.util.Set.of("INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING").contains(config.mode()) || "PERSONAL_PROFILES_OPERATING".equals(config.mode()) || "FUND_MANDATE_OPERATING".equals(config.mode()) || "FUND_OFFICE_CONTACTS_OPERATING".equals(config.mode()) || "FUND_OFFICE_ROUTING_OPERATING".equals(config.mode())) return LiveDecisionProvider.PERSONAL_PROFILE_SYSTEM_TEXT;
         if (java.util.Set.of("MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING").contains(config.mode()) || "CONTINUING_ROLES_OPERATING".equals(config.mode()) || "ISSUER_CREDIT_OPERATING".equals(config.mode()) || "ISSUER_CREDIT_DECISIONS_OPERATING".equals(config.mode())) return LiveDecisionProvider.RESEARCH_NOTE_SYSTEM_TEXT;
         return (config.mode().startsWith("PLANNING") || informedMode(config.mode())) ? LiveDecisionProvider.PLANNING_SYSTEM_TEXT

@@ -13,8 +13,8 @@ import java.util.Set;
 /**
  * 任职与授权子集：唯一世界日志里的不可变运行包装。
  *
- * <p>本类型只承载两样东西：纯核 {@link RoleAccess.State} 授权元数据，以及按 taskId 索引的
- * 管理审计报告。<b>它不保存任何现金、持仓、日志或角色记忆</b>；角色能看到的资产一律由
+ * <p>本类型承载 {@link RoleAccess.State} 授权元数据、按 taskId 索引的管理审计报告，
+ * 以及已确认暂停新决定的人物。角色能看到的资产由
  * {@link WorldRuntime#roleView(String)} 从同一快照的现金账户与证券批次现算。</p>
  *
  * <p>{@link Config} 是显式开局配置：产品管理授权与首批任职随运行清单一起冻结进日志第一批，
@@ -23,11 +23,19 @@ import java.util.Set;
  *
  * @param access  纯核授权状态（不可变）
  * @param reports 管理审计报告，按 taskId 索引
+ * @param pausedPersons 暂停新决定的自然人，只有启用档且实际暂停时序列化
  */
-public record RoleRun(RoleAccess.State access, Map<String, Report> reports) {
+public record RoleRun(RoleAccess.State access, Map<String, Report> reports,
+                      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY)
+                      List<String> pausedPersons) {
+    /** 兼容未设置单人暂停的任职档案。 */
+    public RoleRun(RoleAccess.State access, Map<String, Report> reports) { this(access, reports, List.of()); }
 
     /** 校验非空与报告索引一致性。 */
     public RoleRun {
+        pausedPersons = pausedPersons == null ? List.of() : List.copyOf(pausedPersons);
+        if (!pausedPersons.equals(List.copyOf(new java.util.TreeSet<>(pausedPersons))))
+            throw new IllegalArgumentException("暂停人物须已按标识排序并去重");
         Objects.requireNonNull(access, "任职授权状态");
         Objects.requireNonNull(reports, "任职报告");
         Map<String, Report> copy = new LinkedHashMap<>(reports);
@@ -137,7 +145,7 @@ public record RoleRun(RoleAccess.State access, Map<String, Report> reports) {
         }
         Map<String, Report> next = new LinkedHashMap<>(reports);
         next.put(entry.taskId(), entry);
-        return new RoleRun(access, next);
+        return new RoleRun(access, next, pausedPersons);
     }
 
     /**
@@ -147,7 +155,7 @@ public record RoleRun(RoleAccess.State access, Map<String, Report> reports) {
      * @return 替换后的新子集
      */
     public RoleRun withAccess(RoleAccess.State next) {
-        return new RoleRun(Objects.requireNonNull(next, "候选授权状态"), reports);
+        return new RoleRun(Objects.requireNonNull(next, "候选授权状态"), reports, pausedPersons);
     }
 
     private static void requireText(String value, String field) {

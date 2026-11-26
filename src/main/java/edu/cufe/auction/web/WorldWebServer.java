@@ -526,6 +526,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> manufacturingIntake(exchange));
                 return;
             }
+            if ("/api/admin/person-decision-pause".equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> personDecisionPause(exchange));
+                return;
+            }
             if ("/api/admin/operations".equals(path) && "GET".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> operationsView(exchange, null));
                 return;
@@ -761,6 +765,7 @@ public final class WorldWebServer implements AutoCloseable {
                 && "GET".equals(method))
                 || ("/api/me/operations/action".equals(path) && "POST".equals(method))
                 || ("/api/admin/operations/intake".equals(path) && "POST".equals(method))
+                || ("/api/admin/person-decision-pause".equals(path) && "POST".equals(method))
                 || ("/api/admin/operations/loan-promotion".equals(path) && ("POST".equals(method) || "GET".equals(method)))
                 || ("/api/me/resources/action".equals(path) && "POST".equals(method))
                 || ("/api/me/digital/action".equals(path) && "POST".equals(method))
@@ -1717,7 +1722,8 @@ public final class WorldWebServer implements AutoCloseable {
         JsonNode model = node.get("model");
         JsonNode enabled = node.get("enabled");
         Integer calls = intField(node.get("maxCalls"));
-        Integer total = intField(node.get("maxTotalTokens"));
+        JsonNode tokens = node.path("maxTotalTokens");
+        Long total = tokens.isIntegralNumber() && tokens.canConvertToLong() ? tokens.longValue() : null;
         Integer output = intField(node.get("maxOutputTokens"));
         Integer concurrency = intField(node.get("maxConcurrency"));
         JsonNode policy = node.get("budgetPolicy");
@@ -2061,6 +2067,19 @@ public final class WorldWebServer implements AutoCloseable {
         catch (WorldWebHost.PositionMismatch mismatch) { send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对")); }
         catch (IllegalArgumentException invalid) { send(exchange, 400, error("INVALID", invalid.getMessage())); }
         catch (IllegalStateException invalid) { send(exchange, 409, error("CONFLICT", invalid.getMessage())); }
+        catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
+    private void personDecisionPause(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
+        var body=jsonBody(exchange, Set.of("expectedPosition","person","paused"));
+        try {
+            if (!body.path("paused").isBoolean()) throw new IllegalArgumentException("paused 须为布尔值");
+            long position=host.setPersonDecisionPause(new edu.cufe.auction.world.WorldRuntime.PersonPauseRequest(
+                    researchInteger(body,"expectedPosition"),requiredText(body,"person"),body.get("paused").booleanValue()));
+            send(exchange,200,mapper.writeValueAsString(Map.of("position",Long.toString(position),"paused",body.get("paused").booleanValue())));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (IllegalArgumentException invalid) { send(exchange,400,error("INVALID",invalid.getMessage())); }
+        catch (IllegalStateException conflict) { send(exchange,409,error("CONFLICT",conflict.getMessage())); }
         catch (Exception failure) { throw new WorldIoFailure(); }
     }
 
@@ -2822,6 +2841,7 @@ public final class WorldWebServer implements AutoCloseable {
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("personPartyId", view.personPartyId());
             response.put("displayName", page.displayName());
+            if (page.decisionPaused()!=null) response.put("decisionPaused",page.decisionPaused());
             response.put("timeMillis", Long.toString(view.timeMillis()));
             response.put("tools", view.tools());
             response.put("accounts", accounts);

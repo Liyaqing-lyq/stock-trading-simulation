@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import edu.cufe.auction.world.DecisionModel;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -102,29 +103,29 @@ public final class SceneRoutes implements AutoCloseable {
      * @param slotId          固定槽位 key-1..key-5
      * @param model           deepseek-flash 或 deepseek-v4-pro
      * @param enabled         是否启用
-     * @param maxCalls        调用上限 1..100
-     * @param maxTotalTokens  总 token 上限 256..1000000
+     * @param maxCalls        调用次数上限，范围随本路预算策略确定
+     * @param maxTotalTokens  累计 token 上限，长期策略允许浏览器可精确表示的正整数
      * @param maxOutputTokens 单次输出上限 128..8192 且不超过总上限
      * @param maxConcurrency  并发上限 1..4 且不超过调用上限
      * @param providerPolicy  空值保留关闭思考；deepseek-thinking-high-v1 显式启用思考
-     * @param budgetPolicy    空值保留旧上限；lifecycle-v1 显式启用有限跨期预算
+     * @param budgetPolicy    空值保留旧上限，lifecycle-v1 与 long-horizon-v1 分别用于有限跨期与长期预算
      */
     public record Route(Scene scene, String slotId, String model, boolean enabled,
-                        int maxCalls, int maxTotalTokens, int maxOutputTokens,
+                        int maxCalls, long maxTotalTokens, int maxOutputTokens,
                         int maxConcurrency,
                         @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy,
                         @JsonInclude(JsonInclude.Include.NON_NULL) String providerPolicy) {
 
         /** 旧配置继续使用原有单场景上限。 */
         public Route(Scene scene, String slotId, String model, boolean enabled,
-                     int maxCalls, int maxTotalTokens, int maxOutputTokens, int maxConcurrency) {
+                     int maxCalls, long maxTotalTokens, int maxOutputTokens, int maxConcurrency) {
             this(scene, slotId, model, enabled, maxCalls, maxTotalTokens, maxOutputTokens,
                     maxConcurrency, null);
         }
 
         /** 旧九参路由保留关闭思考策略。 */
         public Route(Scene scene, String slotId, String model, boolean enabled,
-                     int maxCalls, int maxTotalTokens, int maxOutputTokens, int maxConcurrency,
+                     int maxCalls, long maxTotalTokens, int maxOutputTokens, int maxConcurrency,
                      String budgetPolicy) {
             this(scene, slotId, model, enabled, maxCalls, maxTotalTokens, maxOutputTokens,
                     maxConcurrency, budgetPolicy, null);
@@ -142,13 +143,13 @@ public final class SceneRoutes implements AutoCloseable {
             if (providerPolicy != null && !"deepseek-thinking-high-v1".equals(providerPolicy)) {
                 throw new IllegalArgumentException("未知提供方策略");
             }
-            if (budgetPolicy != null && !"lifecycle-v1".equals(budgetPolicy)) {
+            if (budgetPolicy != null && !"lifecycle-v1".equals(budgetPolicy) && !DecisionModel.Route.LONG_HORIZON.equals(budgetPolicy)) {
                 throw new IllegalArgumentException("未知预算策略");
             }
-            if (maxCalls < 1 || maxCalls > (budgetPolicy == null ? 100 : 5000)) {
+            if (maxCalls < 1 || maxCalls > DecisionModel.Route.callCeiling(budgetPolicy)) {
                 throw new IllegalArgumentException("调用上限超出范围");
             }
-            if (maxTotalTokens < 256 || maxTotalTokens > (budgetPolicy == null ? 1_000_000 : 100_000_000)) {
+            if (maxTotalTokens < 256 || maxTotalTokens > DecisionModel.Route.tokenCeiling(budgetPolicy)) {
                 throw new IllegalArgumentException("总 token 上限超出范围");
             }
             if (maxOutputTokens < 128 || maxOutputTokens > 8192
@@ -210,7 +211,7 @@ public final class SceneRoutes implements AutoCloseable {
 
     /** 持久化形态：只含非秘密字段。 */
     private record RouteDto(String scene, String slotId, String model, boolean enabled,
-                            int maxCalls, int maxTotalTokens, int maxOutputTokens,
+                            int maxCalls, long maxTotalTokens, int maxOutputTokens,
                             int maxConcurrency,
                             @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy,
                             @JsonInclude(JsonInclude.Include.NON_NULL) String providerPolicy) {

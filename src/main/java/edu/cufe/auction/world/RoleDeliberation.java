@@ -109,6 +109,21 @@ public final class RoleDeliberation {
                 new DecisionModel.Budget(DecisionModel.Usage.unknownCost(3000, 40_000_000, 6_000_000), caps), base.profile());
     }
 
+    /** 为长期实验设置可精确表示的记账上界。角色的工时、动作权限与每次请求限制由各自合同决定。
+     * @param base 本档原有的模型和已登记人物
+     * @return 按真实已用与在途数量继续计量的配置
+     */
+    public static DecisionModel.Config longHorizonBudget(DecisionModel.Config base) {
+        String policy = DecisionModel.Route.LONG_HORIZON;
+        long tokens = DecisionModel.Route.tokenCeiling(policy);
+        var allowance = DecisionModel.Usage.unknownCost(DecisionModel.Route.callCeiling(policy), tokens, tokens);
+        var persons = new java.util.TreeMap<String, DecisionModel.Usage>();
+        base.budget().personCap().keySet().forEach(person -> persons.put(person, allowance));
+        return new DecisionModel.Config(base.providerKind(), base.providerId(), base.pricingVersion(),
+                base.thinkMillisByWake(), base.actionMillisByTool(), base.limits(),
+                new DecisionModel.Budget(allowance, persons), base.profile());
+    }
+
     /**
      * 只使用已按本人权限投影的工程输入与本人的历史决定，追加可审计目标和结果。
      * @param root 已完成权限投影的工程输入

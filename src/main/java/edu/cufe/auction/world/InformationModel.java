@@ -830,16 +830,8 @@ public final class InformationModel {
         if (!state.persons().contains(personPartyId)) {
             return new Outcome(Status.NOT_AVAILABLE, state, null);
         }
-        Document document = findDocument(state.documents(), docId);
-        if (document == null) {
-            return new Outcome(Status.NOT_AVAILABLE, state, null);
-        }
-        DocumentVersion target = document.at(version);
-        if (target == null || target.publishedAt() > now) {
-            return new Outcome(Status.NOT_AVAILABLE, state, null);
-        }
-        if (!visible(document.audience(), access, personPartyId, now,
-                target.publishedAt(), groupAccess, boardAccess)) {
+        DocumentVersion target = visibleVersion(state, access, personPartyId, docId, version, now, groupAccess, boardAccess);
+        if (target == null) {
             return new Outcome(Status.NOT_AVAILABLE, state, null);
         }
         for (Reading reading : state.active()) {
@@ -1121,6 +1113,18 @@ public final class InformationModel {
     }
 
     // ---------------------------------------------------------------- 内部
+
+    /** 对读取和董事登记使用同一确切版本、发布时间及受众资格。 */
+    static DocumentVersion visibleVersion(State state, RoleAccess.State access, String person,
+            String docId, long version, long now, GroupAccess groups, BoardAccess boards) {
+        Document document = findDocument(state.documents(), docId);
+        DocumentVersion target = document == null ? null : document.at(version);
+        if (target == null || target.publishedAt() > now
+                || !visible(document.audience(), access, person, now, target.publishedAt(), groups, boards)) {
+            return null;
+        }
+        return target;
+    }
 
     static boolean visible(Audience audience, RoleAccess.State access, String personPartyId,
                                    long now, long docVersionPublishedAt, GroupAccess groups,

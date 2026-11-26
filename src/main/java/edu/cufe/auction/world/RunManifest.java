@@ -129,17 +129,34 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 银行进入处置时暂停其证券申报并释放对应挂单。 */
     public static final String ISSUER_RESOLUTION_RUN_ID = "web-issuer-resolution-v1";
 
-    /** 本档或其继承档是否按确认帧计入主体银行权利。 */
-    public static boolean usesOwnerBankValuation(String id) {
-        return OWNER_BANK_VALUATION_RUN_ID.equals(id) || UNPRICED_REFERENCE_RUN_ID.equals(id) || ISSUER_RESOLUTION_RUN_ID.equals(id);
+    /** 在银行处置档基础上启用单人决定暂停。 */
+    public static final String PERSON_PAUSE_RUN_ID = "web-person-pause-v1";
+
+    /** 正常参考价、十个发行人的自主运行开局。 */
+    public static final String TEN_COMPANY_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v1";
+
+    /** @return 是否允许暂停与恢复单个在册人物的决定 */
+    public static boolean usesPersonDecisionPause(String id) {
+        return PERSON_PAUSE_RUN_ID.equals(id) || TEN_COMPANY_AUTONOMY_RUN_ID.equals(id);
     }
 
-    private static boolean usesOpeningCopies(String id) {
+    /** @return 是否继承银行处置联动停牌 */
+    public static boolean usesIssuerResolution(String id) {
+        return ISSUER_RESOLUTION_RUN_ID.equals(id) || usesPersonDecisionPause(id);
+    }
+
+    /** 本档或其继承档是否按确认帧计入主体银行权利。 */
+    public static boolean usesOwnerBankValuation(String id) {
+        return OWNER_BANK_VALUATION_RUN_ID.equals(id) || UNPRICED_REFERENCE_RUN_ID.equals(id) || usesIssuerResolution(id);
+    }
+
+    /** @return 模型是否使用逐工具声明参数及按已读版本展示的群帖引用 */
+    public static boolean usesDeclaredFields(String id) {
         return OPENING_COPIES_RUN_ID.equals(id) || usesOwnerBankValuation(id);
     }
 
     private static boolean usesBaselineParts(String id) {
-        return BASELINE_PARTS_RUN_ID.equals(id) || usesOpeningCopies(id);
+        return BASELINE_PARTS_RUN_ID.equals(id) || usesDeclaredFields(id);
     }
 
     /** 是否冻结每日申报价格带。 */
@@ -1331,13 +1348,18 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             }
             if (usesMediaDesks(runId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
             if (UNPRICED_REFERENCE_RUN_ID.equals(runId)) expectedData.put("unpriced-opening-reference", "HY1-cost-only-v1");
-            if (ISSUER_RESOLUTION_RUN_ID.equals(runId)) expectedData.put("issuer-failure", "bank-resolution-halt-v1");
+            if (usesIssuerResolution(runId)) expectedData.put("issuer-failure", "bank-resolution-halt-v1");
+            if (usesPersonDecisionPause(runId)) expectedData.put("person-decision-pause", "confirmed-person-v1");
             if (usesOwnerBankValuation(runId)) {
                 expectedData.put("owner-bank-valuation", "owner-claims-v1");
                 expectedData.put("owner-bank-decisions", "owner-cash-v1");
             }
-            if (usesOpeningCopies(runId)) {
-                OpeningEntityCopies.fromManifest(data).freeze(expectedData);
+            if (usesDeclaredFields(runId)) {
+                if (TEN_COMPANY_AUTONOMY_RUN_ID.equals(runId)) {
+                    expectedData.put("opening-population", "ten-issuers-v1");
+                    expectedData.put("model-budget", "long-horizon-v1");
+                    expectedData.put("board-material-source", "published-visible-v1");
+                } else OpeningEntityCopies.fromManifest(data).freeze(expectedData);
                 expectedData.put("group-readable-refs", "edition-visible-v1");
                 expectedData.put("tool-argument-guide", "declared-fields-v1");
             }
@@ -1366,7 +1388,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put(HydroDecisionTools.SETTLEMENT_POLICY, HydroDecisionTools.SETTLEMENT_VERSION);
             }
             if (usesRoleTables(runId)) {
-                expectedData.put(RoleInputTables.POLICY, RoleInputTables.VERSION);
+                expectedData.put(RoleInputTables.POLICY, TEN_COMPANY_AUTONOMY_RUN_ID.equals(runId) ? RoleInputTables.BOARD_VERSION : RoleInputTables.VERSION);
             }
             if (usesIssuerReportRules(runId)) {
                 expectedData.put("issuer-period-reports", "versioned-v1");

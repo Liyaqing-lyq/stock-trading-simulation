@@ -48,6 +48,11 @@ final class WorldOverviewView {
                 managers.computeIfAbsent(a.organizationPartyId(),k->new ArrayList<>()).add(a.personPartyId());
             roles.computeIfAbsent(a.personPartyId(),k->new ArrayList<>()).add(names.get(a.organizationPartyId())+" · "+role);
         }
+        if (RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID.equals(world.profile().manifest().runId())) {
+            var mandate = snapshot.engineering().orElseThrow().config().customerMandate();
+            roles.computeIfAbsent(mandate.representativePartyId(), k -> new ArrayList<>())
+                    .add(names.get(mandate.organizationPartyId()) + " · 工程客户代表（查阅委托与收付，履约按合同复核）");
+        }
         var operationIds = new HashSet<String>();
         snapshot.companyOperations().ifPresent(run -> {
             operationIds.addAll(run.companyIds());
@@ -109,6 +114,9 @@ final class WorldOverviewView {
         for(var party:registry.parties()) if(party.kind()==OpeningRegistry.PartyKind.PERSON) {
             var row=new LinkedHashMap<String,Object>();row.put("id",party.partyId());row.put("name",names.get(party.partyId()));
             row.put("roles",roles.getOrDefault(party.partyId(),List.of()));row.put("system",party.partyId().equals("research-system"));
+            if ("confirmed-person-v1".equals(world.profile().manifest().dataVersions().get("person-decision-pause")) && !party.partyId().equals("research-system")
+                    && snapshot.information().orElseThrow().information().persons().contains(party.partyId()))
+                row.put("decisionPaused",world.personDecisionsPaused(party.partyId()));
             people.add(row);
         }
         var result = new LinkedHashMap<String,Object>(Map.of("available",true,"runId",world.profile().manifest().runId(),"position",Long.toString(snapshot.position()),

@@ -1667,7 +1667,7 @@ public final class BoardModel {
      * 异步参与登记：本人在会务窗口内确认参加本次会议，不表示整场连续在场。
      *
      * <p>只允许 {@code CONVENED} 且 {@code createdAt <= now < opensAt} 的会议；登记加入
-     * attendee，{@code selfRecused} 只增不减。任免候选人/被撤人或任免、分红提案
+     * attendee，{@code selfRecused} 只增不减。任免候选人/被撤人占席，或任免、分红、商业化提案的
      * {@code relatedSeatIds} 命中该席时强制回避，自主不回避不能覆盖；重复登记不重复席位、
      * 不清除既有回避，也不改材料、选票、提案/授权或其它字段。</p>
      *
@@ -1736,8 +1736,11 @@ public final class BoardModel {
                 return true;
             }
         }
-        return meeting.dividendProposal() != null
-                && meeting.dividendProposal().relatedSeatIds().contains(seatId);
+        if (meeting.dividendProposal() != null) {
+            return meeting.dividendProposal().relatedSeatIds().contains(seatId);
+        }
+        return meeting.commercializationProposal() != null
+                && meeting.commercializationProposal().relatedSeatIds().contains(seatId);
     }
 
     /**

@@ -776,19 +776,26 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         RolePlanningContext.append(root, wakeReason, config);
         EngineeringManagerHistory.project(root);
         PersonalContactHistory.project(root);
-        boolean useTables = RoleInputTables.VERSION.equals(roleInputFormat);
-        if (BoardProcedureView.VERSION.equals(roleInputFormat) || useTables) BoardProcedureView.project(root);
+        if (BoardProcedureView.VERSION.equals(roleInputFormat) || RoleInputTables.enabled(roleInputFormat)) BoardProcedureView.project(root);
+        return renderInput(root, roleInputFormat, config.limits().maxInputChars());
+    }
+
+    static String renderInput(ObjectNode root, String format, long maxChars) {
         try {
             String ordinary = MAPPER.writeValueAsString(root);
-            if (!useTables || (ordinary.length() <= config.limits().maxInputChars()
-                    && ordinary.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= DecisionModel.MAX_INPUT_BYTES)) {
-                return ordinary;
-            }
+            if (!RoleInputTables.enabled(format) || fitsInput(ordinary, maxChars)) return ordinary;
             RoleInputTables.compact(root);
+            String tables = MAPPER.writeValueAsString(root);
+            if (!RoleInputTables.BOARD_VERSION.equals(format) || fitsInput(tables, maxChars)) return tables;
+            RoleInputTables.compactBoardConditions(root);
             return MAPPER.writeValueAsString(root);
         } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
             throw new IllegalStateException("无法生成决定输入", failure);
         }
+    }
+
+    private static boolean fitsInput(String text, long maxChars) {
+        return text.length() <= maxChars && text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= DecisionModel.MAX_INPUT_BYTES;
     }
 
     /** 一次开决定的请求；字段全部由可信宿主填充，模型不可见。 */

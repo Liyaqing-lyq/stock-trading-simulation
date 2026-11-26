@@ -16,7 +16,9 @@ final class OwnerBankValuationOpening {
     static BankingProfile profile(BankingProfile original, String copiedInvestor) {
         var parties = new TreeMap<>(original.parties());
         var deposits = new ArrayList<>(original.depositAccounts());
-        for (String key : List.of("investor", "fund-a", copiedInvestor)) {
+        var customers = new ArrayList<>(List.of("investor", "fund-a"));
+        if (copiedInvestor != null) customers.add(copiedInvestor);
+        for (String key : customers) {
             var old = parties.get(key);
             String gl = "dep-personal-" + key;
             parties.put(key, new BankingProfile.PartyRef(old.partyId(), old.ownerId(), old.cashAccountId(), gl, old.ownerKind()));

@@ -28,6 +28,7 @@ function makeElement(tag = "div") {
     appendChild(child) { this.children.push(child); return child; },
     append(...items) { this.children.push(...items); },
     replaceChildren(...items) { this.children = items; },
+    focus() { this.focused = true; },
     addEventListener() { },
     closest(selector) { this._closest = this._closest || makeElement(selector); return this._closest; },
     querySelectorAll() { return []; },
@@ -972,6 +973,7 @@ defineCase("admin-social-rendered-and-cleared", async () => {
   await bootSettled(world);
   world.context.showMode("admin");
   world.context.selectPage("social", true);
+  assert.equal(world.context.document.getElementById("page-title").focused, true);
   await waitFor(() => world.rows("social-messages") === 2, "消息页渲染");
 
   const first = rowCells(world, "social-messages", 0);

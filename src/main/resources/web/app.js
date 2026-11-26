@@ -620,6 +620,7 @@ async function refreshPerson() {
     ["观察", view.observations],
     ["可用工具", (view.tools || []).join("、")]
   ];
+  if (typeof view.decisionPaused === "boolean") pairs.push(["我的新决定",view.decisionPaused ? "已暂停，已排程事务继续" : "已启用"]);
   for (const [label, value] of pairs) {
     const dt = document.createElement("dt");
     dt.textContent = label;
@@ -1021,6 +1022,7 @@ function selectPage(page, refresh = true) {
     else node.removeAttribute("aria-current");
   });
   if (refresh) {
+    $("page-title").focus();
     setStatus("正在读取本页确认状态…");
     guard(refreshAdmin());
   }
@@ -1045,8 +1047,8 @@ function routeField(container, scene, name, labelText, value, choices, budgetPol
     control.type = "number";
     control.step = "1";
     control.min = name === "maxOutputTokens" ? "128" : name === "maxTotalTokens" ? "256" : "1";
-    control.max = ({ maxCalls: budgetPolicy === "lifecycle-v1" ? 5000 : 100,
-      maxTotalTokens: budgetPolicy === "lifecycle-v1" ? 100000000 : 1000000,
+    control.max = ({ maxCalls: budgetPolicy === "long-horizon-v1" ? 2147483647 : budgetPolicy === "lifecycle-v1" ? 5000 : 100,
+      maxTotalTokens: budgetPolicy === "long-horizon-v1" ? Number.MAX_SAFE_INTEGER : budgetPolicy === "lifecycle-v1" ? 100000000 : 1000000,
       maxOutputTokens: 8192, maxConcurrency: 4 })[name];
     control.required = true;
   }
@@ -3941,6 +3943,12 @@ if (globalThis.WorldHome) {
     return result.payload;
   };
   globalThis.WorldHome.onPerson = personId => guard(switchPerson(personId));
+  globalThis.WorldHome.onPersonPause = async (person, paused, expectedPosition) => {
+    if (state.mode !== "admin") throw new Error("需要管理员身份");
+    const result = await request("POST","/api/admin/person-decision-pause",{person,paused,expectedPosition});
+    if (result.status !== 200) throw new Error(result.payload?.message || "操作失败，请刷新后重试");
+    if (state.mode === "admin") await refreshAdmin();
+  };
   globalThis.WorldHome.onRefresh = refreshAdmin;
   globalThis.WorldHome.onAutonomy = async (action, days) => {
     if (state.mode !== "admin") throw new Error("请返回上帝视角操作");

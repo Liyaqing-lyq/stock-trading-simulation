@@ -46,10 +46,11 @@ for(const name of ["clearAdminDom","clearPersonDom","clearPersonalMedia","clearP
  "clearOperationsDom","placeOperationsPanel","loadOperations",
  "clearManufacturingDom","placeManufacturingPanel","loadManufacturing"]) context[name]=()=>{};
 vm.createContext(context);
-for(const name of ["showMode","enterPerson","renderPersonalReports","refreshPerson"]) vm.runInContext(sourceFunction(name),context);
+for(const name of ["showMode","enterPerson","renderPersonalReports","renderPersonPortfolios","refreshPerson"]) vm.runInContext(sourceFunction(name),context);
 vm.runInContext(fs.readFileSync(path.join(root,"groups.js"),"utf8"),context);
 (async()=>{
  await context.enterPerson("alice");
+ assert.equal(node("person-owner-valuations").hidden,true,"没有本人金融账户时不显示估值");
  assert(calls.includes("/api/me/groups"),"从真实人物入口必须加载本人群，不依赖管理员当前页");
  assert.equal(panel.parentElement,node("person"),"本人群必须移入可见人物区域");
  assert.equal(panel.hidden,false,"人物群面板必须可见");

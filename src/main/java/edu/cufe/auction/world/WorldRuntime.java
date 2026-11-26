@@ -6194,6 +6194,14 @@ public final class WorldRuntime implements AutoCloseable {
         return Optional.ofNullable(customerMandateView(state, personPartyId));
     }
 
+    /** 检查人物决定入口的系统发稿人限制。
+     * @param person 拟派发决定的主体
+     * @return 本档中该主体是否仅代表系统出版者
+     */
+    public boolean systemPublisherOnly(String person) {
+        return RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID.equals(manifest.runId()) && ResearchRuntime.SYSTEM_PUBLISHER.equals(person);
+    }
+
     private JsonNode customerMandateView(WorldState base, String person) {
         if (!engineeringCustomerEnabled() || !EngineeringCustomerPolicy.REPRESENTATIVE.equals(person)) return null;
         var result = mapper.createObjectNode();
@@ -7362,11 +7370,14 @@ public final class WorldRuntime implements AutoCloseable {
             requireText(request.personPartyId(), "人物");
             requireText(request.actionId(), "动作标识");
             requireText(request.wakeReason(), "唤醒原因");
+            if (systemPublisherOnly(request.personPartyId()))
+                throw new IllegalArgumentException("系统出版者不能作人物决定");
             if (manifest.hasSocial() && state.social() != null
                     && !socialPendingOf(request.personPartyId(), state.pending()).isEmpty()) {
                 throw new IllegalArgumentException(
                         "本人还有未完成的社交动作，不能开始新的决定：" + request.personPartyId());
             }
+            if (!routeBudgetEnabled(request.route())) throw new IllegalArgumentException("此存档未启用长期模型额度");
             if (decisionConfig.live() && request.route() == null) {
                 throw new IllegalArgumentException("live 请求必须提供场景路由："
                         + request.actionId());
@@ -7395,6 +7406,8 @@ public final class WorldRuntime implements AutoCloseable {
                         + request.actionId());
             }
             if (existing == null) {
+                if (state.roles().pausedPersons().contains(request.personPartyId()))
+                    throw new IllegalStateException("PERSON_DECISIONS_PAUSED");
                 newPersons.add(request.personPartyId());
             }
         }
@@ -9485,6 +9498,12 @@ public final class WorldRuntime implements AutoCloseable {
                     if (materialId == null || sourceRef == null || version < 1) {
                         return EngineeringPlanned.rejected("INVALID_ARGUMENT");
                     }
+                    if (requiresPublishedBoardMaterial()) {
+                        WorldState cutoff = frameWithin(recorded.cutoffPosition(), base.position());
+                        if (cutoff == null || !visibleBoardMaterial(cutoff, person, sourceRef, version, recorded.cutoffTimeMillis())) {
+                            return EngineeringPlanned.rejected("MATERIAL_SOURCE_UNAVAILABLE");
+                        }
+                    }
                 }
                 case RoleTradingView.TOOL_BOARD_VOTE -> {
                     action = "VOTE";
@@ -10326,6 +10345,8 @@ public final class WorldRuntime implements AutoCloseable {
             requireText(request.personPartyId(), "人物");
             requireText(request.actionId(), "动作标识");
             requireText(request.wakeReason(), "唤醒原因");
+            if (!routeBudgetEnabled(request.route())) throw new IOException("此存档未启用长期模型额度");
+            if (systemPublisherOnly(request.personPartyId())) throw new IOException("系统出版者不能作人物决定");
             if (request.route() == null) {
                 throw new IOException("live 开决定必须提供场景路由：" + request.actionId());
             }
@@ -10347,6 +10368,8 @@ public final class WorldRuntime implements AutoCloseable {
                 throw new IOException("同一动作标识对应不同请求：" + request.actionId());
             }
             if (existing == null) {
+                if (previous.roles().pausedPersons().contains(request.personPartyId()))
+                    throw new IOException("暂停人物不能新开决定");
                 newPersons.add(request.personPartyId());
             }
         }
@@ -10774,6 +10797,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (previous == null) {
             throw new IOException("新决定缺少可核对的历史快照：" + decision.actionId());
         }
+        if (systemPublisherOnly(decision.personPartyId())) throw new IOException("系统出版者不能作人物决定");
+        if (previous.roles().pausedPersons().contains(decision.personPartyId())) throw new IOException("暂停人物不能新开决定");
         if (decision.cutoffPosition() != previous.position()
                 || decision.cutoffTimeMillis() != previous.timeMillis()) {
             throw new IOException("决定观察截止与历史快照不一致：" + decision.actionId());
@@ -11210,7 +11235,7 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private IssuerResolution.Status resolutionStatus(WorldState snap, String symbol) {
-        if (!RunManifest.ISSUER_RESOLUTION_RUN_ID.equals(manifest.runId()) || symbol == null) return null;
+        if (!RunManifest.usesIssuerResolution(manifest.runId()) || symbol == null) return null;
         var security = registry.security(symbol);
         if (security == null) return null;
         for (var bank : bankOpening.config().profile().banks().entrySet()) {
@@ -11737,9 +11762,8 @@ public final class WorldRuntime implements AutoCloseable {
                         || meeting.recusedSeatIds().contains(payload.seatId())) {
                     outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT, board);
                 } else {
-                    outcome = BoardModel.addMaterial(board, now, meetingId,
-                            new BoardModel.MaterialRef(payload.materialId(),
-                                    payload.sourceRef(), payload.version(), now));
+                    outcome = registerBoardMaterial(state, board, now, payload.seatId(), meetingId,
+                            payload.materialId(), payload.sourceRef(), payload.version());
                 }
             }
             case PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1 -> {
@@ -12154,7 +12178,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (!engineeringCompany && extra != null && extra.has(payload.companyPartyId())) {
             // 组合档额外公司（目前 north）：同一 BoardModel/BoardRun 语义，账仍只在银行三态。
             CompanyBoardApplied applied = applyCompanyBoard(extra, state.roles(),
-                    state.information(), state.research(), task.dueTimeMillis(), payload);
+                    state, task.dueTimeMillis(), payload);
             finishCompanyBoardTask(task, payload.commandId(), applied.container(), applied.roles(),
                     state.information(), task.dueTimeMillis(), applied.accepted(), applied.reason(),
                     applied.children());
@@ -12164,14 +12188,14 @@ public final class WorldRuntime implements AutoCloseable {
                 .equals(state.governance().board().charter().companyPartyId())) {
             // 章程公司（cufe）走同一纯 BoardModel；写回唯一制造业治理单例。
             BoardCoreApplied core = applyGovernanceBoard(state.governance(), state.roles(),
-                    state.information(), state.research(), task.dueTimeMillis(), payload);
+                    state, task.dueTimeMillis(), payload);
             finishGovernanceBoardTask(task, payload.commandId(), core, state.information(),
                     task.dueTimeMillis());
             return;
         }
         requireEngineeringCompany(payload.companyPartyId());
         EngineeringBoardApplied applied = applyEngineeringBoard(state.engineering(), state.roles(),
-                state.information(), state.research(), task.dueTimeMillis(), payload, task.taskId());
+                state, task.dueTimeMillis(), payload, task.taskId());
         finishEngineeringTask(task, payload.commandId(), payload.companyPartyId(), applied.run(),
                 applied.roles(), state.accounts(), task.dueTimeMillis(), applied.accepted(),
                 applied.reason(), applied.children());
@@ -13968,8 +13992,10 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private EngineeringBoardApplied applyEngineeringBoard(EngineeringRun run, RoleRun roles,
-            InformationRun information, ResearchRun research, long now, EngineeringBoardPayload p, String taskId)
+            WorldState source, long now, EngineeringBoardPayload p, String taskId)
             throws IOException {
+        InformationRun information = source.information();
+        ResearchRun research = source.research();
         BoardRun boardRun = run.boardOf(p.companyPartyId());
         if (boardRun == null) {
             return new EngineeringBoardApplied(run, roles, false, "UNKNOWN_COMPANY", List.of());
@@ -14048,9 +14074,8 @@ public final class WorldRuntime implements AutoCloseable {
                         || meeting.recusedSeatIds().contains(p.seatId())) {
                     outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT, board);
                 } else {
-                    outcome = BoardModel.addMaterial(board, now, p.meetingId(),
-                            new BoardModel.MaterialRef(p.materialId(), p.sourceRef(), p.version(),
-                                    now));
+                    outcome = registerBoardMaterial(source, board, now, p.seatId(), p.meetingId(),
+                            p.materialId(), p.sourceRef(), p.version());
                 }
             }
             case "PROPOSE_BUDGET" -> {
@@ -14137,7 +14162,7 @@ public final class WorldRuntime implements AutoCloseable {
                         } else {
                             access = RoleAccess.revoke(access, request.appointmentId(), now);
                         }
-                        nextRoles = new RoleRun(access, roles.reports());
+                        nextRoles = roles.withAccess(access);
                     }
                 } else if (meeting.topic() == BoardModel.Topic.DEBT_WAIVER) {
                     BoardModel.WaiverOutcome implemented = BoardModel.executeAdoptedDebtWaiver(
@@ -14237,6 +14262,24 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         return false;
+    }
+
+    private BoardModel.Outcome registerBoardMaterial(WorldState source, BoardModel.State board,
+            long now, String seat, String meetingId, String materialId, String docId, long version) {
+        if (requiresPublishedBoardMaterial()
+                && !visibleBoardMaterial(source, personOfSeat(board.charter(), seat), docId, version, now)) {
+            return new BoardModel.Outcome(false, "MATERIAL_SOURCE_UNAVAILABLE", board);
+        }
+        return BoardModel.addMaterial(board, now, meetingId, new BoardModel.MaterialRef(materialId, docId, version, now));
+    }
+
+    private boolean requiresPublishedBoardMaterial() {
+        return "published-visible-v1".equals(manifest.dataVersions().get("board-material-source"));
+    }
+
+    private boolean visibleBoardMaterial(WorldState source, String person, String docId, long version, long at) {
+        return InformationModel.visibleVersion(source.information().information(), source.roles().access(),
+                person, docId, version, at, groupAccess(source), roleBoards(source)) != null;
     }
 
     private static String personOfSeat(BoardModel.Charter charter, String seatId) {
@@ -15097,10 +15140,10 @@ public final class WorldRuntime implements AutoCloseable {
      * 预算与债务豁免仍走工程/制造原流程，额外公司显式拒绝，不伪造业务。</p>
      */
     private CompanyBoardApplied applyCompanyBoard(CompanyGovernanceRun container, RoleRun roles,
-            InformationRun information, ResearchRun research, long now, EngineeringBoardPayload p)
+            WorldState source, long now, EngineeringBoardPayload p)
             throws IOException {
         BoardRun boardRun = container == null ? null : container.boardOf(p.companyPartyId());
-        BoardCoreApplied core = applyBoardCore(boardRun, roles, information, research, now, p);
+        BoardCoreApplied core = applyBoardCore(boardRun, roles, source, now, p);
         if (core.board() == null) {
             return new CompanyBoardApplied(container, core.roles(), core.accepted(), core.reason(),
                     core.children());
@@ -15113,14 +15156,15 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 章程公司（制造业治理单例）的董事动作：同一纯核，写回唯一 BoardRun。 */
     private BoardCoreApplied applyGovernanceBoard(BoardRun governance, RoleRun roles,
-            InformationRun information, ResearchRun research, long now,
-            EngineeringBoardPayload p) throws IOException {
-        return applyBoardCore(governance, roles, information, research, now, p);
+            WorldState source, long now, EngineeringBoardPayload p) throws IOException {
+        return applyBoardCore(governance, roles, source, now, p);
     }
 
     private BoardCoreApplied applyBoardCore(BoardRun boardRun, RoleRun roles,
-            InformationRun information, ResearchRun research, long now,
+            WorldState source, long now,
             EngineeringBoardPayload p) throws IOException {
+        InformationRun information = source.information();
+        ResearchRun research = source.research();
         if (boardRun == null) {
             return new BoardCoreApplied(null, roles, false, "UNKNOWN_COMPANY", List.of());
         }
@@ -15162,9 +15206,8 @@ public final class WorldRuntime implements AutoCloseable {
                         || meeting.recusedSeatIds().contains(p.seatId())) {
                     outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT, board);
                 } else {
-                    outcome = BoardModel.addMaterial(board, now, p.meetingId(),
-                            new BoardModel.MaterialRef(p.materialId(), p.sourceRef(), p.version(),
-                                    now));
+                    outcome = registerBoardMaterial(source, board, now, p.seatId(), p.meetingId(),
+                            p.materialId(), p.sourceRef(), p.version());
                 }
             }
             case "PROPOSE_APPOINTMENT" -> {
@@ -15247,7 +15290,7 @@ public final class WorldRuntime implements AutoCloseable {
                         } else {
                             access = RoleAccess.revoke(access, request.appointmentId(), now);
                         }
-                        nextRoles = new RoleRun(access, roles.reports());
+                        nextRoles = roles.withAccess(access);
                     }
                 } else if (meeting.topic() == BoardModel.Topic.BUDGET
                         && researchCompanyBudgetsAllowed(p.companyPartyId())) {
@@ -16522,7 +16565,7 @@ public final class WorldRuntime implements AutoCloseable {
                     EngineeringBoardPayload.class);
             if (extra.has(payload.companyPartyId())) {
                 CompanyBoardApplied applied = applyCompanyBoard(before, previous.roles(),
-                        previous.information(), previous.research(), task.dueTimeMillis(), payload);
+                        previous, task.dueTimeMillis(), payload);
                 if (!applied.container().equals(extra)) {
                     throw new IOException("额外公司董事会无法从原待办重算："
                             + payload.companyPartyId());
@@ -16536,7 +16579,7 @@ public final class WorldRuntime implements AutoCloseable {
             if (previous.governance() != null && payload.companyPartyId()
                     .equals(previous.governance().board().charter().companyPartyId())) {
                 BoardCoreApplied core = applyGovernanceBoard(previous.governance(),
-                        previous.roles(), previous.information(), previous.research(),
+                        previous.roles(), previous,
                         task.dueTimeMillis(), payload);
                 if (!previous.governance().withBoard(core.board())
                         .equals(candidate.governance())) {
@@ -18100,7 +18143,7 @@ public final class WorldRuntime implements AutoCloseable {
                         receipt, now, base.position() + 1))));
         var securities = base.securities();
         var exchange = base.exchange();
-        if (accepted && request.kind() == BankActions.Kind.RESOLUTION_OPEN && RunManifest.ISSUER_RESOLUTION_RUN_ID.equals(manifest.runId())) {
+        if (accepted && request.kind() == BankActions.Kind.RESOLUTION_OPEN && RunManifest.usesIssuerResolution(manifest.runId())) {
             String issuer = decoded.config().profile().banks().get(request.bankKey()).partyId();
             for (var security : registry.securities()) {
                 if (!issuer.equals(security.issuerOrganizationId())) continue;
@@ -18176,7 +18219,7 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private boolean creditSuspended(WorldState base, BankActions.Request request) {
-        return RunManifest.ISSUER_RESOLUTION_RUN_ID.equals(manifest.runId()) && IssuerResolution.newCredit(request.kind())
+        return RunManifest.usesIssuerResolution(manifest.runId()) && IssuerResolution.newCredit(request.kind())
                 && ownerBankClaims.ledgerAt(base.bank(), base.accounts()).state().resolution(request.bankKey()) != null;
     }
 
@@ -19583,6 +19626,16 @@ public final class WorldRuntime implements AutoCloseable {
             if (!frameDifference(rebuilt.state(), candidate).isEmpty() || !id.equals(rebuilt.commandId())
                     || !commit.commandContent().equals(rebuilt.content()) || !commit.result().equals(rebuilt.result())
                     || !frameDomainEvents(commit).equals(rebuilt.events())) throw new IOException("制造公司成组迁移与原批次不符");
+            return;
+        }
+        if (id.startsWith("person-decision-pause:")) {
+            var request = readScheduleContent(commit, PersonPauseRequest.class, "单人决定暂停");
+            ReplayedFrame rebuilt;
+            try { rebuilt = personPauseFrame(previous, request); }
+            catch (IllegalArgumentException | IllegalStateException invalid) { throw new IOException("人物暂停与前一帧不符", invalid); }
+            if (!id.equals(rebuilt.commandId()) || !commit.commandContent().equals(rebuilt.content())
+                    || !commit.result().equals(rebuilt.result()) || !frameDomainEvents(commit).equals(rebuilt.events())
+                    || !frameDifference(rebuilt.state(),candidate).isEmpty()) throw new IOException("单人决定暂停批次不一致");
             return;
         }
         if (id.startsWith("hydro-settle:")) {
@@ -22552,6 +22605,12 @@ public final class WorldRuntime implements AutoCloseable {
     private void validateRoleTransition(WorldState candidate, WorldState previous, WorldCommit commit)
             throws IOException {
         if (previous == null) return; // 首帧已有完整冻结开局比较。
+        if (commit.commandId().startsWith("person-decision-pause:")) {
+            requireCommandOrigin(candidate, commit, previous);
+            return;
+        }
+        if (!previous.roles().pausedPersons().equals(candidate.roles().pausedPersons()))
+            throw new IOException("普通任务不得改变人物决定暂停状态");
         List<PendingTask> removed = previous.pending().stream()
                 .filter(task -> isAppointmentTask(task.kind()))
                 .filter(task -> pendingOf(candidate, task.taskId()) == null).toList();
@@ -23421,8 +23480,7 @@ public final class WorldRuntime implements AutoCloseable {
             if (!payload.companyPartyId().equals(run.board().charter().companyPartyId())) {
                 return run;
             }
-            BoardCoreApplied core = applyGovernanceBoard(run, previous.roles(),
-                    previous.information(), previous.research(), now, payload);
+            BoardCoreApplied core = applyGovernanceBoard(run, previous.roles(), previous, now, payload);
             return core.board() == null ? run : run.withBoard(core.board());
         }
         // 显式资金制造帧的治理效应只有董事预算：承诺/转已花/释放都在同一纯核里算，
@@ -23463,9 +23521,8 @@ public final class WorldRuntime implements AutoCloseable {
                             outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT,
                                     board);
                         } else {
-                            outcome = BoardModel.addMaterial(board, now, meetingId,
-                                    new BoardModel.MaterialRef(payload.materialId(),
-                                            payload.sourceRef(), payload.version(), now));
+                            outcome = registerBoardMaterial(previous, board, now, payload.seatId(), meetingId,
+                                    payload.materialId(), payload.sourceRef(), payload.version());
                         }
                     }
                     case PendingTask.GOVERNANCE_BUDGET_PROPOSAL_V1 -> {
@@ -24161,8 +24218,7 @@ public final class WorldRuntime implements AutoCloseable {
                         && charter.companyPartyId().equals(payload.companyPartyId());
                 if (charterBoard) {
                     // 章程公司的董事动作只写唯一治理单例：同一纯核重演到治理子集与任职。
-                    BoardCoreApplied core = applyGovernanceBoard(governance, roles,
-                            previous.information(), previous.research(), now, payload);
+                    BoardCoreApplied core = applyGovernanceBoard(governance, roles, previous, now, payload);
                     governance = core.board() == null ? governance
                             : governance.withBoard(core.board());
                     roles = core.roles() == null ? roles : core.roles();
@@ -24173,7 +24229,7 @@ public final class WorldRuntime implements AutoCloseable {
                     expectedPending.addAll(core.children());
                 } else {
                     EngineeringBoardApplied applied = applyEngineeringBoard(run, roles,
-                            previous.information(), previous.research(), now, payload, task.taskId());
+                            previous, now, payload, task.taskId());
                     run = applied.run();
                     roles = applied.roles() == null ? roles : applied.roles();
                     accepted = applied.accepted();
@@ -25293,8 +25349,8 @@ public final class WorldRuntime implements AutoCloseable {
                             || meeting.recusedSeatIds().contains(payload.seatId())) {
                         outcome = new BoardModel.Outcome(false, REASON_NOT_ELIGIBLE_SEAT, run.board());
                     } else {
-                        outcome = BoardModel.addMaterial(run.board(), now, meetingId,
-                                new BoardModel.MaterialRef(payload.materialId(), payload.sourceRef(), payload.version(), now));
+                        outcome = registerBoardMaterial(previous, run.board(), now, payload.seatId(), meetingId,
+                                payload.materialId(), payload.sourceRef(), payload.version());
                     }
                 }
             }
@@ -28416,6 +28472,11 @@ public final class WorldRuntime implements AutoCloseable {
         return ValuationModel.value(ownerId, cut.position(), cut.timeMillis(), registry,
                 cut.accounts(), cut.securities(), cut.dividends(), book,
                 ownerBankValuation() ? ownerBankClaims.at(cut.bank(), cut.accounts(), ownerId) : null);
+    }
+
+    private boolean routeBudgetEnabled(DecisionModel.Route route) {
+        return route == null || !DecisionModel.Route.LONG_HORIZON.equals(route.budgetPolicy())
+                || DecisionModel.Route.LONG_HORIZON.equals(manifest.dataVersions().get("model-budget"));
     }
 
     private boolean ownerBankValuation() {
@@ -36490,6 +36551,57 @@ public final class WorldRuntime implements AutoCloseable {
         if (!apply) return state.position();
         commitAndApply(frame.commandId(), frame.content(), frame.result(), frame.events(), frame.state());
         return state.position();
+    }
+
+    /** 管理员所见世界位置、自然人及目标决定状态。 */
+    public record PersonPauseRequest(long expectedPosition, String person, boolean paused) {}
+
+    /** 查询单个人物产生新决定的状态。
+     * @param person 登记自然人的标识
+     * @return 该人物是否已暂停产生新决定 */
+    public synchronized boolean personDecisionsPaused(String person) {
+        return state.roles() != null && state.roles().pausedPersons().contains(person);
+    }
+
+    /** 按管理员所见的确认位置暂停或恢复一个人物的新决定。
+     * @param request 带预期位置和目标人物的变更
+     * @return 已确认变更的位置
+     * @throws IOException 日志读写失败 */
+    public synchronized long setPersonDecisionPause(PersonPauseRequest request) throws IOException {
+        requireOpen(); requireWriter(); requireNotPaused();
+        if (request.expectedPosition() != state.position()) {
+            var old=commitSource.nonSnapshotByCommand("person-decision-pause:" + (request.expectedPosition()+1));
+            if (old.isPresent() && old.get().commandContent().equals(mapper.writeValueAsString(request))) return old.get().position();
+            throw new IllegalStateException("世界位置已改变，请刷新");
+        }
+        var frame=personPauseFrame(state, request);
+        commitAndApply(frame.commandId(), frame.content(), frame.result(), frame.events(), frame.state());
+        return state.position();
+    }
+
+    private ReplayedFrame personPauseFrame(WorldState base, PersonPauseRequest request) throws IOException {
+        if (!"confirmed-person-v1".equals(manifest.dataVersions().get("person-decision-pause")))
+            throw new IllegalArgumentException("此档未启用单人决定暂停");
+        if (request.expectedPosition() != base.position()) throw new IllegalStateException("世界位置已改变，请刷新");
+        String person=request.person();
+        if (person==null || "research-system".equals(person) || !registeredPerson(base,person)
+                || registry.parties().stream().noneMatch(p->p.partyId().equals(person) && p.kind()==OpeningRegistry.PartyKind.PERSON))
+            throw new IllegalArgumentException("请选择已登记的自然人");
+        if (base.decisions().state().decisions().stream().anyMatch(d->d.personPartyId().equals(person) && d.status()==DecisionModel.Status.OPEN))
+            throw new IllegalStateException("此人已有待结算的决定，请在结算后变更");
+        var persons = new TreeSet<>(base.roles().pausedPersons());
+        boolean changed = request.paused() ? persons.add(person) : persons.remove(person);
+        if (!changed) throw new IllegalStateException("该人物已处于所选状态");
+        var roles = new RoleRun(base.roles().access(),base.roles().reports(),List.copyOf(persons));
+        var candidate = new WorldState(base.schemaVersion(), base.runId(), base.position()+1, base.timeMillis(), base.lastPhase(), base.accounts(),
+                base.pending(), base.delivered(), base.usedTaskIds(), base.commandContents(), base.commandOutcomes(), base.securities(), base.exchange(),
+                base.manufacturing(), base.governance(), roles, base.information(), base.trading(), base.decisions(), base.dividends(), base.beliefs(),
+                base.media(), base.interviews(), base.evidence(), base.social(), base.engineering(), base.bank(), base.bankActions(), base.companyGovernance(),
+                base.groups(), base.research(), base.companyOperations());
+        String id = "person-decision-pause:" + candidate.position();
+        String content = mapper.writeValueAsString(request);
+        return new ReplayedFrame(candidate,id,content,request.paused()?"PERSON_PAUSED":"PERSON_RESUMED",
+                List.of(new WorldEvent(id,"PERSON_DECISION_PAUSE_V1",content)),1);
     }
 
     private ReplayedFrame intakeMigrationFrame(WorldState base, ManufacturingIntake.Migration request) throws IOException {

@@ -523,6 +523,21 @@ public final class ComposedIndustryScenario {
         return openConfiguredOperating(journal, draft, RunManifest.ISSUER_RESOLUTION_RUN_ID);
     }
 
+    /** 首建或恢复支持单人决定暂停的受控世界。
+     * @param journal 确认日志 @param draft 首建配置 @return 可继续的世界 @throws Exception 配置或日志无效 */
+    public static WorldRuntime openPersonPauseOperating(Path journal, Path draft) throws Exception {
+        return openConfiguredOperating(journal, draft, RunManifest.PERSON_PAUSE_RUN_ID);
+    }
+
+    /** 以原十家挂牌发行人和已登记人物首建或严格恢复正常经营世界。
+     * @param journal 确认日志
+     * @return 已建立或严格恢复的世界
+     * @throws Exception 开局或存档校验失败
+     */
+    public static WorldRuntime openTenCompanyAutonomy(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID);
+    }
+
     private static WorldRuntime openConfiguredOperating(Path journal, Path draft, String runId) throws Exception {
         var copies = OpeningEntityCopies.forOpening(journal,draft,runId);
         return open(journal,true,true,true,true,false,false,true,true,RoleDeliberation.CONTEXTUAL_VERSION,
@@ -619,7 +634,7 @@ public final class ComposedIndustryScenario {
             endowment = BankLoanPromotionOpening.endowment(endowment);
         }
         boolean ownerBankValuation = RunManifest.usesOwnerBankValuation(thinkingRunId);
-        if (ownerBankValuation) profile = OwnerBankValuationOpening.profile(profile, copies.investor().id());
+        if (ownerBankValuation) profile = OwnerBankValuationOpening.profile(profile, copies == null ? null : copies.investor().id());
         var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.usesIssuerCredit(thinkingRunId)),
                 endowment, Map.of(), Map.of());
         var charters = new TreeMap<>(ComposedManufacturingThreeScenario.charters());
@@ -639,8 +654,11 @@ public final class ComposedIndustryScenario {
             charters.put(company,new BoardModel.Charter(company,companySeats,company+"-seat-0",BoardModel.QUORUM));
             readers.addAll(people);readers.add(company.equals(DigitalIndustryConfig.COMPANY)?DigitalIndustryConfig.MANAGER_PERSON:AgedIndustryConfig.MANAGER_PERSON);
         }
+        boolean tenCompany = RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID.equals(thinkingRunId);
         if (copies != null) readers.add(copies.investor().id());
-        var decisions = ResourceDecisionTools.config(CompanyOperationsDecisionTools.config(ComposedPharmaScenario.debugDecisions(), readers));
+        var decisionPeople = new ArrayList<>(readers);
+        if (tenCompany) decisionPeople.add(EngineeringCustomerPolicy.REPRESENTATIVE);
+        var decisions = ResourceDecisionTools.config(CompanyOperationsDecisionTools.config(ComposedPharmaScenario.debugDecisions(), decisionPeople));
         if (hydro) decisions = HydroDecisionTools.config(decisions);
         if(baseline) decisions=AgedDecisionTools.config(DigitalDecisionTools.config(decisions));
         if(prototype) decisions=PrototypeCompanies.decisions(decisions);
@@ -663,6 +681,7 @@ public final class ComposedIndustryScenario {
                             limits.perCallInputTokens(), limits.perCallOutputTokens(), limits.queueCapacity(), limits.maxInFlight(), 60_000L),
                     decisions.budget(), decisions.profile());
         }
+        if (tenCompany) decisions = RoleDeliberation.longHorizonBudget(decisions);
         var openingAccounts = new ArrayList<>(openings());
         if (hydro) openingAccounts.addAll(HydroIndustryConfig.ACCOUNTS);
         var openingRegistry = hydro ? hydroRegistry(registry()) : registry();
@@ -788,7 +807,7 @@ public final class ComposedIndustryScenario {
                 data.put(HydroDecisionTools.SETTLEMENT_POLICY, HydroDecisionTools.SETTLEMENT_VERSION);
             }
             if (RunManifest.usesRoleTables(thinkingRunId)) {
-                data.put(edu.cufe.auction.world.RoleInputTables.POLICY, edu.cufe.auction.world.RoleInputTables.VERSION);
+                data.put(RoleInputTables.POLICY, tenCompany ? RoleInputTables.BOARD_VERSION : RoleInputTables.VERSION);
             }
             if (RunManifest.usesIssuerReportRules(thinkingRunId)) {
                 data.put("issuer-period-reports", "versioned-v1");
@@ -820,13 +839,19 @@ public final class ComposedIndustryScenario {
                 data.put("board-tool-scope", "charter-chair-v1");
             }
             if (RunManifest.UNPRICED_REFERENCE_RUN_ID.equals(thinkingRunId)) data.put("unpriced-opening-reference", "HY1-cost-only-v1");
-            if (RunManifest.ISSUER_RESOLUTION_RUN_ID.equals(thinkingRunId)) data.put("issuer-failure", "bank-resolution-halt-v1");
+            if (RunManifest.usesIssuerResolution(thinkingRunId)) data.put("issuer-failure", "bank-resolution-halt-v1");
+            if (RunManifest.usesPersonDecisionPause(thinkingRunId)) data.put("person-decision-pause", "confirmed-person-v1");
             if (ownerBankValuation) {
                 data.put("owner-bank-valuation", "owner-claims-v1");
                 data.put("owner-bank-decisions", "owner-cash-v1");
             }
-            if (copies != null) {
-                copies.freeze(data);
+            if (copies != null) copies.freeze(data);
+            if (tenCompany) {
+                data.put("opening-population", "ten-issuers-v1");
+                data.put("model-budget", "long-horizon-v1");
+                data.put("board-material-source", "published-visible-v1");
+            }
+            if (RunManifest.usesDeclaredFields(thinkingRunId)) {
                 data.put("group-readable-refs", "edition-visible-v1");
                 data.put("tool-argument-guide", "declared-fields-v1");
             }

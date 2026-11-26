@@ -314,21 +314,34 @@ public final class DecisionModel {
      * @param budgetPolicy    空值保留旧上限；lifecycle-v1 显式启用有限跨期预算
      */
     public record Route(String sceneId, String slotId, String model, long revision,
-                        int maxCalls, int maxTotalTokens, int maxOutputTokens,
+                        int maxCalls, long maxTotalTokens, int maxOutputTokens,
                         int maxConcurrency,
                         @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy,
                         @JsonInclude(JsonInclude.Include.NON_NULL) String providerPolicy) {
 
+        /** 仅用于明确启用长期实验的开局。实际决定和费用仍逐次记账。 */
+        public static final String LONG_HORIZON = "long-horizon-v1";
+
+        /** 各版本可配置的调用数上界。单个实验批次有自己的派发上限。 */
+        public static int callCeiling(String policy) {
+            return LONG_HORIZON.equals(policy) ? Integer.MAX_VALUE : policy == null ? 100 : 5000;
+        }
+
+        /** 返回前后端均可精确表示的累计 token 上界。 */
+        public static long tokenCeiling(String policy) {
+            return LONG_HORIZON.equals(policy) ? 9_007_199_254_740_991L : policy == null ? 1_000_000L : 100_000_000L;
+        }
+
         /** 旧路由保留原有预算边界与序列化形态。 */
         public Route(String sceneId, String slotId, String model, long revision,
-                     int maxCalls, int maxTotalTokens, int maxOutputTokens, int maxConcurrency) {
+                     int maxCalls, long maxTotalTokens, int maxOutputTokens, int maxConcurrency) {
             this(sceneId, slotId, model, revision, maxCalls, maxTotalTokens, maxOutputTokens,
                     maxConcurrency, null);
         }
 
         /** 旧九参路由保留关闭思考策略。 */
         public Route(String sceneId, String slotId, String model, long revision,
-                     int maxCalls, int maxTotalTokens, int maxOutputTokens, int maxConcurrency,
+                     int maxCalls, long maxTotalTokens, int maxOutputTokens, int maxConcurrency,
                      String budgetPolicy) {
             this(sceneId, slotId, model, revision, maxCalls, maxTotalTokens, maxOutputTokens,
                     maxConcurrency, budgetPolicy, null);
@@ -351,13 +364,13 @@ public final class DecisionModel {
             if (providerPolicy != null && !"deepseek-thinking-high-v1".equals(providerPolicy)) {
                 throw new IllegalArgumentException("未知提供方策略");
             }
-            if (budgetPolicy != null && !"lifecycle-v1".equals(budgetPolicy)) {
+            if (budgetPolicy != null && !"lifecycle-v1".equals(budgetPolicy) && !LONG_HORIZON.equals(budgetPolicy)) {
                 throw new IllegalArgumentException("未知预算策略");
             }
-            if (maxCalls < 1 || maxCalls > (budgetPolicy == null ? 100 : 5000)) {
+            if (maxCalls < 1 || maxCalls > callCeiling(budgetPolicy)) {
                 throw new IllegalArgumentException("场景调用上限超出预算策略范围：" + maxCalls);
             }
-            if (maxTotalTokens < 256 || maxTotalTokens > (budgetPolicy == null ? 1_000_000 : 100_000_000)) {
+            if (maxTotalTokens < 256 || maxTotalTokens > tokenCeiling(budgetPolicy)) {
                 throw new IllegalArgumentException("场景 token 总上限超出预算策略范围："
                         + maxTotalTokens);
             }

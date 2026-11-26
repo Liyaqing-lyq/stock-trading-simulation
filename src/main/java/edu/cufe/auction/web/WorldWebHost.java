@@ -278,8 +278,8 @@ public final class WorldWebHost implements AutoCloseable {
                     || stepMillis != 3_600_000L)
                 throw new IllegalArgumentException("目标须在未来180日内，本版本窗口固定为1小时");
             List<WakeGroup> groups = selectedGroups(selection);
-            if (!selection.isEmpty() && !groups.stream().flatMap(g -> g.persons().stream())
-                    .collect(java.util.stream.Collectors.toSet()).containsAll(selection)) {
+            var runnable = groups.stream().flatMap(g -> g.persons().stream()).collect(java.util.stream.Collectors.toSet());
+            if (selection.stream().anyMatch(p -> !runnable.contains(p) && !current.personDecisionsPaused(p))) {
                 throw new IllegalArgumentException("名单包含本次无法唤醒的人物");
             }
             for (WakeGroup group : groups) {
@@ -287,7 +287,7 @@ public final class WorldWebHost implements AutoCloseable {
                 if (route == null || !route.enabled())
                     throw new SceneRejected("请先启用实际角色所需的模型场景：" + group.scene());
             }
-            if (groups.isEmpty()) throw new SceneRejected("当前没有可唤醒的真实角色");
+            if (groups.isEmpty() && !hasPausedParticipants(selection)) throw new SceneRejected("当前没有可唤醒的真实角色");
             if (!sessionBegun) {
                 current.beginDecisionSession("autonomy:" + expectedPosition + ":" + expectedRevision);
                 sessionBegun = true;
@@ -345,7 +345,7 @@ public final class WorldWebHost implements AutoCloseable {
     // 比较本人可见的具体事实；世界时间或观察时点自身变化不触发全体付费调用。
     private com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
         var facts = (com.fasterxml.jackson.databind.node.ObjectNode) input.deepCopy();
-        if (edu.cufe.auction.world.RoleInputTables.VERSION.equals(runtime.profile().manifest().dataVersions()
+        if (edu.cufe.auction.world.RoleInputTables.enabled(runtime.profile().manifest().dataVersions()
                 .get(edu.cufe.auction.world.RoleInputTables.POLICY))) {
             edu.cufe.auction.world.RoleInputTables.expand(facts);
         }
@@ -501,6 +501,11 @@ public final class WorldWebHost implements AutoCloseable {
                 .filter(g -> !g.persons().isEmpty()).toList();
     }
 
+    private boolean hasPausedParticipants(Set<String> selection) {
+        var paused=runtime.snapshot().roles().map(RoleRun::pausedPersons).orElse(List.of());
+        return selection.isEmpty() ? !paused.isEmpty() : selection.stream().anyMatch(paused::contains);
+    }
+
     private List<WakeGroup> autonomyGroups() {
         var groups = new ArrayList<WakeGroup>();
         var byCompany = new java.util.TreeMap<String, List<String>>();
@@ -524,7 +529,7 @@ public final class WorldWebHost implements AutoCloseable {
                 choices.stream().filter(group -> group.company() == null).findFirst().orElseGet(() ->
                         choices.get((int) Math.floorMod(window + person.hashCode(), choices.size())))));
         var selectedGroups = new ArrayList<>(groups.stream().map(group -> new WakeGroup(group.scene(), group.company(),
-                group.persons().stream().filter(person -> selected.get(person).equals(group)).toList()))
+                group.persons().stream().filter(person -> selected.get(person).equals(group) && !runtime.personDecisionsPaused(person)).toList()))
                 .filter(group -> !group.persons().isEmpty()).toList());
         // 每个世界窗口轮转起点，避免固定首家公司/岗位总是优先消费有限调用预算。
         if (!selectedGroups.isEmpty()) java.util.Collections.rotate(selectedGroups,
@@ -569,8 +574,8 @@ public final class WorldWebHost implements AutoCloseable {
                     autonomy.windowFailures++; autonomy.failures++;
                 }
             }
-            if (lastSkips.stream().anyMatch(skip -> !localInputPolicy()
-                    || !WorldRuntime.DecisionInputTooLargeException.CODE.equals(skip.reason()))) {
+            if (lastSkips.stream().anyMatch(skip -> !"PERSON_DECISIONS_PAUSED".equals(skip.reason()) && (!localInputPolicy()
+                    || !WorldRuntime.DecisionInputTooLargeException.CODE.equals(skip.reason())))) {
                 endAutonomy("ROLE_DISPATCH_REJECTED"); return;
             }
         }
@@ -587,7 +592,7 @@ public final class WorldWebHost implements AutoCloseable {
             autonomy.groups = eventAutonomy() ? eventWakeGroups(autonomy.roster) : autonomy.roster;
             autonomy.next = 0;
             autonomy.windowDecisions = 0; autonomy.windowFailures = 0;
-            if (autonomy.roster.isEmpty()) { endAutonomy("NO_ELIGIBLE_ROLES"); return; }
+            if (autonomy.roster.isEmpty() && !hasPausedParticipants(autonomy.selectedPersons)) { endAutonomy("NO_ELIGIBLE_ROLES"); return; }
             return;
         }
         WakeGroup group = autonomy.groups.get(autonomy.next++);
@@ -595,7 +600,8 @@ public final class WorldWebHost implements AutoCloseable {
         Set<String> alreadyDecided = new HashSet<>();
         decisions.stream().filter(d -> d.decisionAtMillis() == runtime.snapshot().timeMillis()
                 && !d.attempts().isEmpty()).forEach(d -> alreadyDecided.add(d.personPartyId()));
-        List<String> pendingPeople = group.persons().stream().filter(p -> !alreadyDecided.contains(p)).toList();
+        List<String> pendingPeople = group.persons().stream()
+                .filter(p -> !alreadyDecided.contains(p) && !runtime.personDecisionsPaused(p)).toList();
         if (pendingPeople.isEmpty()) return;
         autonomy.decisionStart = decisions.size();
         try {
@@ -901,7 +907,13 @@ public final class WorldWebHost implements AutoCloseable {
     public record PersonPage(RoleView view, Map<String, Object> media,
                              List<Map<String, Object>> publicReports, Map<String, Object> personalResearch,
                              List<PersonBusinessRelations.Edge> businessRelations, String displayName,
-                             Map<RoleView.Holding, Map<String,String>> holdingWeights, Boolean marketClosed) {
+                             Map<RoleView.Holding, Map<String,String>> holdingWeights, Boolean marketClosed, Boolean decisionPaused) {
+        /** 兼容仅含交易所日历状态的个人页。 */
+        public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
+                          Map<String,Object> personalResearch,List<PersonBusinessRelations.Edge> businessRelations,
+                          String displayName,Map<RoleView.Holding,Map<String,String>> holdingWeights,Boolean marketClosed) {
+            this(view, media, publicReports, personalResearch, businessRelations, displayName, holdingWeights, marketClosed, null);
+        }
         /** 兼容尚未附上交易所日历状态的个人页。 */
         public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
                           Map<String,Object> personalResearch, List<PersonBusinessRelations.Edge> businessRelations,
@@ -943,8 +955,10 @@ public final class WorldWebHost implements AutoCloseable {
             var businessRelations = PersonBusinessRelations.of(current, snapshot, view);
             var holdingWeights = PersonalHoldingWeights.holdingWeights(current, view);
             Boolean marketClosed = view.portfolios() == null ? null : snapshot.exchange().orElseThrow().closed();
+            Boolean decisionPaused = "confirmed-person-v1".equals(current.profile().manifest().dataVersions().get("person-decision-pause"))
+                    ? current.personDecisionsPaused(personId) : null;
             String name = WorldOverviewView.displayName(personId, current.openingRegistry().map(r -> displayName(r, personId)).orElse(personId));
-            if (trading == null) return new PersonPage(view, null, publicReports, Map.of(), businessRelations, name, holdingWeights, marketClosed);
+            if (trading == null) return new PersonPage(view, null, publicReports, Map.of(), businessRelations, name, holdingWeights, marketClosed, decisionPaused);
             List<Map<String, Object>> stories = new ArrayList<>();
             Set<String> visibleStories = new LinkedHashSet<>();
             for (RoleTradingView.MediaStory story : trading.media()) {
@@ -1011,7 +1025,7 @@ public final class WorldWebHost implements AutoCloseable {
                     }
                 }
             }
-            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research, businessRelations, name, holdingWeights, marketClosed);
+            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research, businessRelations, name, holdingWeights, marketClosed, decisionPaused);
         });
     }
 
@@ -4341,6 +4355,11 @@ public final class WorldWebHost implements AutoCloseable {
             List<LivePerson> persons = scenes.isEmpty() ? List.of() : livePeople(snapshot);
             List<LivePerson> governancePersons = scenes.contains(SCENE_GOVERNANCE)
                     ? governancePersons(snapshot) : List.of();
+            var paused=snapshot.roles().map(RoleRun::pausedPersons).orElse(List.of());
+            if (!paused.isEmpty()) {
+                persons=persons.stream().filter(p->!paused.contains(p.personPartyId())).toList();
+                governancePersons=governancePersons.stream().filter(p->!paused.contains(p.personPartyId())).toList();
+            }
             return new LiveCapabilities(num(snapshot.position()), num(snapshot.timeMillis()),
                     snapshot.media().isPresent(), scenes, persons, governancePersons);
         });
@@ -4366,6 +4385,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (party.kind() != OpeningRegistry.PartyKind.PERSON) {
                 continue;
             }
+            if (runtime.systemPublisherOnly(party.partyId())) continue;
             LivePerson known = legacy.get(party.partyId());
             if (known != null) {
                 if (!known.governanceCompanies().isEmpty() && !known.scenes().isEmpty()) {
@@ -4479,6 +4499,11 @@ public final class WorldWebHost implements AutoCloseable {
                 addSocialPerson(people, registry, message.from(), message.channel());
                 addSocialPerson(people, registry, message.to(), message.channel());
             }
+        }
+        if (RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID.equals(runtime.profile().manifest().runId())) {
+            var mandate = snapshot.engineering().orElseThrow().config().customerMandate();
+            addLiveScene(people, registry, mandate.representativePartyId(), "trading");
+            people.keySet().removeIf(runtime::systemPublisherOnly);
         }
         return List.copyOf(people.values());
     }
@@ -5984,6 +6009,7 @@ public final class WorldWebHost implements AutoCloseable {
             throw new IllegalArgumentException("同一人物不能在一个轮次里出现两次");
         }
         for (String person : distinct) {
+            if (current.personDecisionsPaused(person)) throw new IllegalArgumentException("该人物已暂停新决定");
             if (allowed.contains(person)) {
                 continue;
             }
@@ -6154,6 +6180,11 @@ public final class WorldWebHost implements AutoCloseable {
                 break;
             }
             String person = iterator.next();
+            if (current.personDecisionsPaused(person)) {
+                round.skipped.put(person, "PERSON_DECISIONS_PAUSED");
+                iterator.remove();
+                continue;
+            }
             String scene = round.scene == null ? sceneFor(person) : round.scene;
             if (scene == null) {
                 round.skipped.put(person, "PERSON_NOT_ELIGIBLE");
@@ -6356,7 +6387,7 @@ public final class WorldWebHost implements AutoCloseable {
                         Integer.toString(route.maxCalls()), Long.toString(used.inputTokens()),
                         Long.toString(reserved.inputTokens()), Long.toString(used.outputTokens()),
                         Long.toString(reserved.outputTokens()),
-                        Integer.toString(route.maxTotalTokens())));
+                        Long.toString(route.maxTotalTokens())));
             }
         }
         List<DecisionView> decisions = new ArrayList<>();
@@ -6637,6 +6668,18 @@ public final class WorldWebHost implements AutoCloseable {
 
     long promoteDisclosedLoan(String loanId, long position) throws Exception {
         return call(() -> readyNow().promoteDisclosedLoan(loanId, position));
+    }
+
+    /** 管理员在同一写队列确认个人暂停或恢复，途中的模型调用先完成结算。 */
+    long setPersonDecisionPause(WorldRuntime.PersonPauseRequest request) throws Exception {
+        return call(() -> {
+            var world=readyNow();
+            if (world.snapshot().position()==request.expectedPosition() && physicalInFlight.keySet().stream()
+                    .anyMatch(k->DecisionModel.decision(world.snapshot().decisions().orElseThrow().state(),k.actionId())
+                            .map(d->d.personPartyId().equals(request.person())).orElse(false)))
+                throw new IllegalStateException("该人物的模型调用仍在途，请在结算后变更");
+            return world.setPersonDecisionPause(request);
+        });
     }
 
     /** 管理员在当前世界队列校验或提交成组收单规则变更。 */
