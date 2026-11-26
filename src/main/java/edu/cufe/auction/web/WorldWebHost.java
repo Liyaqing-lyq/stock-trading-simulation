@@ -853,9 +853,38 @@ public final class WorldWebHost implements AutoCloseable {
         return call(() -> readyNow().roleView(personId));
     }
 
+    /** 本人银行页和关系页共同使用的单一属主存款明细。 */
+    static List<Map<String, Object>> personalDepositRows(String ownerId, BankConfig config, BankState state) {
+        var rows = new ArrayList<Map<String, Object>>();
+        for (var entry : new java.util.TreeMap<>(config.profile().parties()).entrySet()) {
+            if (!entry.getValue().ownerId().equals(ownerId) || entry.getValue().depositGl() == null) continue;
+            for (String bankKey : state.chart().banks()) {
+                var offer = config.depositOffer(bankKey);
+                var account = state.depositAccount(bankKey, entry.getKey());
+                Map<String,Object> row = new LinkedHashMap<>();
+                row.put("bankKey", bankKey);
+                row.put("partyKey", entry.getKey());
+                row.put("amount", money(state.depositOf(bankKey, entry.getKey())));
+                row.put("offerId", offer == null ? "" : offer.offerId());
+                row.put("rateU", offer == null ? "0" : Long.toString(offer.rateU()));
+                row.put("rateText", offer == null ? "—" : rateText(offer.rateU()));
+                row.put("nonAccrual", account != null && account.nonAccrual());
+                rows.add(row);
+            }
+        }
+        return rows;
+    }
+
     /** 个人页面在同一截止取角色投影与可选采编数据；旧档案media为空。 */
     public record PersonPage(RoleView view, Map<String, Object> media,
-                             List<Map<String, Object>> publicReports, Map<String, Object> personalResearch) { }
+                             List<Map<String, Object>> publicReports, Map<String, Object> personalResearch,
+                             List<PersonBusinessRelations.Edge> businessRelations) {
+        /** 兼容未提供经营及资金关系的个人页。 */
+        public PersonPage(RoleView view, Map<String, Object> media, List<Map<String, Object>> publicReports,
+                          Map<String, Object> personalResearch) {
+            this(view, media, publicReports, personalResearch, List.of());
+        }
+    }
 
     /**
      * 读取指定已验证人物的个人页面；正文仅取实际可回忆经历，不查管理端原件。
@@ -870,7 +899,8 @@ public final class WorldWebHost implements AutoCloseable {
             RoleTradingView trading = snapshot.media().isPresent() ? current.openRoleSession(personId).view() : null;
             RoleView view = trading == null ? current.roleView(personId) : trading.profile();
             var publicReports = CompanyPublications.personalReports(current, snapshot, view);
-            if (trading == null) return new PersonPage(view, null, publicReports, Map.of());
+            var businessRelations = PersonBusinessRelations.of(current, snapshot, view);
+            if (trading == null) return new PersonPage(view, null, publicReports, Map.of(), businessRelations);
             List<Map<String, Object>> stories = new ArrayList<>();
             Set<String> visibleStories = new LinkedHashSet<>();
             for (RoleTradingView.MediaStory story : trading.media()) {
@@ -937,7 +967,7 @@ public final class WorldWebHost implements AutoCloseable {
                     }
                 }
             }
-            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research);
+            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research, businessRelations);
         });
     }
 
@@ -3247,28 +3277,7 @@ public final class WorldWebHost implements AutoCloseable {
                 row.put("deposits", money(value.deposits()));
                 row.put("beneficial", money(value.beneficial()));
                 ownerRows.add(row);
-                for (Map.Entry<String, BankingProfile.PartyRef> entry
-                        : new java.util.TreeMap<>(config.profile().parties()).entrySet()) {
-                    BankingProfile.PartyRef party = entry.getValue();
-                    if (!party.ownerId().equals(ownerId) || party.depositGl() == null) {
-                        continue;
-                    }
-                    for (String bankKey : state.chart().banks()) {
-                        BigDecimal amount = state.depositOf(bankKey, entry.getKey());
-                        Map<String, Object> deposit = new LinkedHashMap<>();
-                        deposit.put("bankKey", bankKey);
-                        deposit.put("partyKey", entry.getKey());
-                        deposit.put("amount", money(amount));
-                        BankConfig.DepositOffer offer = config.depositOffer(bankKey);
-                        deposit.put("offerId", offer == null ? "" : offer.offerId());
-                        deposit.put("rateU", offer == null ? "0" : Long.toString(offer.rateU()));
-                        deposit.put("rateText", offer == null ? "—" : rateText(offer.rateU()));
-                        BankState.DepositAccount account =
-                                state.depositAccount(bankKey, entry.getKey());
-                        deposit.put("nonAccrual", account != null && account.nonAccrual());
-                        depositRows.add(deposit);
-                    }
-                }
+                depositRows.addAll(personalDepositRows(ownerId, config, state));
             }
             // 本人托管受益：owner 来自身份的真实授权账户，再按 profile 的 partyKey 逐人取明细。
             // 与 God 全池审计口径不同：这里只有本人那一份，且显式带 ownerId 以免多属主重复。

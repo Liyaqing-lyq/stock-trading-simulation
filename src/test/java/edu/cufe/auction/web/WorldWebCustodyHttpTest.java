@@ -115,6 +115,7 @@ class WorldWebCustodyHttpTest {
 
         // A：只有自己的 120，且不带全局位置/池合计/另一位客户
         personAt(A);
+        assertCustodyRelation(A, "120.00");
         String rawA = rawGet("/api/me/bank", cookie).body();
         JsonNode a = JSON.readTree(rawA);
         assertEquals(A, a.path("personPartyId").asText());
@@ -146,6 +147,7 @@ class WorldWebCustodyHttpTest {
 
         // B：只有自己的 180
         personAt(B);
+        assertCustodyRelation(B, "180.00");
         String rawB = rawGet("/api/me/bank", cookie).body();
         JsonNode b = JSON.readTree(rawB);
         assertEquals(B, b.path("personPartyId").asText());
@@ -162,6 +164,19 @@ class WorldWebCustodyHttpTest {
         HttpResponse<String> reuse = post("/api/session",
                 "{\"bootstrap\":\"" + BOOTSTRAP + "\"}", null);
         assertEquals(401, reuse.statusCode(), "一次性引导凭据不得复用");
+    }
+
+    private void assertCustodyRelation(String party, String expected) throws Exception {
+        var rows = getJson("/api/me/view").path("businessRelations");
+        assertEquals(1, rows.size(), rows.toString());
+        var edge = rows.get(0);
+        assertEquals("资金", edge.path("layer").asText());
+        assertEquals("持有托管受益权", edge.path("relation").asText());
+        assertEquals(party, edge.path("from").asText());
+        assertEquals(CUSTODIAN, edge.path("to").asText());
+        assertEquals(expected, edge.path("quantity").asText());
+        assertEquals("元", edge.path("unit").asText());
+        assertFalse(edge.has("position"));
     }
 
     // ------------------------------------------------------------ 真实开局（复用 bankprobe 契约）

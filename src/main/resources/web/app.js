@@ -720,9 +720,10 @@ function renderPersonRelations(view, historical = false) {
     ...(view.activeAppointments || []).map(a => ({ from: person, layer: "任职", relation: roles[a.role] || a.role,
       to: a.organization, validFrom: a.startsAt, validUntil: a.endsAt, basis: "任期 " + a.startsAt + " 至 " + a.endsAt + " 毫秒" })),
     ...view.accounts.map(a => ({ from: person, layer: "账户", relation: a.kind === "PERSONAL" ? "本人所有" : "获授权查看",
-      to: a.accountId, basis: "账户属主 " + a.ownerId + " · 可用 " + a.availableCash + " 元" })),
+      to: a.accountId, quantity: a.availableCash, unit: "元", timeMillis: view.timeMillis, basis: "账户属主 " + a.ownerId + " · 可用余额" })),
     ...view.holdings.map(h => ({ from: h.accountId, layer: "持仓", relation: "持有",
-      to: h.symbol, quantity: h.quantity, unit: "股", basis: h.quantity + " 股，可卖 " + h.available + " 股" })),
+      to: h.symbol, quantity: h.quantity, unit: "股", timeMillis: view.timeMillis, basis: "可卖 " + h.available + " 股" })),
+    ...(!historical ? view.businessRelations || [] : []),
     ...(view.media?.documents?.rows || []).map(d => ({ from: person, layer: "阅读", relation: "读完",
       to: d.docId + " v" + d.version, basis: d.title + " · 完成于 " + d.completedAtMillis + " 毫秒" })),
     ...(view.personalResearch?.namedReadings || []).map(d => ({ from: d.personPartyId, layer: "交往",
@@ -731,15 +732,16 @@ function renderPersonRelations(view, historical = false) {
   ];
   state.personRelations = { person, timeMillis: view.timeMillis, rows, historical };
   const focus = $("relation-focus");
-  const previous = focus.value;
+  const hasBusiness = !historical && view.businessRelations?.length > 0;
+  const previous = focus.children.length ? focus.value : (hasBusiness ? "" : person);
   const nodes = new Set([person, ...rows.flatMap(row => [row.from, row.to])]);
-  focus.replaceChildren(...Array.from(nodes, node => {
+  focus.replaceChildren(...Array.from(hasBusiness ? ["", ...nodes] : nodes, node => {
     const option = document.createElement("option");
     option.value = node;
-    option.textContent = node;
+    option.textContent = node || "全部可见对象";
     return option;
   }));
-  focus.value = nodes.has(previous) ? previous : person;
+  focus.value = nodes.has(previous) || (hasBusiness && previous === "") ? previous : person;
   $("person-relations").hidden = false;
   filterPersonRelations();
 }
@@ -756,15 +758,20 @@ function visiblePersonRelations() {
       if (row.to === focus) near.add(row.from);
     }
   }
-  return rows.filter(row => (near.has(row.from) || near.has(row.to)) && (!layer || row.layer === layer)
+  return rows.filter(row => (!focus || near.has(row.from) || near.has(row.to)) && (!layer || row.layer === layer)
     && [row.from, row.to, row.relation, row.basis].some(value => value.toLowerCase().includes(query)));
+}
+
+function relationMeasure(row) {
+  if (row.quantity == null) return "";
+  return row.quantity + " " + row.unit + (row.timeMillis == null ? "" : " · " + row.timeMillis + " 毫秒");
 }
 
 function filterPersonRelations() {
   if (state.mode !== "person" || !state.personRelations) return;
   const rows = visiblePersonRelations();
   fillTable("relation-edges", rows, (tr, row) => {
-    for (const value of [row.from, row.relation, row.to, row.basis]) cell(tr, value);
+    for (const value of [row.from, row.relation, row.to, [row.basis, relationMeasure(row)].filter(Boolean).join(" · ")]) cell(tr, value);
   });
   const graph = $("relation-graph");
   graph.replaceChildren();
@@ -788,6 +795,7 @@ function filterPersonRelations() {
     }
     const link = document.createElement("li");
     link.append(document.createTextNode("→ " + row.relation + " → "), nodeButton(row.to));
+    if (row.layer === "经营" || row.layer === "资金") link.append(" · " + relationMeasure(row) + " · " + row.basis);
     branches.get(row.from).append(link);
   }
   $("relation-cut").textContent = (state.personRelations.historical ? "本人当时所见资产 " : "当前世界时点 ")
