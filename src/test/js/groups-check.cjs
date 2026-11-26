@@ -128,7 +128,9 @@ function assert(flag, message) {
   assert(postCall[2].cites.length === 2 && postCall[2].cites[0].version === 1, "引用必须解析版本");
 
   // 3) 阅读按钮复用唯一入口 /api/me/read
-  const readButton = elements.get("groups-posts").children[0].children[6].children[0];
+  const postCells = elements.get("groups-posts").children[0].children;
+  assert(postCells[6].text === "GDOC-PRIVATE-1#1", "已读版本展示接口给本人的来源");
+  const readButton = postCells[7].children[0];
   readButton.listeners.click[0]();
   await new Promise(resolve => setTimeout(resolve, 10));
   const readCall = calls.filter(c => c[0] === "POST" && c[1] === "/api/me/read").pop();

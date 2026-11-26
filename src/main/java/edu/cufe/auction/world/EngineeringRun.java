@@ -714,6 +714,8 @@ public record EngineeringRun(Config config, Map<String, EngineeringModel.State> 
                 }
             }
             for (CompanySpec spec : list) {
+                if (spec.templateSource() != null && !companyIds.contains(spec.templateSource()))
+                    throw new IllegalArgumentException("工程模板来源未在本世界登记："+spec.templateSource());
                 for (String pool : spec.externalAccountIds()) {
                     if (companyAccounts.contains(pool)) {
                         throw new IllegalArgumentException(
@@ -868,14 +870,24 @@ public record EngineeringRun(Config config, Map<String, EngineeringModel.State> 
      * @param unitMillis        每标准工日的模拟毫秒
      * @param laborBp           现场付现比例（0..10000）
      * @param charter           董事会章程，公司必须等于 {@code companyPartyId}
-     * @param contracts         冻结合同计划，至少一张
+     * @param contracts         冻结合同机会，配置副本可为空
+     * @param templateSource    本世界内的工程模板来源，仅配置副本使用
      * @param customerPool      客户期间预算声明；null 表示本档不限制客户期间预算
      */
     public record CompanySpec(String companyPartyId, String companyOwnerId,
                               String companyAccountId, String customerAccountId,
                               String supplierAccountId, String opsAccountId, long unitMillis,
                               int laborBp, BoardModel.Charter charter,
-                              List<ContractPlan> contracts, CustomerPool customerPool) {
+                              List<ContractPlan> contracts, CustomerPool customerPool,
+                              @JsonInclude(JsonInclude.Include.NON_NULL) String templateSource) {
+
+        /** 既有公司直接指定合同机会与客户池。 */
+        public CompanySpec(String companyPartyId, String companyOwnerId, String companyAccountId,
+                           String customerAccountId, String supplierAccountId, String opsAccountId, long unitMillis,
+                           int laborBp, BoardModel.Charter charter, List<ContractPlan> contracts, CustomerPool customerPool) {
+            this(companyPartyId,companyOwnerId,companyAccountId,customerAccountId,supplierAccountId,opsAccountId,
+                    unitMillis,laborBp,charter,contracts,customerPool,null);
+        }
 
         /** 旧十参构造：不声明客户期间预算。 */
         public CompanySpec(String companyPartyId, String companyOwnerId,
@@ -901,7 +913,10 @@ public record EngineeringRun(Config config, Map<String, EngineeringModel.State> 
             }
             List<ContractPlan> list = new ArrayList<>(
                     Objects.requireNonNull(contracts, "工程合同"));
-            if (list.isEmpty()) {
+            if (templateSource != null) {
+                requireText(templateSource, "被复制的工程模板");
+                if (templateSource.equals(companyPartyId)) throw new IllegalArgumentException("工程配置不能复制自身身份");
+            } else if (list.isEmpty()) {
                 throw new IllegalArgumentException("工程公司至少需要一张冻结合同："
                         + companyPartyId);
             }

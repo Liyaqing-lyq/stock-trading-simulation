@@ -479,6 +479,15 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.CREDIT_DECISIONS_RUN_ID);
     }
 
+    /** 由首建草稿创建同世界内的零资产配置副本；重开使用首帧冻结的草稿。
+     * @param journal 世界存档 @param draft 首次创建的声明式 JSON
+     * @return 可用的世界 @throws Exception 不支持的草稿或存档恢复失败 */
+    public static WorldRuntime openOpeningCopiesOperating(Path journal, Path draft) throws Exception {
+        var copies = OpeningEntityCopies.forOpening(journal,draft);
+        return open(journal,true,true,true,true,false,false,true,true,RoleDeliberation.CONTEXTUAL_VERSION,
+                true,true,true,RunManifest.OPENING_COPIES_RUN_ID,copies);
+    }
+
     private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
         return open(journal, true, true, true, true, false, false, true, true,
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true,
@@ -491,6 +500,11 @@ public final class ComposedIndustryScenario {
     }
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating, String thinkingRunId) throws Exception {
+        return open(journal,expansion,hydro,baseline,prototype,behavior,connected,autonomous,eventDriven,roleContext,
+                operating,compact,informedOperating,thinkingRunId,null);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating, String thinkingRunId, OpeningEntityCopies copies) throws Exception {
         boolean thinking = thinkingRunId != null;
         boolean separateInvestorAccounts = connected || RunManifest.usesContinuingRoles(thinkingRunId);
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
@@ -549,6 +563,11 @@ public final class ComposedIndustryScenario {
             parties.put(BankCrisis.PROVIDER, new BankingProfile.PartyRef(BankCrisis.PROVIDER,BankCrisis.PROVIDER,BankCrisisOpening.PROVIDER_CASH,null));
             parties.put(BankCrisis.AUTHORITY, new BankingProfile.PartyRef(BankCrisis.AUTHORITY,BankCrisis.AUTHORITY,BankCrisisOpening.AUTHORITY_CASH,null));
         }
+        if (copies != null) {
+            for (var ref:List.of(new BankingProfile.PartyRef(copies.investor().id(),copies.investor().id(),copies.investorAccount(),null),
+                    new BankingProfile.PartyRef(copies.company().id(),copies.company().id(),copies.companyAccount(),null)))
+                if (parties.putIfAbsent(ref.partyId(),ref)!=null) throw new IllegalArgumentException("配置副本占用原主体账户："+ref.partyId());
+        }
         var profile = new BankingProfile(original.banks(), parties, original.custodians(), buckets, original.groups(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::loanGl).distinct().sorted().toList() : original.loanAccounts(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, crisis ? BankCrisis.PROVIDER : original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
@@ -577,6 +596,7 @@ public final class ComposedIndustryScenario {
             charters.put(company,new BoardModel.Charter(company,companySeats,company+"-seat-0",BoardModel.QUORUM));
             readers.addAll(people);readers.add(company.equals(DigitalIndustryConfig.COMPANY)?DigitalIndustryConfig.MANAGER_PERSON:AgedIndustryConfig.MANAGER_PERSON);
         }
+        if (copies != null) readers.add(copies.investor().id());
         var decisions = ResourceDecisionTools.config(CompanyOperationsDecisionTools.config(ComposedPharmaScenario.debugDecisions(), readers));
         if (hydro) decisions = HydroDecisionTools.config(decisions);
         if(baseline) decisions=AgedDecisionTools.config(DigitalDecisionTools.config(decisions));
@@ -619,6 +639,7 @@ public final class ComposedIndustryScenario {
         if (RunManifest.usesMediaDesks(thinkingRunId)) openingRegistry = MediaDesks.register(openingRegistry);
         if (crisis) openingRegistry = BankCrisisOpening.allocate(openingAccounts, openingRegistry);
         if (promotion) openingRegistry = BankLoanPromotionOpening.register(openingAccounts, openingRegistry);
+        if (copies != null) openingRegistry = copies.register(openingAccounts,openingRegistry);
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -746,6 +767,11 @@ public final class ComposedIndustryScenario {
             if (RunManifest.usesFundedOperatingRules(thinkingRunId)) {
                 data.put("customer-contract-policy", RunManifest.FUNDED_CONTRACT_POLICY);
                 data.put("board-tool-scope", "charter-chair-v1");
+            }
+            if (copies != null) {
+                copies.freeze(data);
+                data.put("group-readable-refs", "edition-visible-v1");
+                data.put("tool-argument-guide", "declared-fields-v1");
             }
             var modules = new TreeMap<>(runManifest.moduleVersions());
             if (RunManifest.usesIssuerDividend(thinkingRunId)) modules.put("dividend", 1);

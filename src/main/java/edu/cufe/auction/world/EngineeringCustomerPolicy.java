@@ -46,9 +46,10 @@ public final class EngineeringCustomerPolicy {
     }
 
     static void validate(OpeningRegistry registry, EngineeringRun.Config config,
-                         Map<String,CashLedger.CashAccount> accounts, List<String> readers) {
+                         Map<String,CashLedger.CashAccount> accounts, List<String> readers, String copiedCompany) {
         var spec = config.specOf(COMPANY);
-        if (!MANDATE.equals(config.customerMandate()) || config.companies().size() != 1 || spec == null
+        if (!MANDATE.equals(config.customerMandate()) || config.companies().size() != (copiedCompany == null ? 1 : 2) || spec == null
+                || copiedCompany != null && (config.specOf(copiedCompany)==null || !ACCOUNT.equals(config.specOf(copiedCompany).customerAccountId()))
                 || !List.of("A1", "A2").equals(spec.contracts().stream().map(EngineeringRun.ContractPlan::contractId).sorted().toList())
                 || !ACCOUNT.equals(spec.customerAccountId()) || !OWNER.equals(accounts.get(ACCOUNT).ownerId())
                 || !new OpeningRegistry.PropertyOwner(OWNER, OpeningRegistry.OwnerKind.ORGANIZATION, CUSTOMER).equals(registry.owner(OWNER))
@@ -68,8 +69,25 @@ public final class EngineeringCustomerPolicy {
         node.set("requests", mapper.valueToTree(run.customer().requestsOf(COMPANY)));
         node.set("responses", mapper.valueToTree(run.customer().responsesOf(COMPANY)));
         node.set("payments", mapper.valueToTree(run.customer().paymentsOf(COMPANY)));
+        appendInvoices(node, run, COMPANY);
+        var additionalCompanies = run.config().companies().stream()
+                .filter(spec -> !COMPANY.equals(spec.companyPartyId()) && !spec.contracts().isEmpty()).toList();
+        if (!additionalCompanies.isEmpty()) {
+            var invited = node.putArray("additionalInvitations");
+            for (var spec : additionalCompanies) {
+                var item=invited.addObject().put("contractor",spec.companyPartyId()).put("account",spec.customerAccountId());
+                item.set("opportunities",mapper.valueToTree(spec.contracts().stream().map(EngineeringRun.ContractPlan::contractId).toList()));
+                item.set("requests",mapper.valueToTree(run.customer().requestsOf(spec.companyPartyId())));
+                item.set("responses",mapper.valueToTree(run.customer().responsesOf(spec.companyPartyId())));
+                item.set("payments",mapper.valueToTree(run.customer().paymentsOf(spec.companyPartyId())));
+                appendInvoices(item, run, spec.companyPartyId());
+            }
+        }
+    }
+
+    private static void appendInvoices(ObjectNode node, EngineeringRun run, String company) {
         var invoices = node.putArray("invoices");
-        new java.util.TreeMap<>(run.stateOf(COMPANY).contracts()).forEach((id, contract) -> {
+        new java.util.TreeMap<>(run.stateOf(company).contracts()).forEach((id, contract) -> {
             for (var invoice : contract.invoices()) {
                 var row = invoices.addObject().put("contractId", id).put("trancheIndex", invoice.trancheIndex());
                 row.put("dueAt", invoice.dueAt()).put("currentOutstanding", invoice.currentOutstanding().toPlainString());

@@ -3,12 +3,15 @@ package edu.cufe.auction.world;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * 群组与平台发布的运行状态：冻结配置、纯核群状态、平台版本与呈现帧、任务报告。
@@ -254,6 +257,29 @@ public record GroupsRun(GroupModel.Config config, PlatformPostModel.Config platf
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * 群帖引用只随本人当前还能访问且记得读过的确切版本呈现。仅保留本人目录已有的来源标识。
+     * @param view 在同一时点形成的人物视图
+     * @return 按群帖版本排序的可见直接引用，省略没有可见引用的帖子
+     */
+    public Map<GroupModel.Ref, List<GroupModel.Ref>> readableGroupRefs(RoleView view) {
+        Set<GroupModel.Ref> visible = new LinkedHashSet<>();
+        for (var entry : view.catalog()) {
+            visible.add(new GroupModel.Ref(entry.docId(), entry.version()));
+        }
+        Map<GroupModel.Ref, List<GroupModel.Ref>> links = new TreeMap<>();
+        for (var experience : view.observations()) {
+            var reading = experience.ref();
+            if (!GroupMediaBridge.isGroupDocument(reading.docId())) continue;
+            var post = new GroupModel.Ref(reading.docId(), reading.version());
+            if (!visible.contains(post)) continue;
+            var refs = originsOf(post.docId(), post.version()).orElse(List.of()).stream()
+                    .filter(visible::contains).toList();
+            if (!refs.isEmpty()) links.put(post, refs);
+        }
+        return Collections.unmodifiableMap(links);
     }
 
     /**

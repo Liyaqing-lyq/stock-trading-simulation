@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import edu.cufe.auction.world.composed.OpeningEntityCopies;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -116,19 +117,26 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 同时启用工程分红、每日价格带及具名借款人登记的实验档。 */
     public static final String BASELINE_PARTS_RUN_ID = "web-baseline-parts-operating-v1";
 
+    /** 允许以独立开局草稿创建零资产副本的组合实验档。 */
+    public static final String OPENING_COPIES_RUN_ID = "web-opening-copies-v1";
+
+    private static boolean usesBaselineParts(String id) {
+        return BASELINE_PARTS_RUN_ID.equals(id) || OPENING_COPIES_RUN_ID.equals(id);
+    }
+
     /** 是否冻结每日申报价格带。 */
     public static boolean usesPriceBand(String id) {
-        return PRICE_BAND_RUN_ID.equals(id) || BASELINE_PARTS_RUN_ID.equals(id);
+        return PRICE_BAND_RUN_ID.equals(id) || usesBaselineParts(id);
     }
 
     /** 是否启用工程发行人现金分红。 */
     public static boolean usesIssuerDividend(String id) {
-        return ISSUER_DIVIDEND_RUN_ID.equals(id) || BASELINE_PARTS_RUN_ID.equals(id);
+        return ISSUER_DIVIDEND_RUN_ID.equals(id) || usesBaselineParts(id);
     }
 
     /** 是否包含有来源凭证的开局贷款。 */
     public static boolean usesLoanPromotion(String id) {
-        return LOAN_PROMOTION_RUN_ID.equals(id) || BASELINE_PARTS_RUN_ID.equals(id);
+        return LOAN_PROMOTION_RUN_ID.equals(id) || usesBaselineParts(id);
     }
 
     /** 是否包含有真实有限资金及独立处置权限的银行开局。 */
@@ -1304,6 +1312,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("wait-empty-args", "allow-empty-object-v1");
             }
             if (usesMediaDesks(runId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (OPENING_COPIES_RUN_ID.equals(runId)) {
+                OpeningEntityCopies.fromManifest(data).freeze(expectedData);
+                expectedData.put("group-readable-refs", "edition-visible-v1");
+                expectedData.put("tool-argument-guide", "declared-fields-v1");
+            }
             if (usesPriceBand(runId)) expectedData.put("limit-band", "previous-close-10pct-exp-v1");
             if (usesIssuerDividend(runId)) expectedData.put("issuer-dividend", "engineering-eng-a-v1");
             if (usesLoanPromotion(runId)) expectedData.put("loan-promotion", "contract-bound-v1");

@@ -30,6 +30,8 @@ mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldRoleTradingDemo -D
 
 制造夹具连接同一世界交易和现金日志，治理夹具加入五席预算表决、经营承诺和固定期间复盘。schema6人物阅读夹具保存任职、固定版本、实际阅读和本人经历。schema7四岗交易夹具通过绑定人物会话依次提交研究、经理目标、风控审核、经理确认及真实子单，prepare保留部分成交后的活动单，full恢复到绝对目标60股，第三次启动逐条重发原计划并保持成交与位置不变。以上独立夹具采用model=none，其历史范围不代表最新十公司 Web 的能力；当前可用项和剩余任务见[实施 Plan](docs/superpowers/plans/2026-11-06-world-implementation.md)，实际证据见[运行记录](docs/05-运行与验证记录.md)。
 
+需要用现有工程与个人模板建立新实例时，可将 [开局草稿示例](src/main/resources/world/opening-copies-example.json) 另存到独立工作目录并命名为 `opening-copies.json`，修改个人与公司的 ID、显示名及董事映射。以该目录作为 `WorldWebApp` 的第一参数，第四参数使用 `world-opening-copies`。新公司初始未上市，新个人和公司初始现金、持股均为零。首次成功建立后，重启从同一目录的 `world-opening-copies-v1.journal` 读取当时的配置。
+
 需要 JDK 17+（本机为 JDK 21）。仓库自带 Maven Wrapper，**无需安装 Maven**。
 
 ```bash

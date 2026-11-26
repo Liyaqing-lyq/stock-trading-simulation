@@ -391,10 +391,10 @@ function renderAdmin(view) {
 
   const startup = view.startup || {};
   const companies = startup.companies || [];
-  $("startup-status").textContent = "当前登记 " + companies.length + " 家发行人 · 确认记录 "
+  $("startup-status").textContent = "当前登记 " + companies.length + " 家公司 · 确认记录 "
     + text(startup.position) + " · 进行中阅读 " + text(startup.activeReadings);
   fillTable("startup-companies", companies, (tr, row) => {
-    cell(tr, text(row.name) + " / " + text(row.symbol));
+    cell(tr, text(row.name) + " / " + (row.symbol || "未上市"));
     cell(tr, row.cash, "num");
     cell(tr, (row.managers || []).join("、") || "空缺");
     cell(tr, row.hasCharter ? row.boardSeats : "未建立");
@@ -5940,10 +5940,20 @@ function fillPersonalEngineeringCompanies(companies) {
       dlPairs(facts, [["授权代表", mandate.representative], ["承包方", mandate.contractor],
         ["付款账户", mandate.account], ["账户余额", mandate.cash], ["可用现金", mandate.freeCash]]);
       card.appendChild(facts);
-      card.appendChild(engineeringTable("收到的合同申请", ["合同", "期次", "申请", "请求编号", "答复事件"],
-        mandate.requests.map(r => [r.contractId, r.trancheIndex, r.kind, r.requestId, r.answeredByEventId || "待复核"])));
-      card.appendChild(engineeringTable("复核及实际付款", ["合同", "期次", "请求编号", "结果", "实付", "进度未付", "质保未付"],
-        mandate.responses.map(r => [r.contractId, r.trancheIndex, r.requestId, r.outcome, r.amount, r.currentOutstanding, r.retentionOutstanding])));
+      for (const contractor of [mandate, ...(mandate.additionalInvitations || [])]) {
+        if (contractor !== mandate) {
+          const heading = document.createElement("h4");
+          heading.textContent = contractor.contractor + " · 邀请 " + contractor.opportunities.join("、");
+          card.appendChild(heading);
+        }
+        card.appendChild(engineeringTable("收到的合同申请", ["合同", "期次", "申请", "请求编号", "答复事件"],
+          contractor.requests.map(r => [r.contractId, r.trancheIndex, r.kind, r.requestId, r.answeredByEventId || "待复核"])));
+        card.appendChild(engineeringTable("复核及实际付款", ["合同", "期次", "请求编号", "结果", "实付", "进度未付", "质保未付"],
+          contractor.responses.map(r => [r.contractId, r.trancheIndex, r.requestId, r.outcome, r.amount, r.currentOutstanding, r.retentionOutstanding])));
+        if (contractor.invoices?.length) card.appendChild(engineeringTable("未清票据", ["合同", "期次", "进度款到期", "进度未付", "质保款到期", "质保未付"],
+          contractor.invoices.filter(r => Number(r.currentOutstanding) > 0 || Number(r.retentionOutstanding) > 0)
+            .map(r => [r.contractId, r.trancheIndex, r.dueAt, r.currentOutstanding, r.retentionDueAt, r.retentionOutstanding])));
+      }
       container.appendChild(card);
       continue;
     }

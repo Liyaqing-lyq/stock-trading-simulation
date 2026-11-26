@@ -1,0 +1,8 @@
+{
+  "investor": {"source":"nina","id":"independent-reader","name":"独立投资者"},
+  "company": {
+    "source":"eng-a","id":"independent-engineering","name":"独立工程试验公司",
+    "directors":["mfgtech-d1","mfgtech-d2","mfgtech-d3","mfgtech-d4","mfgtech-d5"],
+    "customer":"eng-a-customer","sourceQuote":"A1","invitationId":"NEW-INVITATION-1"
+  }
+}

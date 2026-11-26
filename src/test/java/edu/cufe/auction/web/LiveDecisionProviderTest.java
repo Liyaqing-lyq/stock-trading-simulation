@@ -121,6 +121,28 @@ class LiveDecisionProviderTest {
     }
 
     @Test
+    void toolArgumentGuideUsesOnlyTheFrozenTopLevelRoleMarker() throws Exception {
+        var old = JSON.createObjectNode();
+        old.withObject("/engineering/researchNotes").put("version", "v2");
+        var next = old.deepCopy();
+        next.withObject("/engineering").put("toolArgumentGuide", "declared-fields-v1");
+        var namedInDocument = old.deepCopy();
+        namedInDocument.withObject("/profile/document/engineering").put("toolArgumentGuide", "declared-fields-v1");
+        for (var input : List.of(old, next, namedInDocument)) {
+            server.enqueue(200, successBody("{\"tool\":\"role.wait\"}", 11, 5, 16));
+            provider.evaluate(call(input.toString(), route("key-1", "deepseek-flash", 640)), 5_000L);
+            var messages = server.lastRequestJson().required("messages");
+            assertEquals(input.toString(), messages.get(1).required("content").asText());
+            String prompt = messages.get(0).required("content").textValue();
+            String digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(prompt.getBytes(StandardCharsets.UTF_8)));
+            // 两份摘要来自保留的同输入真实模型对照系统消息。
+            assertEquals(input.equals(next) ? "380ad4cddaf31851ba08526e434033b5e9d6fde8fa4191c049ddcdd0d85c1432"
+                    : "70cf29801a4a639410ce2ff89407ccc4aa68601a301e3f671fe63d589ee5f3ec", digest);
+        }
+    }
+
+    @Test
     @DisplayName("请求冻结：model、max_tokens、user 正文与 Call 完全一致，不读 SceneRoutes 当前配置")
     void requestFreezesRouteAndInputExactly() throws Exception {
         server.enqueue(200, successBody("{\"tool\":\"role.wait\"}", 11, 5, 16));

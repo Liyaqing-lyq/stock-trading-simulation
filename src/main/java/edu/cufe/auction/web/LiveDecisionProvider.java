@@ -93,10 +93,18 @@ public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider
             修改先前判断、撤回或在行动中引用它，按照engineering.researchNotes中的合同。basis是简短结论。
             """;
 
+    /** 新档明确各工具的参数边界及私信中的资料访问权。 */
+    public static final String DECLARED_FIELDS_SYSTEM_TEXT = PERSONAL_PROFILE_SYSTEM_TEXT
+            + "\n每个工具的 args 各自独立，只填所选工具 parameters 列出的字段。私信正文可以提到本人知道的材料；提到材料不会给收件人增加查看权限。decision 是独立的顶层对象，按本人的目标填写。\n";
+
     private static String systemText(DecisionRun.Call call) {
         try {
             var root = new com.fasterxml.jackson.databind.ObjectMapper().readTree(call.inputText());
-            if ("v2".equals(root.at("/engineering/researchNotes/version").textValue())) return PERSONAL_PROFILE_SYSTEM_TEXT;
+            if ("v2".equals(root.at("/engineering/researchNotes/version").textValue())) {
+                if ("declared-fields-v1".equals(root.at("/engineering/toolArgumentGuide").textValue()))
+                    return DECLARED_FIELDS_SYSTEM_TEXT;
+                return PERSONAL_PROFILE_SYSTEM_TEXT;
+            }
             if ("v1".equals(root.at("/engineering/researchNotes/version").textValue())) return RESEARCH_NOTE_SYSTEM_TEXT;
             if (edu.cufe.auction.world.RoleDeliberation.isPlanning(root.path("engineering").path("roleContextVersion").asText()))
                 return PLANNING_SYSTEM_TEXT;

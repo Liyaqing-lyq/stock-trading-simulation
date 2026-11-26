@@ -12,7 +12,19 @@ final class WorldOverviewView {
     private static final Map<String,String> NAMES = names();
     private WorldOverviewView() { }
 
-    static String displayName(String id) { return NAMES.getOrDefault(id,id); }
+    static String displayName(String id, String registeredName) { return NAMES.getOrDefault(id, registeredName); }
+
+    record CompanyListing(String id, OpeningRegistry.Security security) { }
+
+    static List<CompanyListing> listings(OpeningRegistry registry, WorldRuntime.Snapshot snapshot) {
+        List<CompanyListing> listed = new ArrayList<>();
+        registry.securities().stream().sorted(Comparator.comparing(OpeningRegistry.Security::symbol))
+                .forEach(s -> listed.add(new CompanyListing(s.issuerOrganizationId(), s)));
+        var ids = listed.stream().map(CompanyListing::id).collect(java.util.stream.Collectors.toSet());
+        snapshot.engineering().ifPresent(run -> run.companies().keySet().stream().sorted().filter(id -> !ids.contains(id))
+                .forEach(id -> listed.add(new CompanyListing(id, null))));
+        return listed;
+    }
 
     static Map<String,Object> of(WorldRuntime world) throws Exception {
         var snapshot=world.snapshot();
@@ -20,7 +32,7 @@ final class WorldOverviewView {
             return Map.of("available",false);
         var registry=world.openingRegistry().orElseThrow();
         var names=new TreeMap<String,String>();
-        registry.parties().forEach(p->names.put(p.partyId(),NAMES.getOrDefault(p.partyId(),p.name())));
+        registry.parties().forEach(p->names.put(p.partyId(),displayName(p.partyId(),p.name())));
         snapshot.accounts().forEach((id,a)->names.put(id,a.ownerId().equals("fund-a")?"机构投资账户":names.getOrDefault(a.ownerId(),a.ownerId())+"的账户"));
         var roles=new TreeMap<String,List<String>>();
         var managers=new TreeMap<String,List<String>>();
@@ -44,15 +56,17 @@ final class WorldOverviewView {
             if (run.digital()!=null) operationIds.add(run.digital().companyPartyId());
             if (run.aged()!=null) operationIds.add(run.aged().companyPartyId());
         });
+        var listings = listings(registry,snapshot);
         var publications = CompanyPublications.of(world,snapshot.information().map(InformationRun::information).orElse(null),
-                registry.securities().stream().map(OpeningRegistry.Security::issuerOrganizationId).toList());
+                listings.stream().map(CompanyListing::id).toList());
         var companies=new ArrayList<Map<String,Object>>();
-        for(var security:registry.securities()) {
-            String id=security.issuerOrganizationId();var prototype=PrototypeCompanies.find(id);
+        for(var listing:listings) {
+            var security = listing.security();
+            String id=listing.id();var prototype=PrototypeCompanies.find(id);
             var board=world.boardOfCompany(id).orElse(null);
             if(board!=null)for(var seat:board.board().charter().seats())
                 roles.computeIfAbsent(seat.partyId(),k->new ArrayList<>()).add(names.get(id)+" · 董事");
-            var row=new LinkedHashMap<String,Object>();row.put("id",id);row.put("symbol",security.symbol());
+            var row=new LinkedHashMap<String,Object>();row.put("id",id);row.put("symbol",security == null ? null : security.symbol());
             if (autonomous && board!=null) row.put("governance", Map.of(
                     "meetings",board.board().meetings().size(), "budgetLines",board.board().budgets().size(),
                     "managers",managers.getOrDefault(id,List.of())));
@@ -65,10 +79,11 @@ final class WorldOverviewView {
                     history.snapshots().stream().map(cut -> Map.of("period",Long.toString(cut.period()),
                             "capturedAt",Long.toString(cut.capturedAt()), "position",Long.toString(cut.position()),
                             "digest",cut.statementDigest())).toList()));
-            row.put("name",names.get(id));row.put("business",prototype.business());
-            row.put("prototype",prototype.prototype());row.put("boundary",prototype.boundary());
-            row.put("referencePrice",security.initialReferencePrice().toPlainString());
-            var trades=snapshot.exchange().orElseThrow().trades().stream().filter(t->t.symbol().equals(security.symbol())).toList();
+            row.put("name",names.get(id));row.put("business",prototype == null ? "工程承包" : prototype.business());
+            row.put("prototype",prototype == null ? "独立工程公司" : prototype.prototype());
+            row.put("boundary",prototype == null ? "未发行证券" : prototype.boundary());
+            row.put("referencePrice",security == null ? null : security.initialReferencePrice().toPlainString());
+            var trades=snapshot.exchange().orElseThrow().trades().stream().filter(t->security != null && t.symbol().equals(security.symbol())).toList();
             row.put("lastPrice",trades.isEmpty()?null:trades.get(trades.size()-1).price().toPlainString());
             row.put("lastTradeTime",trades.isEmpty()?null:trades.get(trades.size()-1).timeMillis());
             row.put("trades",trades.size());row.put("volume",trades.stream().mapToLong(t->t.quantity()).sum());
@@ -100,8 +115,9 @@ final class WorldOverviewView {
         ConnectedWorldView.append(result,world,companies);
         if (autonomous && snapshot.exchange().isPresent()) {
             // 自主档同样只有一个已确认快照：成交与委托都由 snapshot.exchange 一次性派生，不重开世界。
-            result.put("marketOrders", marketOrders(snapshot, companies));
-            if (!result.containsKey("liveDetails")) result.put("liveDetails", marketDetails(snapshot, companies));
+            var listed = companies.stream().filter(c -> c.get("symbol") != null).toList();
+            result.put("marketOrders", marketOrders(snapshot, listed));
+            if (!result.containsKey("liveDetails")) result.put("liveDetails", marketDetails(snapshot, listed));
         }
         return result;
     }

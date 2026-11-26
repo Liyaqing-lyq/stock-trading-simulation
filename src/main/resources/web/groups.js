@@ -94,6 +94,7 @@ function renderGroupPerson(view) {
     cell(tr, row.docId); cell(tr, row.version, "num"); cell(tr, row.groupId);
     cell(tr, row.author); cell(tr, row.title);
     cell(tr, row.read ? row.body : "未读完（正文需真实读完且可回忆）");
+    cell(tr, row.read && row.refs.length ? row.refs.join("、") : "—");
     const td = document.createElement("td");
     const read = document.createElement("button");
     read.type = "button";

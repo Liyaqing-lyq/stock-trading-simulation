@@ -23,6 +23,7 @@ import edu.cufe.auction.world.bank.FundState;
 import edu.cufe.auction.world.bank.Money;
 import edu.cufe.auction.world.composed.BankCompanyReport;
 import edu.cufe.auction.world.composed.BankLoanPromotionOpening;
+import edu.cufe.auction.world.composed.OpeningEntityCopies;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -4275,6 +4276,13 @@ public final class WorldRuntime implements AutoCloseable {
                 PendingTask.INFORMATION_PUBLISH_V1);
     }
 
+    private boolean authorizedEngineeringCustomer(String company) {
+        if (EngineeringCustomerPolicy.MANDATE.contractorPartyId().equals(company)) return true;
+        if (!OpeningEntityCopies.VERSION.equals(manifest.dataVersions().get(OpeningEntityCopies.KEY))) return false;
+        var spec = engineeringConfig.specOf(company);
+        return spec != null && !spec.contracts().isEmpty();
+    }
+
     private boolean engineeringCustomerEnabled() {
         return RunManifest.usesEngineeringCustomerRules(manifest.runId());
     }
@@ -4288,7 +4296,9 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized String scheduleOpeningEngineeringOpportunity(String contractId) throws IOException {
         if (!engineeringCustomerEnabled() || state.timeMillis() != 0L)
             throw new IllegalStateException("工程机会只能在机构授权的新档开局发布");
-        var spec = engineeringConfig.specOf(EngineeringCustomerPolicy.COMPANY);
+        var spec = engineeringConfig.companies().stream().filter(c -> authorizedEngineeringCustomer(c.companyPartyId())
+                && c.contracts().stream().anyMatch(p -> p.contractId().equals(contractId))).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("客户未委托该工程机会"));
         var plan = spec.contracts().stream().filter(c -> c.contractId().equals(contractId))
                 .findFirst().orElseThrow(() -> new IllegalArgumentException("客户未委托该工程机会"));
         String doc = EngineeringCustomerPolicy.PREFIX + contractId;
@@ -4297,6 +4307,8 @@ public final class WorldRuntime implements AutoCloseable {
                 + "；作业单位毫秒=" + spec.unitMillis() + "；开票后账期天数=" + plan.netDays()
                 + "；质保账期天数=" + plan.retentionNetDays() + "；质保基点=" + plan.retentionBp()
                 + "。实际签约后按合同及客观完工申请复核；发票到期可申请收款，到账取决于可用资金。";
+        if (!EngineeringCustomerPolicy.MANDATE.contractorPartyId().equals(spec.companyPartyId()))
+            body += " 此项额外邀请的相对方为 "+spec.companyPartyId()+"，由开局草稿明确登记，与其他工程共用同一客户现金及期间限额。";
         String command = "opening-" + doc;
         var payload = new PublishPayload(command, doc, EngineeringCustomerPolicy.REPRESENTATIVE, "PUBLIC", "",
                 "栖构工程：" + contractId + "机会（EXP）", body, "栖构项目业主授权代表提交的冻结机会", 1000L, List.of());
@@ -6236,7 +6248,7 @@ public final class WorldRuntime implements AutoCloseable {
                 pendingActionsAt(state, requireDecisions(), personPartyId), allowedToolsOf(view), decisionConfig,
                 toolContractVersion(), manifest.hasDialogue() ? interviewInput(state, personPartyId, state.timeMillis()) : null,
                 engineeringInput(state, personPartyId, state.timeMillis()), manifest.hasGroups()
-                        ? groupsInput(state, state.information().information(), personPartyId, state.timeMillis()) : null, ownVisibleReadTimes(state, view), roleInputFormat());
+                        ? groupsInput(state, state.information().information(), view.profile(), state.timeMillis()) : null, ownVisibleReadTimes(state, view), roleInputFormat());
     }
 
     private String roleInputFormat() {
@@ -7412,7 +7424,7 @@ public final class WorldRuntime implements AutoCloseable {
                     engineeringInput(state, request.personPartyId(), cutoffTime),
                     manifest.hasGroups()
                             ? groupsInput(state, state.information() == null ? null
-                                    : state.information().information(), request.personPartyId(),
+                                    : state.information().information(), view.profile(),
                                     cutoffTime)
                             : null, ownVisibleReadTimes(state, view), roleInputFormat());
             if (decisionConfig.live()
@@ -10340,7 +10352,7 @@ public final class WorldRuntime implements AutoCloseable {
                     engineeringInput(previous, request.personPartyId(), cutoffTime),
                     manifest.hasGroups()
                             ? groupsInput(previous, previous.information() == null ? null
-                                    : previous.information().information(), request.personPartyId(),
+                                    : previous.information().information(), view.profile(),
                                     cutoffTime)
                             : null, ownVisibleReadTimes(previous, view), roleInputFormat());
             DecisionModel.Decision historical = DecisionModel.decision(historicalDecisions.state(),
@@ -10751,7 +10763,7 @@ public final class WorldRuntime implements AutoCloseable {
                 manifest.hasGroups()
                         ? groupsInput(previous, previous.information() == null ? null
                                 : previous.information().information(),
-                                decision.personPartyId(), decision.cutoffTimeMillis())
+                                view.profile(), decision.cutoffTimeMillis())
                         : null, ownVisibleReadTimes(previous, view), roleInputFormat());
         regenerated = historicalDecisionInput(regenerated, decision.inputText(), decision.cutoffPosition());
         if (!regenerated.equals(decision.inputText())) {
@@ -14296,7 +14308,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (!"REVIEW".equals(p.kind()) || request == null || !request.requestId().equals(p.evidenceRef())
                 || !p.eventId().equals(EngineeringCustomerPolicy.REVIEW + request.requestId())
                 || now != Math.addExact(request.atMillis(), EngineeringCustomerPolicy.REVIEW_MILLIS)
-                || !EngineeringCustomerPolicy.COMPANY.equals(p.companyPartyId()) || !EngineeringCustomerPolicy.ACCOUNT.equals(p.payerAccountId()))
+                || !authorizedEngineeringCustomer(p.companyPartyId()) || !EngineeringCustomerPolicy.ACCOUNT.equals(p.payerAccountId()))
             throw new IllegalArgumentException("工程客户待办没有绑定到原始申请与授权账户");
         var contract = run.stateOf(p.companyPartyId()).contracts().get(p.contractId());
         var invoice = invoiceOf(contract, p.trancheIndex());
@@ -26397,7 +26409,14 @@ public final class WorldRuntime implements AutoCloseable {
         }
         // 先按纯核同一入口校验公司、账户、owner、章程、金额与冻结合同
         EngineeringRun.open(engineeringConfig, accounts, registry);
-        if (engineeringCustomerEnabled()) EngineeringCustomerPolicy.validate(registry, engineeringConfig, accounts, informationConfig.readers());
+        if (!OpeningEntityCopies.VERSION.equals(manifest.dataVersions().get(OpeningEntityCopies.KEY))
+                && engineeringConfig.companies().stream().anyMatch(c -> c.templateSource()!=null))
+            throw new IllegalArgumentException("此档未登记配置副本");
+        if (engineeringCustomerEnabled()) {
+            var copied = OpeningEntityCopies.VERSION.equals(manifest.dataVersions().get(OpeningEntityCopies.KEY))
+                    ? OpeningEntityCopies.fromManifest(manifest.dataVersions()).company().id() : null;
+            EngineeringCustomerPolicy.validate(registry, engineeringConfig, accounts, informationConfig.readers(),copied);
+        }
         else if (engineeringConfig.customerMandate() != null) throw new IllegalArgumentException("本经营档未启用工程客户委托");
         String manufacturingCompany = charter == null ? "" : charter.companyPartyId();
         ManufacturingModel.Opening accounting = manufacturingConfig == null ? null : manufacturingConfig.accounting();
@@ -27846,9 +27865,9 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("转账排程参数或来源非法");
         }
         if (payload.capital() == null) {
-            String company = manufacturingConfig.accounting().companyAccountId();
+            String company = manufacturingConfig == null ? null : manufacturingConfig.accounting().companyAccountId();
             if (!from.ownerId().equals(payload.actorOwnerId())
-                    || company.equals(payload.fromId()) || company.equals(payload.toId())) {
+                    || payload.fromId().equals(company) || payload.toId().equals(company)) {
                 throw new IOException("普通转账排程资格非法");
             }
         } else if (registry.owner(payload.actorOwnerId()) == null
@@ -29376,7 +29395,8 @@ public final class WorldRuntime implements AutoCloseable {
         var root = mapper.createObjectNode();
         var directorships = root.putArray("directorships");
         var managerships = root.putArray("managerships");
-        if (engineeringCustomerEnabled() && activeManager(snap.roles(), person, EngineeringCustomerPolicy.COMPANY, now))
+        if (engineeringCustomerEnabled() && engineeringConfig.companies().stream().anyMatch(c ->
+                authorizedEngineeringCustomer(c.companyPartyId()) && activeManager(snap.roles(), person, c.companyPartyId(), now)))
             root.put("engineeringCustomerPolicy", EngineeringCustomerPolicy.VERSION);
         JsonNode customerMandate = customerMandateView(snap, person);
         if (customerMandate != null) root.set("customerMandate", customerMandate);
@@ -29760,6 +29780,8 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         String roleContext = manifest.dataVersions().get("role-context");
+        if ("declared-fields-v1".equals(manifest.dataVersions().get("tool-argument-guide")))
+            root.put("toolArgumentGuide", "declared-fields-v1");
         if ("visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
             PersonalLibrarySearch.append(root, person, snap.trading(), snap.decisions(),
                     () -> roleView(snap, person, snap.roles().access()));
@@ -34497,12 +34519,26 @@ public final class WorldRuntime implements AutoCloseable {
      * @return 投影节点；未启用群组模块时为 null
      */
     private com.fasterxml.jackson.databind.JsonNode groupsInput(WorldState base,
-            InformationModel.State info, String person, long at) {
+            InformationModel.State info, RoleView profile, long at) {
         GroupsRun run = base.groups();
         if (!manifest.hasGroups() || run == null) {
             return null;
         }
+        String person = profile.personPartyId();
         com.fasterxml.jackson.databind.node.ObjectNode root = mapper.createObjectNode();
+        if ("edition-visible-v1".equals(manifest.dataVersions().get("group-readable-refs"))) {
+            var links = run.readableGroupRefs(profile);
+            if (!links.isEmpty()) {
+                var rows = root.putArray("readPostSources");
+                links.forEach((post, sources) -> {
+                    var row = rows.addObject().put("docId", post.docId()).put("version", post.version());
+                    var refs = row.putArray("refs");
+                    for (var source : sources) {
+                        refs.addObject().put("docId", source.docId()).put("version", source.version());
+                    }
+                });
+            }
+        }
         com.fasterxml.jackson.databind.node.ArrayNode memberships = root.putArray("memberships");
         for (GroupModel.Group group : run.state().groups()) {
             Optional<GroupModel.Membership> segment = GroupModel.membershipAt(run.state(),

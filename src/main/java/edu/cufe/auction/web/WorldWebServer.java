@@ -2803,7 +2803,7 @@ public final class WorldWebServer implements AutoCloseable {
             }
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("personPartyId", view.personPartyId());
-            response.put("displayName", WorldOverviewView.displayName(view.personPartyId()));
+            response.put("displayName", page.displayName());
             response.put("timeMillis", Long.toString(view.timeMillis()));
             response.put("tools", view.tools());
             response.put("accounts", accounts);

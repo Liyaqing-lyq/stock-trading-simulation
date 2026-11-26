@@ -6,7 +6,7 @@ window.WorldHome = (() => {
   const $ = id => document.getElementById(id);
   const element = (tag, value, className) => { const n=document.createElement(tag); if(value!=null)n.textContent=String(value); if(className)n.className=className; return n; };
   const money = value => value == null ? "暂无成交" : Number(value).toLocaleString("zh-CN", {minimumFractionDigits:2,maximumFractionDigits:2});
-  const detail = () => view?.connected?.enabled || view?.marketOrders ? view?.liveDetails?.[selected] : (view?.experiment?.details?.[selected] || view?.liveDetails?.[selected]);
+  const detail = (id = selected) => view?.connected?.enabled || view?.marketOrders ? view?.liveDetails?.[id] : (view?.experiment?.details?.[id] || view?.liveDetails?.[id]);
   const company = () => view?.companies.find(c=>c.id===selected);
   const personName = id => view?.names?.[id] || id || "世界";
   const companyName = id => view?.companies.find(c=>c.id===id)?.name || id || "市场";
@@ -15,7 +15,7 @@ window.WorldHome = (() => {
     const target=activity.details?.targetId&&(view.connected?.activities||[]).find(a=>a.action==="TARGET"&&a.details?.targetId===activity.details.targetId);
     const symbol=activity.details?.symbol||target?.details?.symbol,source=activity.sourceDoc||target?.sourceDoc||"";
     const news=(view.connected?.news||[]).find(n=>n.docId===source);
-    return view.companies.find(c=>c.symbol===symbol||source.startsWith("connected-news:"+c.id+":")||source.startsWith("research:connected-news:"+c.id+":")||news?.title==="经营观察 · "+c.name)?.id||"";
+    return view.companies.find(c=>(symbol && c.symbol===symbol)||source.startsWith("connected-news:"+c.id+":")||source.startsWith("research:connected-news:"+c.id+":")||news?.title==="经营观察 · "+c.name)?.id||"";
   }
   const at = value => "第 "+Math.floor(Number(value)/86400000)+" 日 "+Math.floor(Number(value)%86400000/3600000)+" 时";
   const actionNames = {SIGN_CONTRACT:"接受订单",ORDER_MATERIAL:"采购缺料",START_BATCH:"安排生产",DELIVER:"交付产品",COLLECT:"收取到期货款",MARK_OVERDUE:"记录履约逾期",WAIT:"等待",PUBLISH:"发布经营快报",DISCLOSE:"发布经营快报",READ:"阅读消息",READING:"阅读消息",RESEARCH:"形成研究判断",TARGET:"调整投资目标",REVIEW:"审核风险",CONFIRM:"确认投资目标",CHILD:"提交执行委托",ORDER:"提交委托",BUY:"买入委托",SELL:"卖出委托",CANCEL:"撤回委托",POST:"发布观点",MEDIA:"发表报道",BEGIN_EXTRACTION:"安排采掘",BEGIN_POWER:"安排发电",DISPATCH_FLOW:"调整发电流量",BEGIN_PILOT:"开始试验",BEGIN_VALIDATION:"开始验证",APPROVE_COMMERCIAL:"批准商业化",ORDER_RAW:"采购原料",RECEIVE_RAW:"接收原料",PRODUCE:"安排生产",REGISTER:"研发立项",BEGIN:"开始研发阶段",SIGN:"签订工程合同",START_WORK:"安排工程履约",INVOICE:"开具工程账单"};
@@ -105,7 +105,7 @@ window.WorldHome = (() => {
       return box;
     };
     table("world-company-list",["公司","最近成交价","累计成交量","现金 / 准备金","累计损益",...(showGovernance?["公司治理"]:[]),"查看"],view.companies.map(c=>[
-      button(c.name,()=>choose(c.id,"world-companies")),c.lastPrice==null?"尚无成交（参考 "+money(c.referencePrice)+"）":money(c.lastPrice),c.volume+" 股",money(c.cash),element("span",money(c.profit),sign(c.profit)),...(showGovernance?[governanceCell(c)]:[]),button("股价与成交",()=>choose(c.id,"world-market"))]));
+      button(c.name,()=>choose(c.id,"world-companies")),c.symbol===null?"未上市":c.lastPrice==null?"尚无成交（参考 "+money(c.referencePrice)+"）":money(c.lastPrice),c.symbol===null?"—":c.volume+" 股",money(c.cash),element("span",money(c.profit),sign(c.profit)),...(showGovernance?[governanceCell(c)]:[]),c.symbol===null?"—":button("股价与成交",()=>choose(c.id,"world-market"))]));
     $("world-run-note").textContent=exp?.note||"当前公司状态来自同一已确认世界时点。";
     $("world-behavior").hidden=!view.behavior?.enabled||!!view.connected?.enabled;
     if(view.behavior?.enabled&&!view.connected?.enabled){
@@ -199,14 +199,16 @@ window.WorldHome = (() => {
       card.append(summary,element("p",item.body,"world-news-body"));box.append(card);}
   }
   function renderMarket() {
-    const c=company(),d=view.marketOrders ? view.liveDetails?.[selected] : detail();
+    const c=company().symbol===null ? view.companies.find(row=>row.symbol!==null) : company();
+    if(!c)return;
+    const d=detail(c.id);
     $("world-market-name").textContent=c.name;$("world-market-business").textContent=c.business;
     const change=c.lastPrice==null?null:(Number(c.lastPrice)/Number(c.referencePrice)-1)*100;
     $("world-quote").replaceChildren(metric("最近成交价",money(c.lastPrice),"开局参考价 "+money(c.referencePrice)),metric("相对开局参考",change==null?"—":(change>=0?"+":"")+change.toFixed(2)+"%","不代表实际投资收益"),metric("累计成交量",c.volume+" 股",c.trades+" 笔成交"));
     chart("world-price-chart",d?.days||[],"lastPrice",true);
     $("world-price-note").textContent=d?((d.days||[]).some(r=>r.trades>0)?"当前世界实际记录。圆点是有实际成交的日子；虚线延续上次成交价，不代表当日成交。第一笔成交前不画价格。":"当前世界尚无实际成交；参考价不是收盘价，不生成价格曲线。"):"当前运行尚无行情记录；不会使用其他世界的季度数据补图。";
     table("world-trade-days",["实验日","收盘成交价","成交笔数","成交量","成交额"],(d?.days||[]).filter(r=>r.trades>0).map(r=>["第"+r.day+"日",money(r.close),r.trades,r.volume+" 股",money(r.turnover)]));
-    const market=view.marketOrders?.[selected],orders=market?.rows||(view.connected?.orders||[]).filter(o=>o.symbol===c.symbol),total=market?.total??orders.length;
+    const market=view.marketOrders?.[c.id],orders=market?.rows||(view.connected?.orders||[]).filter(o=>o.symbol===c.symbol),total=market?.total??orders.length;
     $("world-orders-panel").hidden=!orders.length&&!view.connected?.enabled;
     table("world-orders",["账户","方向","价格","委托数量","已成交","状态"],orders.slice(-40).reverse().map(o=>[personName(o.accountId),
       o.side==="BUY"?"买入":o.side==="SELL"?"卖出":o.side||"—",
@@ -278,8 +280,10 @@ window.WorldHome = (() => {
       const governance=button("董事会与定期材料",()=>api.onGovernance?.(c.id));
       governance.setAttribute("data-destination","governance");links.append(governance);
     }
-    const market=button(c.symbol+" · 委托与成交",()=>choose(c.id,"world-market"));
-    market.setAttribute("data-destination","market");links.append(market);
+    if(c.symbol!==null){
+      const market=button(c.symbol+" · 委托与成交",()=>choose(c.id,"world-market"));
+      market.setAttribute("data-destination","market");links.append(market);
+    }
     if(view.position!=null)sources.append(element("p","经营与资料截至确认记录 "+view.position+" · 模拟时点 "+view.timeMillis+" 毫秒","world-note"));
     const documents=c.publications||[];
     if(!documents.length)sources.append(element("p","本公司尚无已登记的订单公告、公开预测或定期披露。","world-note"));
@@ -337,7 +341,12 @@ window.WorldHome = (() => {
   }
   function paint() {
     if(!view?.available)return;
-    for(const id of ["world-market-select","world-company-select"]){const select=$(id);select.replaceChildren();for(const c of view.companies){const o=element("option",c.name);o.value=c.id;select.append(o);}select.value=selected;}
+    for(const id of ["world-market-select","world-company-select"]){
+      const select=$(id), options=id==="world-market-select" ? view.companies.filter(c=>c.symbol!==null) : view.companies;
+      select.replaceChildren();
+      for(const c of options){const o=element("option",c.name);o.value=c.id;select.append(o);}
+      select.value=options.some(c=>c.id===selected) ? selected : (options[0]?.id || "");
+    }
     renderOverview();renderMarket();renderCompany();renderPeople();
   }
   const api={onPage:null,onPerson:null,onGovernance:null,onOperations:null,onPeriodStatement:null,onOverview:null,onAdvance:null,onAutonomy:null,onRefresh:null,

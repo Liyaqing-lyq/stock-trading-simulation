@@ -230,6 +230,7 @@ public final class WorldWebHost implements AutoCloseable {
         String reason = "RUNNING";
         List<WakeGroup> groups = List.of();
         List<WakeGroup> roster = List.of();
+        Set<String> selectedPersons = Set.of();
         final Map<String, com.fasterxml.jackson.databind.JsonNode> observed = new HashMap<>();
         final Map<String, Long> lastWake = new HashMap<>();
         final Set<String> busy = new HashSet<>();
@@ -256,6 +257,13 @@ public final class WorldWebHost implements AutoCloseable {
      */
     public void startAutonomy(long expectedPosition, long expectedRevision,
                               long targetMillis, long stepMillis) throws Exception {
+        startAutonomy(expectedPosition, expectedRevision, targetMillis, stepMillis, Set.of());
+    }
+
+    /** 专项研究的显式人员名单；空集合沿用网页默认的全体在岗人员。 */
+    void startAutonomy(long expectedPosition, long expectedRevision, long targetMillis, long stepMillis,
+                       Set<String> selectedPersons) throws Exception {
+        var selection = Set.copyOf(selectedPersons);
         call(() -> {
             var current = readyNow();
             if (current.snapshot().position() != expectedPosition)
@@ -269,7 +277,11 @@ public final class WorldWebHost implements AutoCloseable {
             if (targetMillis <= now || targetMillis - now > 180L * 86_400_000L
                     || stepMillis != 3_600_000L)
                 throw new IllegalArgumentException("目标须在未来180日内，本版本窗口固定为1小时");
-            List<WakeGroup> groups = autonomyGroups();
+            List<WakeGroup> groups = selectedGroups(selection);
+            if (!selection.isEmpty() && !groups.stream().flatMap(g -> g.persons().stream())
+                    .collect(java.util.stream.Collectors.toSet()).containsAll(selection)) {
+                throw new IllegalArgumentException("名单包含本次无法唤醒的人物");
+            }
             for (WakeGroup group : groups) {
                 var route = routeOf(routes.view(), group.scene());
                 if (route == null || !route.enabled())
@@ -287,6 +299,7 @@ public final class WorldWebHost implements AutoCloseable {
             next.callsAtStart = current.snapshot().decisions().orElseThrow().state().runUsage().attempts();
             next.roster = groups;
             next.groups = groups;
+            next.selectedPersons = selection;
             autonomy = next;
             if (eventAutonomy()) {
                 for (var decision : current.snapshot().decisions().orElseThrow().state().decisions()) {
@@ -480,6 +493,14 @@ public final class WorldWebHost implements AutoCloseable {
         return target;
     }
 
+    private List<WakeGroup> selectedGroups(Set<String> persons) {
+        List<WakeGroup> groups = autonomyGroups();
+        if (persons.isEmpty()) return groups;
+        return groups.stream().map(g -> new WakeGroup(g.scene(), g.company(),
+                g.persons().stream().filter(persons::contains).toList()))
+                .filter(g -> !g.persons().isEmpty()).toList();
+    }
+
     private List<WakeGroup> autonomyGroups() {
         var groups = new ArrayList<WakeGroup>();
         var byCompany = new java.util.TreeMap<String, List<String>>();
@@ -562,7 +583,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (runtime.snapshot().timeMillis() != target) { endAutonomy("UNRESOLVED_BARRIER"); return; }
             autonomy.cycles++;
             if (target == autonomy.target) { endAutonomy("TARGET_REACHED"); return; }
-            autonomy.roster = autonomyGroups();
+            autonomy.roster = selectedGroups(autonomy.selectedPersons);
             autonomy.groups = eventAutonomy() ? eventWakeGroups(autonomy.roster) : autonomy.roster;
             autonomy.next = 0;
             autonomy.windowDecisions = 0; autonomy.windowFailures = 0;
@@ -879,7 +900,14 @@ public final class WorldWebHost implements AutoCloseable {
     /** 个人页面在同一截止取角色投影与可选采编数据；旧档案media为空。 */
     public record PersonPage(RoleView view, Map<String, Object> media,
                              List<Map<String, Object>> publicReports, Map<String, Object> personalResearch,
-                             List<PersonBusinessRelations.Edge> businessRelations) {
+                             List<PersonBusinessRelations.Edge> businessRelations, String displayName) {
+        /** 兼容只提供个人业务关系的调用方。 */
+        public PersonPage(RoleView view, Map<String, Object> media, List<Map<String, Object>> publicReports,
+                          Map<String, Object> personalResearch, List<PersonBusinessRelations.Edge> businessRelations) {
+            this(view, media, publicReports, personalResearch, businessRelations,
+                    WorldOverviewView.displayName(view.personPartyId(), view.personPartyId()));
+        }
+
         /** 兼容未提供经营及资金关系的个人页。 */
         public PersonPage(RoleView view, Map<String, Object> media, List<Map<String, Object>> publicReports,
                           Map<String, Object> personalResearch) {
@@ -901,7 +929,8 @@ public final class WorldWebHost implements AutoCloseable {
             RoleView view = trading == null ? current.roleView(personId) : trading.profile();
             var publicReports = CompanyPublications.personalReports(current, snapshot, view);
             var businessRelations = PersonBusinessRelations.of(current, snapshot, view);
-            if (trading == null) return new PersonPage(view, null, publicReports, Map.of(), businessRelations);
+            String name = WorldOverviewView.displayName(personId, current.openingRegistry().map(r -> displayName(r, personId)).orElse(personId));
+            if (trading == null) return new PersonPage(view, null, publicReports, Map.of(), businessRelations, name);
             List<Map<String, Object>> stories = new ArrayList<>();
             Set<String> visibleStories = new LinkedHashSet<>();
             for (RoleTradingView.MediaStory story : trading.media()) {
@@ -968,7 +997,7 @@ public final class WorldWebHost implements AutoCloseable {
                     }
                 }
             }
-            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research, businessRelations);
+            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research, businessRelations, name);
         });
     }
 
@@ -1147,9 +1176,8 @@ public final class WorldWebHost implements AutoCloseable {
         if (registry != null) {
             Map<String, String> names = new java.util.TreeMap<>();
             registry.parties().forEach(p -> names.put(p.partyId(), p.name()));
-            for (OpeningRegistry.Security security : registry.securities().stream()
-                    .sorted(Comparator.comparing(OpeningRegistry.Security::symbol)).toList()) {
-                String company = security.issuerOrganizationId();
+            for (var listing : WorldOverviewView.listings(registry, snapshot)) {
+                String company = listing.id();
                 BoardRun board = world.boardOfCompany(company).orElse(null);
                 InformationModel.DocumentVersion note = governanceNoteOf(information, company,
                         snapshot.timeMillis());
@@ -1175,7 +1203,7 @@ public final class WorldWebHost implements AutoCloseable {
                 }
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("companyId", company); row.put("name", names.get(company));
-                row.put("symbol", security.symbol()); row.put("cash", dec(cash));
+                row.put("symbol", listing.security() == null ? null : listing.security().symbol()); row.put("cash", dec(cash));
                 row.put("managers", managers); row.put("hasCharter", board != null);
                 row.put("boardSeats", board == null ? null : Integer.toString(board.board().charter().seats().size()));
                 row.put("budgetLines", board == null ? null : Integer.toString(board.board().budgets().size()));
@@ -5111,10 +5139,7 @@ public final class WorldWebHost implements AutoCloseable {
                 mine.add(group.groupId());
             }
             RoleView view = current.roleView(personId);
-            Set<String> visible = new HashSet<>();
-            for (InformationModel.CatalogEntry entry : view.catalog()) {
-                visible.add(entry.docId() + "#" + entry.version());
-            }
+            var readableRefs = run.readableGroupRefs(view);
             Map<String, RoleView.Experience> experiences = new HashMap<>();
             for (RoleView.Experience experience : view.observations()) {
                 experiences.put(experience.ref().docId() + "#" + experience.ref().version(),
@@ -5131,27 +5156,12 @@ public final class WorldWebHost implements AutoCloseable {
                 RoleView.Experience experience = experiences.get(
                         entry.docId() + "#" + entry.version());
                 boolean read = experience != null;
-                GroupModel.Post post = null;
-                for (GroupModel.Post candidate : run.state().posts()) {
-                    if (candidate.docId().equals(entry.docId())) {
-                        post = candidate;
-                    }
-                }
-                List<String> refs = new ArrayList<>();
-                if (post != null) {
-                    for (GroupModel.Ref ref : post.declaredRefs()) {
-                        // 只公开读者本人此刻可访问/可引用的来源表示；God 审计另列真实根
-                        String key = ref.docId() + "#" + ref.version();
-                        if (visible.contains(key)) {
-                            refs.add(key);
-                        }
-                    }
-                }
+                var refs = readableRefs.getOrDefault(new GroupModel.Ref(entry.docId(), entry.version()),
+                        List.of()).stream().map(ref -> ref.docId() + "#" + ref.version()).toList();
                 posts.add(new GroupPostView(entry.docId(), num(entry.version()),
                         document.audience().partyId(), document.publisherPartyId(), entry.title(),
-                        read ? experience.body() : null, num(document.versions()
-                                .get(document.versions().size() - 1).publishedAt()),
-                        document.publisherPartyId().equals(personId), read, List.copyOf(refs)));
+                        read ? experience.body() : null, num(entry.publishedAt()),
+                        document.publisherPartyId().equals(personId), read, refs));
             }
             List<GroupFeedView> feed = new ArrayList<>();
             for (PublicationRun.FeedEntry entry : PublicationRun.feedForOutlets(
