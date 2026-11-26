@@ -33,7 +33,7 @@ class FundMandateDocumentTest {
             world.openRoleSession("dave").startReading("read", "read-task", 2, DOC, 1);
             world.advanceTo(2);
             assertFalse(world.canCite("dave", DOC, 1));
-            world.advanceTo(world.roleView("dave").readings().getFirst().dueAt());
+            world.advanceTo(world.roleView("dave").readings().get(0).dueAt());
             assertTrue(world.canCite("dave", DOC, 1));
             var body = world.roleView("dave").observations().stream().filter(item -> item.ref().docId().equals(DOC))
                     .findFirst().orElseThrow().body();
