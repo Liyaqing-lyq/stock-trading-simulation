@@ -975,6 +975,10 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                     return List.of(new String[]{"companyPartyId", "string"},
                             new String[]{"contractId", "string"});
                 }
+                case IssuerCreditDecisions.CRISIS -> {
+                    return List.of(new String[]{"bank","string"},new String[]{"kind","string"},
+                            new String[]{"lineId","string|null"},new String[]{"amount","decimal|null"});
+                }
                 case IssuerCreditDecisions.REQUEST -> {
                     return List.of(new String[]{"bank","string"}, new String[]{"borrower","string"}, new String[]{"loanId","string"},
                             new String[]{"amount","decimal"}, new String[]{"rateU","long"}, new String[]{"tenorMs","long"}, new String[]{"purpose","string"});

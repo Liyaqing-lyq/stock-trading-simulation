@@ -20,6 +20,8 @@ public final class IssuerCreditDecisions {
     static final String REQUEST = "bank.loan.request", ACCEPT = "bank.loan.accept", APPROVE = "bank.loan.approve",
             DRAW = "bank.loan.draw", REPAY = "bank.loan.repay", INTEREST = "bank.loan.payInterest",
             DEPOSIT = "bank.cash.deposit", WITHDRAW = "bank.cash.withdraw";
+    static final String CRISIS = "bank.crisis.act";
+    record Crisis(String bank,String kind,String lineId,BigDecimal amount) { }
     static final long DURATION = 60_000L;
     private static final List<String> BORROWER = List.of(REQUEST, ACCEPT, DRAW, REPAY, INTEREST, DEPOSIT, WITHDRAW);
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -51,6 +53,15 @@ public final class IssuerCreditDecisions {
     static void addTools(List<String> tools, Set<String> managed, BankConfig config) {
         if (config.profile().banks().values().stream().anyMatch(bank -> managed.contains(bank.partyId()))) tools.add(APPROVE);
         if (managed.stream().anyMatch(config.profile().buckets()::containsKey)) tools.addAll(BORROWER);
+        if (edu.cufe.auction.world.bank.BankCrisis.PROVIDER.equals(config.profile().providerKey())
+                && config.profile().banks().keySet().stream().anyMatch(bank -> !crisisActions(managed,bank).isEmpty())) tools.add(CRISIS);
+    }
+
+    private static List<String> crisisActions(Set<String> managed,String bank) {
+        return java.util.Arrays.stream(BankActions.Kind.values()).filter(k -> {
+            String office = edu.cufe.auction.world.bank.BankCrisis.office(k,bank);
+            return office != null && edu.cufe.auction.world.bank.BankCrisis.eligible(managed,office,bank);
+        }).map(Enum::name).toList();
     }
 
     static void append(ObjectNode engineering, Set<String> managed, BankRun.Decoded decoded,
@@ -58,6 +69,27 @@ public final class IssuerCreditDecisions {
         BankConfig config = decoded.config();
         BankState state = decoded.state();
         var visible = engineering.putObject("issuerCredit");
+        if (edu.cufe.auction.world.bank.BankCrisis.PROVIDER.equals(config.profile().providerKey())) {
+            for (String bank : config.profile().banks().keySet()) {
+                var actions=crisisActions(managed,bank);
+                if (actions.isEmpty()) continue;
+                var office=visible.withArray("crisisOffices").addObject().put("bank",bank);
+                office.set("actions",JSON.valueToTree(actions));
+                office.put("terms","EXP 参考当前已核报表及现金，自主决定是否采取行动或等待。应急额度3日内可提，单笔30日免息无担保。处置顺序依次为存款、应急融资和次级债务。");
+                if (actions.contains("FACILITY_AUTHORIZE")) {
+                    var id=config.chart().cashAccountOf(config.profile().providerKey());
+                    office.put("providerAvailable",accounts.get(id).cash().subtract(WorldExchange.frozenCash(exchange,id)).toPlainString());
+                }
+                if (actions.contains("RESOLUTION_OPEN") || actions.contains("FACILITY_DRAW"))
+                    office.put("reserve",accounts.get(config.chart().reserveAccountOf(bank)).cash().toPlainString())
+                         .put("bookEquity",state.bookEquity(bank).toPlainString()).put("resolutionOpen",state.resolution(bank)!=null);
+                var lines=office.putArray("lines");
+                for (var f : state.facilityAccountsOf(bank).values())
+                    lines.addObject().put("lineId",f.authorizationId()).put("limit",f.limit().toPlainString())
+                        .put("drawn",f.drawnCumulative().toPlainString()).put("outstanding",f.nominal().toPlainString())
+                        .put("authorizationExpiryMs",f.authorizationExpiryMs()).put("maturityAt",f.facilityMaturityMs());
+            }
+        }
         visible.put("procedure", "各公司资金独立。借款经理自行拟定金额、用途、年利率rateU(1000000=100%)与期限tenorMs；申请后借款方须另外接受，银行经理才可按原条款审批，或等待。提款前没有放款；提款增加借款公司的银行存款，风险闸门可以拒绝。存取款在本公司现金和银行存款间划拨，还本与付息各从存款实扣。到期自动核算利息。");
         var borrowers = visible.putArray("managedBorrowers");
         var banks = visible.putArray("managedBanks");

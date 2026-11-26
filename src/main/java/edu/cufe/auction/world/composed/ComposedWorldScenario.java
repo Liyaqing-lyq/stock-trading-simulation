@@ -13,6 +13,8 @@ import edu.cufe.auction.world.RoleRun;
 import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.WorldRuntime;
 import edu.cufe.auction.world.bank.BankConfig;
+import edu.cufe.auction.world.bank.BankChart;
+import edu.cufe.auction.world.bank.BankCrisis;
 import edu.cufe.auction.world.bank.BankOpening;
 import edu.cufe.auction.world.bank.BankOpeningRequest;
 import edu.cufe.auction.world.bank.BankRules;
@@ -184,7 +186,7 @@ public final class ComposedWorldScenario {
         if (issuerCredit) profile.buckets().forEach((borrower, bucket) -> {
             if (bucket.group() != null) groups.put(borrower, bucket.group());
         });
-        return new BankConfig.Builder(profile).version(24).archiveId(issuerCredit ? BankConfig.ISSUER_CREDIT_ARCHIVE : "COMPOSED-BANK-EXP")
+        var builder = new BankConfig.Builder(profile).version(24).archiveId(issuerCredit ? BankConfig.ISSUER_CREDIT_ARCHIVE : "COMPOSED-BANK-EXP")
                 .label(RunManifest.RULES_COMPOSED_BANK_WORLD_V2)
                 .coverageRule("DECLARED_UNIVERSE_V1")
                 .interest(BankConfig.Interest.act365()).depositOffers(offers)
@@ -194,8 +196,14 @@ public final class ComposedWorldScenario {
                         "lev_min", money("0.01"), "single_name", money("9.90"),
                         "group_name", money("9.90"), "lcr_min", money("0.01"),
                         "maturity_gap_min", money("-0.90"),
-                        "impair_cover_min", money("0.01")))
-                .build();
+                        "impair_cover_min", money("0.01")));
+        if (BankCrisis.PROVIDER.equals(profile.providerKey())) {
+            var first = new ArrayList<>(profile.depositAccounts());
+            first.add("INT.PAYABLE");
+            builder.facilityTerms(new BankConfig.FacilityTerms(BankRules.FACILITY_EXP,BankCrisis.AUTHORITY,List.of(),
+                    List.of(first, List.of(BankChart.FACILITY_DEBT,BankChart.FACILITY_INTEREST_PAYABLE),List.of("SUBT2"))));
+        }
+        return builder.build();
     }
 
     /** @return 历史禀赋：只有 north 的实收资本来源，无存款、无贷款、无房产 */
@@ -303,6 +311,12 @@ public final class ComposedWorldScenario {
         }
         boolean eightDesks = RunManifest.usesMediaDesks(manifest.runId());
         if (eightDesks) MediaDesks.appoint(appointments, end);
+        if (RunManifest.BANK_CRISIS_RUN_ID.equals(manifest.runId())) {
+            appointments.add(new RoleAccess.Appointment("rescue-representative","aged-manager",BankCrisis.PROVIDER,
+                    RoleAccess.Role.COMPANY_MANAGER,0L,end,null));
+            appointments.add(new RoleAccess.Appointment("resolution-officer","kate",BankCrisis.AUTHORITY,
+                    RoleAccess.Role.COMPANY_MANAGER,0L,end,null));
+        }
         List<String> readers = new ArrayList<>(List.of("alice", "bob", "carol", "dave", "erin",
                 WorldWebScenario.INVESTOR));
         readers.addAll(WorldWebScenario.MEDIA_PERSONS);

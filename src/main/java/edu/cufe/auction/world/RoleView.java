@@ -324,7 +324,7 @@ public record RoleView(long timeMillis, String personPartyId,
             if (accountId == null || accountId.isBlank() || symbol == null || symbol.isBlank()) {
                 throw new IllegalArgumentException("持股账户与代码不能为空");
             }
-            if (quantity < 0 || frozen < 0 || available < 0 || frozen + available != quantity) {
+            if (quantity < 0 || frozen < 0 || frozen > quantity || available < 0 || available > quantity - frozen) {
                 throw new IllegalArgumentException("持股数量关系非法：" + accountId + "/" + symbol);
             }
         }

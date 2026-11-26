@@ -101,9 +101,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 本人行情在交易价格旁分别展示账户估值、市价来源和报价时间。 */
     public static final String ROLE_MARKET_VALUATION = "as-of-reference-v1";
 
+    /** 有有限资金来源和独立处置职权的十公司危机档。 */
+    public static final String BANK_CRISIS_RUN_ID = "web-bank-crisis-operating-v1";
+
     /** 是否允许制造公司在安全点成组停止新签。 */
     public static boolean usesManufacturingLifecycle(String id) {
-        return MANUFACTURING_LIFECYCLE_RUN_ID.equals(id);
+        return MANUFACTURING_LIFECYCLE_RUN_ID.equals(id) || BANK_CRISIS_RUN_ID.equals(id);
     }
 
     private static boolean usesIntegratedOpening(String id) {
@@ -1268,6 +1271,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("wait-empty-args", "allow-empty-object-v1");
             }
             if (usesMediaDesks(runId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (BANK_CRISIS_RUN_ID.equals(runId)) {
+                expectedData.put("bank-crisis-authority", "finite-provider-v1");
+                expectedData.put("role-sellable-holdings", "settled-lots-v1");
+            }
             if (usesManufacturingLifecycle(runId)) {
                 expectedData.put(MANUFACTURING_LIFECYCLE_KEY, MANUFACTURING_LIFECYCLE_VERSION);
                 expectedData.put("fund-capital-policy", FIXED_FUND_CAPITAL);

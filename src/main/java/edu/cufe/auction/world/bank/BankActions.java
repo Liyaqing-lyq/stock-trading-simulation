@@ -35,7 +35,12 @@ public final class BankActions {
         /** 借款人在双方一致后提款。 */ LOAN_DRAW,
         /** 借款人还本。 */ LOAN_REPAY,
         /** 按合同到期累计利息（系统任务）。 */ LOAN_ACCRUE,
-        /** 借款人付息。 */ LOAN_PAY_INTEREST
+        /** 借款人付息。 */ LOAN_PAY_INTEREST,
+        /** 出资方签出无担保额度。 */ FACILITY_AUTHORIZE,
+        /** 银行依获批额度提款。 */ FACILITY_DRAW,
+        /** 银行偿还应急本金。 */ FACILITY_PAY,
+        /** 独立处置办公室开启已触发的处置。 */ RESOLUTION_OPEN,
+        /** 独立处置办公室按冻结的债权顺序分配实有准备金。 */ RESOLUTION_DISTRIBUTE
     }
 
     /** 贷款请求状态。 */
@@ -127,10 +132,12 @@ public final class BankActions {
             if (requestId.isBlank() || bankKey.isBlank()) {
                 throw new IllegalArgumentException("请求标识与银行不能为空");
             }
-            if (amount == null || amount.signum() <= 0) {
-                throw new IllegalArgumentException("金额必须为正");
+            if (BankCrisis.procedural(kind)) {
+                if (amount == null || amount.signum() != 0) throw new IllegalArgumentException("处置程序不指定金额");
+                amount = Money.zero();
+            } else {
+                amount = Money.business(amount);
             }
-            amount = Money.business(amount);
             if (rateU < 0 || tenorMs < 0 || toMs < 0) {
                 throw new IllegalArgumentException("利率/期限/时点不能为负");
             }
@@ -330,6 +337,8 @@ public final class BankActions {
         Objects.requireNonNull(frozen, "受信冻结快照不能为空；无冻结请显式传 CashFreeze.none()");
         BankChart chart = bank.chart();
         Map<String, CashLedger.CashAccount> cash = accounts == null ? Map.of() : accounts;
+        if (BankCrisis.office(request.kind(),request.bankKey()) != null)
+            return BankCrisis.apply(bank,cash,book,loans,config,ctx,request,actor,frozen);
         switch (request.kind()) {
             case DEPOSIT, WITHDRAW, PAY -> {
                 return payment(bank, cash, book, loans, config, ctx, request, actor, chart, frozen,

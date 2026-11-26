@@ -15,6 +15,7 @@ import edu.cufe.auction.world.bank.BankChart;
 import edu.cufe.auction.world.bank.BankConfig;
 import edu.cufe.auction.world.bank.BankContext;
 import edu.cufe.auction.world.bank.BankOpeningRequest;
+import edu.cufe.auction.world.bank.BankCrisis;
 import edu.cufe.auction.world.bank.BankRun;
 import edu.cufe.auction.world.bank.BankState;
 import edu.cufe.auction.world.bank.Fund;
@@ -6874,8 +6875,11 @@ public final class WorldRuntime implements AutoCloseable {
             String symbol = entry.getKey().substring(split + 1);
             long quantity = entry.getValue()[0];
             long frozen = entry.getValue()[1];
-            holdings.add(new RoleView.Holding(accountId, symbol, quantity, frozen,
-                    quantity - frozen));
+            long available = quantity - frozen;
+            if ("settled-lots-v1".equals(manifest.dataVersions().get("role-sellable-holdings"))) {
+                available = SecuritiesLedger.available(snap.securities(), accountId, symbol, SecuritiesLedger.day(snap.timeMillis()));
+            }
+            holdings.add(new RoleView.Holding(accountId, symbol, quantity, frozen, available));
         }
         return holdings;
     }
@@ -8849,6 +8853,22 @@ public final class WorldRuntime implements AutoCloseable {
                 return new PlacedAction(recorded.actionId(), tool, planned.kind(), taskId, commandId,
                         planned.dueTimeMillis(), planned.payload(), null, null);
             }
+            case IssuerCreditDecisions.CRISIS -> {
+                var draft = strict(IssuerCreditDecisions.Crisis.class,args);
+                var observed = mapper.readTree(recorded.inputText()).at("/engineering/issuerCredit/crisisOffices");
+                boolean authorized = false;
+                for (var office : observed) if (office.path("bank").asText().equals(draft.bank()))
+                    for (var allowed : office.path("actions")) if (allowed.asText().equals(draft.kind())) authorized = true;
+                if (!authorized || !RunManifest.BANK_CRISIS_RUN_ID.equals(manifest.runId())) throw new IOException("本次观察无对应危机权限");
+                var crisisKind = BankActions.Kind.valueOf(draft.kind());
+                String org = BankCrisis.office(crisisKind,draft.bank());
+                boolean procedure = BankCrisis.procedural(crisisKind);
+                if (procedure ? draft.amount() != null || draft.lineId() != null : draft.amount() == null
+                        || draft.lineId() == null || draft.lineId().isBlank()) throw new IOException("与危机动作不符的金额或融资编号");
+                var request = new BankActions.Request(DecisionRun.actionCommandId(recorded.actionId()),crisisKind,
+                        draft.bank(),org,"","",procedure ? BigDecimal.ZERO : draft.amount(),0,0,"",draft.lineId(),0);
+                return planBankWork(binding,recorded,model,forcedTaskId,base,tool,org,request);
+            }
             case IssuerCreditDecisions.REQUEST, IssuerCreditDecisions.ACCEPT, IssuerCreditDecisions.APPROVE,
                  IssuerCreditDecisions.DRAW, IssuerCreditDecisions.REPAY, IssuerCreditDecisions.INTEREST,
                  IssuerCreditDecisions.DEPOSIT, IssuerCreditDecisions.WITHDRAW -> {
@@ -9621,10 +9641,16 @@ public final class WorldRuntime implements AutoCloseable {
                 : !IssuerCreditDecisions.observed(credit.path("managedBorrowers"), bank, borrower))
             throw new IOException("没有独立的观察时授权");
         String org = approval ? bankOpening.config().profile().banks().get(bank).partyId() : borrower;
+        var request = new BankActions.Request(DecisionRun.actionCommandId(decision.actionId()), kind, bank, borrower,
+                "", "", amount, rate, tenor, purpose, loanId, 0);
+        return planBankWork(binding,decision,model,forcedTaskId,base,tool,org,request);
+    }
+
+    private PlacedAction planBankWork(DecisionRun.Binding binding,DecisionModel.Decision decision,DecisionModel.State model,
+                                      String forcedTaskId,WorldState base,String tool,String org,BankActions.Request request) throws IOException {
         String appointment = binding.appointments().get(org);
         if (appointment == null) throw new IOException("观察时无对应经理任职");
-        String command = DecisionRun.actionCommandId(decision.actionId());
-        var request = new BankActions.Request(command, kind, bank, borrower, "", "", amount, rate, tenor, purpose, loanId, 0);
+        String command = request.requestId();
         long due = DecisionModel.actionDueMillis(model, decision.actionId());
         long duration = due - decision.barrierAtMillis();
         if (duration != IssuerCreditDecisions.DURATION) throw new IOException("授信工时不符");
@@ -17568,9 +17594,12 @@ public final class WorldRuntime implements AutoCloseable {
         String internalTask = roleTaskId(person, clientTaskId);
         String customerKey = bankCustomerKey(state, session, draft);
         BankActions.Request request = draft.toRequest(customerKey);
+        String crisisOffice = BankCrisis.office(request.kind(),request.bankKey());
+        String observedOffice = crisisOffice == null ? null : session.appointments().get(crisisOffice);
+        if (crisisOffice != null && observedOffice == null) throw new IllegalArgumentException("本人观察时无危机处置或出资任职");
         BankActionPayload action = new BankActionPayload(internalCommand, clientCommandId,
                 clientTaskId, person, mapper.writeValueAsString(request), dueMillis,
-                durationMillis, false);
+                durationMillis, false, observedOffice);
         String content = mapper.writeValueAsString(action);
         String existing = state.commandContents().get(internalCommand);
         if (existing != null) {
@@ -17701,6 +17730,12 @@ public final class WorldRuntime implements AutoCloseable {
     private String bankCustomerKey(WorldState base, WorldRoleSession session,
                                    WorldRoleSession.BankActionDraft draft) {
         String person = session.personPartyId();
+        String office = BankCrisis.office(draft.kind(),draft.bankKey());
+        if (office != null) {
+            if (!draft.organizationPartyId().isEmpty() && !office.equals(draft.organizationPartyId()))
+                throw new IllegalArgumentException("该动作只能代表自己的在岗机构");
+            return office;
+        }
         String target = draft.organizationPartyId() == null || draft.organizationPartyId().isBlank()
                 ? person : draft.organizationPartyId();
         BankActions.Book book = base.bankActions() == null ? BankActions.Book.empty()
@@ -17731,6 +17766,15 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未知银行：" + request.bankKey());
         }
         String party = request.customerKey();
+        String crisisOffice = BankCrisis.office(request.kind(), request.bankKey());
+        if (crisisOffice != null) {
+            if (!RunManifest.BANK_CRISIS_RUN_ID.equals(manifest.runId()) || !crisisOffice.equals(party)
+                    || !BankCrisis.eligible(IssuerCreditDecisions.managed(base.roles().access(),person,now),crisisOffice,request.bankKey()))
+                throw new IllegalArgumentException("本人没有该机构的危机动作权限");
+            return;
+        }
+        if (BankCrisis.PROVIDER.equals(party) || BankCrisis.AUTHORITY.equals(party))
+            throw new IllegalArgumentException("危机机构专户仅用于冻结的出资或处置动作");
         if (request.kind() == BankActions.Kind.LOAN_APPROVE) {
             String bankOrg = bankOrganizationOf(chart, request.bankKey());
             if (bankOrg == null || !activeManager(base.roles(), person, bankOrg, now)) {
@@ -17946,6 +17990,17 @@ public final class WorldRuntime implements AutoCloseable {
 
     private BankActorResolution resolveBankActionActor(WorldState base, BankActionPayload action,
                                                         BankActions.Request request, long now) {
+        String crisisOffice = BankCrisis.office(request.kind(),request.bankKey());
+        if (crisisOffice != null) {
+            if (!RunManifest.BANK_CRISIS_RUN_ID.equals(manifest.runId()) || action.system()
+                    || !crisisOffice.equals(request.customerKey()) || action.appointmentId() == null
+                    || !BankCrisis.eligible(IssuerCreditDecisions.managed(base.roles().access(),action.personPartyId(),now),crisisOffice,request.bankKey())
+                    || !activeAppointment(base.roles(),action.appointmentId(),action.personPartyId(),crisisOffice,now))
+                return new BankActorResolution(null,"ACTOR_NOT_AUTHORIZED:crisis-office");
+            return new BankActorResolution(crisisOffice.equals(request.bankKey())
+                    ? BankActions.Actor.manager(action.personPartyId(),bankOpening.config().profile().banks().get(crisisOffice).ownerId(),crisisOffice)
+                    : BankActions.Actor.customer(crisisOffice,crisisOffice),null);
+        }
         if (action.appointmentId() != null) {
             boolean approve = request.kind() == BankActions.Kind.LOAN_APPROVE;
             String org = approve ? bankOpening.config().profile().banks().get(request.bankKey()).partyId() : request.customerKey();
@@ -18349,6 +18404,9 @@ public final class WorldRuntime implements AutoCloseable {
                 BankActions.Request.class);
         requireBankObservationAuthority(previous, action.personPartyId(), request,
                 previous.timeMillis());
+        if (BankCrisis.office(request.kind(),request.bankKey()) != null
+                && resolveBankActionActor(previous,action,request,previous.timeMillis()).reason() != null)
+            throw new IOException("危机任务未绑定观察时点的机构任职");
         requireBankFocusWindow(previous, action.personPartyId(), previous.timeMillis(),
                 action.dueMillis(), action.durationMillis(), request.kind().name());
         List<PendingTask> pending = new ArrayList<>(previous.pending());

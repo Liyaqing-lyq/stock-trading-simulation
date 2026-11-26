@@ -404,6 +404,16 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.MANUFACTURING_LIFECYCLE_RUN_ID);
     }
 
+    /**
+     * 打开组合经营世界中的银行危机实验档。
+     * @param journal 本档独立日志
+     * @return 已建立或恢复的世界
+     * @throws Exception 建立或恢复失败
+     */
+    public static WorldRuntime openBankCrisisOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.BANK_CRISIS_RUN_ID);
+    }
+
     /** @param journal 独立交易时段实验档 @return 严格恢复或首次建立的交易世界 @throws Exception 建立或恢复失败 */
     public static WorldRuntime openMarketSessionsOperating(Path journal) throws Exception {
         return openCompanyInformationOperating(journal, MarketSessions.RUN_ID);
@@ -494,10 +504,15 @@ public final class ComposedIndustryScenario {
                         "book-" + issuer, "impair-" + issuer));
             }
         }
+        boolean crisis = RunManifest.BANK_CRISIS_RUN_ID.equals(thinkingRunId);
+        if (crisis) {
+            parties.put(BankCrisis.PROVIDER, new BankingProfile.PartyRef(BankCrisis.PROVIDER,BankCrisis.PROVIDER,BankCrisisOpening.PROVIDER_CASH,null));
+            parties.put(BankCrisis.AUTHORITY, new BankingProfile.PartyRef(BankCrisis.AUTHORITY,BankCrisis.AUTHORITY,BankCrisisOpening.AUTHORITY_CASH,null));
+        }
         var profile = new BankingProfile(original.banks(), parties, original.custodians(), buckets, original.groups(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::loanGl).distinct().sorted().toList() : original.loanAccounts(),
-                baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
-        var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.usesIssuerCredit(thinkingRunId)), ComposedWorldScenario.endowment(), Map.of(), Map.of());
+                baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, crisis ? BankCrisis.PROVIDER : original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
+        var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.usesIssuerCredit(thinkingRunId)), crisis ? BankCrisisOpening.endowment() : ComposedWorldScenario.endowment(), Map.of(), Map.of());
         var charters = new TreeMap<>(ComposedManufacturingThreeScenario.charters());
         List<BoardModel.Seat> seats = new ArrayList<>();
         for (int i = 0; i < 5; i++) seats.add(new BoardModel.Seat("resource-seat-" + i, DIRECTORS.get(i)));
@@ -525,6 +540,7 @@ public final class ComposedIndustryScenario {
             var limits = decisions.limits();
             var timings = new TreeMap<>(decisions.actionMillisByTool());
             if (RunManifest.usesCreditDecisions(thinkingRunId)) IssuerCreditDecisions.addTimings(timings);
+            if (crisis) timings.put("bank.crisis.act",60_000L);
             if (RunManifest.usesPersonalProfiles(thinkingRunId)) timings.put("role.library.search", 1000L);
             if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
                 timings.put(PersonalMarket.SUBMIT, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
@@ -554,6 +570,7 @@ public final class ComposedIndustryScenario {
         }
         if (RunManifest.usesEngineeringCustomerRules(thinkingRunId)) openingRegistry = EngineeringCustomerPolicy.register(openingRegistry);
         if (RunManifest.usesMediaDesks(thinkingRunId)) openingRegistry = MediaDesks.register(openingRegistry);
+        if (crisis) openingRegistry = BankCrisisOpening.allocate(openingAccounts, openingRegistry);
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -626,6 +643,10 @@ public final class ComposedIndustryScenario {
                 data.put("wait-empty-args", "allow-empty-object-v1");
             }
             if (RunManifest.usesMediaDesks(thinkingRunId)) data.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (RunManifest.BANK_CRISIS_RUN_ID.equals(thinkingRunId)) {
+                data.put("bank-crisis-authority", "finite-provider-v1");
+                data.put("role-sellable-holdings", "settled-lots-v1");
+            }
             if (RunManifest.usesManufacturingLifecycle(thinkingRunId)) {
                 data.put(RunManifest.MANUFACTURING_LIFECYCLE_KEY, RunManifest.MANUFACTURING_LIFECYCLE_VERSION);
                 data.put("fund-capital-policy", RunManifest.FIXED_FUND_CAPITAL);

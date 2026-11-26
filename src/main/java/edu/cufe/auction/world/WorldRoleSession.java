@@ -1342,8 +1342,9 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
             payeeToken = payeeToken == null ? "" : payeeToken;
             purpose = purpose == null ? "" : purpose;
             loanId = loanId == null || loanId.isBlank() ? requestId : loanId;
-            if (amount == null || amount.signum() <= 0) {
-                throw new IllegalArgumentException("金额必须为正");
+            if (amount == null || (edu.cufe.auction.world.bank.BankCrisis.procedural(kind)
+                    ? amount.signum() != 0 : amount.signum() <= 0)) {
+                throw new IllegalArgumentException("处置程序金额必须为零，资金动作金额必须为正");
             }
             if (rateU < 0 || tenorMs < 0) {
                 throw new IllegalArgumentException("利率与期限不能为负");

@@ -51,6 +51,7 @@ import edu.cufe.auction.world.WorldScheduler;
 import edu.cufe.auction.world.bank.BankActions;
 import edu.cufe.auction.world.bank.BankChart;
 import edu.cufe.auction.world.bank.BankConfig;
+import edu.cufe.auction.world.bank.BankCrisis;
 import edu.cufe.auction.world.bank.BankMetrics;
 import edu.cufe.auction.world.bank.BankRun;
 import edu.cufe.auction.world.bank.BankState;
@@ -3325,7 +3326,14 @@ public final class WorldWebHost implements AutoCloseable {
                     payableOrgs.add(org);
                 }
             }
-            view.put("entitlements", entitlements(managedBanks));
+            view.put("entitlements", bankEntitlements(config,managedOrgs,managedBanks));
+            if (BankCrisis.PROVIDER.equals(config.profile().providerKey())
+                    && (managedOrgs.contains(BankCrisis.PROVIDER) || managedOrgs.contains(BankCrisis.AUTHORITY) || !managedBanks.isEmpty())) {
+                view.put("facilities",state.facilityAccounts().values().stream().map(a -> Map.of(
+                        "id",a.authorizationId(),"bank",a.bank(),"limit",money(a.limit()),"outstanding",money(a.nominal()),
+                        "authorizedUntil",Long.toString(a.authorizationExpiryMs()))).toList());
+                view.put("facilityTerms","实验应急额度自授权起三日内可提。每笔期限30日，无担保、免息，须偿还本金。处置可在净资产为负、准备金为零且尚有存款，或到期应急债务超出准备金时开启。");
+            }
             view.put("options", actionOptions(config, state, chart, role, owners, myParties,
                     payableOrgs));
             view.put("loans", loanContracts(config, chart, current.bankBook(), payableOrgs,
@@ -3399,6 +3407,18 @@ public final class WorldWebHost implements AutoCloseable {
                 "LOAN_REQUEST", "LOAN_ACCEPT", "LOAN_DRAW", "LOAN_REPAY", "LOAN_PAY_INTEREST"));
         if (managedBanks != null && !managedBanks.isEmpty()) {
             list.add("LOAN_APPROVE");
+        }
+        return list;
+    }
+
+    private static List<String> bankEntitlements(BankConfig config, Set<String> managedOrgs, List<String> managedBanks) {
+        var list = entitlements(managedBanks);
+        if (!BankCrisis.PROVIDER.equals(config.profile().providerKey())) return list;
+        for (String bank : config.profile().banks().keySet()) {
+            for (var kind : BankActions.Kind.values()) {
+                var office = BankCrisis.office(kind,bank);
+                if (office != null && BankCrisis.eligible(managedOrgs,office,bank) && !list.contains(kind.name())) list.add(kind.name());
+            }
         }
         return list;
     }
@@ -3577,7 +3597,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (kind == BankActions.Kind.LOAN_ACCRUE) {
                 throw new IllegalArgumentException("计息只能由世界按合同到期创建");
             }
-            if (!entitlements(managedBanks).contains(kind.name())) {
+            if (!bankEntitlements(config,managedOrgs,managedBanks).contains(kind.name())) {
                 throw new IllegalArgumentException("当前身份不能执行该动作：" + kind);
             }
             if (command.workMillis() <= 0 || command.workMillis() > 3_600_000L) {
@@ -3619,7 +3639,8 @@ public final class WorldWebHost implements AutoCloseable {
                     }
                 }
             }
-            java.math.BigDecimal amount = parseMoney(command.amount());
+            java.math.BigDecimal amount = BankCrisis.procedural(kind) && (command.amount() == null || "0".equals(command.amount()))
+                    ? java.math.BigDecimal.ZERO : parseMoney(command.amount());
             // 完整请求含 taskId；JSON 转义避免业务文本中的分隔符产生碰撞。
             String signature = PAYLOAD_MAPPER.writeValueAsString(command);
             String cacheKey = PAYLOAD_MAPPER.writeValueAsString(List.of(runId, personId, command.commandId()));
@@ -4283,6 +4304,13 @@ public final class WorldWebHost implements AutoCloseable {
     private List<LivePerson> livePeople(WorldRuntime.Snapshot snapshot) {
         OpeningRegistry registry = runtime.openingRegistry().orElse(null);
         Map<String, LivePerson> people = new LinkedHashMap<>();
+        if (RunManifest.BANK_CRISIS_RUN_ID.equals(runtime.profile().manifest().runId())) {
+            for (var office : snapshot.roles().orElseThrow().access().appointments()) {
+                if (office.activeAt(snapshot.timeMillis()) && office.role() == RoleAccess.Role.COMPANY_MANAGER
+                        && Set.of(BankCrisis.PROVIDER,BankCrisis.AUTHORITY).contains(office.organizationPartyId()))
+                    addLiveScene(people,registry,office.personPartyId(),"trading");
+            }
+        }
         if (usesFundOfficeRouting()) {
             var access = snapshot.roles().orElseThrow().access();
             for (var appointment : access.appointments()) {
