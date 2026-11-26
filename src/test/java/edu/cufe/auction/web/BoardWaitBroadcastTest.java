@@ -47,6 +47,18 @@ class BoardWaitBroadcastTest {
         assertFalse(BoardWaitBroadcast.defer(old,news,input(),1000,31001));
     }
 
+    @Test void compactReadingHistoryUsesTheSameDocumentIdsAsTheOriginalArray() {
+        for (String document : List.of("board-material", "outside-the-meeting")) {
+            var old = previous();
+            old.withArray("/profile/readExperiences").addObject().put("docId", document);
+            var raw = input();
+            var table = raw.withObject("/profile/readExperiences");
+            table.putArray("columns").add("docId");
+            table.putArray("rows").addArray().add(document);
+            assertEquals(document.equals("board-material"), BoardWaitBroadcast.defer(old, article(old), raw, 1000, 1300));
+        }
+    }
+
     @Test void directEventsOfficialDocumentsAndExistingInterestRemainImmediate() {
         var old = previous();
         for (String path : List.of("/social/inbox","/interview/invites","/profile/activeReadings","/profile/market")) {

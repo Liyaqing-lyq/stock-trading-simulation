@@ -101,7 +101,9 @@ final class BoardWaitBroadcast {
         }
         if (!waitingForVote) return false;
         materialIds.add(director.path("decisionMaterialDocId").asText());
-        for (JsonNode read : facts.at("/profile/readExperiences"))
+        var reads = input.at("/profile/readExperiences");
+        if (reads.isObject()) reads = facts.at("/profile/readExperiences");
+        for (JsonNode read : reads)
             if (!materialIds.contains(read.path("docId").asText())) return false;
         return true;
     }
