@@ -40,7 +40,7 @@ const context = { state, console, BigInt, Number, String, Date, $: node,
   }
 };
 for(const name of ["clearAdminDom","clearPersonDom","clearPersonalMedia","clearPersonalInterview",
- "clearHistoryDom","renderPersonalMedia","renderPersonalInterview","renderPersonalDialogue","renderPersonalEvidence",
+ "clearHistoryDom","renderPersonRelations","renderPersonResearch","renderPersonalMedia","renderPersonalInterview","renderPersonalDialogue","renderPersonalEvidence",
  "renderPersonalSocial","renderPersonalEngineering","clearPersonalBank","renderPersonalBank","loadPersonalBank",
  "clearResearchDom","placeResearchPanel","loadResearch",
  "clearOperationsDom","placeOperationsPanel","loadOperations",

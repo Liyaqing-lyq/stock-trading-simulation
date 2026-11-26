@@ -712,7 +712,12 @@ function renderPersonRelations(view) {
   const focus = $("relation-focus");
   const previous = focus.value;
   const nodes = new Set([person, ...rows.flatMap(row => [row.from, row.to])]);
-  focus.replaceChildren(...Array.from(nodes, node => new Option(node, node)));
+  focus.replaceChildren(...Array.from(nodes, node => {
+    const option = document.createElement("option");
+    option.value = node;
+    option.textContent = node;
+    return option;
+  }));
   focus.value = nodes.has(previous) ? previous : person;
   $("person-relations").hidden = false;
   filterPersonRelations();
@@ -768,23 +773,7 @@ function filterPersonRelations() {
   $("relation-export").disabled = rows.length === 0;
 }
 
-$("relation-search").addEventListener("input", filterPersonRelations);
-$("relation-layer").addEventListener("change", filterPersonRelations);
-$("relation-focus").addEventListener("change", filterPersonRelations);
-$("relation-depth").addEventListener("change", filterPersonRelations);
-$("relation-export").addEventListener("click", () => {
-  if (state.mode !== "person" || !state.personRelations) return;
-  const { person, timeMillis } = state.personRelations;
-  const payload = JSON.stringify({ person, timeMillis, focus: $("relation-focus").value,
-    depth: Number($("relation-depth").value), layer: $("relation-layer").value,
-    search: $("relation-search").value, relations: visiblePersonRelations() }, null, 2);
-  const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "relations-" + person + "-" + timeMillis + ".json";
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-});
+
 
 function renderPersonalReports(reports) {
   const list = $("person-report-versions");
@@ -1990,6 +1979,23 @@ $("person-form").addEventListener("submit", (event) => {
   guard(switchPerson(personId));
 });
 $("logout").addEventListener("click", () => guard(logout()));
+$("relation-search").addEventListener("input", filterPersonRelations);
+$("relation-layer").addEventListener("change", filterPersonRelations);
+$("relation-focus").addEventListener("change", filterPersonRelations);
+$("relation-depth").addEventListener("change", filterPersonRelations);
+$("relation-export").addEventListener("click", () => {
+  if (state.mode !== "person" || !state.personRelations) return;
+  const { person, timeMillis } = state.personRelations;
+  const payload = JSON.stringify({ person, timeMillis, focus: $("relation-focus").value,
+    depth: Number($("relation-depth").value), layer: $("relation-layer").value,
+    search: $("relation-search").value, relations: visiblePersonRelations() }, null, 2);
+  const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "relations-" + person + "-" + timeMillis + ".json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 $("back-admin").addEventListener("click", () => guard(backToAdmin()));
 
 document.querySelectorAll("[data-page]").forEach(button => {

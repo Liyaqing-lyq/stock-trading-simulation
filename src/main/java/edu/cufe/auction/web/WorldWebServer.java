@@ -2694,7 +2694,7 @@ public final class WorldWebServer implements AutoCloseable {
             response.put("holdings", holdings);
             response.put("market", market);
             response.put("appointments", view.appointments().size());
-            response.put("activeAppointments", view.appointments().stream().map(a -> Map.of(
+            if (page.media() != null && !view.appointments().isEmpty()) response.put("activeAppointments", view.appointments().stream().map(a -> Map.of(
                     "organization", a.organizationPartyId(), "role", a.role().name(),
                     "startsAt", Long.toString(a.startsAt()), "endsAt", Long.toString(a.endsAt()))).toList());
             response.put("catalog", view.catalog().size());
