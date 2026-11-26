@@ -40,6 +40,7 @@ final class ManufacturingCustomerOffers {
                     .put("remainingSupply", Math.max(0, q.supplyCapPerPeriod() - used));
         }
         var offers = view.putArray("customerOffers");
+        if (run.company(company).intakeVersion() != null) return;
         for (var customer : spec.customers()) {
             String account = ledger.accounts().customerAccounts().get(customer.customerId());
             long occupied = 0;
