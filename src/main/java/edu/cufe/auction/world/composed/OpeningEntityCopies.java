@@ -83,13 +83,13 @@ public record OpeningEntityCopies(Investor investor, Company company) {
         } catch(IOException e) { throw new IllegalArgumentException("开局副本草稿无法读取",e); }
     }
 
-    static OpeningEntityCopies forOpening(Path journal,Path draft) throws IOException {
+    static OpeningEntityCopies forOpening(Path journal,Path draft,String expectedRunId) throws IOException {
         if(!Files.exists(journal) || Files.size(journal)==0)
             return JSON.readValue(Files.readAllBytes(draft),OpeningEntityCopies.class);
         var first=WorldJournalScanner.scanTo(journal,1);
         if(first.isEmpty() || !"__open__".equals(first.commits().get(0).commandId()))
             throw new IOException("缺少完整的配置副本开局帧");
-        if (!RunManifest.OPENING_COPIES_RUN_ID.equals(first.runId()))
+        if (!expectedRunId.equals(first.runId()))
             throw new IllegalArgumentException("存档属于其他运行，无法应用配置副本");
         var manifest=JSON.readTree(first.commits().get(0).commandContent()).required("manifest");
         return fromManifest(JSON.convertValue(manifest.required("dataVersions"),

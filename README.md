@@ -206,6 +206,10 @@ AI 决策间隔、LLM 端点与限流、输出目录。要点：
 .\mvnw.cmd compile exec:java "-Dexec.mainClass=edu.cufe.auction.app.WorldWebApp" "-Dexec.args=logs/web-media C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt 18081 media"
 ```
 
+同一份开局草稿也可用第四参数 `world-unpriced-reference` 启动独立缺价对照档，日志名为 `world-unpriced-reference-v1.journal`。HY1 保留全部发行股数和历史配售成本，开局参考估值留空。个人与管理页会显示缺价状态，依据不全时净资产、收益和收益名次留空。其他证券继续按各自行情撮合。
+
 启动、浏览和保存模型配置均不会自动调用提供方。要执行模型决定，需启用已接入的场景并显式启动单轮；原始Key只从指定本机文件加载，上帝配置页默认遮罩，人物接口不返回Key。
 
 账户表现页现已实现净资产规模、剔除出入资后的表现指数、当前回撤三条历史曲线，以及逐确认点的精确数值表。区间最多400个确认点，超出直接提示；缺估值或单点区间明确显示不可计算，注资和提款不会算作投资收益。本地1280项标准、CSV、两组Web图表回归和真实GUI通过；真实HTTP浏览器已验证资本流、回撤恢复、区间错误和身份清空。独审、持续网页升级及PR状态以实施Plan为准，详见docs/05第41节。
+
+将上述开局草稿放入新的工作目录，第四参数改为 `world-owner-bank-valuation`，可在个人页查看现金、股票、存款、托管、借款与净资产。有效基金经理可用角色银行表单在产品自己的账户之间划转。新档保存到 `world-owner-bank-valuation-v1.journal`；管理端“账户表现与历史”提供各主体同一确认帧的净资产和期间收益。

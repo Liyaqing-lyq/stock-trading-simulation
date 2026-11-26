@@ -479,13 +479,54 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.CREDIT_DECISIONS_RUN_ID);
     }
 
-    /** 由首建草稿创建同世界内的零资产配置副本；重开使用首帧冻结的草稿。
-     * @param journal 世界存档 @param draft 首次创建的声明式 JSON
-     * @return 可用的世界 @throws Exception 不支持的草稿或存档恢复失败 */
+    /**
+     * 由首建草稿创建同世界内的零资产配置副本，重开使用首帧冻结的草稿。
+     * @param journal 世界存档
+     * @param draft 首次创建的声明式 JSON
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 草稿不受支持或存档恢复失败
+     */
     public static WorldRuntime openOpeningCopiesOperating(Path journal, Path draft) throws Exception {
-        var copies = OpeningEntityCopies.forOpening(journal,draft);
+        return openConfiguredOperating(journal, draft, RunManifest.OPENING_COPIES_RUN_ID);
+    }
+
+    /**
+     * 将独立开局配置与同一财产主体的银行资产、负债估值合并。
+     * @param journal 用于建立或恢复世界的日志
+     * @param draft 首次建立时提供的配置文件
+     * @return 已建立或严格恢复的世界
+     * @throws Exception 配置或日志无法通过验证
+     */
+    public static WorldRuntime openOwnerBankValuationOperating(Path journal, Path draft) throws Exception {
+        return openConfiguredOperating(journal, draft, RunManifest.OWNER_BANK_VALUATION_RUN_ID);
+    }
+
+    /**
+     * 保留 HY1 的历史配售成本和发行量，并将市场开局参考估值登记为未知。
+     * @param journal 本档世界日志
+     * @param draft 首次建档的主体配置
+     * @return 新建或严格恢复后的世界
+     * @throws Exception 配置或日志不一致
+     */
+    public static WorldRuntime openUnpricedReferenceOperating(Path journal, Path draft) throws Exception {
+        return openConfiguredOperating(journal, draft, RunManifest.UNPRICED_REFERENCE_RUN_ID);
+    }
+
+    /**
+     * 建立或严格恢复银行处置联动停牌实验，沿用正常的开局参考价。
+     * @param journal 运行日志
+     * @param draft 首建主体配置
+     * @return 恢复到确认位置的运行
+     * @throws Exception 开局或日志不一致
+     */
+    public static WorldRuntime openIssuerResolutionOperating(Path journal, Path draft) throws Exception {
+        return openConfiguredOperating(journal, draft, RunManifest.ISSUER_RESOLUTION_RUN_ID);
+    }
+
+    private static WorldRuntime openConfiguredOperating(Path journal, Path draft, String runId) throws Exception {
+        var copies = OpeningEntityCopies.forOpening(journal,draft,runId);
         return open(journal,true,true,true,true,false,false,true,true,RoleDeliberation.CONTEXTUAL_VERSION,
-                true,true,true,RunManifest.OPENING_COPIES_RUN_ID,copies);
+                true,true,true,runId,copies);
     }
 
     private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
@@ -577,6 +618,8 @@ public final class ComposedIndustryScenario {
             profile = BankLoanPromotionOpening.profile(profile);
             endowment = BankLoanPromotionOpening.endowment(endowment);
         }
+        boolean ownerBankValuation = RunManifest.usesOwnerBankValuation(thinkingRunId);
+        if (ownerBankValuation) profile = OwnerBankValuationOpening.profile(profile, copies.investor().id());
         var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.usesIssuerCredit(thinkingRunId)),
                 endowment, Map.of(), Map.of());
         var charters = new TreeMap<>(ComposedManufacturingThreeScenario.charters());
@@ -607,6 +650,7 @@ public final class ComposedIndustryScenario {
             var limits = decisions.limits();
             var timings = new TreeMap<>(decisions.actionMillisByTool());
             if (RunManifest.usesCreditDecisions(thinkingRunId)) IssuerCreditDecisions.addTimings(timings);
+            if (ownerBankValuation) IssuerCreditDecisions.addOwnerTimings(timings);
             if (crisis) timings.put("bank.crisis.act",60_000L);
             if (RunManifest.usesPersonalProfiles(thinkingRunId)) timings.put("role.library.search", 1000L);
             if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
@@ -640,6 +684,13 @@ public final class ComposedIndustryScenario {
         if (crisis) openingRegistry = BankCrisisOpening.allocate(openingAccounts, openingRegistry);
         if (promotion) openingRegistry = BankLoanPromotionOpening.register(openingAccounts, openingRegistry);
         if (copies != null) openingRegistry = copies.register(openingAccounts,openingRegistry);
+        if (ownerBankValuation) openingRegistry = OwnerBankValuationOpening.register(openingAccounts, openingRegistry);
+        if (RunManifest.UNPRICED_REFERENCE_RUN_ID.equals(thinkingRunId)) {
+            var securities = openingRegistry.securities().stream().map(s -> "HY1".equals(s.symbol())
+                    ? new OpeningRegistry.Security(s.symbol(), s.issuerOrganizationId(), s.issuedShares(), null, s.initialReferencePrice())
+                    : s).toList();
+            openingRegistry = new OpeningRegistry(openingRegistry.parties(), openingRegistry.owners(), securities, openingRegistry.allocations());
+        }
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -767,6 +818,12 @@ public final class ComposedIndustryScenario {
             if (RunManifest.usesFundedOperatingRules(thinkingRunId)) {
                 data.put("customer-contract-policy", RunManifest.FUNDED_CONTRACT_POLICY);
                 data.put("board-tool-scope", "charter-chair-v1");
+            }
+            if (RunManifest.UNPRICED_REFERENCE_RUN_ID.equals(thinkingRunId)) data.put("unpriced-opening-reference", "HY1-cost-only-v1");
+            if (RunManifest.ISSUER_RESOLUTION_RUN_ID.equals(thinkingRunId)) data.put("issuer-failure", "bank-resolution-halt-v1");
+            if (ownerBankValuation) {
+                data.put("owner-bank-valuation", "owner-claims-v1");
+                data.put("owner-bank-decisions", "owner-cash-v1");
             }
             if (copies != null) {
                 copies.freeze(data);

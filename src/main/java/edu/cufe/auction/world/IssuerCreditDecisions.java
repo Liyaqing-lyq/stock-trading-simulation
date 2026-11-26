@@ -9,6 +9,7 @@ import edu.cufe.auction.world.bank.BankConfig;
 import edu.cufe.auction.world.bank.BankMetrics;
 import edu.cufe.auction.world.bank.BankRun;
 import edu.cufe.auction.world.bank.BankState;
+import edu.cufe.auction.world.bank.Fund;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -16,12 +17,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/** 登记发行人的经理贷款工具；条款、审批人、资金与可见贷款均从本次冻结输入派生。 */
+/** 按冻结观察中的本人财产、基金委托或公司任职列出银行账户和贷款工具。 */
 public final class IssuerCreditDecisions {
     static final String REQUEST = "bank.loan.request", ACCEPT = "bank.loan.accept", APPROVE = "bank.loan.approve",
             DRAW = "bank.loan.draw", REPAY = "bank.loan.repay", INTEREST = "bank.loan.payInterest",
             DEPOSIT = "bank.cash.deposit", WITHDRAW = "bank.cash.withdraw";
-    static final String CRISIS = "bank.crisis.act";
+    static final String CRISIS = "bank.crisis.act", MOVE = "bank.cash.move";
     record Crisis(String bank,String kind,String lineId,BigDecimal amount) { }
     static final long DURATION = 60_000L;
     private static final List<String> BORROWER = List.of(REQUEST, ACCEPT, DRAW, REPAY, INTEREST, DEPOSIT, WITHDRAW);
@@ -39,6 +40,74 @@ public final class IssuerCreditDecisions {
     record Ref(String loanId) { }
     record Payment(String loanId, BigDecimal amount) { }
     record Cash(String bank, String borrower, BigDecimal amount) { }
+    record Move(String bank, String customer, String sourceToken, String payeeToken, BigDecimal amount) { }
+    record OwnerCash(String customer, String appointment, boolean canBorrow) { }
+
+    /** 本人/产品同名账户划转与既有银行动作采用相同工时。 */
+    public static void addOwnerTimings(Map<String, Long> timings) { timings.put(MOVE, DURATION); }
+
+    static boolean ownerEnabled(RunManifest manifest) {
+        return "owner-cash-v1".equals(manifest.dataVersions().get("owner-bank-decisions"));
+    }
+
+    static List<OwnerCash> owners(RoleAccess.State access, BankConfig config, String person, long at) {
+        var profile = config.profile();
+        var result = new java.util.ArrayList<OwnerCash>();
+        for (var entry : new java.util.TreeMap<>(profile.parties()).entrySet()) {
+            String customer = entry.getKey();
+            var ref = entry.getValue();
+            if (ref.depositGl() == null) continue;
+            if (customer.equals(person) && person.equals(ref.partyId())) {
+                result.add(new OwnerCash(customer, null, profile.buckets().containsKey(customer)));
+            } else {
+                var office = FundInternalCash.mandate(access, profile, person, customer, at);
+                if (office != null) result.add(new OwnerCash(customer, office.id(), false));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    static void addOwnerTools(List<String> tools, List<OwnerCash> owners) {
+        if (owners.isEmpty()) return;
+        var available = owners.stream().anyMatch(OwnerCash::canBorrow) ? BORROWER : List.of(DEPOSIT, WITHDRAW);
+        for (String tool : available) if (!tools.contains(tool)) tools.add(tool);
+        tools.add(MOVE);
+    }
+
+    private static void appendOwners(ObjectNode visible, List<OwnerCash> owners, BankRun.Decoded decoded,
+                                     Map<String, CashLedger.CashAccount> accounts, WorldExchange.State exchange) {
+        var rows = visible.putArray("ownerAccounts");
+        var frozen = WorldExchange.freezeSnapshot(exchange);
+        var profile = decoded.config().profile();
+        for (var owner : owners) {
+            String customer = owner.customer();
+            String account = profile.parties().get(customer).cashAccountId();
+            for (String bank : new TreeSet<>(profile.banks().keySet())) {
+                var row = rows.addObject().put("customer", customer).put("bank", bank)
+                        .put("authority", owner.appointment() == null ? "PERSON" : "PORTFOLIO_MANAGER")
+                        .put("canBorrow", owner.canBorrow());
+                if (owner.appointment() != null) row.put("appointmentId", owner.appointment());
+                var buckets = row.putObject("buckets");
+                var cash = new Fund.Cash(account);
+                var deposit = new Fund.Deposit(bank, customer);
+                buckets.put(cash.token(), accounts.get(account).cash().subtract(frozen.frozenOf(cash)).toPlainString());
+                buckets.put(deposit.token(), decoded.state().depositOf(bank, customer).subtract(frozen.frozenOf(deposit)).toPlainString());
+                for (var custodian : new TreeSet<>(profile.custodians().keySet())) {
+                    if (!bank.equals(profile.custodians().get(custodian).bankId())) continue;
+                    var detail = new Fund.Custody(custodian, customer);
+                    buckets.put(detail.token(), decoded.book().detailOf(custodian, customer).subtract(frozen.frozenOf(detail)).toPlainString());
+                }
+            }
+        }
+        visible.put("ownerProcedure", "bank.cash.deposit 与 withdraw 的 borrower 填本人或受托产品的 customer。bank.cash.move 的两端须来自同一行 buckets；各数为余额扣除该账户买单冻结后的元数。仅 canBorrow 的本人可申请贷款，接受后由独立银行经理按合同审批，提款才形成存款与债务。");
+    }
+
+    static JsonNode observedOwner(JsonNode credit, String bank, String customer) {
+        if (bank == null || customer == null) return null;
+        for (var row : credit.path("ownerAccounts"))
+            if (bank.equals(row.path("bank").asText()) && customer.equals(row.path("customer").asText())) return row;
+        return null;
+    }
 
     static boolean enabled(RunManifest manifest) {
         return "manager-loan-v1".equals(manifest.dataVersions().get("issuer-credit-decisions"));
@@ -65,7 +134,7 @@ public final class IssuerCreditDecisions {
         }).map(Enum::name).toList();
     }
 
-    static void append(ObjectNode engineering, Set<String> managed, BankRun.Decoded decoded,
+    static void append(ObjectNode engineering, Set<String> managed, List<OwnerCash> owners, BankRun.Decoded decoded,
                        BankActions.Book book, Map<String, CashLedger.CashAccount> accounts, WorldExchange.State exchange) {
         BankConfig config = decoded.config();
         BankState state = decoded.state();
@@ -92,6 +161,10 @@ public final class IssuerCreditDecisions {
             }
         }
         visible.put("procedure", "各公司资金独立。借款经理自行拟定金额、用途、年利率rateU(1000000=100%)与期限tenorMs；申请后借款方须另外接受，银行经理才可按原条款审批，或等待。提款前没有放款；提款增加借款公司的银行存款，风险闸门可以拒绝。存取款在本公司现金和银行存款间划拨，还本与付息各从存款实扣。到期自动核算利息。");
+        if (!owners.isEmpty()) {
+            if (managed.isEmpty()) visible.remove("procedure");
+            appendOwners(visible, owners, decoded, accounts, exchange);
+        }
         var borrowers = visible.putArray("managedBorrowers");
         var banks = visible.putArray("managedBanks");
         var contracts = visible.putArray("contracts");
@@ -118,7 +191,8 @@ public final class IssuerCreditDecisions {
             var historic = disclosed ? BankLoanPromotionOpening.certificate() : null;
             if (disclosed) contractsAtBank.putIfAbsent(historic.contract().loanId(), historic.contract());
             for (var loan : contractsAtBank.values()) {
-                if (!bank.equals(loan.bankKey()) || !bankManager && !managed.contains(loan.borrowerKey())) continue;
+                if (!bank.equals(loan.bankKey()) || !bankManager && !managed.contains(loan.borrowerKey())
+                        && owners.stream().noneMatch(owner -> owner.canBorrow() && owner.customer().equals(loan.borrowerKey()))) continue;
                 var row = contracts.addObject().put("loanId", loan.loanId()).put("bank", bank)
                         .put("borrower", loan.borrowerKey()).put("amount", loan.amount().toPlainString())
                         .put("rateU", loan.rateU()).put("tenorMs", loan.tenorMs()).put("purpose", loan.purpose())
@@ -164,6 +238,7 @@ public final class IssuerCreditDecisions {
             case INTEREST -> BankActions.Kind.LOAN_PAY_INTEREST;
             case DEPOSIT -> BankActions.Kind.DEPOSIT;
             case WITHDRAW -> BankActions.Kind.WITHDRAW;
+            case MOVE -> BankActions.Kind.PAY;
             default -> throw new IllegalArgumentException("未知银行工具");
         };
     }

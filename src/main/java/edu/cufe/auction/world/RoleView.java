@@ -29,6 +29,7 @@ import java.util.Objects;
  * @param readings      本人当前活动的阅读单（不含正文）
  * @param permissions   岗位动作的权限状态，仅限本人可见范围
  * @param tools         已接入的阅读工具
+ * @param portfolios    同一确认帧中本人及有完整查账权限产品的净资产，旧档无此字段
  * @param recall        回忆摘要；旧档案为 null 且不落 JSON
  */
 public record RoleView(long timeMillis, String personPartyId,
@@ -43,7 +44,43 @@ public record RoleView(long timeMillis, String personPartyId,
                        RecallMetadata recall,
                        @com.fasterxml.jackson.annotation.JsonInclude(
                                com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-                       Cognition cognition) {
+                       Cognition cognition,
+                       @com.fasterxml.jackson.annotation.JsonInclude(
+                               com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                       List<OwnerPortfolio> portfolios) {
+
+    /** 兼容早于主体银行估值的角色观察。 */
+    public RoleView(long timeMillis, String personPartyId, List<Appointment> appointments, List<Account> accounts,
+                    List<Holding> holdings, List<Market> market, List<InformationModel.CatalogEntry> catalog,
+                    List<Experience> observations, List<Reading> readings, List<Permission> permissions,
+                    List<String> tools, RecallMetadata recall, Cognition cognition) {
+        this(timeMillis, personPartyId, appointments, accounts, holdings, market, catalog, observations, readings,
+                permissions, tools, recall, cognition, null);
+    }
+
+    /** 以货币小数字符串显示银行债权、托管受益权及借款债务。 */
+    public record BankAmounts(String deposits, String depositInterestReceivable, String custodyBeneficial,
+                              String loanPrincipal, String loanInterestPayable) {
+        /** 从同一份已入账的银行权利生成展示金额。 */
+        public static BankAmounts from(ValuationModel.BankClaims claims) {
+            return new BankAmounts(claims.deposits().toPlainString(), claims.depositInterestReceivable().toPlainString(),
+                    claims.custodyBeneficial().toPlainString(), claims.loanPrincipal().toPlainString(),
+                    claims.loanInterestPayable().toPlainString());
+        }
+    }
+
+    /** 属主级净值及其组成。个人观察不携带全局记录位置或账户流水。 */
+    public record OwnerPortfolio(String ownerId, AccountKind kind, ValuationModel.Status valuationStatus,
+                                 String netWorth, String cash, String holdings, String dividendReceivable,
+                                 String dividendPayable, BankAmounts bankClaims) {
+        static OwnerPortfolio from(AccountKind kind, ValuationModel.Value value) {
+            return new OwnerPortfolio(value.ownerId(), kind, value.status(),
+                    value.netWorth() == null ? null : value.netWorth().toPlainString(), value.cash().toPlainString(),
+                    value.holdings() == null ? null : value.holdings().toPlainString(),
+                    value.dividendReceivable().toPlainString(), value.dividendPayable().toPlainString(),
+                    BankAmounts.from(value.bankClaims()));
+        }
+    }
 
     /**
      * 12 参构造：只有回忆摘要，保持 schema11 语义与源码兼容。
@@ -246,6 +283,7 @@ public record RoleView(long timeMillis, String personPartyId,
         }
         appointments = List.copyOf(appointments);
         accounts = List.copyOf(accounts);
+        if (portfolios != null) portfolios = List.copyOf(portfolios);
         holdings = List.copyOf(holdings);
         market = List.copyOf(market);
         catalog = List.copyOf(catalog);
@@ -349,7 +387,16 @@ public record RoleView(long timeMillis, String personPartyId,
                          ValuationModel.Price reference,
                          @com.fasterxml.jackson.annotation.JsonInclude(
                                  com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-                         DailyPriceBand priceBand) {
+                         DailyPriceBand priceBand,
+                         @com.fasterxml.jackson.annotation.JsonInclude(
+                                 com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                         IssuerResolution.Status issuerResolution) {
+
+        /** 兼容附带申报价范围的旧行情。 */
+        public Market(String symbol, BigDecimal lastPrice, long lastTradeQuantity, long lastTradeAtMillis,
+                      BigDecimal bestBid, BigDecimal bestAsk, ValuationModel.Price reference, DailyPriceBand priceBand) {
+            this(symbol, lastPrice, lastTradeQuantity, lastTradeAtMillis, bestBid, bestAsk, reference, priceBand, null);
+        }
 
         /** 兼容只附带估值参考的行情档案。 */
         public Market(String symbol, BigDecimal lastPrice, long lastTradeQuantity,

@@ -67,6 +67,10 @@ final class WorldOverviewView {
             if(board!=null)for(var seat:board.board().charter().seats())
                 roles.computeIfAbsent(seat.partyId(),k->new ArrayList<>()).add(names.get(id)+" · 董事");
             var row=new LinkedHashMap<String,Object>();row.put("id",id);row.put("symbol",security == null ? null : security.symbol());
+            if (security != null) {
+                var resolution = world.resolutionStatus(security.symbol());
+                if (resolution != null) row.put("issuerResolution", resolution);
+            }
             if (autonomous && board!=null) row.put("governance", Map.of(
                     "meetings",board.board().meetings().size(), "budgetLines",board.board().budgets().size(),
                     "managers",managers.getOrDefault(id,List.of())));
@@ -82,7 +86,7 @@ final class WorldOverviewView {
             row.put("name",names.get(id));row.put("business",prototype == null ? "工程承包" : prototype.business());
             row.put("prototype",prototype == null ? "独立工程公司" : prototype.prototype());
             row.put("boundary",prototype == null ? "未发行证券" : prototype.boundary());
-            row.put("referencePrice",security == null ? null : security.initialReferencePrice().toPlainString());
+            row.put("referencePrice",security == null || security.initialReferencePrice() == null ? null : security.initialReferencePrice().toPlainString());
             var trades=snapshot.exchange().orElseThrow().trades().stream().filter(t->security != null && t.symbol().equals(security.symbol())).toList();
             row.put("lastPrice",trades.isEmpty()?null:trades.get(trades.size()-1).price().toPlainString());
             row.put("lastTradeTime",trades.isEmpty()?null:trades.get(trades.size()-1).timeMillis());

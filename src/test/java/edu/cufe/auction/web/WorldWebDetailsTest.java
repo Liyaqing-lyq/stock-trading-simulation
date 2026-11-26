@@ -558,6 +558,14 @@ class WorldWebDetailsTest {
         JsonNode page = getJson("/api/admin/performance");
         assertEquals(57, page.path("owners").path("total").asInt());
         assertEquals(50, page.path("owners").path("rows").size());
+        assertEquals(2, page.required("ownerPages").asInt());
+        JsonNode second = getJson("/api/admin/performance?ownerPage=2");
+        assertEquals(2, second.required("ownerPage").asInt());
+        var ids = new java.util.HashSet<String>();
+        for (var slice : List.of(page, second)) for (var row : slice.at("/owners/rows")) assertTrue(ids.add(row.required("ownerId").asText()));
+        assertEquals(57, ids.size());
+        assertEquals(second, getJson("/api/admin/performance?ownerPage=999999999999999999"));
+        assertEquals(400, get("/api/admin/performance?ownerPage=9223372036854775807").statusCode());
     }
 
     /** 用真实 Runtime 打开自定义开局（仅现金数额不同），装配与实验档案一致的登记/章程/任职。 */

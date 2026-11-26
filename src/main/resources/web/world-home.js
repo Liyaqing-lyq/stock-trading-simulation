@@ -105,7 +105,7 @@ window.WorldHome = (() => {
       return box;
     };
     table("world-company-list",["公司","最近成交价","累计成交量","现金 / 准备金","累计损益",...(showGovernance?["公司治理"]:[]),"查看"],view.companies.map(c=>[
-      button(c.name,()=>choose(c.id,"world-companies")),c.symbol===null?"未上市":c.lastPrice==null?"尚无成交（参考 "+money(c.referencePrice)+"）":money(c.lastPrice),c.symbol===null?"—":c.volume+" 股",money(c.cash),element("span",money(c.profit),sign(c.profit)),...(showGovernance?[governanceCell(c)]:[]),c.symbol===null?"—":button("股价与成交",()=>choose(c.id,"world-market"))]));
+      button(c.name,()=>choose(c.id,"world-companies")),c.symbol===null?"未上市":c.lastPrice==null?(c.referencePrice==null?"尚无成交，缺少参考估值":"尚无成交（参考 "+money(c.referencePrice)+"）"):money(c.lastPrice),c.symbol===null?"—":c.volume+" 股",money(c.cash),element("span",money(c.profit),sign(c.profit)),...(showGovernance?[governanceCell(c)]:[]),c.symbol===null?"—":button("股价与成交",()=>choose(c.id,"world-market"))]));
     $("world-run-note").textContent=exp?.note||"当前公司状态来自同一已确认世界时点。";
     $("world-behavior").hidden=!view.behavior?.enabled||!!view.connected?.enabled;
     if(view.behavior?.enabled&&!view.connected?.enabled){
@@ -203,7 +203,9 @@ window.WorldHome = (() => {
     if(!c)return;
     const d=detail(c.id);
     $("world-market-name").textContent=c.name;$("world-market-business").textContent=c.business;
-    const change=c.lastPrice==null?null:(Number(c.lastPrice)/Number(c.referencePrice)-1)*100;
+    if (c.issuerResolution) $("world-market-business").textContent += " · " +
+      (c.issuerResolution.openedAtMillis == null ? "银行处置规则" : "发行人待处置，股票已停牌") + "。" + c.issuerResolution.rule;
+    const change=c.lastPrice==null||c.referencePrice==null||Number(c.referencePrice)<=0?null:(Number(c.lastPrice)/Number(c.referencePrice)-1)*100;
     $("world-quote").replaceChildren(metric("最近成交价",money(c.lastPrice),"开局参考价 "+money(c.referencePrice)),metric("相对开局参考",change==null?"—":(change>=0?"+":"")+change.toFixed(2)+"%","不代表实际投资收益"),metric("累计成交量",c.volume+" 股",c.trades+" 笔成交"));
     chart("world-price-chart",d?.days||[],"lastPrice",true);
     $("world-price-note").textContent=d?((d.days||[]).some(r=>r.trades>0)?"当前世界实际记录。圆点是有实际成交的日子；虚线延续上次成交价，不代表当日成交。第一笔成交前不画价格。":"当前世界尚无实际成交；参考价不是收盘价，不生成价格曲线。"):"当前运行尚无行情记录；不会使用其他世界的季度数据补图。";

@@ -27,7 +27,8 @@ public record DailyPriceBand(@JsonFormat(shape = JsonFormat.Shape.STRING) BigDec
         // 交易日第零日零点亦未开市。ValuationModel 用成交号裁决同刻的最后一笔。
         long cutoff = Math.max(0, now - now % SecuritiesLedger.DAY_MILLIS - 1);
         var price = ValuationModel.priceOf(ValuationModel.prices(position, cutoff, exchange, registry, List.of(symbol)), symbol);
-        if (price.source() == ValuationModel.PriceSource.MISSING) return null;
+        if (price.source() == ValuationModel.PriceSource.MISSING)
+            return registry.security(symbol) == null ? null : new DailyPriceBand(null, "MISSING", -1, null, null);
         if (dividends != null) price = ValuationModel.withExDividend(price, symbol, now, dividends);
         if (price.price() == null || price.price().signum() <= 0)
             return new DailyPriceBand(price.price(), "MISSING", price.asOfMillis(), null, null);

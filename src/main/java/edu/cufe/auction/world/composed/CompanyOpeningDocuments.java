@@ -66,8 +66,9 @@ public final class CompanyOpeningDocuments {
                     if (company.equals(security.issuerOrganizationId())) {
                         body.append("开局证券登记（实验时点 0）：代码=").append(security.symbol())
                                 .append("，已发行股数=").append(security.issuedShares())
-                                .append("，每股开局参考估值=").append(security.initialReferencePrice().toPlainString())
-                                .append(" 元。报价和成交另见交易所记录。\n");
+                                .append("，每股开局参考估值=").append(security.initialReferencePrice() == null
+                                        ? "缺少行情依据" : security.initialReferencePrice().toPlainString() + " 元")
+                                .append("。报价和成交另见交易所记录。\n");
                     }
                 }
             }

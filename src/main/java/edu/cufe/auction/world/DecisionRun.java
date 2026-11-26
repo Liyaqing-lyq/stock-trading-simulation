@@ -445,6 +445,9 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
 
         ObjectNode profile = root.putObject("profile");
+        if (view.profile().portfolios() != null && !view.profile().portfolios().isEmpty()) {
+            profile.set("portfolios", MAPPER.valueToTree(view.profile().portfolios()));
+        }
         ArrayNode accounts = profile.putArray("accounts");
         for (RoleView.Account account : sorted(view.profile().accounts(), RoleView.Account::accountId)) {
             ObjectNode node = accounts.addObject();
@@ -473,6 +476,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("bestBid", quote.bestBid() == null ? null : money(quote.bestBid()));
             node.put("bestAsk", quote.bestAsk() == null ? null : money(quote.bestAsk()));
             if (quote.priceBand() != null) node.set("priceBand", MAPPER.valueToTree(quote.priceBand()));
+            if (quote.issuerResolution() != null) node.set("issuerResolution", MAPPER.valueToTree(quote.issuerResolution()));
             if (engineering != null && RunManifest.ROLE_MARKET_VALUATION.equals(engineering.path("marketValuationPolicy").asText())) {
                 var reference = quote.reference();
                 if (reference != null) {
@@ -989,6 +993,10 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 }
                 case IssuerCreditDecisions.INTEREST, IssuerCreditDecisions.REPAY -> {
                     return List.of(new String[]{"loanId","string"}, new String[]{"amount","decimal"});
+                }
+                case IssuerCreditDecisions.MOVE -> {
+                    return List.of(new String[]{"bank","string"}, new String[]{"customer","string"},
+                            new String[]{"sourceToken","string"}, new String[]{"payeeToken","string"}, new String[]{"amount","decimal"});
                 }
                 case IssuerCreditDecisions.DEPOSIT, IssuerCreditDecisions.WITHDRAW -> {
                     return List.of(new String[]{"bank","string"}, new String[]{"borrower","string"}, new String[]{"amount","decimal"});

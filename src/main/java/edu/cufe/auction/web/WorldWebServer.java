@@ -935,13 +935,23 @@ public final class WorldWebServer implements AutoCloseable {
     /** 管理端详情页：一个页面一个只读请求；读取失败统一对外 503。 */
     private void adminDetails(HttpExchange exchange, String path) throws IOException,
             WorldWebHost.BusyException {
+        long ownerPage = 1;
+        if ("/api/admin/performance".equals(path)) {
+            Long requested = queryLong(exchange, "ownerPage", 1L, Set.of("ownerPage"));
+            if (requested == null) return;
+            if (requested < 1) {
+                send(exchange, 400, error("INVALID", "主体页码必须为正数"));
+                return;
+            }
+            ownerPage = requested;
+        }
         Object view;
         try {
             view = switch (path) {
                 case "/api/admin/company" -> host.companyView();
                 case "/api/admin/people" -> host.peopleView();
                 case "/api/admin/information" -> host.informationView();
-                case "/api/admin/performance" -> host.performanceView();
+                case "/api/admin/performance" -> host.performanceView(ownerPage);
                 default -> throw new IllegalArgumentException("未知的管理详情页");
             };
         } catch (WorldWebHost.BusyException busy) {
@@ -2779,6 +2789,7 @@ public final class WorldWebServer implements AutoCloseable {
                 row.put("quantity", Long.toString(holding.quantity()));
                 row.put("frozen", Long.toString(holding.frozen()));
                 row.put("available", Long.toString(holding.available()));
+                row.putAll(page.holdingWeights().getOrDefault(holding, Map.of()));
                 holdings.add(row);
             }
             List<Map<String, Object>> market = new ArrayList<>();
@@ -2792,6 +2803,13 @@ public final class WorldWebServer implements AutoCloseable {
                 entry.put("bestBid", plain(row.bestBid()));
                 entry.put("bestAsk", plain(row.bestAsk()));
                 if (row.priceBand() != null) entry.put("priceBand", row.priceBand());
+                if (row.issuerResolution() != null) entry.put("issuerResolution", row.issuerResolution());
+                if (page.marketClosed() != null) {
+                    String status = row.issuerResolution() != null && row.issuerResolution().openedAtMillis() != null
+                            ? edu.cufe.auction.world.IssuerResolution.HALTED
+                            : edu.cufe.auction.world.MarketSessions.status(row.symbol(), view.timeMillis(), page.marketClosed());
+                    entry.put("sessionStatus", status);
+                }
                 ValuationModel.Price reference = row.reference();
                 entry.put("referencePrice", reference == null ? null : plain(reference.price()));
                 entry.put("referenceSource", reference == null ? null : reference.source().name());
@@ -2807,6 +2825,7 @@ public final class WorldWebServer implements AutoCloseable {
             response.put("timeMillis", Long.toString(view.timeMillis()));
             response.put("tools", view.tools());
             response.put("accounts", accounts);
+            if (view.portfolios() != null && !view.portfolios().isEmpty()) response.put("portfolios", view.portfolios());
             response.put("holdings", holdings);
             response.put("market", market);
             response.put("appointments", view.appointments().size());

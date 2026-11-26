@@ -177,7 +177,17 @@ public final class ValuationModel {
     public record Value(String ownerId, long position, long atMillis, Status status,
                         BigDecimal cash, BigDecimal holdings, BigDecimal dividendReceivable,
                         BigDecimal dividendPayable, BigDecimal netWorth,
-                        Set<String> missingSymbols, List<HoldingLine> lines) {
+                        Set<String> missingSymbols, List<HoldingLine> lines,
+                        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                        BankClaims bankClaims) {
+
+        /** 旧估值合同没有银行权利分项。 */
+        public Value(String ownerId, long position, long atMillis, Status status, BigDecimal cash, BigDecimal holdings,
+                     BigDecimal dividendReceivable, BigDecimal dividendPayable, BigDecimal netWorth,
+                     Set<String> missingSymbols, List<HoldingLine> lines) {
+            this(ownerId, position, atMillis, status, cash, holdings, dividendReceivable, dividendPayable, netWorth,
+                    missingSymbols, lines, null);
+        }
 
         /** 校验字段、金额精度、状态与空值组合，并冻结集合。 */
         public Value {
@@ -210,6 +220,20 @@ public final class ValuationModel {
                     .thenComparing(HoldingLine::symbol));
             missingSymbols = Collections.unmodifiableSet(missing);
             lines = Collections.unmodifiableList(lineCopy);
+        }
+    }
+
+    /** 主体在确认帧中享有的存款、存款应收利息、客户托管受益权及所欠贷款合同本金、利息。 */
+    public record BankClaims(BigDecimal deposits, BigDecimal depositInterestReceivable, BigDecimal custodyBeneficial,
+                             BigDecimal loanPrincipal, BigDecimal loanInterestPayable) {
+        /** 所有金额均为非负两位货币；银行处置减记仍按实际剩余合同义务处理。 */
+        public BankClaims {
+            for (var amount : List.of(deposits, depositInterestReceivable, custodyBeneficial, loanPrincipal, loanInterestPayable))
+                if (amount.signum() < 0 || amount.scale() != 2) throw new IllegalArgumentException("银行权利金额非法");
+        }
+
+        BigDecimal net() {
+            return deposits.add(depositInterestReceivable).add(custodyBeneficial).subtract(loanPrincipal).subtract(loanInterestPayable);
         }
     }
 
@@ -268,7 +292,7 @@ public final class ValuationModel {
             Price price = tradePrice(symbol, cutoffMillis, exchange);
             if (price == null) {
                 OpeningRegistry.Security security = registry.security(symbol);
-                price = security == null
+                price = security == null || security.initialReferencePrice() == null
                         ? new Price(symbol, null, PriceSource.MISSING, -1L, -1L)
                         : new Price(symbol, security.initialReferencePrice(),
                                 PriceSource.OPENING_REFERENCE, 0L, cutoffMillis);
@@ -373,6 +397,12 @@ public final class ValuationModel {
                               Map<String, CashLedger.CashAccount> accounts,
                               SecuritiesLedger.State securities, DividendModel.State dividends,
                               PriceBook book) {
+        return value(ownerId, position, atMillis, registry, accounts, securities, dividends, book, null);
+    }
+
+    static Value value(String ownerId, long position, long atMillis, OpeningRegistry registry,
+                       Map<String, CashLedger.CashAccount> accounts, SecuritiesLedger.State securities,
+                       DividendModel.State dividends, PriceBook book, BankClaims bankClaims) {
         requireText(ownerId, "财产主体");
         if (position < 0 || atMillis < 0) {
             throw new IllegalArgumentException("估值位置与时点不能为负");
@@ -447,10 +477,11 @@ public final class ValuationModel {
                 : missingPrice ? Status.MISSING_PRICE : Status.COMPLETE;
         BigDecimal holdingsValue = missingPrice ? null : money(holdings, "持仓市值");
         BigDecimal netWorth = status == Status.COMPLETE
-                ? money(cash.add(holdingsValue).add(receivable).subtract(payable), "净资产")
+                ? money(cash.add(holdingsValue).add(receivable).subtract(payable)
+                        .add(bankClaims == null ? ZERO : bankClaims.net()), "净资产")
                 : null;
         return new Value(ownerId, position, atMillis, status, cash, holdingsValue,
-                receivable, payable, netWorth, missing, lines);
+                receivable, payable, netWorth, missing, lines, bankClaims);
     }
 
     // ------------------------------------------------------------------

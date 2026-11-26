@@ -900,7 +900,19 @@ public final class WorldWebHost implements AutoCloseable {
     /** 个人页面在同一截止取角色投影与可选采编数据；旧档案media为空。 */
     public record PersonPage(RoleView view, Map<String, Object> media,
                              List<Map<String, Object>> publicReports, Map<String, Object> personalResearch,
-                             List<PersonBusinessRelations.Edge> businessRelations, String displayName) {
+                             List<PersonBusinessRelations.Edge> businessRelations, String displayName,
+                             Map<RoleView.Holding, Map<String,String>> holdingWeights, Boolean marketClosed) {
+        /** 兼容尚未附上交易所日历状态的个人页。 */
+        public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
+                          Map<String,Object> personalResearch, List<PersonBusinessRelations.Edge> businessRelations,
+                          String displayName, Map<RoleView.Holding,Map<String,String>> holdingWeights) {
+            this(view, media, publicReports, personalResearch, businessRelations, displayName, holdingWeights, null);
+        }
+        /** 兼容仅提供姓名与业务关系的个人页。 */
+        public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
+                          Map<String,Object> personalResearch, List<PersonBusinessRelations.Edge> businessRelations, String displayName) {
+            this(view, media, publicReports, personalResearch, businessRelations, displayName, Map.of());
+        }
         /** 兼容只提供个人业务关系的调用方。 */
         public PersonPage(RoleView view, Map<String, Object> media, List<Map<String, Object>> publicReports,
                           Map<String, Object> personalResearch, List<PersonBusinessRelations.Edge> businessRelations) {
@@ -929,8 +941,10 @@ public final class WorldWebHost implements AutoCloseable {
             RoleView view = trading == null ? current.roleView(personId) : trading.profile();
             var publicReports = CompanyPublications.personalReports(current, snapshot, view);
             var businessRelations = PersonBusinessRelations.of(current, snapshot, view);
+            var holdingWeights = PersonalHoldingWeights.holdingWeights(current, view);
+            Boolean marketClosed = view.portfolios() == null ? null : snapshot.exchange().orElseThrow().closed();
             String name = WorldOverviewView.displayName(personId, current.openingRegistry().map(r -> displayName(r, personId)).orElse(personId));
-            if (trading == null) return new PersonPage(view, null, publicReports, Map.of(), businessRelations, name);
+            if (trading == null) return new PersonPage(view, null, publicReports, Map.of(), businessRelations, name, holdingWeights, marketClosed);
             List<Map<String, Object>> stories = new ArrayList<>();
             Set<String> visibleStories = new LinkedHashSet<>();
             for (RoleTradingView.MediaStory story : trading.media()) {
@@ -997,7 +1011,7 @@ public final class WorldWebHost implements AutoCloseable {
                     }
                 }
             }
-            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research, businessRelations, name);
+            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research, businessRelations, name, holdingWeights, marketClosed);
         });
     }
 
@@ -1148,7 +1162,7 @@ public final class WorldWebHost implements AutoCloseable {
                     owners.add(new ViewOwner(ownerId, value.status().name(),
                             value.netWorth() == null ? null : value.netWorth().toPlainString(),
                             value.cash().toPlainString(),
-                            value.holdings().toPlainString()));
+                            dec(value.holdings())));
                 }
             }
             String providerKind = "UNAVAILABLE";
@@ -1601,7 +1615,9 @@ public final class WorldWebHost implements AutoCloseable {
                                     List<MarketGapView> gaps, boolean truncated,
                                     String totalBars,
                                     @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-                                    String selectedSessionStatus) {
+                                    String selectedSessionStatus,
+                                    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                    edu.cufe.auction.world.IssuerResolution.Status issuerResolution) {
         /** 冻结集合，避免调用方修改响应。 */
         public MarketHistoryView {
             symbols = List.copyOf(symbols);
@@ -1649,8 +1665,10 @@ public final class WorldWebHost implements AutoCloseable {
             boolean marketClosed = snapshot.exchange()
                     .map(WorldExchange.State::closed).orElse(false);
             String sessionStatus = null;
+            var resolution = current.resolutionStatus(selected);
             if (RunManifest.usesMarketSessions(current.profile().manifest().runId())) {
-                sessionStatus = MarketSessions.status(selected, snapshot.timeMillis(), marketClosed);
+                sessionStatus = resolution != null && resolution.openedAtMillis() != null ? resolution.trading()
+                        : MarketSessions.status(selected, snapshot.timeMillis(), marketClosed);
                 marketClosed = !"OPEN".equals(MarketSessions.status("", snapshot.timeMillis(), marketClosed));
             }
             List<WorldExchange.Trade> trades = snapshot.exchange()
@@ -1680,7 +1698,7 @@ public final class WorldWebHost implements AutoCloseable {
                     Long.toString(snapshot.timeMillis()), snapshot.lastPhase(), available,
                     marketClosed, List.copyOf(symbols), selected, period.id(),
                     "UNADJUSTED_EXPERIMENT", bars, gaps, result.truncated(),
-                    Long.toString(result.totalBars()), sessionStatus);
+                    Long.toString(result.totalBars()), sessionStatus, resolution);
         });
     }
 
@@ -1787,7 +1805,7 @@ public final class WorldWebHost implements AutoCloseable {
      * @param notes                口径说明
      */
     public record PerformanceView(String runId, String position, String timeMillis,
-                                  boolean performanceAvailable, Section accounts, Section owners,
+                                  boolean performanceAvailable, int ownerPage, int ownerPages, Section accounts, Section owners,
                                   Section holdings, Section flows, List<String> notes) {
     }
 
@@ -2666,6 +2684,16 @@ public final class WorldWebHost implements AutoCloseable {
      * @throws Exception     读取失败
      */
     public PerformanceView performanceView() throws BusyException, Exception {
+        return performanceView(1);
+    }
+
+    /** 按登记主体的固定排序分页，查询同一确认帧的主体净值。
+     * @param requestedPage 从一开始的页码
+     * @return 含实际页码、总页数的估值视图
+     * @throws Exception 无法读取账本
+     */
+    public PerformanceView performanceView(long requestedPage) throws Exception {
+        if (requestedPage < 1) throw new IllegalArgumentException("主体页码必须为正数");
         return call(() -> {
             WorldRuntime current = readyNow();
             WorldRuntime.Snapshot snapshot = current.snapshot();
@@ -2697,6 +2725,7 @@ public final class WorldWebHost implements AutoCloseable {
                 }
             }
             ownerIds.sort(Comparator.naturalOrder());
+            var performances = performanceAvailable ? current.performances(ownerIds, 1L, position) : Map.<String, WorldRuntime.OwnerPerformance>of();
             for (String ownerId : ownerIds) {
                 ValuationModel.Value value = current.valuation(ownerId);
                 Map<String, Object> row = new LinkedHashMap<>();
@@ -2708,6 +2737,7 @@ public final class WorldWebHost implements AutoCloseable {
                 row.put("holdings", dec(value.holdings()));
                 row.put("dividendReceivable", dec(value.dividendReceivable()));
                 row.put("dividendPayable", dec(value.dividendPayable()));
+                if (value.bankClaims() != null) row.put("bankClaims", RoleView.BankAmounts.from(value.bankClaims()));
                 row.put("netWorth", dec(value.netWorth()));
                 row.put("missingSymbols", String.join(",", value.missingSymbols()));
                 for (ValuationModel.HoldingLine line : value.lines()) {
@@ -2740,23 +2770,22 @@ public final class WorldWebHost implements AutoCloseable {
                     flowById.putIfAbsent(flow.flowId(), item);
                 }
                 if (performanceAvailable) {
-                    try {
-                        PerformanceModel.Performance performance =
-                                current.performance(ownerId, 1L, position);
+                    var result = performances.get(ownerId);
+                    if (result.value() != null) {
+                        var performance = result.value();
                         row.put("performanceStatus", performance.status().name());
                         row.put("returnRate", dec(performance.returnRate()));
                         row.put("index", dec(performance.index()));
                         row.put("maxDrawdown", dec(performance.maxDrawdown()));
                         row.put("segmentCount", Integer.toString(performance.segments().size()));
                         row.put("performanceNote", null);
-                    } catch (RuntimeException invalid) {
+                    } else {
                         row.put("performanceStatus", "UNAVAILABLE");
                         row.put("returnRate", null);
                         row.put("index", null);
                         row.put("maxDrawdown", null);
                         row.put("segmentCount", null);
-                        row.put("performanceNote", invalid.getMessage() == null
-                                ? invalid.getClass().getSimpleName() : invalid.getMessage());
+                        row.put("performanceNote", result.error());
                     }
                 } else {
                     row.put("performanceStatus", "NOT_COMPUTED");
@@ -2779,14 +2808,24 @@ public final class WorldWebHost implements AutoCloseable {
                     .thenComparing(row -> String.valueOf(row.get("symbol"))));
 
             List<String> notes = new ArrayList<>();
-            notes.add("净资产 = 现金（含冻结，不重复相加）+ 原始价格估值持仓 + 已确认分红应收 − 分红应付；缺价时净资产保持空，不填 0。");
+            notes.add(OwnerBankValuationWeb.enabled(current) ? OwnerBankValuationWeb.BASIS
+                    : "净资产 = 现金（含冻结，不重复相加）+ 原始价格估值持仓 + 已确认分红应收 − 分红应付；缺价时净资产保持空，不填 0。");
             notes.add("期间收益率、指数与最大回撤全部来自 PerformanceModel：真实资本流前后估值几何链接，DECIMAL128 中间计算、12 位 HALF_EVEN 输出。");
             notes.add("少于两个确认帧、存在缺价或非正权益时，期间表现显示为不适用；本页不另算一套收益率，也不把资本流当收益。");
             notes.add("资本流只列真实确认的转移事实，按主体任一侧过滤；课程排行榜的初始权益口径不在此页混用。");
 
+            if (RunManifest.UNPRICED_REFERENCE_RUN_ID.equals(current.profile().manifest().runId())) {
+                OwnerBankValuationWeb.rankReturns(ownerRows);
+                notes.add("本期收益名次按全部已登记个人和产品的开局至当前时间加权收益率降序排列。同收益并列，估值不完整、净资产非正或缺期间收益的主体不参与。");
+            }
+            int ownerPages = Math.max(1, (int) ((ownerRows.size() + (long) MAX_ROWS - 1) / MAX_ROWS));
+            int ownerPage = (int) Math.min(requestedPage, ownerPages);
+            int offset = (ownerPage - 1) * MAX_ROWS;
+            var selectedOwners = new Section(ownerRows.size(), ownerRows.subList(offset,
+                    (int) Math.min((long) offset + MAX_ROWS, ownerRows.size())));
             return new PerformanceView(runId, Long.toString(position),
-                    Long.toString(snapshot.timeMillis()), performanceAvailable,
-                    bounded(accountRows), bounded(ownerRows), bounded(holdingRows),
+                    Long.toString(snapshot.timeMillis()), performanceAvailable, ownerPage, ownerPages,
+                    bounded(accountRows), selectedOwners, bounded(holdingRows),
                     bounded(flowRows), notes);
         });
     }
@@ -2872,7 +2911,8 @@ public final class WorldWebHost implements AutoCloseable {
                     : pointRows.get(pointRows.size() - 1).timeMillis();
 
             List<String> notes = new ArrayList<>();
-            notes.add("资金规模 = 该确认帧的净资产（现金含冻结不重复相加 + 持仓按最后有效成交价 + 分红应收 − 分红应付）；缺价点断开，不填 0。");
+            notes.add(OwnerBankValuationWeb.enabled(current) ? OwnerBankValuationWeb.BASIS
+                    : "资金规模 = 该确认帧的净资产（现金含冻结不重复相加 + 持仓按最后有效成交价 + 分红应收 − 分红应付）；缺价点断开，不填 0。");
             notes.add("表现指数以 1 为基数，按真实资本流前后的估值几何链接；当前回撤相对该点之前的高精度峰值。两者与期间汇总来自同一遍计算，前端不重算收益。");
             notes.add("横轴是确认记录位置，不是均匀时间；同一毫秒可以有多个确认点。每点的模拟时刻另列。");
             notes.add("区间超过 " + MAX_PERFORMANCE_FRAMES + " 帧会被拒绝；响应总带实际起点，" +
@@ -3328,13 +3368,6 @@ public final class WorldWebHost implements AutoCloseable {
             view.put("actions", own);
             // ---- 可操作范围（全部来自真实任职/账户，不接受客户端自报身份） ----
             BankChart chart = decoded.state().chart();
-            Set<String> myParties = new java.util.TreeSet<>();
-            for (Map.Entry<String, BankingProfile.PartyRef> entry
-                    : new java.util.TreeMap<>(config.profile().parties()).entrySet()) {
-                if (owners.contains(entry.getValue().ownerId())) {
-                    myParties.add(entry.getKey());
-                }
-            }
             Set<String> managedOrgs = new java.util.TreeSet<>();
             for (RoleView.Appointment appointment : role.appointments()) {
                 if (appointment.role() == edu.cufe.auction.world.RoleAccess.Role.COMPANY_MANAGER) {
@@ -3357,7 +3390,14 @@ public final class WorldWebHost implements AutoCloseable {
                     payableOrgs.add(org);
                 }
             }
-            view.put("entitlements", bankEntitlements(config,managedOrgs,managedBanks));
+            boolean scoped = OwnerBankValuationWeb.enabled(current);
+            payableOrgs.addAll(current.bankCashProducts(personId));
+            var kinds = bankEntitlements(config, managedOrgs, managedBanks);
+            if (scoped && payableOrgs.isEmpty()) kinds.removeAll(entitlements(List.of()));
+            if (scoped && !payableOrgs.isEmpty() && payableOrgs.stream().allMatch(
+                    key -> config.profile().parties().get(key).ownerKind() == BankingProfile.PartyKind.PRODUCT))
+                kinds.removeIf(kind -> kind.startsWith("LOAN_") && !kind.equals("LOAN_APPROVE"));
+            view.put("entitlements", kinds);
             if (BankCrisis.PROVIDER.equals(config.profile().providerKey())
                     && (managedOrgs.contains(BankCrisis.PROVIDER) || managedOrgs.contains(BankCrisis.AUTHORITY) || !managedBanks.isEmpty())) {
                 view.put("facilities",state.facilityAccounts().values().stream().map(a -> Map.of(
@@ -3365,8 +3405,7 @@ public final class WorldWebHost implements AutoCloseable {
                         "authorizedUntil",Long.toString(a.authorizationExpiryMs()))).toList());
                 view.put("facilityTerms","实验应急额度自授权起三日内可提。每笔期限30日，无担保、免息，须偿还本金。处置可在净资产为负、准备金为零且尚有存款，或到期应急债务超出准备金时开启。");
             }
-            view.put("options", actionOptions(config, state, chart, role, owners, myParties,
-                    payableOrgs));
+            view.put("options", actionOptions(config, state, chart, role, payableOrgs, scoped ? decoded.book() : null));
             view.put("loans", loanContracts(config, chart, current.bankBook(), payableOrgs,
                     managedBanks));
             view.put("actionsEnabled", true);
@@ -3456,20 +3495,21 @@ public final class WorldWebHost implements AutoCloseable {
 
     /** 表单选项：只列本人可见账户/存款与本人任职组织的桶；普通用户不手写内部 token。 */
     static Map<String, Object> actionOptions(BankConfig config, BankState state, BankChart chart,
-                                             RoleView role, Set<String> owners,
-                                             Set<String> myParties, Set<String> payableOrgs) {
+                                             RoleView role, Set<String> payableOrgs, CustodyBook custodyBook) {
         List<Map<String, Object>> cash = new ArrayList<>();
         List<Map<String, Object>> deposits = new ArrayList<>();
         List<Map<String, Object>> payees = new ArrayList<>();
         List<Map<String, Object>> subjects = new ArrayList<>();
+        List<Map<String, Object>> custody = new ArrayList<>();
         for (String partyKey : payableOrgs) {
             BankingProfile.PartyRef party = config.profile().parties().get(partyKey);
             if (party == null) {
                 continue;
             }
             boolean personal = partyKey.equals(role.personPartyId());
-            subjects.add(Map.of("token", personal ? "" : partyKey,
-                    "label", personal ? "本人" : "任职公司 " + partyKey));
+            boolean product = custodyBook != null && party.ownerKind() == BankingProfile.PartyKind.PRODUCT;
+            if (product) subjects.add(Map.of("token", partyKey, "label", "受托产品 " + partyKey, "internalOnly", true));
+            else subjects.add(Map.of("token", personal ? "" : partyKey, "label", personal ? "本人" : "任职公司 " + partyKey));
             if (party.cashAccountId() != null) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("token", "CASH|" + party.cashAccountId());
@@ -3493,11 +3533,22 @@ public final class WorldWebHost implements AutoCloseable {
                 deposits.add(row);
                 payees.add(row);
             }
+            if (custodyBook != null) {
+                for (String custodian : new java.util.TreeSet<>(config.profile().custodians().keySet())) {
+                    var row = Map.<String,Object>of("token", "CUSTODY|" + custodian + "|" + partyKey,
+                            "label", "托管 " + partyKey + " · " + custodian + " · "
+                                    + money(custodyBook.detailOf(custodian, partyKey)) + " 元",
+                            "partyKey", partyKey, "ownerId", party.ownerId());
+                    custody.add(row);
+                    payees.add(row);
+                }
+            }
         }
         Map<String, Object> options = new LinkedHashMap<>();
         options.put("cash", cash);
         options.put("subjects", subjects);
         options.put("deposits", deposits);
+        if (custodyBook != null) options.put("custody", custody);
         options.put("payees", payees);
         options.put("workMillis", Map.of("min", "1", "max", "3600000", "default", "1000"));
         options.put("banks", new ArrayList<>(chart.banks()));
@@ -3635,11 +3686,28 @@ public final class WorldWebHost implements AutoCloseable {
                 throw new IllegalArgumentException("声明工时必须在 1 毫秒到 1 小时之间");
             }
             String org = command.organizationPartyId() == null ? "" : command.organizationPartyId();
-            if (!org.isBlank() && !managedOrgs.contains(org) && !myParties.contains(org)) {
+            Set<String> cashProducts = current.bankCashProducts(personId);
+            if (!org.isBlank() && !managedOrgs.contains(org) && !myParties.contains(org) && !cashProducts.contains(org)) {
                 throw new IllegalArgumentException("本人不是该组织当时有效的经理：" + org);
             }
             String bankKey = resolveBankKey(command, chart, myParties, managedBanks);
-            if (needsFunds(kind)) {
+            if (needsFunds(kind) && OwnerBankValuationWeb.enabled(current)) {
+                Set<String> parties = new java.util.HashSet<>(managedOrgs);
+                parties.add(personId);
+                parties.addAll(cashProducts);
+                parties.retainAll(config.profile().parties().keySet());
+                String subject = org.isBlank() ? personId : org;
+                if (!parties.contains(subject)) throw new IllegalArgumentException("该身份不能划转此主体的资金");
+                String source = command.sourceToken();
+                if (kind == BankActions.Kind.PAY || source != null && !source.isBlank()) {
+                    if (!config.profile().ownsCashBucket(subject, source)
+                            || kind == BankActions.Kind.DEPOSIT && !source.startsWith("CASH|")
+                            || kind == BankActions.Kind.WITHDRAW && !source.startsWith("DEPOSIT|"))
+                        throw new IllegalArgumentException("出款账户与授权主体不符");
+                }
+                if (kind == BankActions.Kind.PAY && parties.stream().noneMatch(p -> config.profile().ownsCashBucket(p, command.payeeToken())))
+                    throw new IllegalArgumentException("收款账户不在本人授权范围");
+            } else if (needsFunds(kind)) {
                 Set<String> ownCash = new java.util.HashSet<>();
                 for (RoleView.Account account : role.accounts()) {
                     ownCash.add("CASH|" + account.accountId());

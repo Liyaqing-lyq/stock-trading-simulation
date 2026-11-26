@@ -120,8 +120,26 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 允许以独立开局草稿创建零资产副本的组合实验档。 */
     public static final String OPENING_COPIES_RUN_ID = "web-opening-copies-v1";
 
+    /** 对同一持有人的存款、托管净受益和债务按确认时点估值的实验档。 */
+    public static final String OWNER_BANK_VALUATION_RUN_ID = "web-owner-bank-valuation-v1";
+
+    /** 保留 HY1 原始配售成本但无可用开局行情的独立估值档。 */
+    public static final String UNPRICED_REFERENCE_RUN_ID = "web-unpriced-reference-v1";
+
+    /** 银行进入处置时暂停其证券申报并释放对应挂单。 */
+    public static final String ISSUER_RESOLUTION_RUN_ID = "web-issuer-resolution-v1";
+
+    /** 本档或其继承档是否按确认帧计入主体银行权利。 */
+    public static boolean usesOwnerBankValuation(String id) {
+        return OWNER_BANK_VALUATION_RUN_ID.equals(id) || UNPRICED_REFERENCE_RUN_ID.equals(id) || ISSUER_RESOLUTION_RUN_ID.equals(id);
+    }
+
+    private static boolean usesOpeningCopies(String id) {
+        return OPENING_COPIES_RUN_ID.equals(id) || usesOwnerBankValuation(id);
+    }
+
     private static boolean usesBaselineParts(String id) {
-        return BASELINE_PARTS_RUN_ID.equals(id) || OPENING_COPIES_RUN_ID.equals(id);
+        return BASELINE_PARTS_RUN_ID.equals(id) || usesOpeningCopies(id);
     }
 
     /** 是否冻结每日申报价格带。 */
@@ -1312,7 +1330,13 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("wait-empty-args", "allow-empty-object-v1");
             }
             if (usesMediaDesks(runId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
-            if (OPENING_COPIES_RUN_ID.equals(runId)) {
+            if (UNPRICED_REFERENCE_RUN_ID.equals(runId)) expectedData.put("unpriced-opening-reference", "HY1-cost-only-v1");
+            if (ISSUER_RESOLUTION_RUN_ID.equals(runId)) expectedData.put("issuer-failure", "bank-resolution-halt-v1");
+            if (usesOwnerBankValuation(runId)) {
+                expectedData.put("owner-bank-valuation", "owner-claims-v1");
+                expectedData.put("owner-bank-decisions", "owner-cash-v1");
+            }
+            if (usesOpeningCopies(runId)) {
                 OpeningEntityCopies.fromManifest(data).freeze(expectedData);
                 expectedData.put("group-readable-refs", "edition-visible-v1");
                 expectedData.put("tool-argument-guide", "declared-fields-v1");

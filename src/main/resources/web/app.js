@@ -25,6 +25,7 @@ const state = {
   marketRequest: 0,
   market: null,
   performanceRequest: 0,
+  performanceOwnerPage: 1,
   performanceHistory: null,
   mediaRequest: 0,
   capabilities: null,
@@ -60,7 +61,7 @@ const DETAIL_TABLES = ["company-report", "company-inventory", "company-orders",
   "company-batches", "company-contracts", "company-receivables", "company-bills",
   "company-seats", "company-meetings", "company-budgets", "company-commitments",
   "company-reviews", "company-evidence", "company-reports", "performance-accounts",
-  "performance-owners", "performance-holdings", "performance-flows",
+  "performance-owners", "performance-bank-lines", "performance-holdings", "performance-flows",
   "performance-points", "performance-history-flows", "org-parties", "org-prototypes", "org-experiment-companies", "org-experiment-days",
   "org-owners", "org-appointments", "org-mandates", "org-reports",
   "information-documents", "information-active", "information-closed",
@@ -74,6 +75,10 @@ const DETAIL_TABLES = ["company-report", "company-inventory", "company-orders",
   "bank-summary", "bank-deposits", "bank-loans", "bank-loans-raw", "bank-equity",
   "bank-glraw", "bank-gates", "bank-metrics", "bank-custody-pools",
   "bank-custody-beneficial", "bank-actions"];
+const sessionLabels = { OPEN: "撮合开放", PREOPEN: "尚未开盘", LUNCH_BREAK: "午间休市", AFTER_CLOSE: "当日已收盘",
+  WEEKEND: "周末休市", SECURITY_HALTED: "该证券暂停交易", PERMANENTLY_CLOSED: "交易所已关闭",
+  ISSUER_RESOLUTION_HALTED: "发行人已进入处置，暂停交易" };
+
 const PERSON_TABLES = ["person-accounts", "person-holdings", "person-market",
   "person-bank-deposits", "person-bank-actions"];
 
@@ -193,6 +198,7 @@ function clearAdminDom() {
 }
 
 function clearPersonDom() {
+  renderPersonPortfolios([]);
   $("person-research-timeline").replaceChildren();
   $("person-research-card").hidden = true;
   state.personRelations = null;
@@ -348,7 +354,7 @@ async function refreshAdmin() {
     await loadEngineering(generation, pageVersion);
   }
   if (state.page === "history" && current()) {
-    await loadHistoryIndex();
+    await loadHistoryIndex(historyState().cursor !== null);
     await loadBranchRuns();
   }
   return current();
@@ -622,20 +628,36 @@ async function refreshPerson() {
     summary.append(dt, dd);
   }
 
+  renderPersonPortfolios(view.portfolios || []);
   fillTable("person-accounts", view.accounts, (tr, row) => {
     cell(tr, row.accountId);
     cell(tr, row.kind);
     cell(tr, row.cash, "num");
     cell(tr, row.availableCash, "num");
   });
+  const showHoldingWeights = (view.holdings || []).some(row => Object.hasOwn(row, "issuedSharePercent"));
+  $("person-holding-nav-heading").hidden = !showHoldingWeights;
+  $("person-holding-issue-heading").hidden = !showHoldingWeights;
+  $("person-holding-basis").hidden = !showHoldingWeights;
   fillTable("person-holdings", view.holdings, (tr, row) => {
     cell(tr, row.accountId);
     cell(tr, row.symbol);
     cell(tr, row.quantity, "num");
     cell(tr, row.available, "num");
+    if (showHoldingWeights) {
+      cell(tr, row.ownerNavPercent == null ? "—" : row.ownerNavPercent + "%", "num");
+      cell(tr, row.issuedSharePercent == null ? "—" : row.issuedSharePercent + "%", "num");
+    }
   });
   fillTable("person-market", view.market, (tr, row) => {
     cell(tr, row.symbol);
+    if (row.issuerResolution) {
+      const detail = document.createElement("details");
+      const title = document.createElement("summary");
+      title.textContent = row.issuerResolution.openedAtMillis == null ? "银行处置规则" : "发行人待处置，已停牌";
+      detail.append(title, document.createTextNode(row.issuerResolution.rule));
+      tr.firstElementChild.appendChild(detail);
+    }
     cell(tr, row.lastPrice, "num");
     cell(tr, row.referencePrice, "num");
     cell(tr, ({ OPENING_REFERENCE: "开局参考", EX_DIVIDEND_REFERENCE: "除息参考", TRADE: "实际成交", MISSING: "缺少估值依据" })[row.referenceSource] || row.referenceSource || "暂无");
@@ -649,7 +671,9 @@ async function refreshPerson() {
       const source = { PREVIOUS_TRADED_CLOSE: "前次收盘", OPENING_REFERENCE: "开局参考", EX_DIVIDEND_REFERENCE: "除息参考" };
       cell(tr, b.lower == null ? "缺少有效基准，暂停申报" : b.lower + " – " + b.upper + "（" + source[b.source] + " " + b.basis + "）");
     }
+    if (row.sessionStatus) cell(tr, sessionLabels[row.sessionStatus] || row.sessionStatus);
   });
+  $("person-session-status-heading").hidden = !(view.market || []).some(row => row.sessionStatus);
   $("person-price-band-heading").hidden = !(view.market || []).some(row => row.priceBand);
   $("person-catalog").textContent = view.catalog === 0
     ? "当前没有可见资料。" : "共 " + view.catalog + " 条可见目录项。";
@@ -658,6 +682,24 @@ async function refreshPerson() {
   await renderPersonalSocial(generation);
   await renderPersonalEngineering(generation);
   if (isCurrent(generation) && state.mode === "person") renderPersonalReports(view.publicReports || []);
+}
+
+function renderPersonPortfolios(portfolios) {
+  const container = $("person-owner-value-rows");
+  container.replaceChildren();
+  $("person-owner-valuations").hidden = portfolios.length === 0;
+  for (const row of portfolios) {
+    const heading = document.createElement("h3");
+    heading.textContent = (row.kind === "PERSONAL" ? "本人财产" : "受托产品") + " · " + row.ownerId;
+    container.appendChild(heading);
+    const bank = row.bankClaims;
+    periodicDl(container, [
+      ["净资产", row.netWorth ?? label("valuation", row.valuationStatus)], ["现金（含冻结）", row.cash],
+      ["持仓市值", row.holdings], ["存款本金", bank.deposits], ["存款应收利息", bank.depositInterestReceivable],
+      ["托管受益额", bank.custodyBeneficial], ["应收股息", row.dividendReceivable], ["应付股息", row.dividendPayable],
+      ["未偿借款本金", bank.loanPrincipal], ["借款应付利息", bank.loanInterestPayable]
+    ]);
+  }
 }
 
 function renderPersonResearch(research) {
@@ -1147,13 +1189,12 @@ async function loadMarketHistory(generation = state.generation,
 function renderMarketHistory(view) {
   $("market-cut").textContent = view.runId + " · 记录 " + view.position
     + " · " + view.timeMillis + " 毫秒";
-  const sessionLabels = { OPEN: "撮合开放", PREOPEN: "尚未开盘", LUNCH_BREAK: "午间休市", AFTER_CLOSE: "当日已收盘",
-    WEEKEND: "周末休市", SECURITY_HALTED: "该证券暂停交易", PERMANENTLY_CLOSED: "交易所已关闭" };
-  const statusText = sessionLabels[view.selectedSessionStatus] || (view.available
+  const statusText = view.issuerResolution?.openedAtMillis != null ? "发行人已进入处置，暂停交易" : sessionLabels[view.selectedSessionStatus] || (view.available
     ? (view.marketClosed ? "撮合已收盘" : "撮合开放") : "未启用撮合");
   $("market-summary").textContent = statusText + " · 口径 " + basisLabel(view.basis)
     + " · 有成交桶 " + view.totalBars
-    + (view.truncated ? "（仅显示最近 500 根）" : "");
+    + (view.truncated ? "（仅显示最近 500 根）" : "")
+    + (view.issuerResolution ? " · " + view.issuerResolution.rule : "");
   $("market-bars-count").textContent = String(view.bars.length) + " / " + view.totalBars;
 
   const symbols = Array.isArray(view.symbols) ? view.symbols : [];
@@ -1388,16 +1429,21 @@ function guard(promise) {
 /** 历史回看的本地状态；离开页面时整体清空。 */
 function historyState() {
   if (!state.history) {
-    state.history = { after: 0, limit: 50, cut: null, entries: [], selected: null,
-      request: 0, exportRequest: 0 };
+    state.history = { cursor: null, entries: [], selected: null, stale: false,
+      indexRequest: 0, request: 0, exportRequest: 0 };
   }
   return state.history;
 }
 
 /** 清空历史页 DOM 与本地状态（切页、切身份、退出时调用）。 */
 function clearHistoryDom() {
-  state.history = { after: 0, limit: 50, cut: null, entries: [], selected: null,
-    request: 0, exportRequest: 0 };
+  state.history = null;
+  historyState();
+  $("history-after").value = "0";
+  $("history-limit").value = "50";
+  $("history-position-input").value = "";
+  $("history-next").disabled = true;
+  $("history-index-status").textContent = "";
   ["history-run", "history-cut", "history-run-pos", "history-position", "history-position-cut",
     "history-time", "history-phase"].forEach(id => { $(id).textContent = "—"; });
   ["history-count", "history-checkpoint-status", "history-verify-result", "history-note",
@@ -1438,25 +1484,34 @@ function historyPositionValue() {
   return historyIntField("history-position-input", 1, "确认位置必须是大于 0 的整数。");
 }
 
-/** 读取历史索引页（只读）。 */
-async function loadHistoryIndex() {
-  const after = historyIntField("history-after", 0, "起始位置必须是非负整数。");
+/** 索引失败时保留最后成功收到的页和确认位置。 */
+function markHistoryStale(reason) {
+  const history = historyState();
+  history.stale = true;
+  $("history-index-status").textContent = reason + (history.cursor === null ? " 尚未收到索引记录。" :
+    " 当前显示上次读取的记录，已读至位置 " + history.cursor + "。");
+}
+
+/** 从指定起点读索引，或按上一份非空回包的 nextAfter 获取后续。 */
+async function loadHistoryIndex(continueReading = false) {
+  if (state.mode !== "admin" || state.page !== "history") return;
+  const history = historyState();
+  const requestId = ++history.indexRequest;
+  const after = continueReading && history.cursor !== null ? history.cursor
+    : historyIntField("history-after", 0, "起始位置必须是非负整数。");
   if (after === null) return;
   const limit = historyIntField("history-limit", 1, "每页条数必须是正整数。");
   if (limit === null) return;
-  const history = historyState();
-  history.after = after;
-  history.limit = Math.min(limit, 200);
   const generation = state.generation;
   const pageVersion = state.pageVersion;
   const current = () => isCurrent(generation) && state.mode === "admin"
-    && state.page === "history" && pageVersion === state.pageVersion;
+    && state.page === "history" && pageVersion === state.pageVersion && history === state.history
+    && requestId === history.indexRequest;
   let result;
   try {
-    result = await request("GET",
-      "/api/admin/history?after=" + history.after + "&limit=" + history.limit);
+    result = await request("GET", "/api/admin/history?after=" + after + "&limit=" + Math.min(limit, 200));
   } catch (failure) {
-    if (current()) setMessage("history-error", failure.message);
+    if (current()) markHistoryStale("读取历史索引失败。");
     return;
   }
   if (!current()) return;
@@ -1465,18 +1520,24 @@ async function loadHistoryIndex() {
     return;
   }
   if (result.status !== 200 || !result.payload) {
-    setMessage("history-error", "读取历史索引失败（" + result.status + "）。");
+    markHistoryStale("读取历史索引失败（" + result.status + "）。");
     return;
   }
   setMessage("history-error", "");
-  renderHistoryIndex(result.payload);
+  const view = result.payload;
+  history.stale = false;
+  if (view.entries.length) history.cursor = view.nextAfter;
+  $("history-next").disabled = history.cursor === null;
+  const progress = history.cursor === null ? "尚未收到索引记录" : "已读至位置 " + history.cursor;
+  $("history-index-status").textContent = progress + "，读取时确认至 " + view.cutPosition + "。"
+    + (continueReading && !view.entries.length ? " 暂无后续记录。" : "");
+  if (!continueReading || view.entries.length) history.entries = view.entries;
+  renderHistoryIndex(view);
 }
 
 /** 渲染历史索引（位置为精确字符串）。 */
 function renderHistoryIndex(view) {
   const history = historyState();
-  history.cut = Number(view.cutPosition);
-  history.entries = view.entries || [];
   $("history-run").textContent = view.runId || "—";
   $("history-cut").textContent = view.cutPosition;
   $("history-count").textContent = history.entries.length + " 条（每页上限 200）";
@@ -2057,6 +2118,15 @@ document.querySelectorAll("[data-page]").forEach(button => {
 });
 $("routes-form").addEventListener("submit", event => guard(saveRoutes(event)));
 $("history-load").addEventListener("click", () => guard(loadHistoryIndex()));
+$("history-next").addEventListener("click", () => guard(loadHistoryIndex(true)));
+globalThis.addEventListener?.("offline", () => {
+  if (state.mode !== "admin" || state.page !== "history") return;
+  historyState().indexRequest++;
+  markHistoryStale("连接中断。");
+});
+globalThis.addEventListener?.("online", () => {
+  if (state.mode === "admin" && state.page === "history" && historyState().stale) guard(loadHistoryIndex(true));
+});
 $("history-open").addEventListener("click", () => guard(openHistoryPosition(historyPositionValue())));
 $("history-live").addEventListener("click", () => selectPage("overview"));
 $("history-checkpoint").addEventListener("click", () => guard(downloadHistoryCheckpoint()));
@@ -2103,6 +2173,10 @@ function label(group, value) {
 }
 
 function clearDetailDom() {
+  state.performanceOwnerPage = 1;
+  $("performance-prev").hidden = true;
+  $("performance-next").hidden = true;
+  $("performance-bank-claims").hidden = true;
   if ($("org-experiment-card")) $("org-experiment-card").hidden = true;
   for (const id of ["org-experiment-summary", "org-experiment-note", "org-experiment-checks"]) {
     if ($(id)) $(id).replaceChildren();
@@ -2148,7 +2222,8 @@ function clearDetailDom() {
 
 async function loadDetail(page) {
   if (page === "media") clearMediaDom();
-  const url = DETAIL_PAGES[page];
+  const url = page === "performance" && state.performanceOwnerPage > 1
+    ? DETAIL_PAGES.performance + "?ownerPage=" + state.performanceOwnerPage : DETAIL_PAGES[page];
   if (!url || state.mode !== "admin") return;
   const generation = state.generation;
   const pageVersion = state.pageVersion;
@@ -2512,7 +2587,7 @@ function renderPersonalBankOps(view) {
   const options = (view && view.options) || {};
   fill("person-bank-subject", options.subjects || [{ token: "", label: "本人" }]);
   $("person-bank-subject").value = ((options.subjects || [])[0] || {}).token || "";
-  fill("person-bank-source", (options.cash || []).concat(options.deposits || []));
+  fill("person-bank-source", (options.cash || []).concat(options.deposits || [], options.custody || []));
   fill("person-bank-payee", options.payees || []);
   const loanSel = $("person-bank-loan");
   loanSel.replaceChildren();
@@ -2539,13 +2614,28 @@ function renderPersonalBankOps(view) {
 
 /** 按动作显示/隐藏字段：资金类要账户，生命周期要合同，申请要条款。 */
 function togglePersonalBankRows() {
-  const kind = $("person-bank-kind").value;
   const view = state.personalBank || {};
   const options = view.options || {};
   const party = $("person-bank-subject").value || view.personPartyId;
+  const products = new Set((options.subjects || []).filter(subject => subject.internalOnly).map(subject => subject.token));
+  const kindSelect = $("person-bank-kind");
+  if (options.custody) {
+    for (const option of kindSelect.options) {
+      option.hidden = option.disabled = products.has(party) && !["DEPOSIT", "WITHDRAW", "PAY"].includes(option.value);
+    }
+    if (kindSelect.selectedOptions[0]?.disabled) kindSelect.value = "PAY";
+    const payees = (options.payees || []).filter(row => products.has(party)
+      ? row.partyKey === party : !products.has(row.partyKey));
+    const payee = $("person-bank-payee");
+    const previous = payee.value;
+    payee.replaceChildren();
+    for (const row of payees) payee.add(new Option(row.label, row.token));
+    if (payees.some(row => row.token === previous)) payee.value = previous;
+  }
+  const kind = kindSelect.value;
   const sources = kind === "DEPOSIT" ? (options.cash || [])
     : kind === "WITHDRAW" ? (options.deposits || [])
-    : (options.cash || []).concat(options.deposits || []);
+    : (options.cash || []).concat(options.deposits || [], options.custody || []);
   const source = $("person-bank-source");
   const selected = source.value;
   const allowed = sources.filter(row => !row.partyKey || row.partyKey === party);
@@ -2970,6 +3060,8 @@ function renderPerformanceOwners() {
   const view = state.details.performance;
   if (!view) return;
   const section = view.owners || { total: 0, rows: [] };
+  const showRank = (section.rows || []).some(row => Object.hasOwn(row, "periodReturnRank"));
+  $("performance-return-rank").hidden = !showRank;
   const mode = $("performance-filter").value;
   const rows = (section.rows || []).filter(row => mode === "ALL" || row.valuationStatus === mode);
   fillTable("performance-owners", rows, (tr, row) => {
@@ -2983,12 +3075,25 @@ function renderPerformanceOwners() {
     cell(tr, row.dividendPayable, "num");
     cell(tr, label("performance", row.performanceStatus) + (row.performanceNote ? "（" + row.performanceNote + "）" : ""));
     cell(tr, row.returnRate, "num");
+    if (showRank) cell(tr, row.periodReturnRank, "num");
     cell(tr, row.index, "num");
     cell(tr, row.maxDrawdown, "num");
     cell(tr, row.capitalFlowCount, "num");
   });
+  const bankRows = rows.filter(row => row.bankClaims && row.netWorth != null);
+  $("performance-bank-claims").hidden = bankRows.length === 0;
+  fillTable("performance-bank-lines", bankRows, (tr, row) => {
+    cell(tr, row.ownerId);
+    for (const key of ["deposits", "depositInterestReceivable", "custodyBeneficial", "loanPrincipal", "loanInterestPayable"]) {
+      cell(tr, row.bankClaims[key], "num");
+    }
+  });
   $("performance-owners-empty").hidden = rows.length !== 0;
-  $("performance-owners-count").textContent = "显示 " + rows.length + " / 本页 " + (section.rows || []).length
+  state.performanceOwnerPage = view.ownerPage || 1;
+  $("performance-prev").hidden = state.performanceOwnerPage <= 1;
+  $("performance-next").hidden = state.performanceOwnerPage >= (view.ownerPages || 1);
+  $("performance-owners-count").textContent = "第 " + state.performanceOwnerPage + " / " + (view.ownerPages || 1)
+    + " 页，显示 " + rows.length + " / 本页 " + (section.rows || []).length
     + " 条（总计 " + section.total + " 条）";
 }
 
@@ -3645,6 +3750,17 @@ for (const [id, render] of [["company-report-filter", renderCompanyReports],
   ["org-appointment-filter", renderAppointments],
   ["information-closed-filter", renderClosedReadings]]) {
   $(id).addEventListener("change", () => render());
+}
+
+for (const [id, step] of [["performance-prev", -1], ["performance-next", 1]]) {
+  $(id).addEventListener("click", () => {
+    const current = state.details.performance;
+    if (!current || state.mode !== "admin") return;
+    state.performanceOwnerPage = Math.min(current.ownerPages, Math.max(1, current.ownerPage + step));
+    $("performance-prev").hidden = true;
+    $("performance-next").hidden = true;
+    selectPage("performance");
+  });
 }
 
 for (const id of ["performance-history-owner", "performance-history-start",

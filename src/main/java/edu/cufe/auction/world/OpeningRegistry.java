@@ -99,10 +99,17 @@ public record OpeningRegistry(List<Party> parties, List<PropertyOwner> owners,
      * @param symbol               标的代码
      * @param issuerOrganizationId 发行组织（必须是已登记的组织）
      * @param issuedShares         已发行股数
-     * @param initialReferencePrice 开局参考估值，精确到分
+     * @param initialReferencePrice 已确认的开局参考估值，未报价时为空
+     * @param unquotedAllocationCost 缺少报价标的的历史配售成本，仅供期初股份核对
      */
-    public record Security(String symbol, String issuerOrganizationId, long issuedShares,
-                           BigDecimal initialReferencePrice) {
+    public record Security(String symbol, String issuerOrganizationId, long issuedShares, BigDecimal initialReferencePrice,
+                           @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                           BigDecimal unquotedAllocationCost) {
+        /** 按原开局契约登记有市场参考价的证券。 */
+        public Security(String symbol, String issuerOrganizationId, long issuedShares, BigDecimal initialReferencePrice) {
+            this(symbol, issuerOrganizationId, issuedShares, initialReferencePrice, null);
+        }
+
         /** 校验标识、股数与估值精度。 */
         public Security {
             requireText(symbol, "证券代码");
@@ -110,7 +117,12 @@ public record OpeningRegistry(List<Party> parties, List<PropertyOwner> owners,
             if (issuedShares <= 0) {
                 throw new IllegalArgumentException("已发行股数必须为正：" + issuedShares);
             }
-            initialReferencePrice = money2(initialReferencePrice, "开局参考估值");
+            if (unquotedAllocationCost == null) {
+                initialReferencePrice = money2(initialReferencePrice, "开局参考估值");
+            } else {
+                if (initialReferencePrice != null) throw new IllegalArgumentException("缺报价的历史成本不能同时作为市场参考估值");
+                unquotedAllocationCost = money2(unquotedAllocationCost, "缺报价证券的历史配售成本");
+            }
         }
     }
 
@@ -191,11 +203,13 @@ public record OpeningRegistry(List<Party> parties, List<PropertyOwner> owners,
             if (security == null) {
                 throw new IllegalArgumentException("分配引用了未登记证券：" + allocation.symbol());
             }
-            if (allocation.costPrice().compareTo(security.initialReferencePrice()) != 0) {
-                throw new IllegalArgumentException("开局成本必须等于参考估值："
+            BigDecimal openingCost = security.unquotedAllocationCost() == null
+                    ? security.initialReferencePrice() : security.unquotedAllocationCost();
+            if (allocation.costPrice().compareTo(openingCost) != 0) {
+                String basis = security.unquotedAllocationCost() == null ? "参考估值" : "登记的历史配售成本";
+                throw new IllegalArgumentException("开局成本必须等于" + basis + "："
                         + allocation.accountId() + " " + allocation.symbol() + " 成本 "
-                        + allocation.costPrice().toPlainString() + "，估值 "
-                        + security.initialReferencePrice().toPlainString());
+                        + allocation.costPrice().toPlainString() + "，登记值 " + openingCost.toPlainString());
             }
             AllocationKey key = new AllocationKey(allocation.accountId(), allocation.symbol(),
                     allocation.classification());
