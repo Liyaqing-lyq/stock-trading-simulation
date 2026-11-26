@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class BankCrisisAccountingTest {
     private static final String RUN = "crisis-independent-exp3", PROVIDER = BankRules.PROVIDER;
-    private final BankConfig config = BankConfig.experimentalExp3();
+    private BankConfig config = BankConfig.experimentalExp3();
     private BankState bank;
     private Map<String,CashLedger.CashAccount> cash;
     private long clock;
@@ -46,7 +46,7 @@ class BankCrisisAccountingTest {
     private BigDecimal money(String key) { return cash.get(config.chart().cashAccountOf(key)).cash(); }
     private void eq(String expected,BigDecimal actual) { assertEquals(new BigDecimal(expected).setScale(2), actual); }
 
-    @Test void assetSaleAtHalfFaceAndCashWaterfallPreserveBothDebtorsAfterRestore() {
+    @Test void assetSaleAtHalfFaceAndCashWaterfallPreserveBothDebtorsAfterRestore() throws Exception {
         open(true);
         String c="BANK-C", debtor="CO-C", buyer="BIG", saver="BG-DEP", authority=BankRules.RESOLUTION_AUTHORITY;
         var pre=cash; String purchase="offer", claim="sold";
@@ -67,6 +67,11 @@ class BankCrisisAccountingTest {
         eq("800",bank.outstandingDebtOf(debtor)); eq("200",bank.facilityAccount(c,"F-C-1").nominal());
         eq("5600",money(buyer)); eq("-300",bank.bookEquity(c));
         var reporting=BankRun.of(config,bank,CustodyBook.openEmpty(bank,cash,config));
+        var saverReport=ClientCompanyReport.of(reporting,cash,saver);
+        var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
+        String oldReport=mapper.writeValueAsString(saverReport);
+        assertFalse(oldReport.contains("assignedClaims"));
+        assertEquals(saverReport,mapper.readValue(oldReport,ClientCompanyReport.class));
         var debtorReport=ClientCompanyReport.of(reporting,cash,debtor);
         eq("800",debtorReport.loanPrincipal());
         assertEquals(buyer,debtorReport.assignedClaims().get(0).holder());
@@ -88,6 +93,43 @@ class BankCrisisAccountingTest {
         eq("0",bank.gl(c,"SUBT2")); eq("0",bank.facilityAccount(c,"F-C-1").nominal());
         eq("0",bank.bookEquity(c)); eq("600",money(PROVIDER)); eq("400",money(saver));
         eq("800",bank.outstandingDebtOf(debtor));
+    }
+
+    @Test void rescueCanSpendOnlyUnencumberedProviderCash() {
+        var base=BankWorldFixture.profile(false);
+        String lender="firm", recipient=BankWorldFixture.BANK;
+        var profile=new BankingProfile(base.banks(),base.parties(),base.custodians(),base.buckets(),base.groups(),
+                base.loanAccounts(),base.llpAccounts(),base.depositAccounts(),lender,null,null);
+        var tiers=List.of(List.of("dep-acme","dep-firm","INT.PAYABLE"),
+                List.of(BankChart.FACILITY_DEBT,BankChart.FACILITY_INTEREST_PAYABLE),List.of("SUBT2"));
+        config=new BankConfig.Builder(profile).version(24).coverageRule("DECLARED_UNIVERSE_V1")
+                .facilityTerms(new BankConfig.FacilityTerms(BankRules.FACILITY_EXP,"outside",List.of(),tiers)).build();
+        var funds=new LinkedHashMap<String,CashLedger.CashAccount>();
+        for (var row : BankWorldFixture.openings()) {
+            funds.put(row.accountId(),new CashLedger.CashAccount(row.ownerId(),row.cash(),row.source()));
+        }
+        var endowment=BankWorldFixture.endowment();
+        var provider=new BankState.ProviderOpening(lender,funds.get("firm-cash").cash(),BigDecimal.ZERO,
+                funds.get("firm-cash").cash(),"b5-opening-firm");
+        var opening=BankOpening.openDeclared(BankWorldFixture.registry(),funds,profile,config,
+                new BankOpening.DeclaredEndowment(endowment.banks(),endowment.loans(),endowment.deposits(),
+                        endowment.facilities(),endowment.collaterals(),endowment.origins(),List.of(provider),endowment.source()),RUN);
+        bank=opening.state(); cash=opening.accounts();
+        ok(FACILITY_AUTHORIZE,lender,Map.of("bank",recipient,"provider",lender,"authorization","credit","limit","400",
+                "rate","0","loanTenorMs","1000","authorizationExpiryMs","900","facilityMaturityMs","2000",
+                "collateralPolicy",BankRules.COLLATERAL_UNSECURED));
+        var frozen=new CashFreeze(Map.of(new Fund.Cash("firm-cash").token(),new BigDecimal("300")));
+        var draw=new HashMap<>(Map.of("bank",recipient,"provider",lender,"authorization","credit","amount","200"));
+        var failed=call(FACILITY_DRAW,recipient,draw,frozen);
+        assertFalse(failed.accepted(),"已冻结300的400元账户不能出资200");
+        assertEquals(Reasons.PAYER_BALANCE_INSUFFICIENT + ":CASH|firm-cash",failed.reason());
+        eq("400",money(lender)); eq("500",cash.get("rsv-north").cash());
+        eq("0",bank.facilityAccount(recipient,"credit").nominal());
+        draw.put("amount","100");
+        var funded=call(FACILITY_DRAW,recipient,draw,frozen);
+        assertTrue(funded.accepted(),funded.reason());
+        eq("300",money(lender)); eq("600",cash.get("rsv-north").cash());
+        eq("100",bank.facilityAccount(recipient,"credit").nominal()); restore();
     }
 
     @Test void facilityCannotExceedProviderCashAndWriteOffCannotEraseDebt() {

@@ -27,7 +27,7 @@ import java.util.TreeMap;
  *       另列 {@code onBook}（账面本金）、{@code writtenOff}（已核销仍有追索）与
  *       {@code interestReceivable}（应计未付利息）。<b>不使用</b>银行资产侧贷款 GL：
  *       核销会让 GL 减少，但客户债务并不因此消失。</li>
- *   <li>净金融资产 = 现金 + 存款 + 托管受益权 − 名义本金 − 应计未付利息。</li>
+ *   <li>净金融资产 = 现金 + 存款及应计利息 + 托管受益权 + 受让债权剩余成本 − 原有及转让后仍欠的本金和利息。</li>
  * </ul>
  *
  * <p><b>不是完整经营报表</b>：证券持仓、存货/在制、应收应付与设备不在本类内，
@@ -75,7 +75,7 @@ public record ClientCompanyReport(String partyKey, String ownerId,
         cashAccountIds = List.copyOf(cashAccountIds);
         depositBanks = List.copyOf(depositBanks);
         loans = List.copyOf(loans);
-        assignedClaims = List.copyOf(assignedClaims);
+        assignedClaims = assignedClaims == null ? List.of() : List.copyOf(assignedClaims);
         notes = List.copyOf(notes);
         unsupported = List.copyOf(unsupported);
         cash = Money.scale2(cash);

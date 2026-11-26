@@ -64,7 +64,7 @@ public record Outcome(boolean accepted, String reason, String receipt,
      * @param config 冻结档案
      * @param ctx 运行上下文
      * @param cmd 命令（完整 body）
-     * @param frozen 受信冻结快照（非 PAYMENT 命令忽略）
+     * @param frozen 世界侧派生的受信资金冻结快照
      * @return 结果；协议错误与配置错误不消费 commandId
      */
     public static Outcome apply(BankState state, Map<String, CashLedger.CashAccount> accounts,
@@ -1248,7 +1248,12 @@ public record Outcome(boolean accepted, String reason, String receipt,
         } else if (collateralId != null) {
             throw new BankException(Reasons.FACILITY_COLLATERAL_POLICY_INVALID + ":unsecured");
         }
-        move(w, provider, w.chart().cashAccountOf(provider), w.chart().reserveAccountOf(bank), amount);
+        String providerAccount = w.chart().cashAccountOf(provider);
+        // 旧 EXP-3 现金账户含分隔符，无法用作交易资金桶；只检查冻结快照中实际存在的桶。
+        if (w.frozen != null && w.frozen.frozenByBucket().containsKey("CASH|" + providerAccount)) {
+            requireCashRoom(w, providerAccount, amount);
+        }
+        move(w, provider, providerAccount, w.chart().reserveAccountOf(bank), amount);
         addGl(w, bank, BankChart.FACILITY_DEBT, amount.negate());
         long frozenMaturity = saturate(now, account.loanTenorMs());
         w.draft.putFacilityAccount(account.withDraw(amount, frozenMaturity, pledged));
