@@ -20,9 +20,17 @@ final class ConnectedWorldView {
             var v=d.at(1);news.add(Map.of("docId",d.docId(),"title",v.title(),"body",v.body(),"publisher",d.publisherPartyId(),"publishedAt",v.publishedAt()));
         }
         news.sort(Comparator.comparingLong(n->((Number)n.get("publishedAt")).longValue()));
-        var orders=new ArrayList<Map<String,Object>>();for(var o:s.exchange().orElseThrow().orders())orders.add(Map.of("symbol",o.symbol(),"side",o.side(),"quantity",o.quantity(),"filled",o.filled(),"price",o.limitPrice().toPlainString(),"status",o.status(),"accountId",o.accountId()));
+        var orders=new ArrayList<Map<String,Object>>();
+        for(var o:s.exchange().orElseThrow().orders()) {
+            var row = new LinkedHashMap<String,Object>();
+            row.put("symbol",o.symbol()); row.put("side",o.side()); row.put("type",o.type());
+            row.put("quantity",o.quantity()); row.put("filled",o.filled());
+            row.put("price",o.limitPrice()==null ? null : o.limitPrice().toPlainString());
+            row.put("status",o.status()); row.put("accountId",o.accountId());
+            orders.add(row);
+        }
         long reads=s.information().orElseThrow().information().observations().size();
-        var detail=new TreeMap<String,Object>();int days=Math.max(1,(int)((s.timeMillis()+DAY-1)/DAY));
+        var detail=new TreeMap<String,Object>();int days=(int)(s.timeMillis()/DAY)+1;
         for(var company:companies){String id=(String)company.get("id"),symbol=(String)company.get("symbol");
             var cashByDay=new TreeMap<Integer,BigDecimal>();
             for(var n:news){var f=read((String)n.get("body"));if(f.path("company").asText().equals(id))cashByDay.put((int)(((Number)n.get("publishedAt")).longValue()/DAY)+1,new BigDecimal(f.path("cash").asText()));}
@@ -32,7 +40,7 @@ final class ConnectedWorldView {
             for(int day=1;day<=days;day++){
                 final int d=day;var trades=s.exchange().orElseThrow().trades().stream().filter(t->t.symbol().equals(symbol)&&t.timeMillis()/DAY+1==d).toList();
                 if(!trades.isEmpty())last=trades.get(trades.size()-1).price();if(cashByDay.containsKey(day))lastCash=cashByDay.get(day);
-                var row=new LinkedHashMap<String,Object>();row.put("day",day);row.put("lastPrice",last==null?null:last.toPlainString());row.put("close",last==null?null:last.toPlainString());row.put("cash",lastCash.toPlainString());row.put("trades",trades.size());row.put("volume",trades.stream().mapToLong(WorldExchange.Trade::quantity).sum());row.put("turnover",trades.stream().map(t->t.price().multiply(BigDecimal.valueOf(t.quantity()))).reduce(BigDecimal.ZERO,BigDecimal::add).toPlainString());rows.add(row);
+                var row=new LinkedHashMap<String,Object>();row.put("day",day);row.put("lastPrice",last==null?null:last.toPlainString());row.put("close",trades.isEmpty()?null:last.toPlainString());row.put("cash",lastCash.toPlainString());row.put("trades",trades.size());row.put("volume",trades.stream().mapToLong(WorldExchange.Trade::quantity).sum());row.put("turnover",trades.stream().map(t->t.price().multiply(BigDecimal.valueOf(t.quantity()))).reduce(BigDecimal.ZERO,BigDecimal::add).toPlainString());rows.add(row);
             }
             detail.put(id,Map.of("days",rows,"openingCash",opening.toPlainString(),"cashChange",cash.subtract(opening).toPlainString(),"periods",List.of()));
         }

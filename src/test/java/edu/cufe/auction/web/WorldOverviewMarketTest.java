@@ -35,6 +35,26 @@ class WorldOverviewMarketTest {
     Path dir;
 
     @Test
+    void connectedWorldKeepsNoTradeCloseAndMarketOrderLimitEmpty() throws Exception {
+        try (var world = ComposedIndustryScenario.openConnected(dir.resolve("connected-market.journal"))) {
+            world.scheduleOrder("rest", "rest-task", 60_000L, "mfg-tech-founder", "MFG-TECH-FOUNDER-SEC",
+                    "MT1", Side.SELL, OrderType.LIMIT, new BigDecimal("9.50"), 5L);
+            world.scheduleOrder("buy", "buy-task", 120_000L, "auto-oem", "EXT-CUST-AUTO",
+                    "MT1", Side.BUY, OrderType.MARKET, null, 5L);
+            world.advanceTo(86_400_000L);
+            var overview = JSON.valueToTree(WorldOverviewView.of(world));
+            var orders = overview.at("/connected/orders");
+            assertEquals("MARKET", orders.get(1).required("type").asText());
+            assertTrue(orders.get(1).required("price").isNull());
+            var days = overview.at("/liveDetails/mfg-tech/days");
+            assertEquals("9.50", days.get(0).required("close").asText());
+            assertEquals("9.50", days.get(1).required("lastPrice").asText());
+            assertTrue(days.get(1).required("close").isNull());
+            assertEquals(0, days.get(1).required("trades").asInt());
+        }
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void autonomousWorldShowsRealTradesOrdersAndBlankDaysFromOneSnapshot() throws Exception {
         Path journal = dir.resolve("autonomous-market.journal");
