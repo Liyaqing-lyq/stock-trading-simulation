@@ -1593,6 +1593,11 @@ public final class WorldExchange {
      */
     public static Outcome close(State exchange, Map<String, CashLedger.CashAccount> accounts,
                                 SecuritiesLedger.State securities, long nowMillis) {
+        return expire(exchange, accounts, securities, nowMillis, null);
+    }
+
+    static Outcome expire(State exchange, Map<String, CashLedger.CashAccount> accounts,
+                          SecuritiesLedger.State securities, long nowMillis, String scope) {
         Objects.requireNonNull(exchange, "交易状态");
         Objects.requireNonNull(accounts, "现金账户");
         Objects.requireNonNull(securities, "证券状态");
@@ -1606,7 +1611,7 @@ public final class WorldExchange {
         List<Long> cancelled = new ArrayList<>();
         SecuritiesLedger.State securitiesCandidate = securities;
         for (Order order : exchange.orders()) {
-            if (!order.live()) {
+            if (!order.live() || scope != null && !scope.equals(MarketSessions.END) && !scope.equals(order.symbol())) {
                 orders.add(order);
                 continue;
             }
@@ -1623,8 +1628,9 @@ public final class WorldExchange {
             }
         }
         State candidate = new State(orders, exchange.trades(), exchange.nextOrderId(),
-                exchange.nextSequence(), exchange.nextTradeId(), true, exchange.reports());
-        return new Outcome(true, REASON_MARKET_CLOSED, null, List.of(), cancelled, candidate,
+                exchange.nextSequence(), exchange.nextTradeId(), scope == null, exchange.reports());
+        String reason = scope == null ? REASON_MARKET_CLOSED : scope.equals(MarketSessions.END) ? scope : MarketSessions.HALT;
+        return new Outcome(true, reason, null, List.of(), cancelled, candidate,
                 accounts, securitiesCandidate);
     }
 

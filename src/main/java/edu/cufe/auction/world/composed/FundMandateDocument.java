@@ -36,6 +36,10 @@ final class FundMandateDocument {
                     .append("组合经理可阅读报告、比较现金与现有持仓。提出目标须对应本产品同一证券的已读报告，填写绝对目标股数、价格边界与截止。也可维持配置。\n")
                     .append("风控可核对目标版本和投资依据，审议数量、单笔、价格与有效期，作出批准或拒绝。经理确认已批准的同一版本后进入执行。\n")
                     .append("执行员可核对已确认的版本、风控边界与市场条件，自行决定是否分笔申报或撤单。无有效授权时可观察和查证。实际订单和成交分别以交易所与产品账户回报为准。");
+            if ("appointment-pair-v1".equals(world.profile().manifest().dataVersions().get("fund-office-contacts"))) {
+                body.append("\n在岗业务通讯录：读完本文件后，social.contacts 可见同一产品其他在岗人员、职务和到达其本人的业务地址。"
+                        + "地址随双方任职变更失效；写信、收件、阅读分别占用时间。");
+            }
             String id = "fund-mandate:" + org + ":" + product;
             world.schedulePublishDocument("opening-" + id, "opening-task-" + id, 1L, id,
                     manager.personPartyId(), InformationModel.Audience.organization(org),

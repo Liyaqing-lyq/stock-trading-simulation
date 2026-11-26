@@ -104,9 +104,22 @@ public final class SocialMessageModel {
      * @param recall   回忆参数，用于判定入口文档/来信是否仍然可回忆
      * @param config   写信、投递等待与阅读三类受信工时
      * @param contacts 明确的联系入口，深拷贝并按目标/渠道/资料排序
+     * @param fundOffices 启用内部通讯录时用于核验双方任职的当前权限快照，旧档为空
      */
     public record Context(OpeningRegistry registry, Policy recall, Config config,
-                          List<ContactEntry> contacts) {
+                          List<ContactEntry> contacts, RoleAccess.State fundOffices) {
+
+        /** 旧档以原有地址表提供私信。 */
+        public Context(OpeningRegistry registry, Policy recall, Config config, List<ContactEntry> contacts) {
+            this(registry, recall, config, contacts, null);
+        }
+
+        private List<ContactEntry> contactsFor(String person, long now) {
+            if (fundOffices == null) return contacts;
+            var rows = new ArrayList<>(contacts);
+            rows.addAll(FundOfficeContacts.entries(fundOffices, person, now));
+            return rows;
+        }
 
         /** 深拷贝并排序联系入口。 */
         public Context {
@@ -919,7 +932,8 @@ public final class SocialMessageModel {
                     DeliverStatus.BLOCKED, now);
             return new DeliverOutcome(DeliverStatus.BLOCKED, next, info, settled);
         }
-        if (!registeredPerson(context.registry(), message.to())
+        if (!FundOfficeContacts.permits(context.fundOffices(), message.from(), message.to(), message.channel(), now)
+                || !registeredPerson(context.registry(), message.to())
                 || !registeredPerson(context.registry(), message.from())
                 || !info.persons().contains(message.to())
                 || !info.persons().contains(message.from())) {
@@ -1118,7 +1132,8 @@ public final class SocialMessageModel {
         if (blocked(social, from, to) || blocked(social, to, from)) {
             return false;
         }
-        for (ContactEntry entry : context.contacts()) {
+        if (!FundOfficeContacts.permits(context.fundOffices(), from, to, channel, now)) return false;
+        for (ContactEntry entry : context.contactsFor(from, now)) {
             if (entry.targetPartyId().equals(to) && entry.channel().equals(channel)
                     && recallable(info, from, entry.docId(), entry.version(), now,
                             context.recall())) {
@@ -1206,7 +1221,7 @@ public final class SocialMessageModel {
     public static List<ContactEntry> recallableContacts(State social, InformationModel.State info,
                                                         Context context, String person, long now) {
         java.util.Map<String, ContactEntry> merged = new java.util.TreeMap<>();
-        for (ContactEntry entry : context.contacts()) {
+        for (ContactEntry entry : context.contactsFor(person, now)) {
             if (entry.targetPartyId().equals(person) || !info.persons().contains(person)
                     || !info.persons().contains(entry.targetPartyId())) {
                 continue;
@@ -1216,7 +1231,8 @@ public final class SocialMessageModel {
             }
         }
         for (Message message : social.messages()) {
-            if (message.status() != MessageStatus.DELIVERED || !message.to().equals(person)) {
+            if (message.status() != MessageStatus.DELIVERED || !message.to().equals(person)
+                    || !FundOfficeContacts.permits(context.fundOffices(), person, message.from(), message.channel(), now)) {
                 continue;
             }
             if (recallable(info, person, message.docId(), 1L, now, context.recall())) {

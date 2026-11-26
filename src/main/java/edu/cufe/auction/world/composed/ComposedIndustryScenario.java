@@ -369,9 +369,24 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.FUND_MANDATE_RUN_ID);
     }
 
+    /** 打开或恢复按双方在岗任职复核联系地址的基金档。 */
+    public static WorldRuntime openFundOfficeContactsOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.FUND_CONTACTS_RUN_ID);
+    }
+
     /** @param journal 独立八媒体档路径 @return 启用八类采编合同的世界 @throws Exception 无法建立或恢复时抛出 */
     public static WorldRuntime openMediaDesksOperating(Path journal) throws Exception {
         return openCompanyInformationOperating(journal, RunManifest.MEDIA_DESKS_RUN_ID);
+    }
+
+    /** 打开使用同一开局的个人、机构、媒体、授信和时段规则；不启动模型调度。 */
+    public static WorldRuntime openIntegratedOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.INTEGRATED_RUN_ID);
+    }
+
+    /** @param journal 独立交易时段实验档 @return 严格恢复或首次建立的交易世界 @throws Exception 建立或恢复失败 */
+    public static WorldRuntime openMarketSessionsOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, MarketSessions.RUN_ID);
     }
 
     /**
@@ -489,7 +504,7 @@ public final class ComposedIndustryScenario {
         if (thinking) {
             var limits = decisions.limits();
             var timings = new TreeMap<>(decisions.actionMillisByTool());
-            if (RunManifest.CREDIT_DECISIONS_RUN_ID.equals(thinkingRunId)) IssuerCreditDecisions.addTimings(timings);
+            if (RunManifest.usesCreditDecisions(thinkingRunId)) IssuerCreditDecisions.addTimings(timings);
             if (RunManifest.usesPersonalProfiles(thinkingRunId)) timings.put("role.library.search", 1000L);
             if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
                 timings.put(PersonalMarket.SUBMIT, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
@@ -518,7 +533,7 @@ public final class ComposedIndustryScenario {
             openingRegistry = new OpeningRegistry(externalParties, externalOwners, openingRegistry.securities(), openingRegistry.allocations());
         }
         if (RunManifest.usesEngineeringCustomerRules(thinkingRunId)) openingRegistry = EngineeringCustomerPolicy.register(openingRegistry);
-        if (RunManifest.MEDIA_DESKS_RUN_ID.equals(thinkingRunId)) openingRegistry = MediaDesks.register(openingRegistry);
+        if (RunManifest.usesMediaDesks(thinkingRunId)) openingRegistry = MediaDesks.register(openingRegistry);
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -584,12 +599,14 @@ public final class ComposedIndustryScenario {
                 data.put("research-manager-view", "project-state-v1");
             }
             if (RunManifest.usesPersonalProfiles(thinkingRunId)) data.putAll(RunManifest.personalProfilePolicies());
-            if (RunManifest.FUND_MANDATE_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.usesFundContacts(thinkingRunId)) data.put("fund-office-contacts", "appointment-pair-v1");
+            if (RunManifest.usesFundMandate(thinkingRunId)) {
                 data.put("fund-mandate-document", "opening-register-v1");
                 data.put("wait-empty-args", "allow-empty-object-v1");
             }
-            if (RunManifest.MEDIA_DESKS_RUN_ID.equals(thinkingRunId)) data.put("media-template-catalog", MediaModel.EIGHT_DESKS);
-            if (RunManifest.CREDIT_DECISIONS_RUN_ID.equals(thinkingRunId)) data.put("issuer-credit-decisions", "manager-loan-v1");
+            if (RunManifest.usesMediaDesks(thinkingRunId)) data.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (RunManifest.usesMarketSessions(thinkingRunId)) data.put(MarketSessions.KEY, MarketSessions.VERSION);
+            if (RunManifest.usesCreditDecisions(thinkingRunId)) data.put("issuer-credit-decisions", "manager-loan-v1");
             if (RunManifest.usesIssuerCredit(thinkingRunId)) data.put("issuer-credit", "separate-loan-ledgers-v1");
             if (RunManifest.usesContinuingRoles(thinkingRunId)) {
                 data.putAll(RunManifest.CONTINUING_ROLE_POLICIES);

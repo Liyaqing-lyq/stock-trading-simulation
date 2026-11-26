@@ -45,6 +45,7 @@ import edu.cufe.auction.world.SocialMessageModel;
 import edu.cufe.auction.world.SocialRun;
 import edu.cufe.auction.world.ValuationModel;
 import edu.cufe.auction.world.WorldExchange;
+import edu.cufe.auction.world.MarketSessions;
 import edu.cufe.auction.world.WorldRuntime;
 import edu.cufe.auction.world.WorldScheduler;
 import edu.cufe.auction.world.bank.BankActions;
@@ -1539,7 +1540,9 @@ public final class WorldWebHost implements AutoCloseable {
                                     List<String> symbols, String selectedSymbol, String period,
                                     String basis, List<MarketBarView> bars,
                                     List<MarketGapView> gaps, boolean truncated,
-                                    String totalBars) {
+                                    String totalBars,
+                                    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                    String selectedSessionStatus) {
         /** 冻结集合，避免调用方修改响应。 */
         public MarketHistoryView {
             symbols = List.copyOf(symbols);
@@ -1586,6 +1589,11 @@ public final class WorldWebHost implements AutoCloseable {
             boolean available = snapshot.exchange().isPresent();
             boolean marketClosed = snapshot.exchange()
                     .map(WorldExchange.State::closed).orElse(false);
+            String sessionStatus = null;
+            if (RunManifest.usesMarketSessions(current.profile().manifest().runId())) {
+                sessionStatus = MarketSessions.status(selected, snapshot.timeMillis(), marketClosed);
+                marketClosed = !"OPEN".equals(MarketSessions.status("", snapshot.timeMillis(), marketClosed));
+            }
             List<WorldExchange.Trade> trades = snapshot.exchange()
                     .map(WorldExchange.State::trades).orElse(List.of());
             MarketHistory.Result result = selected == null
@@ -1613,7 +1621,7 @@ public final class WorldWebHost implements AutoCloseable {
                     Long.toString(snapshot.timeMillis()), snapshot.lastPhase(), available,
                     marketClosed, List.copyOf(symbols), selected, period.id(),
                     "UNADJUSTED_EXPERIMENT", bars, gaps, result.truncated(),
-                    Long.toString(result.totalBars()));
+                    Long.toString(result.totalBars()), sessionStatus);
         });
     }
 

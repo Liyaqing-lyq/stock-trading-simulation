@@ -616,11 +616,12 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 收盘命令内容。 */
-    private record CloseMarketCommand(String commandId, String taskId, long dueTimeMillis) {
+    private record CloseMarketCommand(String commandId, String taskId, long dueTimeMillis,
+                                      @JsonInclude(JsonInclude.Include.NON_NULL) String expiry) {
     }
 
     /** 收盘任务参数。 */
-    private record CloseMarketPayload(String commandId) {
+    private record CloseMarketPayload(String commandId, @JsonInclude(JsonInclude.Include.NON_NULL) String expiry) {
     }
 
     /** 外部制造命令的规范化内容（幂等比对用）；六类命令共用一种形状。 */
@@ -2508,13 +2509,17 @@ public final class WorldRuntime implements AutoCloseable {
      */
     public synchronized String scheduleCloseMarket(String commandId, String taskId,
                                                    long dueTimeMillis) throws IOException {
+        return scheduleMarketClose(commandId, taskId, dueTimeMillis, null);
+    }
+
+    private String scheduleMarketClose(String commandId, String taskId, long dueTimeMillis, String expiry) throws IOException {
         requireMatchingEnabled();
         requireOpen();
         requireWriter();
         requireNotPaused();
         requireText(commandId, "命令标识");
         requireText(taskId, "任务标识");
-        CloseMarketCommand command = new CloseMarketCommand(commandId, taskId, dueTimeMillis);
+        CloseMarketCommand command = new CloseMarketCommand(commandId, taskId, dueTimeMillis, expiry);
         String content = mapper.writeValueAsString(command);
         if (state.commandContents().containsKey(commandId)) {
             if (!content.equals(state.commandContents().get(commandId))) {
@@ -2523,9 +2528,13 @@ public final class WorldRuntime implements AutoCloseable {
             return state.commandOutcomes().get(commandId);
         }
         requireSchedulable(dueTimeMillis, taskId);
-        CloseMarketPayload payload = new CloseMarketPayload(commandId);
+        if (expiry != null && (!RunManifest.usesMarketSessions(manifest.runId()) || dueTimeMillis == Long.MAX_VALUE
+                || dueTimeMillis != MarketSessions.firstExpiry(state.exchange()) || !expiry.equals(MarketSessions.scope(dueTimeMillis))))
+            throw new IllegalArgumentException("交易时段到期与冻结日历或当前挂单不符");
+        CloseMarketPayload payload = new CloseMarketPayload(commandId, expiry);
         PendingTask task = new PendingTask(taskId, dueTimeMillis,
-                WorldScheduler.Phase.COMPLETION, PendingTask.EXCHANGE_CLOSE_V1,
+                expiry == null ? WorldScheduler.Phase.COMPLETION : WorldScheduler.Phase.RULES,
+                expiry == null ? PendingTask.EXCHANGE_CLOSE_V1 : PendingTask.EXCHANGE_EXPIRY_V1,
                 mapper.writeValueAsString(payload));
         return scheduleCompletionTask(task, commandId, content);
     }
@@ -4579,6 +4588,11 @@ public final class WorldRuntime implements AutoCloseable {
             boolean stopsAtBarrier = stopsAtDecisionBarrier(inclusiveMillis);
             while (true) {
                 PendingTask next = peek(limit);
+                if (RunManifest.usesMarketSessions(manifest.runId())) {
+                    long due = MarketSessions.firstExpiry(state.exchange());
+                    if (due != Long.MAX_VALUE && due > state.timeMillis() && due <= (next == null ? limit : next.dueTimeMillis())
+                            && scheduleMissingExpiry(due)) next = peek(limit);
+                }
                 if (next == null) {
                     break;
                 }
@@ -10974,6 +10988,13 @@ public final class WorldRuntime implements AutoCloseable {
     private void completeOrder(PendingTask task) throws IOException {
         OrderPayload payload = mapper.readValue(task.payload(), OrderPayload.class);
         long now = task.dueTimeMillis();
+        String denial = marketRejection(payload.symbol(), now);
+        if (denial != null) {
+            var report = new OrderReport(task.taskId(), payload.commandId(), task.kind(), false, denial,
+                    null, List.of(), List.of(), now, state.position() + 1);
+            finishExchangeTask(task, state.accounts(), state.securities(), state.exchange().withReport(report), report);
+            return;
+        }
         if (manufacturingConfig != null) {
             CashLedger.CashAccount account = state.accounts().get(payload.accountId());
             if (account != null && account.ownerId().equals(
@@ -11059,13 +11080,28 @@ public final class WorldRuntime implements AutoCloseable {
     private void completeCloseMarket(PendingTask task) throws IOException {
         CloseMarketPayload payload = mapper.readValue(task.payload(), CloseMarketPayload.class);
         long now = task.dueTimeMillis();
-        WorldExchange.Outcome outcome = WorldExchange.close(state.exchange(), state.accounts(),
-                state.securities(), now);
+        WorldExchange.Outcome outcome = WorldExchange.expire(state.exchange(), state.accounts(),
+                state.securities(), now, payload.expiry());
         OrderReport report = new OrderReport(task.taskId(), payload.commandId(), task.kind(),
                 outcome.accepted(), outcome.reason(), outcome.orderId(), outcome.tradeIds(),
                 outcome.cancelledOrderIds(), now, state.position() + 1);
         finishExchangeTask(task, outcome.accounts(), outcome.securities(),
                 outcome.exchange().withReport(report), report);
+    }
+
+    private String marketRejection(String symbol, long at) {
+        return RunManifest.usesMarketSessions(manifest.runId()) ? MarketSessions.rejection(symbol, at) : null;
+    }
+
+    private boolean scheduleMissingExpiry(long due) throws IOException {
+        String scope = MarketSessions.scope(due);
+        for (var task : state.pending()) {
+            if (task.dueTimeMillis() == due && task.kind().equals(PendingTask.EXCHANGE_EXPIRY_V1)) return false;
+        }
+        String id = "exchange-expiry:" + due;
+        while (state.usedTaskIds().contains(id) || state.commandContents().containsKey(id)) id += "-";
+        scheduleMarketClose(id, id, due, scope);
+        return true;
     }
 
     /** 世界订单任务的统一收尾：完成待办、写入成交与结果、保存全量状态并持久确认后发布。 */
@@ -16295,6 +16331,7 @@ public final class WorldRuntime implements AutoCloseable {
                 || PendingTask.EXCHANGE_ORDER_V1.equals(kind)
                 || PendingTask.EXCHANGE_CANCEL_V1.equals(kind)
                 || PendingTask.EXCHANGE_CLOSE_V1.equals(kind)
+                || PendingTask.EXCHANGE_EXPIRY_V1.equals(kind)
                 || PendingTask.BANK_ACTION_V1.equals(kind);
     }
 
@@ -16568,7 +16605,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         switch (task.kind()) {
             case PendingTask.EXCHANGE_ORDER_V1, PendingTask.EXCHANGE_CANCEL_V1,
-                 PendingTask.EXCHANGE_CLOSE_V1, PendingTask.SELL_RESERVE_V1,
+                 PendingTask.EXCHANGE_CLOSE_V1, PendingTask.EXCHANGE_EXPIRY_V1, PendingTask.SELL_RESERVE_V1,
                  PendingTask.SELL_CANCEL_V1, PendingTask.FILL_SETTLE_V1,
                  PendingTask.MANUFACTURING_PURCHASE_ORDER_V1,
                  PendingTask.MANUFACTURING_PRODUCTION_V1,
@@ -16994,11 +17031,10 @@ public final class WorldRuntime implements AutoCloseable {
                 scheduleCancelOrder(command.commandId(), command.taskId(),
                         command.dueTimeMillis(), command.actorOwnerId(), command.orderId());
             }
-            case PendingTask.EXCHANGE_CLOSE_V1 -> {
+            case PendingTask.EXCHANGE_CLOSE_V1, PendingTask.EXCHANGE_EXPIRY_V1 -> {
                 CloseMarketCommand command = readScheduleContent(commit, CloseMarketCommand.class,
                         "收盘");
-                scheduleCloseMarket(command.commandId(), command.taskId(),
-                        command.dueTimeMillis());
+                scheduleMarketClose(command.commandId(), command.taskId(), command.dueTimeMillis(), command.expiry());
             }
             case PendingTask.SELL_RESERVE_V1 -> {
                 ReserveCommand command = readScheduleContent(commit, ReserveCommand.class,
@@ -18460,7 +18496,7 @@ public final class WorldRuntime implements AutoCloseable {
             case PendingTask.FILL_SETTLE_V1 -> completeFill(task);
             case PendingTask.EXCHANGE_ORDER_V1 -> completeOrder(task);
             case PendingTask.EXCHANGE_CANCEL_V1 -> completeCancelOrder(task);
-            case PendingTask.EXCHANGE_CLOSE_V1 -> completeCloseMarket(task);
+            case PendingTask.EXCHANGE_CLOSE_V1, PendingTask.EXCHANGE_EXPIRY_V1 -> completeCloseMarket(task);
             case PendingTask.MANUFACTURING_PURCHASE_ORDER_V1,
                  PendingTask.MANUFACTURING_PRODUCTION_V1,
                  PendingTask.MANUFACTURING_SALES_CONTRACT_V1,
@@ -20418,7 +20454,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         SocialMessageModel.BeginOutcome begin = SocialMessageModel.beginSend(before.state(),
                 previous.information().information(),
-                before.context(registry, requireSocialRecall()), payload.personPartyId(),
+                socialContext(previous), payload.personPartyId(),
                 payload.commandId(), draft.toPartyId(), draft.channel(), draft.title(),
                 draft.body(), previous.timeMillis());
         SocialRun replay = before.withState(begin.state());
@@ -24341,6 +24377,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (exchange == null) {
             throw new IOException("撮合档案缺少订单子集状态");
         }
+        if (RunManifest.usesMarketSessions(manifest.runId()) && MarketSessions.firstExpiry(exchange) < candidate.timeMillis())
+            throw new IOException("交易日历清退边界之后仍有逾期挂单");
         if (candidate.securities() == null) {
             throw new IOException("撮合档案缺少持仓子集状态");
         }
@@ -29503,6 +29541,7 @@ public final class WorldRuntime implements AutoCloseable {
             PersonalOpeningProfiles.append(root, person, now, PersonalMarket.accounts(snap.roles(), person),
                     orderedOpenings, snap.accounts(), snap.exchange());
         }
+        if (RunManifest.usesMarketSessions(manifest.runId())) MarketSessions.describe(root, now, snap.exchange().closed());
         if ("office-policy-v1".equals(manifest.dataVersions().get("media-editorial-view")) && snap.media() != null) {
             for (var office : snap.roles().access().appointments()) {
                 if (!office.personPartyId().equals(person) || !office.activeAt(now)) continue;
@@ -30217,7 +30256,7 @@ public final class WorldRuntime implements AutoCloseable {
                     + duration);
         }
         requireSocialFocusFree(person, state);
-        SocialMessageModel.Context context = run.context(registry, requireSocialRecall());
+        SocialMessageModel.Context context = socialContext(state);
         SocialMessageModel.BeginOutcome begin = SocialMessageModel.beginSend(run.state(),
                 state.information().information(), context, person, internalCommand,
                 draft.toPartyId(), draft.channel(), draft.title(), draft.body(), now);
@@ -30367,7 +30406,7 @@ public final class WorldRuntime implements AutoCloseable {
         String commandId = body.commandId();
         // 执行时点 = max(到期, 当前世界时间)：只吸收"世界已经走过到期"，绝不写未来
         long now = Math.max(task.dueTimeMillis(), base.timeMillis());
-        SocialMessageModel.Context context = run.context(registry, requireSocialRecall());
+        SocialMessageModel.Context context = socialContext(base);
         InformationModel.State info = base.information().information();
         InformationRun infoRun = base.information();
         SocialRun after = run;
@@ -30482,6 +30521,12 @@ public final class WorldRuntime implements AutoCloseable {
         return "social:deliver:" + messageId;
     }
 
+    private SocialMessageModel.Context socialContext(WorldState frame) {
+        var social = frame.social();
+        return new SocialMessageModel.Context(registry, requireSocialRecall(), social.config(), social.contacts(),
+                "appointment-pair-v1".equals(manifest.dataVersions().get("fund-office-contacts")) ? frame.roles().access() : null);
+    }
+
     /** 按标识取消息元数据。 */
     private static SocialMessageModel.Message messageOf(SocialMessageModel.State social,
                                                         String messageId) {
@@ -30548,7 +30593,7 @@ public final class WorldRuntime implements AutoCloseable {
         // 与纯核 recallable 同口径（衰减阈值，不看 maxItems），且不含对方屏蔽条件
         List<InterviewRun.ContactEntry> reachable = social == null || info == null ? List.of()
                 : SocialMessageModel.recallableContacts(social.state(), info,
-                        social.context(registry, requireSocialRecall()), person, now);
+                        socialContext(snap), person, now);
         return new SocialRun.SocialView(person, inbox, outbox, reachable, read);
     }
 
@@ -31699,6 +31744,11 @@ public final class WorldRuntime implements AutoCloseable {
                     break;
                 }
                 RoleTradingModel.TargetVersion version = parent.current();
+                String denial = marketRejection(parent.symbol(), now);
+                if (denial != null) {
+                    reason = denial;
+                    break;
+                }
                 WorldExchange.Outcome outcome = WorldExchange.submit(exchange, accounts, securities,
                         task.taskId(), payload.commandId(), parent.productOwnerId(),
                         parent.accountId(), parent.symbol(), version.side(), OrderType.LIMIT,

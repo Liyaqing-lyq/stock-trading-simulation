@@ -301,7 +301,7 @@ public final class ComposedWorldScenario {
                     i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
                     0L, end, null));
         }
-        boolean eightDesks = RunManifest.MEDIA_DESKS_RUN_ID.equals(manifest.runId());
+        boolean eightDesks = RunManifest.usesMediaDesks(manifest.runId());
         if (eightDesks) MediaDesks.appoint(appointments, end);
         List<String> readers = new ArrayList<>(List.of("alice", "bob", "carol", "dave", "erin",
                 WorldWebScenario.INVESTOR));

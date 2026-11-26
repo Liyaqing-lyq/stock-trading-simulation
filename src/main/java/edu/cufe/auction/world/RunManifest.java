@@ -83,15 +83,46 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 同一十公司开局下的八家独立采编机构。 */
     public static final String MEDIA_DESKS_RUN_ID = "web-media-desks-operating-v1";
 
+    /** 合并已登记的分项能力，供同一开局的受限角色检验使用。 */
+    public static final String INTEGRATED_RUN_ID = "web-integrated-operating-v1";
+
+    /** 是否开放借款人与银行经理的授信决定。 */
+    public static boolean usesCreditDecisions(String id) {
+        return CREDIT_DECISIONS_RUN_ID.equals(id) || INTEGRATED_RUN_ID.equals(id);
+    }
+
+    /** 是否启用八家媒体的任职和采编规则。 */
+    public static boolean usesMediaDesks(String id) {
+        return MEDIA_DESKS_RUN_ID.equals(id) || INTEGRATED_RUN_ID.equals(id);
+    }
+
+    /** 是否启用基金在岗人员工作地址。 */
+    public static boolean usesFundContacts(String id) {
+        return FUND_CONTACTS_RUN_ID.equals(id) || INTEGRATED_RUN_ID.equals(id);
+    }
+
+    /** 是否按实验交易时段受理申报。 */
+    public static boolean usesMarketSessions(String id) {
+        return MarketSessions.RUN_ID.equals(id) || INTEGRATED_RUN_ID.equals(id);
+    }
+
     /** 有本人开局自述和实际资产对照的经营档。 */
     public static final String PERSONAL_PROFILES_RUN_ID = "web-personal-profiles-operating-v1";
 
     /** 延续个人档并登记基金产品的实际受托账册与四岗程序。 */
     public static final String FUND_MANDATE_RUN_ID = "web-fund-mandate-operating-v1";
 
+    /** 带按收发双方任职核验的基金内部工作地址。 */
+    public static final String FUND_CONTACTS_RUN_ID = "web-fund-office-contacts-operating-v1";
+
+    /** 是否发布机构产品的开局委托书。 */
+    public static boolean usesFundMandate(String runId) {
+        return FUND_MANDATE_RUN_ID.equals(runId) || usesFundContacts(runId);
+    }
+
     /** 指定档是否继承个人档的资料、检索与互动。 */
     public static boolean usesPersonalProfiles(String runId) {
-        return PERSONAL_PROFILES_RUN_ID.equals(runId) || FUND_MANDATE_RUN_ID.equals(runId);
+        return PERSONAL_PROFILES_RUN_ID.equals(runId) || usesFundMandate(runId);
     }
 
     /** 继承持续角色档、为九家非银行发行人分别登记授信科目的实验档。 */
@@ -102,13 +133,13 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** 是否使用分发行人的授信账。 */
     public static boolean usesIssuerCredit(String runId) {
-        return ISSUER_CREDIT_RUN_ID.equals(runId) || CREDIT_DECISIONS_RUN_ID.equals(runId);
+        return ISSUER_CREDIT_RUN_ID.equals(runId) || usesCreditDecisions(runId);
     }
 
     /** 判断运行是否采用三个独立投资者及持续角色输入。 */
     public static boolean usesContinuingRoles(String runId) {
         return CONTINUING_ROLES_RUN_ID.equals(runId) || usesIssuerCredit(runId)
-                || usesPersonalProfiles(runId) || MEDIA_DESKS_RUN_ID.equals(runId);
+                || usesPersonalProfiles(runId) || usesMediaDesks(runId) || usesMarketSessions(runId);
     }
 
     /** 新经营档冻结的角色与账户配置版本。 */
@@ -1198,12 +1229,14 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
             if (usesPersonalProfiles(runId)) expectedData.putAll(personalProfilePolicies());
-            if (FUND_MANDATE_RUN_ID.equals(runId)) {
+            if (usesFundContacts(runId)) expectedData.put("fund-office-contacts", "appointment-pair-v1");
+            if (usesFundMandate(runId)) {
                 expectedData.put("fund-mandate-document", "opening-register-v1");
                 expectedData.put("wait-empty-args", "allow-empty-object-v1");
             }
-            if (MEDIA_DESKS_RUN_ID.equals(runId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
-            if (CREDIT_DECISIONS_RUN_ID.equals(runId)) expectedData.put("issuer-credit-decisions", "manager-loan-v1");
+            if (usesMediaDesks(runId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (usesMarketSessions(runId)) expectedData.put(MarketSessions.KEY, MarketSessions.VERSION);
+            if (usesCreditDecisions(runId)) expectedData.put("issuer-credit-decisions", "manager-loan-v1");
             if (usesIssuerCredit(runId)) expectedData.put("issuer-credit", "separate-loan-ledgers-v1");
             if (usesContinuingRoles(runId)) {
                 expectedData.putAll(CONTINUING_ROLE_POLICIES);

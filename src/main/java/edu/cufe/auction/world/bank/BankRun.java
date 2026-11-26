@@ -94,6 +94,7 @@ public record BankRun(String runId, String configFingerprint, String profileFing
             throw new IllegalArgumentException(Reasons.STATE_FINGERPRINT_MISMATCH + ":profile");
         }
         BankState state = BankPersistence.readState(stateJson, config, accounts, runId);
+        if (state.chart().profile() != config.profile()) config = BankConfigSnapshot.of(config).toConfig(state.chart().profile());
         CustodyBook book = readCustody(config, state, accounts);
         return new Decoded(config, state, book);
     }

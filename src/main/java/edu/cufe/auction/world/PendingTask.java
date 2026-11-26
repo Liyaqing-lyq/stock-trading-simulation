@@ -47,6 +47,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
 
     /** 世界收盘：受信系统动作，撤销全簿并释放冻结。 */
     public static final String EXCHANGE_CLOSE_V1 = "EXCHANGE_CLOSE_V1";
+    /** 交易规则时点清退适用的挂单，保留原成交与产权。 */
+    public static final String EXCHANGE_EXPIRY_V1 = "EXCHANGE_EXPIRY_V1";
 
     /** 外部管理夹具：到期形成采购承诺并按固定耗时自动排到货。 */
     public static final String MANUFACTURING_PURCHASE_ORDER_V1 = "MANUFACTURING_PURCHASE_ORDER_V1";
@@ -424,7 +426,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  ROLE_TRADING_APPOINTMENT_END_V1, ROLE_TRADING_HALT_RELEASE_V1,
                  INTERVIEW_START_GATE_V1, INTERVIEW_MISS_GATE_V1,
                  INTERVIEW_END_GATE_V1, INTERVIEW_TTL_GATE_V1,
-                 INTERVIEW_DIALOGUE_DEADLINE_V1 -> {
+                 EXCHANGE_EXPIRY_V1, INTERVIEW_DIALOGUE_DEADLINE_V1 -> {
                 if (phase != WorldScheduler.Phase.RULES) {
                     throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
                 }

@@ -33,7 +33,7 @@ class PersonalMarketTest {
         for(var row : observation.path("tools")) if(row.path("name").asText().equals(name)) return true;
         return false;
     }
-    private static DecisionRun.ActionRef decide(WorldRuntime w,String person,String action,String tool,ObjectNode args) throws Exception {
+    static DecisionRun.ActionRef decide(WorldRuntime w,String person,String action,String tool,ObjectNode args) throws Exception {
         return decide(w, person, action, tool, input -> args, "定向测试本人的交易决定");
     }
 

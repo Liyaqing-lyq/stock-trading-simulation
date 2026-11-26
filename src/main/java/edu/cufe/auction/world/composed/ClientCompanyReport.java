@@ -43,13 +43,39 @@ public record ClientCompanyReport(String partyKey, String ownerId,
                                   BigDecimal loanPrincipal, BigDecimal loanOnBook,
                                   BigDecimal writtenOff, BigDecimal interestReceivable,
                                   BigDecimal netFinancialAssets,
+                                  List<String> notes, List<String> unsupported,
+                                  @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY)
+                                  List<AssignedPosition> assignedClaims) {
+
+    /** 客户为借款人或受让人时可见的债权。名义未偿与购买方剩余成本分别列示。 */
+    public record AssignedPosition(String claimId, String borrower, String holder, String sellerBank,
+                                   BigDecimal principal, BigDecimal interestReceivable,
+                                   @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                   BigDecimal remainingCost) { }
+
+    /** 兼容只有原始贷款关系的报表构造。 */
+    public ClientCompanyReport(String partyKey, String ownerId,
+                                  List<String> cashAccountIds, BigDecimal cash,
+                                  boolean depositDeclared, List<String> depositBanks,
+                                  BigDecimal deposits,
+                                  BigDecimal depositInterest,
+                                  BigDecimal custodyBeneficial,
+                                  List<LoanLine> loans,
+                                  BigDecimal loanPrincipal, BigDecimal loanOnBook,
+                                  BigDecimal writtenOff, BigDecimal interestReceivable,
+                                  BigDecimal netFinancialAssets,
                                   List<String> notes, List<String> unsupported) {
+        this(partyKey, ownerId, cashAccountIds, cash, depositDeclared, depositBanks, deposits, depositInterest,
+                custodyBeneficial, loans, loanPrincipal, loanOnBook, writtenOff, interestReceivable,
+                netFinancialAssets, notes, unsupported, List.of());
+    }
 
     /** 校验、排序并冻结金额与清单。 */
     public ClientCompanyReport {
         cashAccountIds = List.copyOf(cashAccountIds);
         depositBanks = List.copyOf(depositBanks);
         loans = List.copyOf(loans);
+        assignedClaims = List.copyOf(assignedClaims);
         notes = List.copyOf(notes);
         unsupported = List.copyOf(unsupported);
         cash = Money.scale2(cash);
@@ -173,9 +199,23 @@ public record ClientCompanyReport(String partyKey, String ownerId,
             writtenOff = writtenOff.add(loan.writtenOff());
             interest = interest.add(loan.interestReceivable());
         }
-        BigDecimal net = cash.add(deposits).add(depositInterest).add(beneficial)
+        var assignments = new ArrayList<AssignedPosition>();
+        BigDecimal heldCost = Money.zero();
+        for (var claim : new TreeMap<>(state.assignedClaims()).values()) {
+            boolean borrower = partyKey.equals(claim.borrower()), holder = partyKey.equals(claim.holder());
+            if (!borrower && !holder) continue;
+            assignments.add(new AssignedPosition(claim.claimId(), claim.borrower(), claim.holder(), claim.sellerBank(),
+                    claim.nominal(), claim.interestReceivable(), holder ? claim.costOutstanding() : null));
+            if (borrower) {
+                principal = principal.add(claim.nominal());
+                interest = interest.add(claim.interestReceivable());
+            }
+            if (holder) heldCost = heldCost.add(claim.costOutstanding());
+        }
+        BigDecimal net = cash.add(deposits).add(depositInterest).add(beneficial).add(heldCost)
                 .subtract(principal).subtract(interest);
         List<String> notes = new ArrayList<>();
+        if (!assignments.isEmpty()) notes.add("债权转让保留原借款人名义负债；持有人按剩余购买成本列入净金融资产。");
         notes.add("名义本金含已核销但仍可追索部分；核销不等于客户免债");
         notes.add("应计未付利息单列并从净金融资产扣除；应收存款利息计入客户权利");
         if (!depositDeclared) {
@@ -191,7 +231,7 @@ public record ClientCompanyReport(String partyKey, String ownerId,
                 "未接：多币种折算与减值后预期信用损失重估");
         return new ClientCompanyReport(partyKey, ownerId, cashAccounts, cash, depositDeclared,
                 depositBanks, deposits, depositInterest, beneficial, loans, principal, onBook,
-                writtenOff, interest, net, notes, unsupported);
+                writtenOff, interest, net, notes, unsupported, assignments);
     }
 
     /** @return 便于断言的固定文本 */

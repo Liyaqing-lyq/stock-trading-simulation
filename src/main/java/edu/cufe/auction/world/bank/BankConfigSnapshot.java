@@ -145,7 +145,9 @@ public record BankConfigSnapshot(
      *
      * @return 档案
      */
-    public BankConfig toConfig() {
+    public BankConfig toConfig() { return toConfig(profile); }
+
+    BankConfig toConfig(BankingProfile keyFormat) {
         return new BankConfig.Builder()
                 .archiveId(archiveId)
                 .version(version)
@@ -177,7 +179,7 @@ public record BankConfigSnapshot(
                 .coverageRule(coverageRule)
                 .referenceClues(new ArrayList<>(referenceClues))
                 .provenanceStatus(provenanceStatus)
-                .profile(profile)
+                .profile(keyFormat)
                 .build();
     }
 

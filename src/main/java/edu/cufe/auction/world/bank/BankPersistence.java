@@ -130,6 +130,13 @@ public final class BankPersistence {
                 || !trusted.fingerprint().equals(snapshot.configFingerprint())) {
             throw new IllegalArgumentException("STATE_CONFIG_MISMATCH");
         }
+        // 原参考档以 BANK-X|主体 为键。相同注册表也能显式使用带长度的自定义键，按存档本身识别。
+        if (trusted.profile() != BankingProfile.reference()
+                && trusted.profile().fingerprint().equals(BankingProfile.reference().fingerprint())
+                && java.util.stream.Stream.of(snapshot.loans(), snapshot.depositAccounts(), snapshot.facilityAccounts(),
+                        snapshot.commitmentRecords()).flatMap(map -> map.keySet().stream())
+                        .anyMatch(key -> BankChart.BANKS.stream().anyMatch(bank -> key.startsWith(bank + "|"))))
+            trusted = BankConfigSnapshot.of(trusted).toConfig(BankingProfile.reference());
         validateReferences(snapshot, trusted);
         BankState state;
         try {

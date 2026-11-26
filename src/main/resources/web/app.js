@@ -1131,8 +1131,10 @@ async function loadMarketHistory(generation = state.generation,
 function renderMarketHistory(view) {
   $("market-cut").textContent = view.runId + " · 记录 " + view.position
     + " · " + view.timeMillis + " 毫秒";
-  const statusText = view.available ? (view.marketClosed ? "撮合已收盘" : "撮合开放")
-    : "未启用撮合";
+  const sessionLabels = { OPEN: "撮合开放", PREOPEN: "尚未开盘", LUNCH_BREAK: "午间休市", AFTER_CLOSE: "当日已收盘",
+    WEEKEND: "周末休市", SECURITY_HALTED: "该证券暂停交易", PERMANENTLY_CLOSED: "交易所已关闭" };
+  const statusText = sessionLabels[view.selectedSessionStatus] || (view.available
+    ? (view.marketClosed ? "撮合已收盘" : "撮合开放") : "未启用撮合");
   $("market-summary").textContent = statusText + " · 口径 " + basisLabel(view.basis)
     + " · 有成交桶 " + view.totalBars
     + (view.truncated ? "（仅显示最近 500 根）" : "");
