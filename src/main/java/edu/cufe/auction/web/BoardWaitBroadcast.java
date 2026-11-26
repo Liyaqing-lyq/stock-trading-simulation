@@ -23,7 +23,7 @@ final class BoardWaitBroadcast {
         String company = director.path("companyPartyId").asText();
         if (!("director:" + company).equals(objectives.get(0).path("id").asText())
                 || !objectives.get(0).path("id").equals(statement.at("/ownStatement/objective"))
-                || !quietDirector(input, director, last, now)) return false;
+                || !quietDirector(input, facts, director, last, now)) return false;
         return onlyNewPlatformPost(previous, facts);
     }
 
@@ -77,7 +77,7 @@ final class BoardWaitBroadcast {
         return previous.equals(restored);
     }
 
-    private static boolean quietDirector(JsonNode input, JsonNode director, long last, long now) {
+    private static boolean quietDirector(JsonNode input, JsonNode facts, JsonNode director, long last, long now) {
         // 交易账户、其他任职、已跟进的非会议资料或公开判断各有其自己的信息需求。
         for (String path : List.of("/appointments", "/profile/accounts", "/profile/holdings", "/profile/activeReadings",
                 "/research", "/targets", "/children", "/cognition/beliefs", "/cognition/claims", "/cognition/sourceReliability",
@@ -101,7 +101,7 @@ final class BoardWaitBroadcast {
         }
         if (!waitingForVote) return false;
         materialIds.add(director.path("decisionMaterialDocId").asText());
-        for (JsonNode read : input.at("/profile/readExperiences"))
+        for (JsonNode read : facts.at("/profile/readExperiences"))
             if (!materialIds.contains(read.path("docId").asText())) return false;
         return true;
     }

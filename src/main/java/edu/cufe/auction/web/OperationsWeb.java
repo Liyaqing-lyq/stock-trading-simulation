@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
+import edu.cufe.auction.world.BusinessReceipts;
 import edu.cufe.auction.world.CompanyOperationsRun;
 import edu.cufe.auction.world.ManufacturingIntake;
+import edu.cufe.auction.world.ManufacturingUpgrade;
 import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.WorldRuntime;
 import edu.cufe.auction.world.composed.ComposedCompanyReport;
@@ -20,6 +22,15 @@ final class OperationsWeb {
             .addSerializer(Long.TYPE, ToStringSerializer.instance));
     private OperationsWeb() { }
 
+    private static boolean privateView(WorldRuntime world, String person) {
+        return person != null && BusinessReceipts.enabled(world.profile().manifest());
+    }
+
+    static Map<String, Object> acknowledgment(WorldRuntime world, String person, String receipt) {
+        return privateView(world, person) ? Map.of("receipt", receipt)
+                : Map.of("position", Long.toString(world.snapshot().position()), "receipt", receipt);
+    }
+
     record Command(long expectedPosition, String commandId, String taskId, long dueTimeMillis,
                    long durationMillis, String companyId, CompanyOperationsRun.Action action,
                    CompanyOperationsRun.Fields fields) { }
@@ -30,8 +41,10 @@ final class OperationsWeb {
     static String scheduleResource(WorldRuntime world, String person, ResourceCommand command) throws Exception {
         if (world.snapshot().position() != command.expectedPosition()) throw new WorldWebHost.PositionMismatch(world.snapshot().position());
         var resource = world.operationsRun().orElseThrow().resource();
+        boolean subscription = command.request().action() == edu.cufe.auction.world.ResourceOperations.Action.SUBSCRIBE_SHARES;
         if (resource == null || !resource.companyPartyId().equals(command.companyId()) || person == null
-                || !world.isActiveManager(command.companyId(), person, world.snapshot().timeMillis())) throw new IllegalArgumentException("本人没有该资源公司经理任职");
+                || (subscription ? world.primaryOfferFor(person).isEmpty() : !world.isActiveManager(command.companyId(), person, world.snapshot().timeMillis())))
+            throw new IllegalArgumentException(subscription ? "当前无本人可认购的要约" : "本人没有该资源公司经理任职");
         return world.openRoleSession(person).resourceAction(command.commandId(), command.taskId(), command.dueTimeMillis(),
                 command.companyId(), command.request(), command.durationMillis());
     }
@@ -86,6 +99,10 @@ final class OperationsWeb {
         }
         if (lifecycle && person == null) result.put("intakeLifecycle",
                 Map.of("fromVersion", ManufacturingIntake.ACTIVE, "toVersion", ManufacturingIntake.RUNOFF));
+        boolean upgrade = run != null && ManufacturingUpgrade.VERSION.equals(world.profile().manifest().dataVersions().get(ManufacturingUpgrade.KEY));
+        if (upgrade && person == null) result.put("manufacturingUpgrade", Map.of(
+                "fromVersion", ManufacturingUpgrade.ORIGINAL, "toVersion", ManufacturingUpgrade.EXTENDED,
+                "batches", JSON.valueToTree(run.upgradeBatches().values())));
         if (run != null) for (var company : run.companies()) {
             String id = company.companyPartyId();
             boolean manager = person != null && world.isActiveManager(id, person, snapshot.timeMillis());
@@ -93,6 +110,10 @@ final class OperationsWeb {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("companyId", id);
             if (lifecycle) row.put("intakeVersion", company.currentIntakeVersion());
+            if (upgrade) {
+                row.put("templateVersion", ManufacturingUpgrade.templateVersion(run,id));
+                row.put("newProcurementLeadMillis", Long.toString(ManufacturingUpgrade.leadMillis(run,id)));
+            }
             row.put("name", world.openingRegistry().orElseThrow().parties().stream()
                     .filter(party -> party.partyId().equals(id)).map(party -> party.name()).findFirst().orElse(id));
             row.put("actions", manager ? world.operationsActions(id) : List.of());
@@ -114,13 +135,17 @@ final class OperationsWeb {
         }
         if (run != null && run.resource() != null) {
             var resource = run.resource(); String id = resource.companyPartyId();
+            var offer = world.primaryOfferFor(person);
             boolean manager = person != null && world.isActiveManager(id, person, snapshot.timeMillis());
             if (person == null || manager) {
                 var reports = run.reports().values().stream().filter(report -> id.equals(report.companyPartyId())).toList();
                 var plan = edu.cufe.auction.world.ResourceDecisionTools.observation(resource, world.boardOfCompany(id).orElseThrow(),
-                        snapshot.timeMillis(), snapshot.accounts().get(resource.ledger().config().companyAccountId()).cash(), reports);
+                        snapshot.timeMillis(), snapshot.accounts().get(resource.ledger().config().companyAccountId()).cash(), reports,
+                        "board-wind-down-v1".equals(world.profile().manifest().dataVersions().get("resource-cessation")));
+                if (!offer.isEmpty()) ((com.fasterxml.jackson.databind.node.ObjectNode)plan.path("actionFields")).put("SUBSCRIBE_SHARES","meetingId, shares");
                 List<String> actions = new ArrayList<>(); plan.path("actionFields").fieldNames().forEachRemaining(actions::add);
                 Map<String, Object> row = new LinkedHashMap<>();
+                if (!offer.isEmpty()) row.put("primaryOffer",offer);
                 row.put("kind", "RESOURCE"); row.put("companyId", id); row.put("name", "资源公司：煤炭与发电一体化");
                 row.put("actions", manager ? actions : List.of()); row.put("plan", plan);
                 row.put("financial", JSON.valueToTree(ComposedCompanyReport.of(world, id)));
@@ -128,6 +153,9 @@ final class OperationsWeb {
                 row.put("reports", JSON.valueToTree(reports));
                 if (person == null) row.put("scenarioTruth", JSON.valueToTree(resource));
                 companies.add(row);
+            } else if (!offer.isEmpty()) {
+                companies.add(Map.of("kind","RESOURCE","companyId",id,"name","资源公司普通股认购",
+                        "primaryOffer",offer,"actions",List.of("SUBSCRIBE_SHARES"),"plan",Map.of("actionFields",Map.of("SUBSCRIBE_SHARES","meetingId, shares"))));
             }
         }
         result.put("enabled", !companies.isEmpty());
@@ -184,6 +212,16 @@ final class OperationsWeb {
             }
         }
         result.put("enabled", !companies.isEmpty());
+        if (privateView(world, person)) {
+            for (var company : companies) {
+                if (company.get("reports") instanceof com.fasterxml.jackson.databind.node.ArrayNode reports) {
+                    var receipts = BusinessReceipts.rows(reports);
+                    company.put("reports", receipts);
+                    if (company.get("plan") instanceof com.fasterxml.jackson.databind.node.ObjectNode plan && plan.has("reports"))
+                        plan.set("reports", receipts);
+                }
+            }
+        }
         result.put("companies", companies);
         result.put("note", person == null ? "上帝审计含冻结情景；经理只看本公司已发生台账和公开方案。"
                 : "仅显示本人当前管理的公司。排程不等于完成，开始与完成时均复核任职和工时。");

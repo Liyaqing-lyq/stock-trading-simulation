@@ -31,7 +31,7 @@ class ExDividendPriceBandTest {
         assertTrue(result.accepted(),name+" "+result.reason());
         return result;
     }
-    private static void approve(WorldRuntime w,long now) throws Exception {
+    static void approve(WorldRuntime w,long now) throws Exception {
         var charter=w.boardOfCompany(ISSUER).orElseThrow().board().charter();
         var voters=charter.seats().stream().map(BoardModel.Seat::partyId).toList();
         var chair=charter.seats().stream().filter(s->charter.chairSeatId().equals(s.seatId())).findFirst().orElseThrow().partyId();

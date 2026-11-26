@@ -238,7 +238,7 @@ final class CompanyOperationsRuntime {
         Outcome outcome;
         try {
             outcome = call(ledger, information, action, fields, commandId, personPartyId, actor,
-                    now, funds, payer);
+                    now, funds, payer, ManufacturingUpgrade.leadMillis(run, companyPartyId));
         } catch (RuntimeException invalid) {
             return Applied.reject(run, board, funds, "OPERATIONS_REJECTED:" + invalid.getMessage());
         }
@@ -302,7 +302,7 @@ final class CompanyOperationsRuntime {
                                 CompanyOperationsRun.Action action,
                                 CompanyOperationsRun.Fields fields, String commandId,
                                 String person, String actor, long now, FundState funds,
-                                FundPayer payer) {
+                                FundPayer payer, long leadMillis) {
         ManufacturingTemplateModel.FundOutcome funded;
         ManufacturingTemplateModel.Outcome plain;
         String business = "";
@@ -310,7 +310,7 @@ final class CompanyOperationsRuntime {
             case ORDER_MATERIAL -> {
                 business = purchaseOrderIdFor(commandId);
                 plain = ManufacturingTemplateModel.orderMaterial(ledger, now, actor, commandId,
-                        business, fields.materialId(), fields.quantity(), funds.accounts());
+                        business, fields.materialId(), fields.quantity(), funds.accounts(), leadMillis);
                 return new Outcome(plain.accepted(), plain.reason(), plain.state(),
                         new FundState(plain.accounts(), funds.bank(), funds.book()), business);
             }

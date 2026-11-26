@@ -24,6 +24,11 @@ package edu.cufe.auction.world;
 public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phase phase,
                           String kind, String payload) {
 
+    /** 本人已决定的基金申购、赎回或撤回。 */
+    public static final String OPEN_FUND_ORDER_V1 = "OPEN_FUND_ORDER_V1";
+    /** 受理申请后的统一确认或付款时钟。 */
+    public static final String OPEN_FUND_CYCLE_V1 = "OPEN_FUND_CYCLE_V1";
+
     /** 现金转账任务：在 COMPLETION 阶段结算资金。 */
     public static final String CASH_TRANSFER_V1 = "CASH_TRANSFER_V1";
 
@@ -363,6 +368,10 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
 
     /** 逐轮访谈：双方各发一轮（COMPLETION，schema15）。 */
     public static final String INTERVIEW_SPEAK_V1 = "INTERVIEW_SPEAK_V1";
+    /** 接待人或记者本人的现场合同指令。 */
+    public static final String ONSITE_ACTION_V1 = "ONSITE_ACTION_V1";
+    /** 已出发记者到站、按约返程或到家的实际确认时刻。 */
+    public static final String ONSITE_GATE_V1 = "ONSITE_GATE_V1";
 
     /** 逐轮访谈：回复期限门，到期结束真实会话（RULES，schema15）。 */
     public static final String INTERVIEW_DIALOGUE_DEADLINE_V1 = "INTERVIEW_DIALOGUE_DEADLINE_V1";
@@ -454,6 +463,9 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                             + " 必须落在 COMPLETION、RULES 或周期边界关期阶段，收到 " + phase);
                 }
             }
+            case OPEN_FUND_CYCLE_V1 -> {
+                if (phase != WorldScheduler.Phase.RULES) throw new IllegalArgumentException("基金确认与付款须在统一规则阶段");
+            }
             case TRANSFER_NOTICE_V1, INFORMATION_BELIEF_PUBLISH_FACT_V1 -> {
                 if (phase != WorldScheduler.Phase.DELIVERY) {
                     throw new IllegalArgumentException(kind + " 必须落在 DELIVERY 阶段，收到 " + phase);
@@ -509,7 +521,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
             case MEDIA_STORY_PROPOSE_V1, MEDIA_STORY_SUBMIT_V1, MEDIA_STORY_REVIEW_V1,
                  MEDIA_STORY_PUBLISH_V1, MEDIA_STORY_CORRECTION_V1, MEDIA_WORK_CANCEL_V1,
                  INTERVIEW_INVITE_V1, INTERVIEW_RESPOND_V1,
-                 INTERVIEW_CANCEL_V1, INTERVIEW_END_V1, INTERVIEW_SPEAK_V1,
+                 OPEN_FUND_ORDER_V1, INTERVIEW_CANCEL_V1, INTERVIEW_END_V1, INTERVIEW_SPEAK_V1, ONSITE_ACTION_V1, ONSITE_GATE_V1,
                  MEDIA_EVIDENCE_SHARE_V1, SOCIAL_BEGIN_V1, SOCIAL_FINISH_V1, SOCIAL_DELIVER_V1,
                  SOCIAL_BLOCK_V1, SOCIAL_UNBLOCK_V1,
                  BANK_ACTION_V1, GROUP_BEGIN_V1, GROUP_FINISH_V1, GROUP_PUBLISH_V1 -> {

@@ -79,6 +79,32 @@ class PersonalHoldingWeightsTest {
         }
     }
 
+    @Test void newSharesDiluteExistingOwnersOnlyAfterTheirActualObservation() throws Exception {
+        var journal=dir.resolve("historic-issue.journal");
+        var beforeDigest=new java.util.concurrent.atomic.AtomicReference<String>();
+        try(var w=ComposedIndustryScenario.openTenCompanyAutonomy(journal)) {
+            beforeDigest.set(edu.cufe.auction.world.composed.ResourceCessationTest.captureObservation(w,"nina","nina-cut"));
+            edu.cufe.auction.world.composed.ResourceCessationTest.vote(w,"issued",edu.cufe.auction.world.BoardModel.Topic.RESOURCE_PRIMARY_OFFER,4);
+            long due=w.snapshot().timeMillis()+2000;
+            w.openRoleSession("investor").resourceAction("pay","pay-work",due,"resources",new edu.cufe.auction.world.ResourceOperations.Request(
+                    edu.cufe.auction.world.ResourceOperations.Action.SUBSCRIBE_SHARES,Map.of("meetingId","issued","shares","40")),1000);
+            w.advanceTo(due);
+            var nina=w.roleView("nina"); var buyer=w.roleView("investor");
+            assertEquals(25,holding(nina,"RESOURCE").quantity());
+            assertEquals("2.4038",PersonalHoldingWeights.holdingWeights(w,nina).get(holding(nina,"RESOURCE")).get("issuedSharePercent"));
+            assertEquals("9.6154",PersonalHoldingWeights.holdingWeights(w,buyer).get(holding(buyer,"RESOURCE")).get("issuedSharePercent"));
+        }
+        try(var host=new WorldWebHost(()->{
+            var w=ComposedIndustryScenario.openTenCompanyAutonomy(journal);
+            return new WorldWebHost.Opened(w,w.profile().manifest().runId());
+        })) {
+            var history=host.portfolioHistory("nina",beforeDigest.get());
+            var holding=history.holdings().stream().filter(h->"RESOURCE".equals(h.get("symbol"))).findFirst().orElseThrow();
+            assertEquals("25",holding.get("quantity")); assertEquals("2.5000",holding.get("issuedSharePercent"));
+            assertThrows(Exception.class,()->host.portfolioHistory("omar",beforeDigest.get()));
+        }
+    }
+
     @Test void signedInPersonReceivesDistinctPercentagesAndNoOtherPersonsBalances() throws Exception {
         Path keys = dir.resolve("dummy-fixture.txt");
         Files.writeString(keys,java.util.stream.IntStream.rangeClosed(1,5)

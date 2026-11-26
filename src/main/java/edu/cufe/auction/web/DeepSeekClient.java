@@ -52,6 +52,8 @@ public final class DeepSeekClient {
     public static final String THINKING_HIGH_POLICY = "deepseek-thinking-high-v1";
     /** 请求体上限 64 KiB。 */
     public static final int MAX_REQUEST_BYTES = 64 * 1024;
+    /** 长角色材料经 JSON 转义并附带宿主系统提示后的本地 HTTP 请求上限。 */
+    static final int EXTENDED_REQUEST_BYTES = 1024 * 1024;
     /** 响应体上限 1 MiB。 */
     public static final int MAX_RESPONSE_BYTES = 1024 * 1024;
     /** 输出 token 下限。 */
@@ -102,7 +104,12 @@ public final class DeepSeekClient {
     /** 一次请求的输入（toString 只给形状，不含正文）。 */
     public record Request(String model, String systemText, String userText,
                           int maxOutputTokens, long timeoutMillis,
-                          @JsonInclude(JsonInclude.Include.NON_NULL) String providerPolicy) {
+                          @JsonInclude(JsonInclude.Include.NON_NULL) String providerPolicy, boolean extendedRoleInput) {
+
+        /** 既有适配器调用保留原 64 KiB 整包上限。 */
+        public Request(String model, String systemText, String userText, int maxOutputTokens, long timeoutMillis, String providerPolicy) {
+            this(model, systemText, userText, maxOutputTokens, timeoutMillis, providerPolicy, false);
+        }
 
         /** 旧五参请求保留关闭思考模式。 */
         public Request(String model, String systemText, String userText, int maxOutputTokens, long timeoutMillis) {
@@ -116,8 +123,8 @@ public final class DeepSeekClient {
             if (!MODEL_FLASH.equals(model) && !MODEL_PRO.equals(model)) {
                 throw new IllegalArgumentException("模型不在允许列表");
             }
-            requireText(systemText, "system 文本");
-            requireText(userText, "user 文本");
+            requireText(systemText, "system 文本", MAX_REQUEST_BYTES);
+            requireText(userText, "user 文本", extendedRoleInput ? EXTENDED_REQUEST_BYTES : MAX_REQUEST_BYTES);
             if (maxOutputTokens < MIN_OUTPUT_TOKENS || maxOutputTokens > MAX_OUTPUT_TOKENS) {
                 throw new IllegalArgumentException("输出 token 上限超出范围");
             }
@@ -370,8 +377,9 @@ public final class DeepSeekClient {
         } catch (IOException impossible) {
             throw new Failure(Failure.Code.PROTOCOL, "请求无法序列化", null);
         }
-        if (body.length > MAX_REQUEST_BYTES) {
-            throw new Failure(Failure.Code.REQUEST_REJECTED, "请求超过 64 KiB", null);
+        int maxBytes = request.extendedRoleInput() ? EXTENDED_REQUEST_BYTES : MAX_REQUEST_BYTES;
+        if (body.length > maxBytes) {
+            throw new Failure(Failure.Code.REQUEST_REJECTED, "请求超过 " + maxBytes / 1024 + " KiB", null);
         }
         return body;
     }
@@ -568,11 +576,11 @@ public final class DeepSeekClient {
         return endpoint;
     }
 
-    private static void requireText(String value, String label) {
+    private static void requireText(String value, String label, int maxLength) {
         if (value == null || value.isEmpty()) {
             throw new IllegalArgumentException(label + "不能为空");
         }
-        if (value.length() > MAX_REQUEST_BYTES) {
+        if (value.length() > maxLength) {
             throw new IllegalArgumentException(label + "过长");
         }
     }

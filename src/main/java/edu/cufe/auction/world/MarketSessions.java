@@ -10,6 +10,7 @@ public final class MarketSessions {
     static final long OPEN = 570 * MINUTE, BREAK = 690 * MINUTE, AFTERNOON = 780 * MINUTE, CLOSE = 900 * MINUTE;
     static final String SYMBOL = "HY1", END = "SESSION_END", HALT = "SECURITY_HALTED";
     static final long HALT_AT = 630 * MINUTE, RESUME_AT = 660 * MINUTE;
+    private static final java.util.List<Long> WEEKDAY_BOUNDARIES = java.util.List.of(OPEN,BREAK,AFTERNOON,CLOSE);
     private MarketSessions() { }
 
     static String rejection(String symbol, long now) {
@@ -30,6 +31,23 @@ public final class MarketSessions {
         if (clock >= CLOSE) return "AFTER_CLOSE";
         if (clock >= BREAK && clock < AFTERNOON) return "LUNCH_BREAK";
         return SYMBOL.equals(symbol) && now >= HALT_AT && now < RESUME_AT ? HALT : "OPEN";
+    }
+
+    /** 自动推进时对齐交易日、开闭市与已登记的临时停复牌时点。
+     * @param now 已确认的世界时点
+     * @param limit 本次推进的上界
+     * @return 不跨过下一次交易时段变化的目标
+     */
+    public static long nextBoundary(long now, long limit) {
+        long clock = now % DAY;
+        long distance = DAY - clock;
+        if (now / DAY % 7 < 5) {
+            for (long boundary : WEEKDAY_BOUNDARIES)
+                if (boundary > clock) { distance = boundary - clock; break; }
+        }
+        if (now < HALT_AT) distance = Math.min(distance,HALT_AT-now);
+        else if (now < RESUME_AT) distance = Math.min(distance,RESUME_AT-now);
+        return distance < limit-now ? now + distance : limit;
     }
 
     static long firstExpiry(WorldExchange.State exchange) {

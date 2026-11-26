@@ -168,7 +168,8 @@ public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider
         }
         DecisionModel.Route route = plan.route();
         DeepSeekClient.Request request = new DeepSeekClient.Request(route.model(), systemText(call),
-                call.inputText(), route.maxOutputTokens(), timeoutMillis, route.providerPolicy());
+                call.inputText(), route.maxOutputTokens(), timeoutMillis, route.providerPolicy(),
+                DecisionModel.EXTENDED_ROLE_INPUT.equals(plan.inputPolicy()));
         try {
             DeepSeekClient client = clients.apply(route.slotId());
             if (client == null) {

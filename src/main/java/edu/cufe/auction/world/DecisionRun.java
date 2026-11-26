@@ -475,6 +475,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("lastTradeAtMillis", quote.lastTradeAtMillis());
             node.put("bestBid", quote.bestBid() == null ? null : money(quote.bestBid()));
             node.put("bestAsk", quote.bestAsk() == null ? null : money(quote.bestAsk()));
+            if (quote.bestBidQuantity() != null) { node.put("bestBidQuantity",quote.bestBidQuantity()); node.put("bestAskQuantity",quote.bestAskQuantity()); }
             if (quote.priceBand() != null) node.set("priceBand", MAPPER.valueToTree(quote.priceBand()));
             if (quote.issuerResolution() != null) node.set("issuerResolution", MAPPER.valueToTree(quote.issuerResolution()));
             if (engineering != null && RunManifest.ROLE_MARKET_VALUATION.equals(engineering.path("marketValuationPolicy").asText())) {
@@ -640,6 +641,19 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("filled", target.filled());
             node.put("leaves", target.leaves());
             node.put("remaining", target.remaining());
+            if (target.current().sourceResearchId() != null) {
+                node.put("sourceResearchId", target.current().sourceResearchId());
+                node.put("haltedUntilMillis", target.haltedUntilMillis());
+                RoleTradingView.ReviewView review = target.review();
+                if (review == null) {
+                    node.putNull("review");
+                } else {
+                    node.putObject("review").put("riskRevision", review.revision()).put("approved", review.approved())
+                            .put("maxTotalQuantity", review.maxTotal()).put("maxChildQuantity", review.maxChild())
+                            .put("priceLimit", money(review.priceLimit())).put("validUntilMillis", review.validUntil())
+                            .put("reason", review.reason());
+                }
+            }
         }
 
         ArrayNode children = root.putArray("children");
@@ -754,6 +768,15 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("name", tool);
             Long millis = config.actionMillisByTool().get(tool);
             node.put("actionMillis", millis == null ? 0L : millis);
+            if (RoleTradingView.TOOL_MEDIA_SUBMIT.equals(tool) && editorialOffice
+                    && "personal-read-index-v1".equals(engineering.path("editorialEvidenceContract").asText())) {
+                var items = node.putObject("arrayItems");
+                items.putObject("evidence").put("docId", "string").put("version", "long").put("index", "long");
+                items.putObject("aliases").put("rootDocId", "string").put("rootVersion", "long").put("label", "string");
+                node.put("evidenceSource", "每条从本人 profile.readExperiences 中仍可引用的 lastReadRef 取齐三项。"
+                        + "index 是本人该版本的阅读序号，目录、他人提及和转述均不授予原件引用权。"
+                        + "aliases 可省略。每个标签需绑定本版证据中的真实根及版本。");
+            }
             ArrayNode parameters = node.putArray("parameters");
             for (String[] field : toolParameters(tool, toolContractVersion)) {
                 ObjectNode parameter = parameters.addObject();
@@ -777,25 +800,36 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         EngineeringManagerHistory.project(root);
         PersonalContactHistory.project(root);
         if (BoardProcedureView.VERSION.equals(roleInputFormat) || RoleInputTables.enabled(roleInputFormat)) BoardProcedureView.project(root);
-        return renderInput(root, roleInputFormat, config.limits().maxInputChars());
+        return renderInput(root, roleInputFormat, config.limits().maxInputChars(), DecisionModel.inputByteLimit(config.limits().inputPolicy()));
     }
 
     static String renderInput(ObjectNode root, String format, long maxChars) {
+        return renderInput(root, format, maxChars, DecisionModel.MAX_INPUT_BYTES);
+    }
+
+    private static String renderInput(ObjectNode root, String format, long maxChars, long maxBytes) {
         try {
             String ordinary = MAPPER.writeValueAsString(root);
-            if (!RoleInputTables.enabled(format) || fitsInput(ordinary, maxChars)) return ordinary;
+            if (!RoleInputTables.enabled(format) || fitsInput(ordinary, maxChars, maxBytes)) return ordinary;
             RoleInputTables.compact(root);
             String tables = MAPPER.writeValueAsString(root);
-            if (!RoleInputTables.BOARD_VERSION.equals(format) || fitsInput(tables, maxChars)) return tables;
+            boolean mixedMarket = RoleInputTables.MIXED_MARKET_FORMAT.equals(format);
+            if (!(RoleInputTables.BOARD_VERSION.equals(format) || mixedMarket) || fitsInput(tables, maxChars, maxBytes)) return tables;
             RoleInputTables.compactBoardConditions(root);
+            String board = MAPPER.writeValueAsString(root);
+            if (!mixedMarket || fitsInput(board, maxChars, maxBytes)) return board;
+            RoleInputTables.compactMixedMarket(root);
+            String market = MAPPER.writeValueAsString(root);
+            if (fitsInput(market, maxChars, maxBytes)) return market;
+            RoleInputTables.compactPlanningAndHistory(root);
             return MAPPER.writeValueAsString(root);
         } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
             throw new IllegalStateException("无法生成决定输入", failure);
         }
     }
 
-    private static boolean fitsInput(String text, long maxChars) {
-        return text.length() <= maxChars && text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= DecisionModel.MAX_INPUT_BYTES;
+    private static boolean fitsInput(String text, long maxChars, long maxBytes) {
+        return text.length() <= maxChars && text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= maxBytes;
     }
 
     /** 一次开决定的请求；字段全部由可信宿主填充，模型不可见。 */
@@ -892,6 +926,10 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             if (PersonalLibrarySearch.TOOL.equals(tool)) return List.<String[]>of(new String[]{"query", "string"});
             // 只声明模型可选的业务对象；actor/seat 由运行层按本人真实任职派生，不能自授
             switch (tool) {
+                case "fund.subscribe", "fund.redeem" -> {
+                    return List.of(new String[]{"requestId","string"}, new String[]{"amount","decimal"});
+                }
+                case "fund.cancel" -> { return List.<String[]>of(new String[]{"requestId","string"}); }
                 case PersonalMarket.SUBMIT -> {
                     return List.of(new String[]{"accountId", "string"}, new String[]{"symbol", "string"},
                             new String[]{"side", "BUY|SELL"}, new String[]{"limitPrice", "decimal"},
@@ -1008,6 +1046,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 case IssuerCreditDecisions.DEPOSIT, IssuerCreditDecisions.WITHDRAW -> {
                     return List.of(new String[]{"bank","string"}, new String[]{"borrower","string"}, new String[]{"amount","decimal"});
                 }
+                case ResourcePrimaryEquity.TOOL -> { return List.of(new String[]{"meetingId", "string"}, new String[]{"shares", "long"}); }
                 case ResourceDecisionTools.ACT, HydroDecisionTools.ACT, DigitalDecisionTools.ACT, AgedDecisionTools.ACT -> {
                     return List.of(new String[]{"action", "string"}, new String[]{"arguments", "object"});
                 }
@@ -1139,6 +1178,9 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 || TOOL_CONTRACT_VERSION_V5.equals(version)
                 || TOOL_CONTRACT_VERSION_V6.equals(version)) {
             switch (tool) {
+                case OnsiteVisit.TOOL -> {
+                    return List.of(new String[]{"requestId","string"},new String[]{"action","string"});
+                }
                 case RoleTradingView.TOOL_INTERVIEW_INVITE -> {
                     return List.of(new String[]{"requestClientId", "string"},
                             new String[]{"toPartyId", "string"}, new String[]{"topic", "string"},

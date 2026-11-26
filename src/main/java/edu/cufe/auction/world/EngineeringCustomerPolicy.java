@@ -2,6 +2,7 @@ package edu.cufe.auction.world;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -60,12 +61,12 @@ public final class EngineeringCustomerPolicy {
     }
 
     static void customerView(ObjectMapper mapper, ObjectNode node, EngineeringRun run,
-                             Map<String,CashLedger.CashAccount> accounts, WorldExchange.State exchange) {
+                             Map<String,CashLedger.CashAccount> accounts, BigDecimal transferable) {
         var mandate = run.config().customerMandate();
         node.put("organization", mandate.organizationPartyId()).put("representative", mandate.representativePartyId())
                 .put("contractor", mandate.contractorPartyId()).put("account", mandate.accountId());
         node.put("cash", accounts.get(ACCOUNT).cash().toPlainString());
-        node.put("freeCash", WorldExchange.freeCash(exchange, accounts, ACCOUNT).toPlainString());
+        node.put("freeCash", transferable.toPlainString());
         node.set("requests", mapper.valueToTree(run.customer().requestsOf(COMPANY)));
         node.set("responses", mapper.valueToTree(run.customer().responsesOf(COMPANY)));
         node.set("payments", mapper.valueToTree(run.customer().paymentsOf(COMPANY)));

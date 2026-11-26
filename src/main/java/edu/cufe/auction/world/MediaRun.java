@@ -8,6 +8,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 
@@ -396,6 +397,22 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
             }
         }
         return null;
+    }
+
+    /** 当前确认帧里正式发表的精确版本及其原始根。 */
+    Optional<List<MediaModel.Ref>> publishedRoots(InformationModel.State information, String docId, long version) {
+        for (var desk : states) {
+            for (var entry : desk.lineage()) {
+                if (!docId.equals(entry.docId()) || version != entry.version()) continue;
+                var document = MediaModel.boundPublishedVersion(desk, entry, information);
+                if (document == null) return Optional.empty();
+                boolean confirmed = desk.revisions().stream().anyMatch(revision -> revision.status() == MediaModel.Status.PUBLISHED
+                        && docId.equals(revision.docId()) && revision.docVersion() == version
+                        && revision.atMillis() == document.publishedAt());
+                return confirmed ? Optional.of(entry.roots()) : Optional.empty();
+            }
+        }
+        return Optional.empty();
     }
 
     /** @return 该组织预算；不存在返回 null */

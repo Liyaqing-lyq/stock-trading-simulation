@@ -106,6 +106,61 @@ class ResourceOperationsWebHttpTest {
         }
     }
 
+    @Test void namedSubscriberReceivesOnlyThePublicOfferAndTheConfirmedNewLot() throws Exception {
+        Path journal=dir.resolve("equity.journal");
+        try(var w=ComposedIndustryScenario.openTenCompanyAutonomy(journal)) {
+            OperationsFixture.grantBudgetAndAppoint(w,ComposedIndustryScenario.RESOURCE,ComposedIndustryScenario.DIRECTORS,
+                    ComposedIndustryScenario.MANAGER,"http-receipts",List.of(0L));
+            ResourceCessationTest.vote(w,"subscribe",BoardModel.Topic.RESOURCE_PRIMARY_OFFER,4);
+        }
+        Path keys=dir.resolve("fixture-keys");
+        Files.writeString(keys,String.join("\n",List.of("sk-local-only-test-1","sk-local-only-test-2","sk-local-only-test-3","sk-local-only-test-4","sk-local-only-test-5")));
+        try(var host=new WorldWebHost(()->{
+            var w=ComposedIndustryScenario.openTenCompanyAutonomy(journal);
+            return new WorldWebHost.Opened(w,w.profile().manifest().runId());
+        });var routes=SceneRoutes.open(dir);var server=new WorldWebServer(host,KeySlots.load(keys),routes,0,"research-bootstrap",null,console::add)) {
+            server.start();base=server.baseUrl();admin();person("investor");
+            var operations=JSON.readTree(request("GET","/api/me/operations",null).body());
+            var row=java.util.stream.StreamSupport.stream(operations.path("companies").spliterator(),false)
+                    .filter(c->"resources".equals(c.path("companyId").asText())).findFirst().orElseThrow();
+            assertEquals("SUBSCRIBE_SHARES",row.at("/actions/0").asText()); assertEquals(1,row.path("actions").size());
+            assertEquals("subscribe",row.at("/primaryOffer/meetingIds/0").asText());
+            assertFalse(row.has("financial"));assertFalse(row.has("jobs"));assertFalse(row.has("reports"));
+            long due=operations.path("timeMillis").asLong()+2000;
+            assertFalse(operations.has("position"));
+            var body=JSON.writeValueAsString(Map.of("expectedPosition",operations.required("observationToken").asText(),"commandId","http-pay",
+                    "taskId","http-pay-work","dueTimeMillis",Long.toString(due),"durationMillis","1000","companyId","resources",
+                    "action","SUBSCRIBE_SHARES","fields",Map.of("meetingId","subscribe","shares","7")));
+            admin();person("nina");
+            assertFalse(request("GET","/api/me/operations",null).body().contains("SUBSCRIBE_SHARES"));
+            assertNotEquals(200,request("POST","/api/me/resources/action",body).statusCode());
+            admin();person("investor");
+            var result=request("POST","/api/me/resources/action",body);assertEquals(200,result.statusCode(),result.body());
+            assertFalse(JSON.readTree(result.body()).has("position"));
+            assertEquals(409,request("POST","/api/me/resources/action",body).statusCode());
+            admin();var current=JSON.readTree(request("GET","/api/admin/operations",null).body());
+            var settled=request("POST","/api/admin/advance",JSON.writeValueAsString(Map.of("expectedPosition",current.path("position").asText(),"targetMillis",Long.toString(due))));
+            assertEquals(200,settled.statusCode(),settled.body());
+            var audited = JSON.readTree(request("GET","/api/admin/operations",null).body()).findValues("reports").stream()
+                    .flatMap(rows -> java.util.stream.StreamSupport.stream(rows.spliterator(),false))
+                    .filter(r -> "SUBSCRIBE_SHARES".equals(r.path("action").asText()) && r.path("amount").asDouble()>0)
+                    .findFirst().orElseThrow();
+            assertTrue(audited.path("position").asLong()>0);
+            person(ComposedIndustryScenario.MANAGER);
+            var managerView = JSON.readTree(request("GET","/api/me/operations",null).body());
+            assertTrue(managerView.findValues("position").isEmpty());
+            var company=managerView.path("companies").get(0);
+            assertEquals(company.path("reports"),company.at("/plan/reports"));
+            var paid=company.required("reports").get(company.path("reports").size()-1);
+            assertEquals("70.00",paid.path("amount").asText());
+            assertEquals("SUBSCRIBE_SHARES",paid.path("action").asText());
+            admin();person("investor");var page=JSON.readTree(request("GET","/api/me/view",null).body());
+            var owned=java.util.stream.StreamSupport.stream(page.path("holdings").spliterator(),false).filter(h->"RESOURCE".equals(h.path("symbol").asText())).findFirst().orElseThrow();
+            assertEquals("67",owned.path("quantity").asText()); assertEquals("6.6534",owned.path("issuedSharePercent").asText());
+        }
+        try(var w=ComposedIndustryScenario.openTenCompanyAutonomy(journal)) { assertEquals(1007,w.issuedSharesAt("RESOURCE",w.snapshot().position())); }
+    }
+
     private void admin() throws Exception {
         String bootstrap = "research-bootstrap";
         for (String line : console) {

@@ -19,6 +19,54 @@ final class StateDeltaCodec {
 
     private StateDeltaCodec() { }
 
+    /** 只读已通过完整恢复校验的提交，保留绩效核算使用的字段。它不用于确认或恢复世界。 */
+    record ReturnFields(long position, String digest, Map<String,JsonNode> fields) {
+        private static final List<String> KEYS = List.of("accounts","securities","exchange","dividends","bank","timeMillis");
+
+        static ReturnFields next(WorldCommit commit, ReturnFields previous, boolean openFund) throws IOException {
+            var event = commit.events().stream().filter(e -> TYPE.equals(e.type())).findFirst()
+                    .orElseThrow(() -> new IOException("已确认帧缺少状态差量"));
+            JsonNode record = JSON.readTree(event.payload());
+            long priorPosition = previous == null ? 0 : previous.position;
+            String base = previous == null ? StateDeltaCodec.digest(NullNode.instance) : previous.digest;
+            if (commit.position() != priorPosition + 1 || record.path("position").asLong() != commit.position()
+                    || record.path("basePosition").asLong(-1) != priorPosition || !base.equals(record.path("baseDigest").asText())
+                    || !commit.runId().equals(record.path("runId").asText()) || !VERSION.equals(record.path("version").asText()))
+                throw new IOException("收益汇总的确认前缀不连续");
+            var fields = previous == null ? new HashMap<String,JsonNode>() : new HashMap<>(previous.fields);
+            JsonNode operation = record.path("patch");
+            for (String key : KEYS) update(fields, key, child(operation,key));
+            if (openFund) update(fields, "fundUnits", child(child(operation,"trading"),"fundUnits"));
+            return new ReturnFields(commit.position(), record.path("resultDigest").asText(), Map.copyOf(fields));
+        }
+
+        private static void update(Map<String,JsonNode> fields, String key, JsonNode change) throws IOException {
+            if (change != null) fields.put(key, patch(fields.getOrDefault(key, NullNode.instance), change));
+        }
+
+        private static JsonNode child(JsonNode operation, String key) throws IOException {
+            if (operation == null) return null;
+            return switch (operation.path("kind").asText()) {
+                case "same" -> null;
+                case "replace" -> replacement(operation.path("value").has(key)
+                        ? operation.path("value").get(key) : NullNode.instance);
+                case "object" -> {
+                    var changed = operation.path("changes").get(key);
+                    if (changed == null) {
+                        for (var removed : operation.path("removed"))
+                            if (key.equals(removed.asText())) { changed = replacement(NullNode.instance); break; }
+                    }
+                    yield changed;
+                }
+                default -> throw new IOException("经济字段不在对象差量中");
+            };
+        }
+
+        boolean changed(String name, ReturnFields previous) {
+            return previous == null || fields.get(name) != previous.fields.get(name);
+        }
+    }
+
     static String encode(String runId, long position, String previous, String next) throws IOException {
         JsonNode before = previous == null ? NullNode.instance : canonical(JSON.readTree(previous));
         JsonNode after = canonical(JSON.readTree(next));

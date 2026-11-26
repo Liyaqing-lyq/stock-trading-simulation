@@ -22,6 +22,7 @@ final class ProbeProviderEvidence {
     private volatile boolean failed;
     private final boolean thinking;
     private final MeasuredLengthPolicy measuredLength;
+    private final TargetTransportPolicy transport;
     private volatile String stopReason;
     static final String TECHNICAL_FAILURE = "PROBE_PROVIDER_TECHNICAL_FAILURE";
     static final String UNKNOWN_EVIDENCE = "PROBE_PROVIDER_EVIDENCE_UNKNOWN";
@@ -31,6 +32,11 @@ final class ProbeProviderEvidence {
     ProbeProviderEvidence(Path out, boolean thinking) { this(out, thinking, null); }
 
     ProbeProviderEvidence(Path out, boolean thinking, MeasuredLengthPolicy measuredLength) {
+        this(out,thinking,measuredLength,null);
+    }
+
+    ProbeProviderEvidence(Path out, boolean thinking, MeasuredLengthPolicy measuredLength, TargetTransportPolicy transport) {
+        this.transport = transport;
         this.out = out;
         this.thinking = thinking;
         this.measuredLength = measuredLength;
@@ -40,11 +46,14 @@ final class ProbeProviderEvidence {
 
     static ObjectNode policy(boolean thinking) { return policy(thinking, false); }
 
-    private static ObjectNode policy(boolean thinking, boolean measured) {
+    private static ObjectNode policy(boolean thinking, boolean measured) { return policy(thinking,measured,false); }
+
+    private static ObjectNode policy(boolean thinking, boolean measured, boolean target) {
         var result = JSON.createObjectNode().put("schema", thinking ? LiveDecisionProvider.THINKING_PROVENANCE_SCHEMA : LiveDecisionProvider.PROVENANCE_SCHEMA)
                 .put("identityScope", "PROVIDER_DECLARED_ONLY").put("underlyingModelVersion", "UNKNOWN");
         if (thinking) result.put("providerPolicy", DeepSeekClient.THINKING_HIGH_POLICY);
         if (measured) result.put("technicalFailurePolicy", MeasuredLengthPolicy.VERSION);
+        if (target) result.put("transportFailurePolicy",TargetTransportPolicy.VERSION);
         return result;
     }
 
@@ -57,7 +66,11 @@ final class ProbeProviderEvidence {
     }
 
     static void freezePolicy(Path out, boolean thinking, boolean measured) throws IOException {
-        JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve(POLICY_FILE).toFile(), policy(thinking, measured));
+        freezePolicy(out,thinking,measured,false);
+    }
+
+    static void freezePolicy(Path out, boolean thinking, boolean measured, boolean target) throws IOException {
+        JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve(POLICY_FILE).toFile(), policy(thinking, measured, target));
     }
 
     void settleMeasuredLengths(String nextActionId, long timeoutMillis) {
@@ -104,10 +117,16 @@ final class ProbeProviderEvidence {
         synchronized (this) {
             completed++;
             count(audited.provenance());
-            if (thinking && stopReason == null) {
+            boolean transientFailure = transport != null && TargetTransportPolicy.transientFailure(audited.provenance(),audited.completion());
+            if (transport != null) {
+                transport.record(index,transientFailure,audited.completion().failureCode());
+                if (stopReason == null && transport.tripped()) stopReason = TargetTransportPolicy.STOP;
+            }
+            if (thinking && stopReason == null && !transientFailure) {
                 if (!audited.completion().businessReply()) {
                     if (measuredLength == null || !MeasuredLengthPolicy.matches(call, audited.completion(), audited.provenance())
-                            || !measuredLength.remember(call, audited.completion().reply())) stopReason = TECHNICAL_FAILURE;
+                            || !measuredLength.remember(call, audited.completion().reply()))
+                        stopReason = transport == null ? TECHNICAL_FAILURE : TECHNICAL_FAILURE + ":" + audited.completion().failureCode();
                 }
                 else if (!completeMetadata(audited.provenance(), audited.completion())) stopReason = UNKNOWN_EVIDENCE;
             }
@@ -137,6 +156,7 @@ final class ProbeProviderEvidence {
                 .put("evidenceComplete", !failed && completed == expectedCalls && recorded == completed && physicalInFlight == 0)
                 .put("completedCalls", completed).put("recordedCalls", recorded).put("missingIdentityCalls", missingIdentity);
         result.set("reportedModelCounts", JSON.valueToTree(reportedModels));
+        if (transport != null) result.set("transport",transport.summary());
         if (failed) result.put("failureCode", WRITE_FAILURE); else result.putNull("failureCode");
         return result.put("underlyingModelVersion", "UNKNOWN");
     }
@@ -149,23 +169,23 @@ final class ProbeProviderEvidence {
     }
 
     static void validateSeed(Path seed, JsonNode result, boolean thinking, boolean measured) throws IOException {
+        var cfg = result.has("config") ? JSON.treeToValue(result.get("config"),AutonomousLifecycleProbe.Config.class) : null;
+        boolean target = cfg != null && cfg.runUntilTarget();
+        var policy = target ? new TargetTransportPolicy(TargetTransportPolicy.inherited(cfg.seed() == null ? null : Path.of(cfg.seed()))) : null;
         if (!Files.isRegularFile(seed.resolve(POLICY_FILE))
-                || !policy(thinking, measured).equals(JSON.readTree(seed.resolve(POLICY_FILE).toFile())))
+                || !policy(thinking, measured, target).equals(JSON.readTree(seed.resolve(POLICY_FILE).toFile())))
             throw invalid();
         JsonNode calls = result.path("httpCalls");
-        if (!calls.isIntegralNumber() || !calls.canConvertToInt() || calls.intValue() < 0 || calls.intValue() > 3000)
+        if (!calls.isIntegralNumber() || !calls.canConvertToInt() || calls.intValue() < 0 || calls.intValue() > evidenceCallLimit(result))
             throw invalid();
         int total = calls.intValue();
-        var expected = new ProbeProviderEvidence(seed, thinking);
+        var expected = new ProbeProviderEvidence(seed,thinking,null,policy);
         try (var paths = Files.list(seed)) {
-            var names = paths.map(p -> p.getFileName().toString()).toList();
-            for (String prefix : new String[]{"call-", "reply-", "provider-"}) {
-                var matched = names.stream().filter(n -> n.matches(prefix + "[0-9]+[.]json")).toList();
-                if (matched.size() != total) throw invalid();
-                for (int index = 1; index <= total; index++)
-                    if (!matched.contains(prefix + index + ".json") || !Files.isRegularFile(seed.resolve(prefix + index + ".json")))
-                        throw invalid();
-            }
+            var pattern = java.util.regex.Pattern.compile("(call-|reply-|provider-)[0-9]+[.]json");
+            var counts = paths.map(p -> pattern.matcher(p.getFileName().toString())).filter(java.util.regex.Matcher::matches)
+                    .collect(java.util.stream.Collectors.groupingBy(match -> match.group(1), java.util.stream.Collectors.counting()));
+            for (String prefix : java.util.List.of("call-", "reply-", "provider-"))
+                if (counts.getOrDefault(prefix, 0L) != total) throw invalid();
         }
         var identities = new java.util.HashSet<String>();
         for (int index = 1; index <= total; index++) {
@@ -187,7 +207,9 @@ final class ProbeProviderEvidence {
                 if (!edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION.equals(
                         JSON.readTree(frozenCall.inputText()).path("engineering").path("roleContextVersion").asText())) throw invalid();
                 validateInvocation(provenance, frozenCall, completion);
-                if (measured && !completion.businessReply() && !MeasuredLengthPolicy.matches(frozenCall, completion, provenance))
+                boolean transientFailure = target && TargetTransportPolicy.transientFailure(provenance,completion);
+                if (policy != null) policy.record(index,transientFailure,completion.failureCode());
+                if (measured && !completion.businessReply() && !transientFailure && !MeasuredLengthPolicy.matches(frozenCall, completion, provenance))
                     throw invalid();
             }
             else if (provenance.invocation() != null) throw invalid();
@@ -219,7 +241,11 @@ final class ProbeProviderEvidence {
             }
             expected.completed++; expected.recorded++; expected.count(provenance);
         }
-        if (!expected.summary(total, 0).equals(result.path("providerProvenance"))) throw invalid();
+        if (policy != null && policy.tripped() || !expected.summary(total, 0).equals(result.path("providerProvenance"))) throw invalid();
+    }
+
+    static int evidenceCallLimit(JsonNode result) throws IOException {
+        return result.has("config") ? JSON.treeToValue(result.get("config"), AutonomousLifecycleProbe.Config.class).callLimit() : 3000;
     }
 
     private static boolean completeMetadata(LiveDecisionProvider.ProviderProvenance provenance,

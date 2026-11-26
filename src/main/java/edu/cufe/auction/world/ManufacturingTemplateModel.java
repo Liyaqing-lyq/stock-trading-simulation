@@ -1020,8 +1020,13 @@ public final class ManufacturingTemplateModel {
     public static Outcome orderMaterial(State state, long now, String actor, String commandId,
                                         String poId, String materialId, long quantity,
                                         Map<String, CashAccount> cash) {
+        return orderMaterial(state, now, actor, commandId, poId, materialId, quantity, cash, MATERIAL_LEAD_MILLIS);
+    }
+
+    static Outcome orderMaterial(State state, long now, String actor, String commandId, String poId,
+                                 String materialId, long quantity, Map<String, CashAccount> cash, long leadMillis) {
         Settlement s = orderMaterialCore(state, now, actor, commandId, poId, materialId,
-                quantity, new Leg(cash, null, null));
+                quantity, new Leg(cash, null, null), leadMillis);
         return new Outcome(s.accepted(), s.reason(), s.state(), s.accounts());
     }
 
@@ -1030,13 +1035,13 @@ public final class ManufacturingTemplateModel {
                                             String poId, String materialId, long quantity,
                                             FundState funds, FundPayer payer) {
         Settlement s = orderMaterialCore(state, now, actor, commandId, poId, materialId,
-                quantity, new Leg(null, funds, payer));
+                quantity, new Leg(null, funds, payer), MATERIAL_LEAD_MILLIS);
         return new FundOutcome(s.accepted(), s.reason(), s.state(), s.funds());
     }
 
     private static Settlement orderMaterialCore(State state, long now, String actor,
                                                 String commandId, String poId, String materialId,
-                                                long quantity, Leg leg) {
+                                                long quantity, Leg leg, long leadMillis) {
         String content = "ORDER|" + poId + "|" + materialId + "|" + quantity;
         Settlement replay = replay(state, commandId, content, leg);
         if (replay != null) {
@@ -1071,7 +1076,7 @@ public final class ManufacturingTemplateModel {
         }
         Draft draft = new Draft(state, now);
         draft.purchases.put(poId, new PurchaseOrder(poId, materialId, quote.supplierId(), quantity,
-                quote.price(), now, now + MATERIAL_LEAD_MILLIS, PurchaseStatus.ORDERED));
+                quote.price(), now, Math.addExact(now, leadMillis), PurchaseStatus.ORDERED));
         draft.usedIds.add(poId);
         return accept(draft, REASON_ORDERED, leg, commandId, content);
     }

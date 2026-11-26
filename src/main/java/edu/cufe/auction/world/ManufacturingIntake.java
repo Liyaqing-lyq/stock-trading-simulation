@@ -35,6 +35,6 @@ public final class ManufacturingIntake {
         for (var c : run.companies()) companies.add(request.companyIds().contains(c.companyPartyId())
                 ? new CompanyOperationsRun.Company(c.companyPartyId(), c.symbol(), c.templateId(), c.ledger(), c.expansionOffer(), RUNOFF) : c);
         return new CompanyOperationsRun(run.rulesVersion(), companies, run.reports(), run.resource(), run.hydro(),
-                run.digital(), run.aged(), run.externalDemand());
+                run.digital(), run.aged(), run.externalDemand(), run.upgradeBatches());
     }
 }

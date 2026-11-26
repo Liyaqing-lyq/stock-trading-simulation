@@ -54,10 +54,14 @@ public final class ComposedIndustryScenario {
 
     /** 新资源档提供固定技术许可与报价，不预批董事预算。 */
     public static ResourceCompanyRun.Config resourceConfig(boolean expansion) {
+        return resourceConfig(expansion, false);
+    }
+
+    private static ResourceCompanyRun.Config resourceConfig(boolean expansion, boolean namedSubscription) {
         var model = new IntegratedResourcesModel.Config(RESOURCE, CASH, "RES-OPS",
                 "resource-customer", "RES-COAL-CUSTOMER", "resource-grid", "RES-GRID",
                 "resource-converter", "RES-CONVERTER", "resource-contractor", "RES-CONTRACTOR",
-                "resource-disposal", "RES-DISPOSAL", "resource-sponsor", "RES-SPONSOR",
+                "resource-disposal", "RES-DISPOSAL", namedSubscription ? "investor" : "resource-sponsor", namedSubscription ? "INV" : "RES-SPONSOR",
                 money("20000.00"), money("2.00"), money("3.00"), money("800.00"), 200L, money("50.00"),
                 1000L, 5L, 1000L, 600L, money("1800.00"), 5L, money("4000.00"),
                 money("100.00"), money("50.00"), new BigDecimal("0.25"),
@@ -535,7 +539,27 @@ public final class ComposedIndustryScenario {
      * @throws Exception 开局或存档校验失败
      */
     public static WorldRuntime openTenCompanyAutonomy(Path journal) throws Exception {
-        return openCompanyInformationOperating(journal, RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID);
+        if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal)>0) {
+            var first = WorldJournalScanner.readPrefix(journal,1,java.io.OutputStream.nullOutputStream()).first();
+            if (first != null && RunManifest.ORIGINAL_TEN_COMPANY_RUN_ID.equals(first.runId()))
+                return openOriginalTenCompanyAutonomy(journal);
+        }
+        return openCompanyInformationOperating(journal,RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID);
+    }
+
+    /** 使用首版十公司清单的主体、开局和输入上限，供历史运行的恢复与复验。 */
+    public static WorldRuntime openOriginalTenCompanyAutonomy(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal,RunManifest.ORIGINAL_TEN_COMPANY_RUN_ID);
+    }
+
+    /** @param journal 独立开放式产品运行日志 @return 含份额登记和工作日确认的十公司世界 @throws Exception 初始化或恢复失败 */
+    public static WorldRuntime openOpenFundOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.OPEN_FUND_RUN_ID);
+    }
+
+    /** @param journal 显式采购模板升级实验档 @return 普通十公司世界 @throws Exception 初始化或恢复失败 */
+    public static WorldRuntime openManufacturingUpgradeOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.MANUFACTURING_UPGRADE_RUN_ID);
     }
 
     private static WorldRuntime openConfiguredOperating(Path journal, Path draft, String runId) throws Exception {
@@ -562,6 +586,8 @@ public final class ComposedIndustryScenario {
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating, String thinkingRunId, OpeningEntityCopies copies) throws Exception {
         boolean thinking = thinkingRunId != null;
+        boolean tenCompany = RunManifest.usesTenCompanyAutonomy(thinkingRunId);
+        boolean currentTen = RunManifest.usesCurrentTenCompany(thinkingRunId);
         boolean separateInvestorAccounts = connected || RunManifest.usesContinuingRoles(thinkingRunId);
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
@@ -624,6 +650,7 @@ public final class ComposedIndustryScenario {
                     new BankingProfile.PartyRef(copies.company().id(),copies.company().id(),copies.companyAccount(),null)))
                 if (parties.putIfAbsent(ref.partyId(),ref)!=null) throw new IllegalArgumentException("配置副本占用原主体账户："+ref.partyId());
         }
+        if (currentTen) parties.put("visit-carrier", new BankingProfile.PartyRef("visit-carrier", "visit-carrier", "VISIT-CARRIER", null));
         var profile = new BankingProfile(original.banks(), parties, original.custodians(), buckets, original.groups(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::loanGl).distinct().sorted().toList() : original.loanAccounts(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, crisis ? BankCrisis.PROVIDER : original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
@@ -654,7 +681,6 @@ public final class ComposedIndustryScenario {
             charters.put(company,new BoardModel.Charter(company,companySeats,company+"-seat-0",BoardModel.QUORUM));
             readers.addAll(people);readers.add(company.equals(DigitalIndustryConfig.COMPANY)?DigitalIndustryConfig.MANAGER_PERSON:AgedIndustryConfig.MANAGER_PERSON);
         }
-        boolean tenCompany = RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID.equals(thinkingRunId);
         if (copies != null) readers.add(copies.investor().id());
         var decisionPeople = new ArrayList<>(readers);
         if (tenCompany) decisionPeople.add(EngineeringCustomerPolicy.REPRESENTATIVE);
@@ -667,8 +693,12 @@ public final class ComposedIndustryScenario {
         if (thinking) {
             var limits = decisions.limits();
             var timings = new TreeMap<>(decisions.actionMillisByTool());
+            if (currentTen) timings.put(OnsiteVisit.TOOL,1_000L);
+            if (RunManifest.OPEN_FUND_RUN_ID.equals(thinkingRunId))
+                edu.cufe.auction.world.OpenFundTools.TOOLS.forEach(tool -> timings.put(tool,1_000L));
             if (RunManifest.usesCreditDecisions(thinkingRunId)) IssuerCreditDecisions.addTimings(timings);
             if (ownerBankValuation) IssuerCreditDecisions.addOwnerTimings(timings);
+            if (currentTen) timings.put(ResourcePrimaryEquity.TOOL, ResourceDecisionTools.ACTION_MILLIS);
             if (crisis) timings.put("bank.crisis.act",60_000L);
             if (RunManifest.usesPersonalProfiles(thinkingRunId)) timings.put("role.library.search", 1000L);
             if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
@@ -677,8 +707,10 @@ public final class ComposedIndustryScenario {
             }
             decisions = new DecisionModel.Config(decisions.providerKind(), decisions.providerId(), decisions.pricingVersion(),
                     decisions.thinkMillisByWake(), timings,
-                    new DecisionModel.Limits(limits.maxAttemptsPerDecision(), limits.maxInputChars(), limits.maxReplyChars(),
-                            limits.perCallInputTokens(), limits.perCallOutputTokens(), limits.queueCapacity(), limits.maxInFlight(), 60_000L),
+                    new DecisionModel.Limits(limits.maxAttemptsPerDecision(), currentTen ? DecisionModel.EXTENDED_INPUT_CHARS : limits.maxInputChars(),
+                            limits.maxReplyChars(), currentTen ? DecisionModel.EXTENDED_INPUT_BYTES + DecisionModel.ESTIMATE_MARGIN_TOKENS : limits.perCallInputTokens(),
+                            limits.perCallOutputTokens(), limits.queueCapacity(), limits.maxInFlight(), 60_000L,
+                            currentTen ? DecisionModel.EXTENDED_ROLE_INPUT : null),
                     decisions.budget(), decisions.profile());
         }
         if (tenCompany) decisions = RoleDeliberation.longHorizonBudget(decisions);
@@ -704,6 +736,15 @@ public final class ComposedIndustryScenario {
         if (promotion) openingRegistry = BankLoanPromotionOpening.register(openingAccounts, openingRegistry);
         if (copies != null) openingRegistry = copies.register(openingAccounts,openingRegistry);
         if (ownerBankValuation) openingRegistry = OwnerBankValuationOpening.register(openingAccounts, openingRegistry);
+        if (RunManifest.OPEN_FUND_RUN_ID.equals(thinkingRunId)) openingRegistry = OpenFundUnits.registerOpening(openingAccounts, openingRegistry);
+        if (currentTen) {
+            var carrierParties = new ArrayList<>(openingRegistry.parties());
+            carrierParties.add(new OpeningRegistry.Party("visit-carrier", OpeningRegistry.PartyKind.ORGANIZATION, "现场采访交通承运机构"));
+            var carrierOwners = new ArrayList<>(openingRegistry.owners());
+            carrierOwners.add(new OpeningRegistry.PropertyOwner("visit-carrier", OpeningRegistry.OwnerKind.ORGANIZATION, "visit-carrier"));
+            openingAccounts.add(new CashLedger.OpeningAccount("VISIT-CARRIER", "visit-carrier", money("0.00"), "EXP承运人自有收款账户"));
+            openingRegistry = new OpeningRegistry(carrierParties, carrierOwners, openingRegistry.securities(), openingRegistry.allocations());
+        }
         if (RunManifest.UNPRICED_REFERENCE_RUN_ID.equals(thinkingRunId)) {
             var securities = openingRegistry.securities().stream().map(s -> "HY1".equals(s.symbol())
                     ? new OpeningRegistry.Security(s.symbol(), s.issuerOrganizationId(), s.issuedShares(), null, s.initialReferencePrice())
@@ -791,7 +832,9 @@ public final class ComposedIndustryScenario {
             }
             if (RunManifest.usesManufacturingLifecycle(thinkingRunId)) {
                 data.put(RunManifest.MANUFACTURING_LIFECYCLE_KEY, RunManifest.MANUFACTURING_LIFECYCLE_VERSION);
-                data.put("fund-capital-policy", RunManifest.FIXED_FUND_CAPITAL);
+                data.put("fund-capital-policy", RunManifest.OPEN_FUND_RUN_ID.equals(thinkingRunId) ? OpenFundUnits.CAPITAL_POLICY : RunManifest.FIXED_FUND_CAPITAL);
+                if (RunManifest.OPEN_FUND_RUN_ID.equals(thinkingRunId)) data.put(OpenFundUnits.KEY, OpenFundUnits.VERSION);
+                if (RunManifest.MANUFACTURING_UPGRADE_RUN_ID.equals(thinkingRunId)) data.put(ManufacturingUpgrade.KEY, ManufacturingUpgrade.VERSION);
                 data.put("role-market-valuation", RunManifest.ROLE_MARKET_VALUATION);
             }
             if (RunManifest.usesMarketSessions(thinkingRunId)) data.put(MarketSessions.KEY, MarketSessions.VERSION);
@@ -851,6 +894,20 @@ public final class ComposedIndustryScenario {
                 data.put("model-budget", "long-horizon-v1");
                 data.put("board-material-source", "published-visible-v1");
             }
+            if (currentTen) {
+                data.put("role-market-depth", "best-level-remaining-v1");
+                data.put("role-input-limit", DecisionModel.EXTENDED_ROLE_INPUT);
+                data.put("fund-execution-view", "authorized-review-v1");
+                data.put("compact-branch", "sealed-index-v1");
+                data.put(SettlementCash.KEY, SettlementCash.VERSION);
+                data.put("branch-profile-run", thinkingRunId);
+                data.put("role-report-privacy", "business-receipts-v1");
+                data.put("publication-origins", "confirmed-media-v1");
+                data.put("wake-clock", "dated-facts-v1");
+                data.put("onsite-interview", "host-fare-v1");
+                data.put("resource-cessation", "board-wind-down-v1");
+                data.put("resource-primary-equity", "named-subscription-v1");
+            }
             if (RunManifest.usesDeclaredFields(thinkingRunId)) {
                 data.put("group-readable-refs", "edition-visible-v1");
                 data.put("tool-argument-guide", "declared-fields-v1");
@@ -867,7 +924,7 @@ public final class ComposedIndustryScenario {
                 world.initializeResearch("bootstrap", ComposedPharmaScenario.PHARMA,
                         new ResearchModel.Config(ComposedPharmaScenario.PHARMA_OWNER, ComposedPharmaScenario.PHARMA_CASH, BigDecimal.ZERO),
                         prototype ? PrototypeCompanies.researchProjects() : WorldWebScenario.researchProjects(), 1);
-                world.initializeCompanyOperations("bootstrap", ComposedManufacturingThreeScenario.companies(), resourceConfig(expansion), baseline ? BaselineIndustryConfig.hydro() : hydro ? HydroIndustryConfig.config() : null, baseline ? BaselineIndustryConfig.digital():null, baseline ? BaselineIndustryConfig.aged():null);
+                world.initializeCompanyOperations("bootstrap", ComposedManufacturingThreeScenario.companies(), resourceConfig(expansion, currentTen), baseline ? BaselineIndustryConfig.hydro() : hydro ? HydroIndustryConfig.config() : null, baseline ? BaselineIndustryConfig.digital():null, baseline ? BaselineIndustryConfig.aged():null);
                 Map<String,List<String>> candidates = new TreeMap<>(Map.of(RESOURCE, List.of(MANAGER), ComposedManufacturingThreeScenario.TECH,
                         List.of(ComposedManufacturingThreeScenario.TECH_MANAGER), ComposedManufacturingThreeScenario.STRUCT,
                         List.of(ComposedManufacturingThreeScenario.STRUCT_MANAGER), ComposedManufacturingThreeScenario.VERSA,

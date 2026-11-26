@@ -1,0 +1,164 @@
+package edu.cufe.auction.web;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sun.net.httpserver.HttpServer;
+import edu.cufe.auction.world.composed.ComposedIndustryScenario;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import static org.junit.jupiter.api.Assertions.*;
+
+class TargetTransportProbeTest {
+    @TempDir Path root;
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    private JsonNode run(String name, Path seed, long target, List<String> people, LiveDecisionProvider provider) throws Exception {
+        var cfg = new AutonomousLifecycleProbe.Config("TEN_COMPANY_AUTONOMY",0,0,target,3_600_000L,
+                seed == null ? null : seed.toString(),"transport-fixture",people);
+        var params = root.resolve(name+".json");
+        JSON.writeValue(params.toFile(),cfg);
+        var out = root.resolve(name);
+        AutonomousLifecycleProbe.run(out,params,() -> provider);
+        return JSON.readTree(out.resolve("result.json").toFile());
+    }
+
+    @Test void oneUnmeteredHttp429AllowsOtherPersonAndPreservesOriginalAttemptAcrossRestart() throws Exception {
+        var http = HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
+        var ordered = new CopyOnWriteArrayList<String>();
+        http.createContext("/chat/completions", exchange -> {
+            try {
+                var visible = JSON.readTree(JSON.readTree(exchange.getRequestBody()).at("/messages/1/content").asText());
+                String actor = visible.path("person").asText();
+                ordered.add(actor);
+                if ("alice".equals(actor)) {
+                    exchange.sendResponseHeaders(429,-1);
+                    return;
+                }
+                var answer = JSON.createObjectNode().put("tool","role.wait");
+                answer.putObject("decision").put("objective",visible.at("/engineering/deliberation/objectives/0/id").asText())
+                        .put("basis","等待本人复核").put("reviewAfterMillis",60_000);
+                var body = JSON.createObjectNode().put("id","local-success").put("model","deepseek-flash");
+                body.putArray("choices").addObject().put("index",0).put("finish_reason","stop")
+                        .putObject("message").put("role","assistant").put("content",answer.toString());
+                body.putObject("usage").put("prompt_tokens",25).put("completion_tokens",20).put("total_tokens",45);
+                byte[] bytes = JSON.writeValueAsBytes(body);
+                exchange.sendResponseHeaders(200,bytes.length);
+                exchange.getResponseBody().write(bytes);
+            } finally { exchange.close(); }
+        });
+        http.start();
+        try {
+            var uri=URI.create("http://127.0.0.1:"+http.getAddress().getPort()+"/chat/completions");
+            var provider=new LiveDecisionProvider(slot -> new DeepSeekClient(() -> "sk-fixture-aaaaaaaaaaaaaaaa",uri));
+            var people=List.of("alice","bob");
+            var first=run("first",null,100,people,provider);
+            assertEquals("TARGET_REACHED",first.path("probeStop").asText());
+            assertEquals(List.of("alice","bob"),ordered);
+            assertEquals(ordered.size(),first.path("httpCalls").asInt());
+            assertEquals(ordered.stream().filter("alice"::equals).count(),first.at("/providerProvenance/transport/failuresByCode/HTTP_RATE_LIMITED").asLong());
+            var folder=root.resolve("first");
+            int found=0;
+            for(int i=1;i<=ordered.size();i++) {
+                var raw=JSON.readTree(folder.resolve("provider-"+i+".json").toFile());
+                if (!"HTTP_RATE_LIMITED".equals(raw.path("failureCode").asText())) continue;
+                assertTrue(raw.get("providerReportedModel").isNull() && raw.get("requestId").isNull());
+                var receipt=JSON.readTree(folder.resolve("reply-"+i+".json").toFile());
+                assertFalse(receipt.path("businessReply").asBoolean());
+                assertTrue(receipt.at("/reply/usage").isNull());
+                assertTrue(receipt.at("/reply/body").asText().isEmpty());
+                found++;
+            }
+            assertTrue(found>0);
+            var frozenPolicy=folder.resolve(ProbeProviderEvidence.POLICY_FILE);
+            var original=Files.readAllBytes(frozenPolicy);
+            ProbeProviderEvidence.freezePolicy(folder,true,true);
+            assertThrows(IllegalArgumentException.class,() -> run("wrong-policy",folder,200,people,provider));
+            Files.write(frozenPolicy,original);
+            int prior=ordered.size();
+            var second=run("second",folder,200,people,provider);
+            assertEquals("TARGET_REACHED",second.path("probeStop").asText());
+            assertEquals(0,second.path("httpCalls").asInt(-1));
+            assertEquals(prior,ordered.size());
+            try(var w=ComposedIndustryScenario.openTenCompanyAutonomy(root.resolve("second/world.journal"))) {
+                var decisions=w.snapshot().decisions().orElseThrow().state().decisions();
+                var failed=decisions.stream().filter(d -> "alice".equals(d.personPartyId())).findFirst().orElseThrow();
+                assertEquals("TECHNICAL_FAILED",failed.outcome().name());
+                assertEquals("UNKNOWN_USAGE",failed.lastAttempt().reason());
+                assertEquals(failed.lastAttempt().reserved(),failed.lastAttempt().settled());
+                assertNull(failed.lastAttempt().declaredUsage());
+                assertEquals("WAIT",decisions.stream().filter(d -> "bob".equals(d.personPartyId())).findFirst().orElseThrow().outcome().name());
+            }
+        } finally { http.stop(0); }
+    }
+
+    @Test void authStopsEvenWithOtherCallsAvailable() throws Exception {
+        var http=HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
+        http.createContext("/chat/completions",exchange -> {
+            try { exchange.sendResponseHeaders(401,-1); } finally { exchange.close(); }
+        });
+        http.start();
+        try {
+            var uri=URI.create("http://127.0.0.1:"+http.getAddress().getPort()+"/chat/completions");
+            var provider=new LiveDecisionProvider(slot -> new DeepSeekClient(() -> "sk-fixture-aaaaaaaaaaaaaaaa",uri));
+            var result=run("unauthorized",null,2_000,List.of("bob"),provider);
+            assertEquals("PROBE_PROVIDER_TECHNICAL_FAILURE:HTTP_AUTH",result.path("probeStop").asText());
+            assertEquals(1,result.path("httpCalls").asInt());
+            assertThrows(IllegalArgumentException.class,() -> run("wrong",root.resolve("unauthorized"),3_000,List.of("bob"),provider));
+        } finally { http.stop(0); }
+    }
+
+    @Test void repeatedUnavailableProviderStopsBeforeTheWorldTarget() throws Exception {
+        Path out=root.resolve("outage"), cfg=root.resolve("outage.json");
+        var people=List.of("alice","bob");
+        JSON.writeValue(cfg.toFile(),new AutonomousLifecycleProbe.Config("TEN_COMPANY_AUTONOMY",0,0,90_000L,
+                3_600_000L,null,"transport-fixture",people));
+        var count=new java.util.concurrent.atomic.AtomicInteger();
+        var http=HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
+        http.createContext("/chat/completions", exchange -> {
+            count.incrementAndGet();
+            try { exchange.sendResponseHeaders(503,-1); } finally { exchange.close(); }
+        });
+        http.start();
+        try {
+            var uri=URI.create("http://127.0.0.1:"+http.getAddress().getPort()+"/chat/completions");
+            AutonomousLifecycleProbe.run(out,cfg,() -> {
+                try (var w=ComposedIndustryScenario.openTenCompanyAutonomy(out.resolve("world.journal"))) {
+                    for (int n=1;n<=6;n++) {
+                        String id="observable-change-"+n;
+                        w.schedulePublishDocument(id,id+"-work",10_000L*n,id,"dave",
+                                edu.cufe.auction.world.InformationModel.Audience.publicAudience(),"报表 "+n,"受控新增资料","测试",10,List.of());
+                    }
+                } catch (Exception failure) { throw new java.io.IOException(failure); }
+                return new LiveDecisionProvider(slot -> new DeepSeekClient(() -> "sk-fixture-aaaaaaaaaaaaaaaa",uri));
+            });
+            var result=JSON.readTree(out.resolve("result.json").toFile());
+            assertEquals(TargetTransportPolicy.STOP,result.path("probeStop").asText());
+            assertEquals(8,count.get());
+            assertEquals(8,result.at("/providerProvenance/transport/consecutive").asInt());
+            assertTrue(result.at("/autonomy/timeMillis").asLong()<90_000);
+        } finally { http.stop(0); }
+    }
+
+    @Test void persistentOutageUsesDispatchOrderAndCarriesPriorConsecutiveFailures() {
+        var policy=new TargetTransportPolicy(5);
+        policy.record(2,true,"HTTP_RATE_LIMITED");
+        policy.record(3,true,"HTTP_TIMEOUT");
+        assertFalse(policy.tripped());
+        policy.record(1,true,"HTTP_NETWORK");
+        assertTrue(policy.tripped());
+        assertEquals(8,policy.summary().path("consecutive").asInt());
+        var recovered=new TargetTransportPolicy(6);
+        recovered.record(2,false,null);
+        recovered.record(1,true,"HTTP_SERVICE_UNAVAILABLE");
+        recovered.record(3,true,"HTTP_RATE_LIMITED");
+        assertEquals(1,recovered.summary().path("consecutive").asInt());
+        assertFalse(recovered.tripped());
+    }
+}

@@ -17,7 +17,7 @@ final class ManagerOperatingInformation {
         view.put("units", "金额为实验记账元；产品数量为件，供应数量为对应物料BOM单位；时点与时长为模拟毫秒。");
         view.put("informationScope", "本公司当前公开报价及已发生台账；报价在执行时重新核验，未选择合同或经营动作，未保证付款。");
         for (var quote : view.path("visibleQuotes")) {
-            ((ObjectNode) quote).put("leadTimeMillis", ManufacturingTemplateModel.MATERIAL_LEAD_MILLIS)
+            ((ObjectNode) quote).put("leadTimeMillis", ManufacturingUpgrade.leadMillis(run, company))
                     .put("paymentTiming", "到货时按锁定单价支付；资金不足到货失败");
         }
         for (var offer : view.path("customerOffers")) {

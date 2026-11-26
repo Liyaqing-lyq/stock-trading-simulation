@@ -133,11 +133,31 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String PERSON_PAUSE_RUN_ID = "web-person-pause-v1";
 
     /** 正常参考价、十个发行人的自主运行开局。 */
-    public static final String TEN_COMPANY_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v1";
+    public static final String TEN_COMPANY_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v2";
+
+    /** 旧十公司开局沿用最初的主体、采购与唤醒规则。 */
+    public static final String ORIGINAL_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v1";
+
+    /** 可申赎产品的独立十公司档。 */
+    public static final String OPEN_FUND_RUN_ID = "web-open-fund-v1";
+
+    /** 制造采购模板可以显式按运行实例成组升级的档案。 */
+    public static final String MANUFACTURING_UPGRADE_RUN_ID = "web-manufacturing-upgrade-v1";
+
+    /** @return 是否使用普通十公司共同开局（含独立开放式基金档） */
+    public static boolean usesTenCompanyAutonomy(String id) {
+        return ORIGINAL_TEN_COMPANY_RUN_ID.equals(id) || usesCurrentTenCompany(id);
+    }
+
+    /** @return 是否采用第二版十公司开局及其显式衍生实验 */
+    public static boolean usesCurrentTenCompany(String id) {
+        return TEN_COMPANY_AUTONOMY_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
+                || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
+    }
 
     /** @return 是否允许暂停与恢复单个在册人物的决定 */
     public static boolean usesPersonDecisionPause(String id) {
-        return PERSON_PAUSE_RUN_ID.equals(id) || TEN_COMPANY_AUTONOMY_RUN_ID.equals(id);
+        return PERSON_PAUSE_RUN_ID.equals(id) || usesTenCompanyAutonomy(id);
     }
 
     /** @return 是否继承银行处置联动停牌 */
@@ -936,6 +956,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("manufacturing-funding");
     }
 
+    /** 同一实验的策略来源；显式分支沿用父档已登记的策略。 */
+    public String policyRunId() { return dataVersions.getOrDefault("branch-profile-run", runId); }
+
+    /** 是否支持从已校验的紧凑存档前缀派生。 */
+    public boolean supportsCompactBranch() { return "sealed-index-v1".equals(dataVersions.get("compact-branch")); }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -1205,26 +1231,29 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
-        boolean engineeringCustomer = usesEngineeringCustomerRules(runId);
+        String policyId = dataVersions == null ? runId : dataVersions.getOrDefault("branch-profile-run", runId);
+        if (!runId.equals(policyId) && (!usesCurrentTenCompany(policyId) || usesFundedOperatingRules(runId)))
+            throw new IllegalArgumentException("分支来源必须绑定已登记的十公司实验");
+        boolean engineeringCustomer = usesEngineeringCustomerRules(policyId);
         if ((engineeringCustomer || dataVersions != null && dataVersions.containsKey(EngineeringCustomerPolicy.KEY))
                 && (!engineeringCustomer || dataVersions == null || !EngineeringCustomerPolicy.VERSION.equals(dataVersions.get(EngineeringCustomerPolicy.KEY))))
             throw new IllegalArgumentException("工程客户复核必须显式绑定独立经营档及版本");
-        boolean personalMarket = usesPersonalMarketRules(runId);
+        boolean personalMarket = usesPersonalMarketRules(policyId);
         if ((personalMarket || dataVersions != null && (dataVersions.containsKey(PersonalMarket.POLICY)
                 || dataVersions.containsKey("belief-company-scope") || dataVersions.containsKey("research-manager-view")))
                 && (!personalMarket || dataVersions == null || !PersonalMarket.VERSION.equals(dataVersions.get(PersonalMarket.POLICY))
                     || !"manufacturing-orders-v1".equals(dataVersions.get("belief-company-scope"))
                     || !"project-state-v1".equals(dataVersions.get("research-manager-view"))))
             throw new IllegalArgumentException("个人交易工具必须绑定独立经营档与明确版本");
-        boolean fundedThinking = usesFundedOperatingRules(runId);
+        boolean fundedThinking = usesFundedOperatingRules(policyId);
         if ((fundedThinking || dataVersions != null && (dataVersions.containsKey("customer-contract-policy")
                 || dataVersions.containsKey("board-tool-scope")))
                 && (!fundedThinking || dataVersions == null || !FUNDED_CONTRACT_POLICY.equals(dataVersions.get("customer-contract-policy"))
                 || !"charter-chair-v1".equals(dataVersions.get("board-tool-scope"))))
             throw new IllegalArgumentException("客户签约资金和董事会工具权限规则必须与经营档版本一致");
-        if ((fundedThinking || "web-thinking-operating-v1".equals(runId) || dataVersions != null && dataVersions.containsKey("provider-policy"))
+        if ((fundedThinking || "web-thinking-operating-v1".equals(policyId) || dataVersions != null && dataVersions.containsKey("provider-policy"))
                 && (dataVersions == null || !"deepseek-thinking-high-v1".equals(dataVersions.get("provider-policy"))
-                    || !(fundedThinking || "web-thinking-operating-v1".equals(runId))
+                    || !(fundedThinking || "web-thinking-operating-v1".equals(policyId))
                     || !RoleDeliberation.CONTEXTUAL_VERSION.equals(dataVersions.get("role-context"))
                     || !"manager-v1".equals(dataVersions.get("operating-information"))
                     || !"bounded-history-v1".equals(dataVersions.get("role-input-policy"))
@@ -1252,7 +1281,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             throw new IllegalArgumentException("经理经营信息必须显式使用 manager-v1 / deliberation-v4 / delta-v1 / external-demand=v1，且不得混用固定行为策略");
         if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion) && dataVersions!=null && List.of("industry-baseline-v1", "industry-prototype-v1").contains(dataVersions.get(DATA_PROFILE))) {
             expected.keySet().removeAll(List.of("manufacturing","governance","dividend","manufacturing-funding"));
-            if (usesIssuerDividend(runId)) expected.put("dividend", 1);
+            if (usesIssuerDividend(policyId)) expected.put("dividend", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "
@@ -1339,73 +1368,89 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
-            if (usesPersonalProfiles(runId)) expectedData.putAll(personalProfilePolicies());
-            if (usesFundOfficeRouting(runId)) expectedData.put("fund-office-routing", "active-appointments-v1");
-            if (usesFundContacts(runId)) expectedData.put("fund-office-contacts", "appointment-pair-v1");
-            if (usesFundMandate(runId)) {
+            if (usesPersonalProfiles(policyId)) expectedData.putAll(personalProfilePolicies());
+            if (usesFundOfficeRouting(policyId)) expectedData.put("fund-office-routing", "active-appointments-v1");
+            if (usesFundContacts(policyId)) expectedData.put("fund-office-contacts", "appointment-pair-v1");
+            if (usesFundMandate(policyId)) {
                 expectedData.put("fund-mandate-document", "opening-register-v1");
                 expectedData.put("wait-empty-args", "allow-empty-object-v1");
             }
-            if (usesMediaDesks(runId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
-            if (UNPRICED_REFERENCE_RUN_ID.equals(runId)) expectedData.put("unpriced-opening-reference", "HY1-cost-only-v1");
-            if (usesIssuerResolution(runId)) expectedData.put("issuer-failure", "bank-resolution-halt-v1");
-            if (usesPersonDecisionPause(runId)) expectedData.put("person-decision-pause", "confirmed-person-v1");
-            if (usesOwnerBankValuation(runId)) {
+            if (usesMediaDesks(policyId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (UNPRICED_REFERENCE_RUN_ID.equals(policyId)) expectedData.put("unpriced-opening-reference", "HY1-cost-only-v1");
+            if (usesIssuerResolution(policyId)) expectedData.put("issuer-failure", "bank-resolution-halt-v1");
+            if (usesPersonDecisionPause(policyId)) expectedData.put("person-decision-pause", "confirmed-person-v1");
+            if (usesOwnerBankValuation(policyId)) {
                 expectedData.put("owner-bank-valuation", "owner-claims-v1");
                 expectedData.put("owner-bank-decisions", "owner-cash-v1");
             }
-            if (usesDeclaredFields(runId)) {
-                if (TEN_COMPANY_AUTONOMY_RUN_ID.equals(runId)) {
+            if (usesDeclaredFields(policyId)) {
+                if (usesTenCompanyAutonomy(policyId)) {
                     expectedData.put("opening-population", "ten-issuers-v1");
                     expectedData.put("model-budget", "long-horizon-v1");
                     expectedData.put("board-material-source", "published-visible-v1");
                 } else OpeningEntityCopies.fromManifest(data).freeze(expectedData);
+                if (usesCurrentTenCompany(policyId)) {
+                    expectedData.put(BestQuoteDepth.KEY, BestQuoteDepth.VERSION);
+                    expectedData.put("role-input-limit", DecisionModel.EXTENDED_ROLE_INPUT);
+                    expectedData.put("fund-execution-view", "authorized-review-v1");
+                    expectedData.put("compact-branch", "sealed-index-v1");
+                    expectedData.put(SettlementCash.KEY, SettlementCash.VERSION);
+                    expectedData.put("branch-profile-run", policyId);
+                    expectedData.put("wake-clock", "dated-facts-v1");
+                    expectedData.put("role-report-privacy","business-receipts-v1");
+                    expectedData.put("publication-origins","confirmed-media-v1");
+                    expectedData.put("onsite-interview", "host-fare-v1");
+                    expectedData.put("resource-cessation", "board-wind-down-v1");
+                    expectedData.put("resource-primary-equity", "named-subscription-v1");
+                }
                 expectedData.put("group-readable-refs", "edition-visible-v1");
                 expectedData.put("tool-argument-guide", "declared-fields-v1");
             }
-            if (usesPriceBand(runId)) expectedData.put("limit-band", "previous-close-10pct-exp-v1");
-            if (usesIssuerDividend(runId)) expectedData.put("issuer-dividend", "engineering-eng-a-v1");
-            if (usesLoanPromotion(runId)) expectedData.put("loan-promotion", "contract-bound-v1");
-            if (usesBankCrisis(runId)) {
+            if (usesPriceBand(policyId)) expectedData.put("limit-band", "previous-close-10pct-exp-v1");
+            if (usesIssuerDividend(policyId)) expectedData.put("issuer-dividend", "engineering-eng-a-v1");
+            if (usesLoanPromotion(policyId)) expectedData.put("loan-promotion", "contract-bound-v1");
+            if (usesBankCrisis(policyId)) {
                 expectedData.put("bank-crisis-authority", "finite-provider-v1");
                 expectedData.put("role-sellable-holdings", "settled-lots-v1");
             }
-            if (usesManufacturingLifecycle(runId)) {
+            if (usesManufacturingLifecycle(policyId)) {
                 expectedData.put(MANUFACTURING_LIFECYCLE_KEY, MANUFACTURING_LIFECYCLE_VERSION);
-                expectedData.put("fund-capital-policy", FIXED_FUND_CAPITAL);
+                expectedData.put("fund-capital-policy", OPEN_FUND_RUN_ID.equals(policyId) ? OpenFundUnits.CAPITAL_POLICY : FIXED_FUND_CAPITAL);
+                if (OPEN_FUND_RUN_ID.equals(policyId)) expectedData.put(OpenFundUnits.KEY, OpenFundUnits.VERSION);
+                if (MANUFACTURING_UPGRADE_RUN_ID.equals(policyId)) expectedData.put(ManufacturingUpgrade.KEY, ManufacturingUpgrade.VERSION);
                 expectedData.put("role-market-valuation", ROLE_MARKET_VALUATION);
             }
-            if (usesMarketSessions(runId)) expectedData.put(MarketSessions.KEY, MarketSessions.VERSION);
-            if (usesCreditDecisions(runId)) expectedData.put("issuer-credit-decisions", "manager-loan-v1");
-            if (usesIssuerCredit(runId)) expectedData.put("issuer-credit", "separate-loan-ledgers-v1");
-            if (usesContinuingRoles(runId)) {
+            if (usesMarketSessions(policyId)) expectedData.put(MarketSessions.KEY, MarketSessions.VERSION);
+            if (usesCreditDecisions(policyId)) expectedData.put("issuer-credit-decisions", "manager-loan-v1");
+            if (usesIssuerCredit(policyId)) expectedData.put("issuer-credit", "separate-loan-ledgers-v1");
+            if (usesContinuingRoles(policyId)) {
                 expectedData.putAll(CONTINUING_ROLE_POLICIES);
             }
-            if (usesPersonalLimitRules(runId)) {
+            if (usesPersonalLimitRules(policyId)) {
                 expectedData.put(PersonalMarket.LIMIT_RULES, PersonalMarket.LIMIT_RULES_VERSION);
             }
-            if (usesHydroSettlementView(runId)) {
+            if (usesHydroSettlementView(policyId)) {
                 expectedData.put(HydroDecisionTools.SETTLEMENT_POLICY, HydroDecisionTools.SETTLEMENT_VERSION);
             }
-            if (usesRoleTables(runId)) {
-                expectedData.put(RoleInputTables.POLICY, TEN_COMPANY_AUTONOMY_RUN_ID.equals(runId) ? RoleInputTables.BOARD_VERSION : RoleInputTables.VERSION);
+            if (usesRoleTables(policyId)) {
+                expectedData.put(RoleInputTables.POLICY, usesTenCompanyAutonomy(policyId) ? RoleInputTables.BOARD_VERSION : RoleInputTables.VERSION);
             }
-            if (usesIssuerReportRules(runId)) {
+            if (usesIssuerReportRules(policyId)) {
                 expectedData.put("issuer-period-reports", "versioned-v1");
             }
-            if (usesBoardProcedureRules(runId)) {
+            if (usesBoardProcedureRules(policyId)) {
                 expectedData.put("board-procedure-view", "shared-rules-v1");
                 expectedData.put("manager-term-clock", "registered-boundaries-v1");
             }
-            if (usesAgedOrderRules(runId)) {
+            if (usesAgedOrderRules(policyId)) {
                 expectedData.put("aged-order-terms", "next-period-v1");
             }
-            if (usesForwardBudgetRules(runId)) {
+            if (usesForwardBudgetRules(policyId)) {
                 expectedData.put("forward-budget-view", "period-window-v1");
                 expectedData.put("institutional-objectives", "product-office-v1");
                 expectedData.put("catalog-read-receipts", "visible-version-v1");
             }
-            if (usesCompanyInformationRules(runId)) {
+            if (usesCompanyInformationRules(policyId)) {
                 expectedData.put("listing-disclosure", "opening-register-v1");
                 expectedData.put("research-evidence", "reader-gated-v1");
                 expectedData.put("research-cash-view", "available-v1");

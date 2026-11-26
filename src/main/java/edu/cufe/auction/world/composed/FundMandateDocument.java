@@ -25,6 +25,10 @@ final class FundMandateDocument {
             if (RunManifest.FIXED_FUND_CAPITAL.equals(world.profile().manifest().dataVersions().get("fund-capital-policy"))) {
                 body.append("产品采用固定开局资本，不受理投资者申购、赎回与追加或提取资本。证券成交和分红由产品账户入账。\n");
             }
+            if (world.hasOpenFund()) {
+                body.append("本产品开放申赎。开局发起份额对应原有产品全部净资产，不另注资。工作日15:00按确认前净资产统一确认，此时提交的申请顺延。")
+                        .append("申购预收款独立保管。赎回超出可用现金时按申请份额同比例确认，其余顺延。未确认余额可撤。已确认赎回款次工作日09:30支付，期间不计息、不收费。\n");
+            }
             for (String account : mandate.accountIds()) {
                 var opening = snap.accounts().get(account);
                 body.append("开局账户=").append(account).append("；财产主体=").append(opening.ownerId())

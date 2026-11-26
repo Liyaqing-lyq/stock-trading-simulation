@@ -823,6 +823,11 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
         }
     }
 
+    /** 在本人的双边采访预约上办理现场接待、出发、撤权或提前返程。 */
+    public String siteVisit(String clientCommandId, String clientTaskId, long dueMillis, OnsiteVisit.Draft draft) throws IOException {
+        return runtime.scheduleInterview(this,PendingTask.ONSITE_ACTION_V1,clientCommandId,clientTaskId,dueMillis,draft);
+    }
+
     /**
      * 发送一轮访谈正文；轮次标识与开始时刻由运行桥派生，模型不能提供。
      *

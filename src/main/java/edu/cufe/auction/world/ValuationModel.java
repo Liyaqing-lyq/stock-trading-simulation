@@ -179,7 +179,17 @@ public final class ValuationModel {
                         BigDecimal dividendPayable, BigDecimal netWorth,
                         Set<String> missingSymbols, List<HoldingLine> lines,
                         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-                        BankClaims bankClaims) {
+                        BankClaims bankClaims,
+                        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                        FundClaims fundClaims) {
+        /** 不含基金份额的原有主体估值。 */
+        public Value(String ownerId, long position, long atMillis, Status status, BigDecimal cash, BigDecimal holdings,
+                     BigDecimal dividendReceivable, BigDecimal dividendPayable, BigDecimal netWorth,
+                     Set<String> missingSymbols, List<HoldingLine> lines, BankClaims bankClaims) {
+            this(ownerId, position, atMillis, status, cash, holdings, dividendReceivable, dividendPayable, netWorth,
+                    missingSymbols, lines, bankClaims, null);
+        }
+
 
         /** 旧估值合同没有银行权利分项。 */
         public Value(String ownerId, long position, long atMillis, Status status, BigDecimal cash, BigDecimal holdings,
@@ -222,6 +232,10 @@ public final class ValuationModel {
             lines = Collections.unmodifiableList(lineCopy);
         }
     }
+
+    /** 开放式基金的份额市值、待确认申购权益、已确认待收赎回款，以及产品尚欠投资者的全部受限资金。 */
+    public record FundClaims(BigDecimal units, BigDecimal marketValue, BigDecimal subscriptionAdvance,
+                            BigDecimal redemptionReceivable, BigDecimal productLiability) { }
 
     /** 主体在确认帧中享有的存款、存款应收利息、客户托管受益权及所欠贷款合同本金、利息。 */
     public record BankClaims(BigDecimal deposits, BigDecimal depositInterestReceivable, BigDecimal custodyBeneficial,

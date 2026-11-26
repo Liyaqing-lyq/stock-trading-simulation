@@ -70,7 +70,9 @@ function renderResearch(view) {
   state.researchView = view;
   $("research-financial-card").hidden = state.mode !== "admin" || !view.companyReport;
   $("research-note").textContent = view.note || "";
-  $("research-cut").textContent = (view.companyName || view.companyId || "") + " · 确认记录 " + view.position + " · 世界时点 " + view.timeMillis + " 毫秒";
+  $("research-cut").textContent = [view.companyName || view.companyId,
+    view.position == null ? null : "确认记录 " + view.position, "世界时点 " + view.timeMillis + " 毫秒"]
+    .filter(Boolean).join(" · ");
   for (const id of ["research-projects", "research-financial"]) $(id).replaceChildren();
   const projects = view.projects || [];
   for (const project of projects) {
@@ -154,7 +156,7 @@ async function submitResearch(event) {
   if (state.mode !== "person" || !view?.enabled) return;
   const action = $("research-action").value;
   const id = "web-rnd-" + crypto.randomUUID();
-  const command = { expectedPosition: view.position, commandId: id, taskId: id + "-task",
+  const command = { expectedPosition: view.observationToken ?? view.position, commandId: id, taskId: id + "-task",
     dueTimeMillis: researchInteger("research-due"), companyId: view.companyId, action };
   if (["REGISTER", "BEGIN", "PROPOSE", "APPROVE"].includes(action)) command.projectId = $("research-project").value;
   if (["REGISTER", "BEGIN", "PROPOSE", "APPROVE"].includes(action)) command.durationMillis = researchInteger("research-duration");

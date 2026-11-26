@@ -21,7 +21,7 @@ class BoardInputOverflowTest {
         Path journal = dir.resolve("ten.journal");
         String chair = BaselineIndustryConfig.directors(AgedIndustryConfig.COMPANY).get(0);
         String input;
-        try (var world = ComposedIndustryScenario.openTenCompanyAutonomy(journal)) {
+        try (var world = ComposedIndustryScenario.openOriginalTenCompanyAutonomy(journal)) {
             ConnectedWorldBootstrap.grantBudgetAndAppoint(world, AgedIndustryConfig.COMPANY,
                     BaselineIndustryConfig.directors(AgedIndustryConfig.COMPANY), AgedIndustryConfig.MANAGER_PERSON, "term", List.of(0L));
             world.beginDecisionSession("one-director");

@@ -113,8 +113,13 @@ class PersonDecisionPauseTest {
                     .filter(e->!e.type().equals("PERSON_DECISION_PAUSE_V1")).toList());
         }
         assertThrows(IOException.class,()->ComposedIndustryScenario.openPersonPauseOperating(forged,null));
-        try(var old=ComposedIndustryScenario.openIssuerResolutionOperating(dir.resolve("old.journal"),DRAFT)) {
+        var oldFile=dir.resolve("old.journal");
+        try(var old=ComposedIndustryScenario.openIssuerResolutionOperating(oldFile,DRAFT)) {
             assertThrows(IllegalArgumentException.class,()->old.setPersonDecisionPause(new WorldRuntime.PersonPauseRequest(old.snapshot().position(),PERSON,true)));
         }
+        var first=WorldJournalScanner.scan(oldFile).commits().get(0);
+        var delta=first.events().stream().filter(e->e.type().equals(StateDeltaCodec.TYPE)).findFirst().orElseThrow();
+        var oldOpening=StateDeltaCodec.checkedTree(first.runId(),first.position(),null,delta.payload());
+        assertFalse(oldOpening.required("roles").has("pausedPersons"),"旧档首帧摘要必须保持历史字节");
     }
 }

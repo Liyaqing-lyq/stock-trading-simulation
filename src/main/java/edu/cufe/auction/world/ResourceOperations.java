@@ -18,7 +18,12 @@ public final class ResourceOperations {
     /** 已实现的资源经营动作；到期完成类由世界排程绑定原始作业。 */
     public enum Action {
         BEGIN_EXTRACTION, FINISH_EXTRACTION, SELL_COAL, TRANSFER_TO_PLANT,
-        BEGIN_POWER, FINISH_POWER, ABORT_JOB, COLLECT, WRITE_OFF, CLOSE_PERIOD, START_EXPANSION, COMPLETE_EXPANSION, SELL_RESIDUAL
+        BEGIN_POWER, FINISH_POWER, ABORT_JOB, COLLECT, WRITE_OFF, CLOSE_PERIOD, START_EXPANSION, COMPLETE_EXPANSION, SELL_RESIDUAL,
+        EXIT_BUSINESS, SETTLE_BILL, SUBSCRIBE_SHARES
+    }
+
+    static boolean windDown(Action action) {
+        return action == Action.EXIT_BUSINESS || action == Action.SETTLE_BILL;
     }
 
     /** 自动完工与关期不由人物触发。 */
@@ -43,7 +48,9 @@ public final class ResourceOperations {
                 case TRANSFER_TO_PLANT -> Set.of("transferId", "quantityKg");
                 case BEGIN_POWER -> Set.of("jobId", "mwh", "receivableId");
                 case COLLECT, WRITE_OFF -> Set.of("receivableId");
-                case CLOSE_PERIOD -> Set.of("period");
+                case CLOSE_PERIOD, SETTLE_BILL -> Set.of("period");
+                case EXIT_BUSINESS -> Set.of("meetingId");
+                case SUBSCRIBE_SHARES -> Set.of("meetingId", "shares");
                 case START_EXPANSION, COMPLETE_EXPANSION, SELL_RESIDUAL -> Set.of("projectId");
             };
             if (!arguments.keySet().equals(expected)) {
@@ -53,7 +60,7 @@ public final class ResourceOperations {
                 if (entry.getValue() == null || entry.getValue().isBlank()) {
                     throw new IllegalArgumentException("资源字段不能为空：" + entry.getKey());
                 }
-                if (Set.of("quantityKg", "mwh", "period").contains(entry.getKey())) {
+                if (Set.of("quantityKg", "mwh", "period", "shares").contains(entry.getKey())) {
                     if (!entry.getValue().matches("0|[1-9][0-9]*")) {
                         throw new IllegalArgumentException("资源数量必须为精确非负整数");
                     }
@@ -108,6 +115,7 @@ public final class ResourceOperations {
                     request.field("receivableId"), funds, payer);
             case WRITE_OFF -> IntegratedResourcesModel.writeOff(state, now, owner, commandId,
                     request.field("receivableId"), funds);
+            case EXIT_BUSINESS, SETTLE_BILL, SUBSCRIBE_SHARES -> new IntegratedResourcesModel.Outcome(false, "RESOURCE_WIND_DOWN_NOT_ENABLED", state, funds);
             case CLOSE_PERIOD -> IntegratedResourcesModel.closePeriod(state, now, owner, commandId,
                     request.integer("period"), funds, payer);
         };

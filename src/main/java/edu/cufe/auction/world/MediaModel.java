@@ -119,7 +119,7 @@ public final class MediaModel {
     public static final String EIGHT_DESKS = "eight-desks-v1";
 
     private static final String DRAFT_PREFIX = "media-draft:";
-    private static final String PUBLIC_PREFIX = "media-public:";
+    static final String PUBLIC_PREFIX = "media-public:";
 
     private MediaModel() {
     }
@@ -1519,14 +1519,7 @@ public final class MediaModel {
                 throw new IllegalArgumentException("媒体来源上下文重复或为空");
             }
             for (Lineage entry : source.lineage()) {
-                Story publisher = source.stories().stream().filter(story ->
-                        story.publicDocId().equals(entry.docId())
-                                && story.publicVersion() >= entry.version()).findFirst().orElse(null);
-                Document document = documentOf(information, entry.docId());
-                if (publisher == null || document == null || document.at(entry.version()) == null
-                        || document.audience().kind() != AudienceKind.PUBLIC
-                        || !document.publisherPartyId().equals(publisher.authorPartyId())
-                        || !entry.docId().equals(publicDocId(source.policy(), publisher.storyId()))
+                if (boundPublishedVersion(source, entry, information) == null
                         || catalog.putIfAbsent(new Ref(entry.docId(), entry.version()), entry) != null) {
                     throw new IllegalArgumentException("媒体来源版本未确认或冲突");
                 }
@@ -1750,6 +1743,17 @@ public final class MediaModel {
                                              long version) {
         Document document = documentOf(information, docId);
         return document == null ? null : document.at(version);
+    }
+
+    /** 精确版本、发表者、派生单号和公开文档均与已发表稿件绑定。 */
+    static DocumentVersion boundPublishedVersion(State source, Lineage entry, InformationModel.State information) {
+        Story publisher = source.stories().stream().filter(story -> story.publicDocId().equals(entry.docId())
+                && story.publicVersion() >= entry.version()).findFirst().orElse(null);
+        Document document = documentOf(information, entry.docId());
+        if (publisher == null || document == null || document.audience().kind() != AudienceKind.PUBLIC
+                || !document.publisherPartyId().equals(publisher.authorPartyId())
+                || !entry.docId().equals(publicDocId(source.policy(), publisher.storyId()))) return null;
+        return document.at(entry.version());
     }
 
     private static Document documentOf(InformationModel.State information, String docId) {

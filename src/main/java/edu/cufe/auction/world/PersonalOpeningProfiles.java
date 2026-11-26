@@ -3,6 +3,7 @@ package edu.cufe.auction.world;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import edu.cufe.auction.world.bank.Fund;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -54,7 +55,7 @@ final class PersonalOpeningProfiles {
 
     static void append(ObjectNode engineering, String person, long now, List<String> ownedAccounts,
                        List<CashLedger.OpeningAccount> opening, Map<String, CashLedger.CashAccount> accounts,
-                       WorldExchange.State exchange) {
+                       WorldExchange.State exchange, boolean cashSettlement) {
         Plan plan = PLANS.get(person);
         if (plan == null) return;
         var goals = engineering.withObject("/deliberation").withArray("objectives");
@@ -75,12 +76,25 @@ final class PersonalOpeningProfiles {
         detail.put("scope", "目标金额供本人安排。到期只供复查；支付、收款和成交须有各自账本记录。本人证券数量和冻结见profile.holdings中下列账户。");
         var sources = detail.putArray("ownedAccounts");
         BigDecimal available = BigDecimal.ZERO.setScale(2);
+        BigDecimal trading = BigDecimal.ZERO.setScale(2);
+        var settlement = cashSettlement ? SettlementCash.projection(exchange, now) : null;
         for (var original : opening) {
             String account = original.accountId();
             if (!ownedAccounts.contains(account)) continue;
             sources.addObject().put("accountId", account).put("openingCash", original.cash().toPlainString())
                     .put("openingSource", original.source());
-            available = available.add(accounts.get(account).cash().subtract(WorldExchange.frozenCash(exchange, account)));
+            var balance = accounts.get(account).cash();
+            if (settlement == null) {
+                available = available.add(balance.subtract(WorldExchange.frozenCash(exchange, account)));
+            } else {
+                var wallet = settlement.balance(new Fund.Cash(account),balance,false);
+                available = available.add(wallet.withdrawableCash());
+                trading = trading.add(wallet.tradingAvailable());
+            }
+        }
+        if (settlement != null) {
+            detail.put("tradingAvailableCash", trading.toPlainString());
+            detail.put("cashBasis", "availableCash 为本人下列现金账户现在可转出的金额，cashShortfall 按此计算。可再买证券的金额另列。存款及托管另见本人账户。");
         }
         detail.put("availableCash", available.toPlainString());
         if (plan.targetLiquidCash() != null) detail.put("cashShortfall",

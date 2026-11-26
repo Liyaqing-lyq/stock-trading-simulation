@@ -145,6 +145,7 @@ final class ListCommitSource implements CommitSource {
  */
 final class BranchCommitSource implements CommitSource {
 
+    private final CommitSource parent;
     private final List<WorldCommit> prefix;
     private final WorldJournal journal;
 
@@ -153,7 +154,12 @@ final class BranchCommitSource implements CommitSource {
      * @param journal 子档自有日志，首帧位置必须是 {@code p+1}
      */
     BranchCommitSource(List<WorldCommit> prefix, WorldJournal journal) {
-        this.prefix = List.copyOf(prefix);
+        this(new ListCommitSource(prefix), journal);
+    }
+
+    BranchCommitSource(CommitSource parent, WorldJournal journal) {
+        this.parent = parent;
+        this.prefix = parent.commits();
         this.journal = journal;
         List<WorldCommit> own = journal.commitView();
         long base = journal.base();
@@ -169,14 +175,7 @@ final class BranchCommitSource implements CommitSource {
             throw new IllegalArgumentException("子档首帧位置必须等于父位置加一："
                     + own.get(0).position());
         }
-        long expected = 1L;
-        for (WorldCommit commit : this.prefix) {
-            if (commit.position() != expected) {
-                throw new IllegalArgumentException("分支父前缀位置不连续：期望 " + expected
-                        + "，实际 " + commit.position());
-            }
-            expected++;
-        }
+
     }
 
     @Override
@@ -193,7 +192,7 @@ final class BranchCommitSource implements CommitSource {
 
     @Override
     public List<WorldCommit> nonSnapshotCommits() {
-        List<WorldCommit> result = new ArrayList<>(prefix.stream().map(WorldJournal::withoutSnapshot).toList());
+        List<WorldCommit> result = new ArrayList<>(parent.nonSnapshotCommits());
         result.addAll(journal.nonSnapshotCommits());
         return List.copyOf(result);
     }
@@ -210,10 +209,15 @@ final class BranchCommitSource implements CommitSource {
     @Override
     public Optional<WorldCommit> nonSnapshotCommitAt(long position) {
         if (position >= 1 && position <= prefix.size()) {
-            WorldCommit candidate = prefix.get((int) (position - 1));
-            return candidate.position() == position ? Optional.of(WorldJournal.withoutSnapshot(candidate)) : Optional.empty();
+            return parent.nonSnapshotCommitAt(position);
         }
         return journal.nonSnapshotCommitAt(position);
+    }
+
+    @Override
+    public Optional<WorldCommit> nonSnapshotByCommand(String command) {
+        var inherited = parent.nonSnapshotByCommand(command);
+        return inherited.isPresent() ? inherited : journal.nonSnapshotByCommand(command);
     }
 
     @Override
@@ -221,12 +225,7 @@ final class BranchCommitSource implements CommitSource {
         if (limit <= 0) {
             throw new IllegalArgumentException("分页条数必须为正：" + limit);
         }
-        List<WorldCommit> page = new ArrayList<>();
-        for (WorldCommit commit : prefix) {
-            if (commit.position() > afterPosition && page.size() < limit) {
-                page.add(commit);
-            }
-        }
+        List<WorldCommit> page = new ArrayList<>(parent.commitsAfter(afterPosition,limit));
         if (page.size() < limit) {
             page.addAll(journal.commitsAfter(afterPosition, limit - page.size()));
         }

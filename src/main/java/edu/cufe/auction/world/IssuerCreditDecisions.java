@@ -75,9 +75,8 @@ public final class IssuerCreditDecisions {
     }
 
     private static void appendOwners(ObjectNode visible, List<OwnerCash> owners, BankRun.Decoded decoded,
-                                     Map<String, CashLedger.CashAccount> accounts, WorldExchange.State exchange) {
+                                     Map<String, CashLedger.CashAccount> accounts, edu.cufe.auction.world.bank.CashFreeze frozen) {
         var rows = visible.putArray("ownerAccounts");
-        var frozen = WorldExchange.freezeSnapshot(exchange);
         var profile = decoded.config().profile();
         for (var owner : owners) {
             String customer = owner.customer();
@@ -135,7 +134,7 @@ public final class IssuerCreditDecisions {
     }
 
     static void append(ObjectNode engineering, Set<String> managed, List<OwnerCash> owners, BankRun.Decoded decoded,
-                       BankActions.Book book, Map<String, CashLedger.CashAccount> accounts, WorldExchange.State exchange) {
+                       BankActions.Book book, Map<String, CashLedger.CashAccount> accounts, edu.cufe.auction.world.bank.CashFreeze frozen) {
         BankConfig config = decoded.config();
         BankState state = decoded.state();
         var visible = engineering.putObject("issuerCredit");
@@ -148,7 +147,7 @@ public final class IssuerCreditDecisions {
                 office.put("terms","EXP 参考当前已核报表及现金，自主决定是否采取行动或等待。应急额度3日内可提，单笔30日免息无担保。处置顺序依次为存款、应急融资和次级债务。");
                 if (actions.contains("FACILITY_AUTHORIZE")) {
                     var id=config.chart().cashAccountOf(config.profile().providerKey());
-                    office.put("providerAvailable",accounts.get(id).cash().subtract(WorldExchange.frozenCash(exchange,id)).toPlainString());
+                    office.put("providerAvailable",accounts.get(id).cash().subtract(frozen.frozenOf(new Fund.Cash(id))).toPlainString());
                 }
                 if (actions.contains("RESOLUTION_OPEN") || actions.contains("FACILITY_DRAW"))
                     office.put("reserve",accounts.get(config.chart().reserveAccountOf(bank)).cash().toPlainString())
@@ -163,7 +162,7 @@ public final class IssuerCreditDecisions {
         visible.put("procedure", "各公司资金独立。借款经理自行拟定金额、用途、年利率rateU(1000000=100%)与期限tenorMs；申请后借款方须另外接受，银行经理才可按原条款审批，或等待。提款前没有放款；提款增加借款公司的银行存款，风险闸门可以拒绝。存取款在本公司现金和银行存款间划拨，还本与付息各从存款实扣。到期自动核算利息。");
         if (!owners.isEmpty()) {
             if (managed.isEmpty()) visible.remove("procedure");
-            appendOwners(visible, owners, decoded, accounts, exchange);
+            appendOwners(visible, owners, decoded, accounts, frozen);
         }
         var borrowers = visible.putArray("managedBorrowers");
         var banks = visible.putArray("managedBanks");
@@ -182,7 +181,7 @@ public final class IssuerCreditDecisions {
             }
             for (String borrower : managed) if (config.profile().buckets().containsKey(borrower)) {
                 String account = config.chart().cashAccountOf(borrower);
-                BigDecimal cash = accounts.get(account).cash().subtract(WorldExchange.frozenCash(exchange, account));
+                BigDecimal cash = accounts.get(account).cash().subtract(frozen.frozenOf(new Fund.Cash(account)));
                 borrowers.addObject().put("borrower", borrower).put("bank", bank).put("cashAccount", account)
                         .put("availableCash", cash.toPlainString()).put("deposit", state.depositOf(bank, borrower).toPlainString());
             }

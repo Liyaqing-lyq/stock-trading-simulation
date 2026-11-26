@@ -64,7 +64,7 @@ public final class ConnectedWorldLoop {
             boolean appointed=role.appointments().stream().anyMatch(a->a.organizationPartyId().equals(company)&&a.role()==RoleAccess.Role.COMPANY_MANAGER);
             if(appointed) {
                 var s=w.openingRegistry().orElseThrow().securities().stream().filter(x->x.issuerOrganizationId().equals(company)).findFirst().orElseThrow();
-                var fact=root.putObject("financial");fact.put("company",company).put("name",PrototypeCompanies.find(company).name()).put("symbol",s.symbol()).put("reference",s.initialReferencePrice() == null ? null : s.initialReferencePrice().toPlainString()).put("shares",s.issuedShares()).put("asOf",w.snapshot().timeMillis());
+                var fact=root.putObject("financial");fact.put("company",company).put("name",PrototypeCompanies.find(company).name()).put("symbol",s.symbol()).put("reference",s.initialReferencePrice() == null ? null : s.initialReferencePrice().toPlainString()).put("shares",w.issuedSharesAt(s.symbol(),w.snapshot().position())).put("asOf",w.snapshot().timeMillis());
                 if(company.equals("north")){var r=BankCompanyReport.of(w.bankOf().orElseThrow(),w.snapshot().accounts(),company);fact.put("cash",r.assets().getOrDefault("RESERVE",BigDecimal.ZERO).toPlainString()).put("equity",r.totalEquity().toPlainString()).put("profit",r.currentEarnings().toPlainString());}
                 else{var r=ComposedCompanyReport.of(w,company);fact.put("cash",r.financial().cash().toPlainString()).put("equity",r.totalEquity().toPlainString()).put("profit",r.profit().toPlainString());}
                 fact.put("basis","经理自愿发布的未审计经营快报；与实际账一致但不是审计财报。固定费用按期结转；金额和估值参数仍为实验规则。");

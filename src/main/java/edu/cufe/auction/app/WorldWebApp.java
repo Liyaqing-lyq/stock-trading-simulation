@@ -79,7 +79,9 @@ public final class WorldWebApp {
         boolean fundContactsMode = mode.equals("world-fund-office-contacts-operating");
         boolean fundMandateMode = mode.equals("world-fund-mandate-operating");
         boolean personalProfilesMode = mode.equals("world-personal-profiles-operating");
-        boolean tenCompanyMode = mode.equals("world-ten-company-autonomy");
+        boolean manufacturingUpgradeMode = mode.equals("world-manufacturing-upgrade");
+        boolean openFundMode = mode.equals("world-open-fund");
+        boolean tenCompanyMode = mode.equals("world-ten-company-autonomy") || openFundMode || manufacturingUpgradeMode;
         boolean personPauseMode = mode.equals("world-person-pause");
         boolean issuerResolutionMode = mode.equals("world-issuer-resolution");
         boolean unpricedReferenceMode = mode.equals("world-unpriced-reference");
@@ -124,7 +126,7 @@ public final class WorldWebApp {
                 && !mode.equals("composed") && !mode.equals("custody") && !mode.equals("research") && !mode.equals("world") && !mode.equals("world-manager") && !mode.equals("world-debug") && !mode.equals("world-ready") && !mode.equals("world-manufacturing") && !mode.equals("world-industry") && !mode.equals("world-hydro") && !mode.equals("world-baseline") && !(mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode)) && !mode.equals("world-behavior")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-contextual-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating、world-continuing-roles-operating 、world-issuer-credit-operating、world-issuer-credit-decisions-operating、world-integrated-operating、world-manufacturing-lifecycle-operating、world-bank-crisis-operating、world-owner-bank-valuation、world-ten-company-autonomy、world-person-pause、world-issuer-resolution、world-unpriced-reference、world-opening-copies、world-baseline-parts-operating、world-price-band-operating、world-issuer-dividend-operating、world-loan-promotion-operating、world-media-desks-operating、world-market-sessions-operating 、world-personal-profiles-operating 、world-fund-mandate-operating 、world-fund-office-routing-operating 或 world-fund-office-contacts-operating");
+                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-contextual-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating、world-continuing-roles-operating 、world-issuer-credit-operating、world-issuer-credit-decisions-operating、world-integrated-operating、world-manufacturing-lifecycle-operating、world-bank-crisis-operating、world-owner-bank-valuation、world-ten-company-autonomy、world-open-fund、world-manufacturing-upgrade、world-person-pause、world-issuer-resolution、world-unpriced-reference、world-opening-copies、world-baseline-parts-operating、world-price-band-operating、world-issuer-dividend-operating、world-loan-promotion-operating、world-media-desks-operating、world-market-sessions-operating 、world-personal-profiles-operating 、world-fund-mandate-operating 、world-fund-office-routing-operating 或 world-fund-office-contacts-operating");
         }
         boolean worldMode = mode.equals("world");
         boolean managerMode = mode.equals("world-manager");
@@ -174,7 +176,9 @@ public final class WorldWebApp {
         WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode))
                 ? new WorldWebHost(() -> {
                     var runtime=sessionsMode ? ComposedIndustryScenario.openMarketSessionsOperating(workDir.resolve("world-market-sessions-operating-v1.journal"))
-                            : tenCompanyMode ? ComposedIndustryScenario.openTenCompanyAutonomy(workDir.resolve("world-ten-company-autonomy-v1.journal"))
+                            : manufacturingUpgradeMode ? ComposedIndustryScenario.openManufacturingUpgradeOperating(workDir.resolve("world-manufacturing-upgrade-v1.journal"))
+                            : openFundMode ? ComposedIndustryScenario.openOpenFundOperating(workDir.resolve("world-open-fund-v1.journal"))
+                            : tenCompanyMode ? ComposedIndustryScenario.openTenCompanyAutonomy(tenCompanyJournal(workDir))
                             : personPauseMode ? ComposedIndustryScenario.openPersonPauseOperating(workDir.resolve("world-person-pause-v1.journal"), workDir.resolve("opening-copies.json"))
                             : issuerResolutionMode ? ComposedIndustryScenario.openIssuerResolutionOperating(workDir.resolve("world-issuer-resolution-v1.journal"), workDir.resolve("opening-copies.json"))
                             : unpricedReferenceMode ? ComposedIndustryScenario.openUnpricedReferenceOperating(workDir.resolve("world-unpriced-reference-v1.journal"), workDir.resolve("opening-copies.json"))
@@ -456,6 +460,12 @@ public final class WorldWebApp {
             // 取不到代码位置时只用已有 classpath；子进程启动失败会给出真实原因
         }
         return String.join(java.io.File.pathSeparator, parts);
+    }
+
+    static Path tenCompanyJournal(Path workDir) {
+        Path current = workDir.resolve("world-ten-company-autonomy-v2.journal");
+        Path original = workDir.resolve("world-ten-company-autonomy-v1.journal");
+        return Files.exists(current) || !Files.exists(original) ? current : original;
     }
 
     private static WorldRuntime openThinkingOperating(Path workDir) throws Exception {

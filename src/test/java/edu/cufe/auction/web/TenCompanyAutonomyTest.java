@@ -106,6 +106,7 @@ class TenCompanyAutonomyTest {
             assertEquals("ten-issuers-v1",data.get("opening-population"));
             assertEquals("long-horizon-v1",data.get("model-budget"));
             assertEquals("published-visible-v1",data.get("board-material-source"));
+            assertEquals("host-fare-v1",data.get("onsite-interview"));
             var caps = w.snapshot().decisions().orElseThrow().state().config().budget().personCap();
             assertEquals(61,caps.size());
             assertFalse(caps.containsKey(SYSTEM));
@@ -119,6 +120,13 @@ class TenCompanyAutonomyTest {
             assertTrue(w.openingRegistry().orElseThrow().securities().stream().allMatch(s -> s.initialReferencePrice()!=null));
             var profile = w.bankOf().orElseThrow().decode(w.snapshot().accounts()).config().profile();
             assertFalse(profile.parties().containsKey("independent-reader"));
+            var carrier = profile.parties().get("visit-carrier");
+            assertEquals("visit-carrier",carrier.ownerId());
+            assertEquals("VISIT-CARRIER",carrier.cashAccountId());
+            assertNull(carrier.depositGl());
+            var cash = w.snapshot().accounts().get(carrier.cashAccountId());
+            assertEquals(carrier.ownerId(),cash.ownerId());
+            assertEquals(new java.math.BigDecimal("0.00"),cash.cash());
             assertTrue(profile.custodians().containsKey("cst"));
             assertTrue(w.snapshot().accounts().containsKey("CST-CASH"));
             assertNotNull(w.valuation("investor").bankClaims());
@@ -153,6 +161,8 @@ class TenCompanyAutonomyTest {
                 routes.replace(0, AutonomousLifecycleProbe.probeRoutes(routes.view(),MODE));
                 try (var host = new WorldWebHost(() -> {
                     var w = ComposedIndustryScenario.openTenCompanyAutonomy(work.resolve("world.journal"));
+                    if (!automatic) edu.cufe.auction.world.composed.ResourceCessationTest.captureObservation(
+                            w,rep,"person-decision:"+rep+":2");
                     current.set(w);
                     return new WorldWebHost.Opened(w,w.profile().manifest().runId());
                 },routes,(call,timeout) -> {
@@ -180,9 +190,19 @@ class TenCompanyAutonomyTest {
                     assertFalse(host.autonomyStatus().running());
                     assertEquals("IDLE",host.liveStatus().phase());
                     var call = received.get(0);
+                    assertEquals("person-decision:"+rep+":"+(automatic ? 1 : 3),call.actionId());
                     var decision = host.call(() -> DecisionModel.decision(current.get().snapshot().decisions().orElseThrow().state(),
                             call.actionId()).orElseThrow());
                     assertEquals(DecisionModel.Outcome.WAIT,decision.outcome());
+                    var retried = host.call(() -> {
+                        var w = current.get();
+                        int count = w.snapshot().decisions().orElseThrow().state().decisions().size();
+                        w.openDecisions("repeat-finished", List.of(new DecisionRun.Request(rep,call.actionId(),"wake",call.plan().route())));
+                        assertEquals(count,w.snapshot().decisions().orElseThrow().state().decisions().size());
+                        return w.dispatchLiveDecision("repeat-finished",call.actionId());
+                    });
+                    assertNull(retried.call());
+                    assertEquals(1,received.size());
                     assertEquals("trading",call.plan().route().sceneId());
                     var input = mapper.readTree(call.inputText());
                     assertEquals(rep,input.path("person").asText());
@@ -198,9 +218,15 @@ class TenCompanyAutonomyTest {
 
     @Test void archivedCopyRunKeepsItsOwnTwoExtraIdentitiesAndCannotBeReopenedAsTheStandardPopulation() throws Exception {
         var file = dir.resolve("old.journal");
+        java.math.BigDecimal total;
         try (var w = ComposedIndustryScenario.openPersonPauseOperating(file,DRAFT)) {
+            assertFalse(w.snapshot().accounts().containsKey("VISIT-CARRIER"));
+            total = w.snapshot().accounts().values().stream().map(a -> a.cash()).reduce(java.math.BigDecimal.ZERO,java.math.BigDecimal::add);
             assertTrue(w.snapshot().accounts().containsKey("COPY-COMPANY-independent-engineering"));
             assertTrue(w.snapshot().accounts().containsKey("COPY-PERSON-independent-reader"));
+        }
+        try (var w = ComposedIndustryScenario.openTenCompanyAutonomy(dir.resolve("normal.journal"))) {
+            assertEquals(total,w.snapshot().accounts().values().stream().map(a -> a.cash()).reduce(java.math.BigDecimal.ZERO,java.math.BigDecimal::add));
         }
         var old = Files.readAllBytes(file);
         assertThrows(Exception.class,() -> ComposedIndustryScenario.openTenCompanyAutonomy(file));

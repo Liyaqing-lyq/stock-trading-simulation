@@ -48,7 +48,7 @@ final class WorldOverviewView {
                 managers.computeIfAbsent(a.organizationPartyId(),k->new ArrayList<>()).add(a.personPartyId());
             roles.computeIfAbsent(a.personPartyId(),k->new ArrayList<>()).add(names.get(a.organizationPartyId())+" · "+role);
         }
-        if (RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID.equals(world.profile().manifest().runId())) {
+        if (RunManifest.usesTenCompanyAutonomy(world.profile().manifest().policyRunId())) {
             var mandate = snapshot.engineering().orElseThrow().config().customerMandate();
             roles.computeIfAbsent(mandate.representativePartyId(), k -> new ArrayList<>())
                     .add(names.get(mandate.organizationPartyId()) + " · 工程客户代表（查阅委托与收付，履约按合同复核）");

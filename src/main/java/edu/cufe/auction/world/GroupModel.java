@@ -790,6 +790,11 @@ public final class GroupModel {
          * @return 来源根；元数据缺失返回空
          */
         Optional<List<Ref>> originsOf(String docId, long version);
+
+        /** @param docId 直接引用的文档标识
+         * @return 当前策略是否要求从真实发布记录确认此版本
+         */
+        default boolean requiresBinding(String docId) { return false; }
     }
 
     /**
@@ -3072,11 +3077,12 @@ public final class GroupModel {
         List<Ref> roots = new ArrayList<>();
         for (Ref ref : direct) {
             Post source = postByDocId(state, ref.docId());
-            if (source == null) {
+            boolean boundVersion = context.versionOrigins().requiresBinding(ref.docId());
+            if (source == null && !boundVersion) {
                 roots.add(ref);
                 continue;
             }
-            if (ref.version() == 1) {
+            if (!boundVersion && ref.version() == 1) {
                 if (!source.originRefs().isEmpty()) {
                     roots.addAll(source.originRefs());
                 } else {

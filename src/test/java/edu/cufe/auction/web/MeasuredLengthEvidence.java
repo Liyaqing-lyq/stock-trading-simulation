@@ -36,6 +36,8 @@ final class MeasuredLengthEvidence {
     static java.util.Set<LiveCompletionInbox.AttemptKey> restore(Path initial, MeasuredLengthPolicy policy, DecisionRun ledger) throws IOException {
         var visited = new HashSet<Path>();
         var attempts = new HashSet<LiveCompletionInbox.AttemptKey>();
+        var decisions = ledger.state().decisions().stream().collect(java.util.stream.Collectors.toMap(
+                edu.cufe.auction.world.DecisionModel.Decision::actionId, java.util.function.Function.identity()));
         Path child = null;
         String source = null;
         String mode = null;
@@ -69,7 +71,8 @@ final class MeasuredLengthEvidence {
                 var call = JSON.readValue(path.resolve("call-" + index + ".json").toFile(), DecisionRun.Call.class);
                 if (!attempts.add(LiveCompletionInbox.AttemptKey.of(call))) throw invalid();
                 var receipt = JSON.readValue(path.resolve("reply-" + index + ".json").toFile(), LiveCompletionInbox.Completion.class);
-                var d = edu.cufe.auction.world.DecisionModel.decision(ledger.state(), call.actionId()).orElseThrow(MeasuredLengthEvidence::invalid);
+                var d = decisions.get(call.actionId());
+                if (d == null) throw invalid();
                 if (!call.runId().equals(d.runId()) || !call.plan().equals(d.plan()) || !call.inputText().equals(d.inputText())
                         || !call.allowedTools().equals(d.allowedTools())) throw invalid();
                 var a = d.attempts().stream().filter(x -> x.attemptId().equals(call.attemptId())).findFirst().orElseThrow(MeasuredLengthEvidence::invalid);
@@ -77,6 +80,8 @@ final class MeasuredLengthEvidence {
                         || !a.replyReceived() || !a.settledDone() || !a.replyBody().equals(receipt.reply().body())
                         || !a.usageSource().equals(receipt.reply().usageSource())
                         || !java.util.Objects.equals(a.declaredUsage(), receipt.reply().usage())) throw invalid();
+                if (cfg.runUntilTarget() && !receipt.businessReply()
+                        && a.outcome() != edu.cufe.auction.world.DecisionModel.Outcome.TECHNICAL_FAILED) throw invalid();
                 if ("PROVIDER_LENGTH".equals(receipt.failureCode()) && !policy.remember(call, receipt.reply())) throw invalid();
             }
             child = path;
@@ -86,10 +91,12 @@ final class MeasuredLengthEvidence {
     }
 
     private static Seal calculate(Path folder, Path parent, int calls) throws IOException {
-        if (calls < 0 || calls > 3000) throw invalid();
+        var config = JSON.readValue(folder.resolve("config.json").toFile(), AutonomousLifecycleProbe.Config.class);
+        if (calls < 0 || calls > config.callLimit()) throw invalid();
         var digest = sha256();
         for (String name : List.of("config.json", "result.json", "system-prompt.txt", SceneRoutes.FILE_NAME,
                 ProbeProviderEvidence.POLICY_FILE, "world.journal")) add(folder, name, digest);
+        if (config.runUntilTarget()) add(folder,AutonomousLifecycleProbe.INPUT_EVENTS,digest);
         for (int index = 1; index <= calls; index++)
             for (String prefix : List.of("call-", "reply-", "provider-")) add(folder, prefix + index + ".json", digest);
         String parentHash = parent == null ? null : HexFormat.of().formatHex(fileDigest(parent.resolve(FILE)));

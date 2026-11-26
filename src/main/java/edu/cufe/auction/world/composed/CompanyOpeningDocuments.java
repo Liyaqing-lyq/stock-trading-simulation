@@ -5,6 +5,7 @@ import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.OpeningRegistry;
 import edu.cufe.auction.world.RunManifest;
+import edu.cufe.auction.world.ResourcePrimaryEquity;
 import edu.cufe.auction.world.WorldRuntime;
 
 import java.util.List;
@@ -61,7 +62,7 @@ public final class CompanyOpeningDocuments {
                 if (identity != null) body.append(identity.publicDescription()).append('\n');
             }
             body.append("公司=").append(company).append("（").append(parties.get(company).name()).append("）\n");
-            if (RunManifest.usesCompanyInformationRules(world.profile().manifest().runId())) {
+            if (RunManifest.usesCompanyInformationRules(world.profile().manifest().policyRunId())) {
                 for (var security : registry.securities()) {
                     if (company.equals(security.issuerOrganizationId())) {
                         body.append("开局证券登记（实验时点 0）：代码=").append(security.symbol())
@@ -72,6 +73,8 @@ public final class CompanyOpeningDocuments {
                     }
                 }
             }
+            if (ResourcePrimaryEquity.ISSUER.equals(company) && ResourcePrimaryEquity.VERSION.equals(data.get(ResourcePrimaryEquity.POLICY)))
+                body.append(ResourcePrimaryEquity.TERMS).append('\n');
             TreeSet<String> candidates = new TreeSet<>(extraCandidates.getOrDefault(company, List.of()));
             body.append("章程席位：\n");
             for (BoardModel.Seat seat : charter.seats()) {
@@ -98,7 +101,7 @@ public final class CompanyOpeningDocuments {
         if (PrototypeCompanies.PROFILE.equals(world.profile().manifest().dataVersions().get("profile"))) {
             for (var spec : world.snapshot().engineering().orElseThrow().config().companies()) {
                 for (var plan : spec.contracts()) {
-                    if (RunManifest.usesEngineeringCustomerRules(world.profile().manifest().runId())) {
+                    if (RunManifest.usesEngineeringCustomerRules(world.profile().manifest().policyRunId())) {
                         world.scheduleOpeningEngineeringOpportunity(plan.contractId());
                         continue;
                     }
@@ -116,9 +119,9 @@ public final class CompanyOpeningDocuments {
         if (edu.cufe.auction.world.RoleDeliberation.hasEvidence(world.profile().manifest().dataVersions().get("role-context"))) {
             edu.cufe.auction.world.RoleEvidenceDocuments.publish(world, extraCandidates);
         }
-        if (RunManifest.usesFundMandate(world.profile().manifest().runId())) FundMandateDocument.publish(world);
-        if (RunManifest.usesPersonalProfiles(world.profile().manifest().runId())
-                || RunManifest.usesMediaDesks(world.profile().manifest().runId())) {
+        if (RunManifest.usesFundMandate(world.profile().manifest().policyRunId())) FundMandateDocument.publish(world);
+        if (RunManifest.usesPersonalProfiles(world.profile().manifest().policyRunId())
+                || RunManifest.usesMediaDesks(world.profile().manifest().policyRunId())) {
             world.schedulePublishDocument("opening-personal-contacts", "opening-personal-contacts-task", 1L,
                     WorldWebScenario.SOCIAL_CONTACT_DOC, WorldWebScenario.INVESTOR, InformationModel.Audience.publicAudience(),
                     "持有人公开联系说明（EXP）", "登记的一对一私信地址：" + String.join("、", WorldWebScenario.SOCIAL_PERSONS),

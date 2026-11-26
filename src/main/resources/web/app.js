@@ -198,6 +198,7 @@ function clearAdminDom() {
 }
 
 function clearPersonDom() {
+  renderFundUnits(null);
   renderPersonPortfolios([]);
   $("person-research-timeline").replaceChildren();
   $("person-research-card").hidden = true;
@@ -629,12 +630,16 @@ async function refreshPerson() {
     summary.append(dt, dd);
   }
 
-  renderPersonPortfolios(view.portfolios || []);
+  renderPersonPortfolios(view.portfolios || [], view.portfolioReturns || {});
+  renderFundUnits(view.fundUnits, generation);
+  const ownSettlement = (view.accounts || []).some(row => row.settlement);
+  if ($("person-settlement-heading")) $("person-settlement-heading").hidden = !ownSettlement;
   fillTable("person-accounts", view.accounts, (tr, row) => {
     cell(tr, row.accountId);
     cell(tr, row.kind);
     cell(tr, row.cash, "num");
     cell(tr, row.availableCash, "num");
+    if (ownSettlement) renderSettlementCell(tr,row.settlement);
   });
   const showHoldingWeights = (view.holdings || []).some(row => Object.hasOwn(row, "issuedSharePercent"));
   $("person-holding-nav-heading").hidden = !showHoldingWeights;
@@ -666,7 +671,9 @@ async function refreshPerson() {
     cell(tr, row.referenceAgeMillis, "num");
     cell(tr, row.lastTradeQuantity, "num");
     cell(tr, row.bestBid, "num");
+    if (row.bestBidQuantity != null) cell(tr, row.bestBidQuantity, "num");
     cell(tr, row.bestAsk, "num");
+    if (row.bestAskQuantity != null) cell(tr, row.bestAskQuantity, "num");
     if (row.priceBand) {
       const b = row.priceBand;
       const source = { PREVIOUS_TRADED_CLOSE: "前次收盘", OPENING_REFERENCE: "开局参考", EX_DIVIDEND_REFERENCE: "除息参考" };
@@ -674,6 +681,9 @@ async function refreshPerson() {
     }
     if (row.sessionStatus) cell(tr, sessionLabels[row.sessionStatus] || row.sessionStatus);
   });
+  const depthVisible = (view.market || []).some(row => row.bestBidQuantity != null);
+  $("person-best-bid-quantity").hidden = !depthVisible;
+  $("person-best-ask-quantity").hidden = !depthVisible;
   $("person-session-status-heading").hidden = !(view.market || []).some(row => row.sessionStatus);
   $("person-price-band-heading").hidden = !(view.market || []).some(row => row.priceBand);
   $("person-catalog").textContent = view.catalog === 0
@@ -685,7 +695,12 @@ async function refreshPerson() {
   if (isCurrent(generation) && state.mode === "person") renderPersonalReports(view.publicReports || []);
 }
 
-function renderPersonPortfolios(portfolios) {
+const fundClaimFields = [
+  ["units","基金份额（份）"],["marketValue","份额市值（元）"],["subscriptionAdvance","申购预付款（元）"],
+  ["redemptionReceivable","赎回应收款（元）"],["productLiability","产品预收及赎回应付款（元）"]
+];
+
+function renderPersonPortfolios(portfolios, returns = {}) {
   const container = $("person-owner-value-rows");
   container.replaceChildren();
   $("person-owner-valuations").hidden = portfolios.length === 0;
@@ -698,9 +713,111 @@ function renderPersonPortfolios(portfolios) {
       ["净资产", row.netWorth ?? label("valuation", row.valuationStatus)], ["现金（含冻结）", row.cash],
       ["持仓市值", row.holdings], ["存款本金", bank.deposits], ["存款应收利息", bank.depositInterestReceivable],
       ["托管受益额", bank.custodyBeneficial], ["应收股息", row.dividendReceivable], ["应付股息", row.dividendPayable],
-      ["未偿借款本金", bank.loanPrincipal], ["借款应付利息", bank.loanInterestPayable]
+      ["未偿借款本金", bank.loanPrincipal], ["借款应付利息", bank.loanInterestPayable],
+      ...(row.fundClaims ? fundClaimFields.map(([key,label]) => [label,row.fundClaims[key]]) : [])
+    ]);
+    const period = returns[row.ownerId];
+    if (period) periodicDl(container, [
+      ["开局至今表现", label("performance",period.status)], ["时间加权收益率",period.returnRate],
+      ["净值指数（开局为 1）",period.index], ["最大回撤",period.maxDrawdown]
     ]);
   }
+}
+
+function renderSettlementCell(tr, settlement) {
+  if (!settlement) { cell(tr, null); return; }
+  const td = document.createElement("td");
+  tr.appendChild(td);
+  const details = document.createElement("details"), summary = document.createElement("summary");
+  summary.textContent = "可转出 " + settlement.withdrawableCash + " 元";
+  details.appendChild(summary);
+  periodicDl(details,[["可买入（元）",settlement.tradingAvailable],["买单冻结（元）",settlement.orderFrozen],
+    ["卖出待交收（元）",settlement.unsettledSaleCash],["可转出（元）",settlement.withdrawableCash],
+    ["已付交易费（元）",settlement.transactionFees]]);
+  td.appendChild(details);
+}
+
+function renderFundUnits(book, generation) {
+  const card = $("person-fund-units");
+  if (!card) return;
+  card.hidden = !book;
+  const summary = $("fund-units-summary"), controls = $("fund-units-controls"), orders = $("fund-units-orders");
+  summary.replaceChildren(); controls.replaceChildren(); orders.replaceChildren();
+  $("fund-units-status").textContent = "";
+  if (!book) return;
+  const pairs = [["产品",book.productId],["单位净值（元）",book.unitNav ?? "当前无法完整估值"],
+    ["已登记份额",book.totalUnits],["产品净资产（元）",book.netAssets ?? "当前无法完整估值"],["申赎费用（元）","0.00"],
+    ["下次确认（世界毫秒）",book.nextCutoffMillis ?? "—"],["下次支付（世界毫秒）",book.nextPaymentMillis ?? "—"]];
+  if (book.manager) pairs.push(["待确认申购款（元）",book.totalPendingSubscriptions],["待确认赎回（份）",book.totalPendingRedemptions],
+    ["已确认应付款（元）",book.totalPayables],["结算专户（元）",book.settlementCash],["投资账户现金（元）",book.operatingCash]);
+  if (book.holder) pairs.push(["本人份额",book.ownUnits],["本人可赎回份额",book.availableUnits],
+    ["本人待确认申购款（元）",book.pendingSubscription],["本人待确认赎回（份）",book.pendingRedemption],["本人应收赎回款（元）",book.receivable]);
+  periodicDl(summary,pairs);
+  if (!book.holder) return;
+  for (const [action, label, step] of [["SUBSCRIBE","申购金额（元）","0.01"],["REDEEM","赎回份额（份）","0.0001"]]) {
+    const form = document.createElement("form"), field = document.createElement("label"), input = document.createElement("input");
+    const button = document.createElement("button");
+    field.textContent = label; input.type = "number"; input.step = step; input.min = step; input.required = true;
+    button.type = "submit"; button.textContent = action === "SUBSCRIBE" ? "提交申购" : "提交赎回";
+    field.appendChild(input); form.append(field,button); controls.appendChild(form);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      guard(submitFundUnits(book, action, "web-" + crypto.randomUUID(), input.value, button, generation));
+    });
+  }
+  for (const order of book.orders || []) {
+    const line = document.createElement("div"), description = document.createElement("p");
+    line.appendChild(description);
+    const unit = order.kind === "SUBSCRIBE" ? "元" : "份";
+    description.textContent = order.id + " · " + (order.kind === "SUBSCRIBE" ? "申购 " : "赎回 ") + order.requested + unit
+      + "，待确认 " + order.remaining + unit + "，已确认 " + order.confirmedUnits + "份 / " + order.confirmedAmount + "元"
+      + (order.cancelledAt == null ? "" : "，已撤回 " + order.cancelledRemainder + unit)
+      + (order.kind === "REDEEM" ? "，已付 " + order.paidAmount + "元，待付 " + order.receivable + "元" : "，尾差退款 " + order.roundingRefund + "元");
+    if (order.confirmations?.length) {
+      const details = document.createElement("details"), title = document.createElement("summary");
+      title.textContent = "查看逐批确认"; details.appendChild(title);
+      for (const fill of order.confirmations) {
+        const entry = document.createElement("p");
+        entry.textContent = "确认时点 " + fill.cutoff + "，单位净值 " + fill.unitNav + " 元，确认 " + fill.units + " 份 / " + fill.amount + " 元"
+          + (fill.payableAt == null ? "，尾差退款 " + fill.refund + " 元" : fill.paidAt == null ? "，预计支付时点 " + fill.payableAt : "，实际支付时点 " + fill.paidAt);
+        details.appendChild(entry);
+      }
+      line.appendChild(details);
+    }
+    if (/[1-9]/.test(String(order.remaining))) {
+      const cancel = document.createElement("button"); cancel.type="button"; cancel.textContent="撤回申请";
+      cancel.setAttribute("aria-label","撤回申请 " + order.id);
+      cancel.addEventListener("click", () => guard(submitFundUnits(book,"CANCEL",order.id,null,cancel,generation)));
+      line.appendChild(cancel);
+    }
+    orders.appendChild(line);
+  }
+}
+
+async function submitFundUnits(book, action, requestId, amount, button, generation) {
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  button.disabled = true;
+  const payload = { revision: book.revision, requestId, action };
+  if (amount !== null) payload.amount=amount;
+  try {
+    const result = await request("POST","/api/me/fund-units",payload);
+    if (!isCurrent(generation) || state.mode !== "person") return;
+    if (result.status === 401) { sessionLost(); return; }
+    if (result.status === 200 && result.payload?.person === book.person && result.payload.orders?.some(o => o.id === requestId)) {
+      const receipt = (action === "CANCEL" ? "已撤回尚未确认的申请余额。" : "已受理，等待交易日统一确认。") + " 申请编号 " + requestId;
+      renderFundUnits(result.payload, generation);
+      $("fund-units-status").textContent = receipt;
+      let refreshFailed = false;
+      try { await refreshPerson(); }
+      catch (failed) { refreshFailed = true; }
+      if (!isCurrent(generation) || state.mode !== "person") return;
+      $("fund-units-status").textContent = receipt + (refreshFailed || !$("person-error").hidden ? " 其余资料刷新失败，请稍后重试。" : "");
+    } else {
+      $("fund-units-status").textContent = result.payload?.message || "未能受理，刷新后可核对本人申请。";
+    }
+  } catch (failure) {
+    if (isCurrent(generation) && state.mode === "person") $("fund-units-status").textContent="尚未取得回执，请刷新核对申请编号 " + requestId;
+  } finally { button.disabled=false; }
 }
 
 function renderPersonResearch(research) {
@@ -771,7 +888,8 @@ function renderPersonRelations(view, historical = false) {
     ...view.accounts.map(a => ({ from: person, layer: "账户", relation: a.kind === "PERSONAL" ? "本人所有" : "获授权查看",
       to: a.accountId, quantity: a.availableCash, unit: "元", timeMillis: view.timeMillis, basis: "账户属主 " + a.ownerId + " · 可用余额" })),
     ...view.holdings.map(h => ({ from: h.accountId, layer: "持仓", relation: "持有",
-      to: h.symbol, quantity: h.quantity, unit: "股", timeMillis: view.timeMillis, basis: "可卖 " + h.available + " 股" })),
+      to: h.symbol, quantity: h.quantity, unit: "股", timeMillis: view.timeMillis, basis: "可卖 " + h.available + " 股" +
+        (h.issuedSharePercent == null ? "" : " · 占当时已发行股份 " + h.issuedSharePercent + "%") })),
     ...(!historical ? view.businessRelations || [] : []),
     ...(view.media?.documents?.rows || []).map(d => ({ from: person, layer: "阅读", relation: "读完",
       to: d.docId + " v" + d.version, basis: d.title + " · 完成于 " + d.completedAtMillis + " 毫秒" })),
@@ -2143,7 +2261,7 @@ $("market-refresh").addEventListener("click", () => guard(loadMarketHistory()));
 // ---------------------------------------------------------------- 管理详情页（公司 / 表现 / 人物任职 / 信息阅读）
 
 const LABELS = {
-  topic: { MANAGER_APPOINTMENT: "经理任免", BUDGET: "预算授权", OPERATING_REVIEW: "经营考核", DIVIDEND_AUTHORIZATION: "分红授权" },
+  topic: { MANAGER_APPOINTMENT: "经理任免", BUDGET: "预算授权", OPERATING_REVIEW: "经营考核", DIVIDEND_AUTHORIZATION: "分红授权", RESOURCE_CESSATION: "资源公司停业决议", RESOURCE_PRIMARY_OFFER: "资源公司普通股认购要约" },
   meeting: { CONVENED: "已召集", MATERIALS_FROZEN: "材料已冻结", REVIEWED: "已评分", VOTING: "表决中",
     ADOPTED: "已通过", REJECTED: "未通过", ADJOURNED_NO_QUORUM: "不足法定人数",
     IMPLEMENTED: "已实施", IMPLEMENTATION_FAILED: "实施失败" },
@@ -3019,12 +3137,16 @@ function renderCompanyReports() {
 function renderPerformance(view) {
   $("performance-cut").textContent = cutText(view, view.performanceAvailable
     ? "期间表现按 PerformanceModel 计算" : "确认帧过长，本期未计算期间表现");
-  fillTable("performance-accounts", (view.accounts || {}).rows, (tr, row) => {
+  const accounts = (view.accounts || {}).rows || [];
+  const showSettlement = accounts.some(row => row.settlement);
+  if ($("performance-settlement-heading")) $("performance-settlement-heading").hidden = !showSettlement;
+  fillTable("performance-accounts", accounts, (tr, row) => {
     cell(tr, row.accountId);
     cell(tr, row.ownerId);
     cell(tr, row.ownerName);
     cell(tr, row.cash, "num");
     cell(tr, row.source);
+    if (showSettlement) renderSettlementCell(tr,row.settlement);
   });
   fillSection("performance-accounts-empty", null, view.accounts);
   renderPerformanceOwners();
@@ -3089,6 +3211,12 @@ function renderPerformanceOwners() {
     for (const key of ["deposits", "depositInterestReceivable", "custodyBeneficial", "loanPrincipal", "loanInterestPayable"]) {
       cell(tr, row.bankClaims[key], "num");
     }
+  });
+  const fundOwners = rows.filter(row => row.fundClaims);
+  $("performance-fund-claims").hidden = fundOwners.length === 0;
+  fillTable("performance-fund-lines", fundOwners, (tr,row) => {
+    cell(tr,row.ownerId);
+    for (const [key] of fundClaimFields) cell(tr,row.fundClaims[key],"num");
   });
   $("performance-owners-empty").hidden = rows.length !== 0;
   state.performanceOwnerPage = view.ownerPage || 1;
@@ -4468,7 +4596,16 @@ async function renderPersonalEvidence(generation) {
     cell(tr, row.storyId);
     cell(tr, row.publicDocId);
     cell(tr, row.publicVersion, "num");
-    cell(tr, row.publicLabel);
+    const td = cell(tr, row.publicLabel);
+    if (row.publicTitle) {
+      const details = document.createElement("details"), summary = document.createElement("summary");
+      summary.textContent = "查看已读公开稿 · " + row.publicTitle;
+      const body = document.createElement("p"), source = document.createElement("p");
+      body.textContent = row.publicBody;
+      source.textContent = row.publicSourceDescription;
+      details.append(summary,body,source);
+      td.appendChild(details);
+    }
   });
   fillTable("person-evidence-shares", shares, (tr, row) => {
     cell(tr, row.title);
@@ -4687,6 +4824,11 @@ function renderInterviewAudit(view) {
 function clearPersonalInterview() {
   const panel = $("person-interview");
   if (panel) panel.hidden = true;
+  if ($("person-site-visits")) {
+    $("person-site-visits").hidden = true;
+    fillTable("person-site-visit-table", [], () => {});
+    $("person-site-visit-result").textContent = "";
+  }
   for (const id of ["person-interview-invites", "person-interview-contacts",
     "person-dialogue-sessions", "person-dialogue-turns"]) {
     fillTable(id, [], () => undefined);
@@ -4757,7 +4899,8 @@ async function renderPersonalInterview(tools, generation) {
   const view = result.payload;
   const invites = view.invites || [];
   const contacts = view.contacts || [];
-  panel.hidden = !(invites.length || contacts.length || actions.length);
+  panel.hidden = !(invites.length || contacts.length || actions.length || view.siteVisits?.appointments?.length);
+  renderSiteVisits(view, generation);
   fillTable("person-interview-invites", invites, (tr, row) => {
     const other = row.fromPartyId === view.personPartyId ? row.toPartyId : row.fromPartyId;
     cell(tr, row.requestId);
@@ -4777,6 +4920,56 @@ async function renderPersonalInterview(tools, generation) {
   });
   $("person-interview-contacts-empty").textContent = contacts.length
     ? "" : "本人尚未通过实际阅读取得可私信的联系入口。";
+}
+
+function renderSiteVisits(view, generation) {
+  const panel = $("person-site-visits");
+  if (!panel) return;
+  const rows = view.siteVisits?.appointments || [];
+  panel.hidden = rows.length === 0;
+  const stages = { APPOINTMENT: "已预约", CONSENTED: "已同意出票", BOOKED: "已安排出发，尚未出票", OUTBOUND: "前往接待点",
+    ONSITE: "已到访", RETURNING: "返程中", HOME: "已返回", REVOKED: "出发前已撤回" };
+  fillTable("person-site-visit-table", rows, (tr, row) => {
+    cell(tr, row.requestId);
+    cell(tr, row.reporter + " ／ " + row.host);
+    cell(tr, stages[row.stage] || row.stage);
+    cell(tr, windowText(row.startMillis, row.endMillis));
+    cell(tr, [row.departMillis, row.returnMillis].map(t => t >= 0 ? t : "—").join(" ／ "));
+    cell(tr, row.farePaid, "num");
+    cell(tr, row.observed ? "已获准" : "尚无");
+    const controls = cell(tr, "");
+    const labels = { HOST_CONSENT: "同意接待并承担往返车费 " + row.fare + " 元", REVOKE: "撤回现场访问许可",
+      DEPART: "安排出发", RETURN: "开始返程" };
+    for (const action of row.actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = labels[action] || action;
+      button.addEventListener("click", () => guard(submitSiteVisit(view, row, action, button, generation)));
+      controls.appendChild(button);
+    }
+  });
+}
+
+async function submitSiteVisit(view, row, action, button, generation) {
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  button.disabled = true;
+  const feedback = $("person-site-visit-result");
+  try {
+    const result = await request("POST", "/api/me/interview/site-visit", {
+      observedMillis: view.timeMillis, expectedStage: row.stage, commandId: "web-visit-" + crypto.randomUUID(),
+      requestId: row.requestId, action
+    });
+    if (!isCurrent(generation) || state.mode !== "person") return;
+    if (result.status === 401) { sessionLost(); return; }
+    feedback.textContent = result.status === 200
+      ? "已排程。将在世界时点 " + result.payload.dueTimeMillis + " 毫秒复核，推进后可查看结果。"
+      : (result.payload?.message || "此动作未获受理。");
+  } catch (failure) {
+    if (isCurrent(generation) && state.mode === "person")
+      feedback.textContent = "暂未收到回执。刷新本人行程可核对最新状态。";
+  } finally {
+    if (isCurrent(generation) && state.mode === "person") button.disabled = false;
+  }
 }
 
 // ---------------------------------------------------------------- 工程经营与回款（18c 第一切片）
@@ -6817,7 +7010,7 @@ async function renderPersonalEngineering(generation) {
   if (!card) return;
   card.hidden = false;
   $("person-engineering-note").textContent = view.enabled
-    ? "同一确认记录 " + view.position + " · 世界时点 " + view.timeMillis + " 毫秒；只显示本人岗位内容。"
+    ? (view.position == null ? "" : "同一确认记录 " + view.position + " · ") + "世界时点 " + view.timeMillis + " 毫秒；只显示本人岗位内容。"
     : (view.note || "此运行未启用工程经营。");
   fillPersonalEngineeringCompanies(view.companies || []);
   fillEngineeringSelectors(view.companies || []);
@@ -6830,7 +7023,7 @@ function engineeringActionBody(tool, values) {
   state.engineeringSubmitSeq = (state.engineeringSubmitSeq || 0) + 1;
   const stamp = Date.now() + "-" + state.engineeringSubmitSeq;
   const body = {
-    expectedPosition: String(view.position || ""),
+    expectedPosition: String(view.observationToken ?? view.position ?? ""),
     commandId: "web-eng-" + stamp,
     taskId: "web-eng-" + stamp + "-task",
     dueTimeMillis: values.dueTimeMillis,
@@ -6860,8 +7053,8 @@ function engineeringActionBody(tool, values) {
  */
 async function scheduleDocumentReading(companyId, docId, version, label, feedbackId) {
   const view = state.personEngineering || {};
-  if (!view.position) {
-    setMessage(feedbackId || "engineering-action-error", "当前没有可用的世界位置，请刷新后再试。");
+  if (!(view.observationToken ?? view.position)) {
+    setMessage(feedbackId || "engineering-action-error", "请刷新本人资料后重试。");
     return;
   }
   state.engineeringSubmitSeq = (state.engineeringSubmitSeq || 0) + 1;
@@ -6869,7 +7062,7 @@ async function scheduleDocumentReading(companyId, docId, version, label, feedbac
   let result;
   try {
     result = await request("POST", "/api/me/read", {
-      expectedPosition: String(view.position),
+      expectedPosition: String(view.observationToken ?? view.position),
       commandId: "web-read-" + stamp,
       taskId: "web-read-" + stamp + "-task",
       dueTimeMillis: String(Number(view.timeMillis) + 1000),

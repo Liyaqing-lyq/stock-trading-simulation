@@ -21,7 +21,12 @@ import java.util.Objects;
  * @param trading 纯核工作流（不可变）
  * @param reports 管理回报，按内部任务标识索引
  */
-public record RoleTradingRun(RoleTradingModel.State trading, Map<String, Report> reports) {
+public record RoleTradingRun(RoleTradingModel.State trading, Map<String, Report> reports,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        OpenFundUnits.Book fundUnits) {
+
+    /** 无份额模块的历史档。 */
+    public RoleTradingRun(RoleTradingModel.State trading, Map<String,Report> reports) { this(trading, reports, null); }
 
     /** 校验非空与索引一致性。 */
     public RoleTradingRun {
@@ -122,7 +127,7 @@ public record RoleTradingRun(RoleTradingModel.State trading, Map<String, Report>
         }
         Map<String, Report> next = new LinkedHashMap<>(reports);
         next.put(entry.taskId(), entry);
-        return new RoleTradingRun(trading, next);
+        return new RoleTradingRun(trading, next, fundUnits);
     }
 
     /**
@@ -132,7 +137,7 @@ public record RoleTradingRun(RoleTradingModel.State trading, Map<String, Report>
      * @return 替换后的子集
      */
     public RoleTradingRun withTrading(RoleTradingModel.State next) {
-        return new RoleTradingRun(Objects.requireNonNull(next, "候选交易工作流"), reports);
+        return new RoleTradingRun(Objects.requireNonNull(next, "候选交易工作流"), reports, fundUnits);
     }
 
     private static void requireText(String value, String field) {

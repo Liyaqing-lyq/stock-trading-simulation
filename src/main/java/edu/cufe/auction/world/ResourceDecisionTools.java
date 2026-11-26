@@ -42,6 +42,12 @@ public final class ResourceDecisionTools {
 
     /** 只投影本公司可执行方案与已发生经营状态。 */
     public static JsonNode observation(ResourceCompanyRun run, BoardRun board, long now, BigDecimal cash, List<CompanyOperationsRun.ReportEntry> reports) {
+        return observation(run, board, now, cash, reports, false);
+    }
+
+    /** 已启用停业的资源发行人同时展示停业决议、应付旧账和经理可办动作。 */
+    public static JsonNode observation(ResourceCompanyRun run, BoardRun board, long now, BigDecimal cash,
+                                       List<CompanyOperationsRun.ReportEntry> reports, boolean windDown) {
         var ledger = run.ledger(); var config = ledger.config();
         Map<String, Object> view = new TreeMap<>();
         view.put("companyId", run.companyPartyId()); view.put("cash", cash); view.put("reports", reports);
@@ -67,6 +73,15 @@ public final class ResourceDecisionTools {
             view.put("expansions", ledger.expansions()); view.put("residualAssets", ledger.residualAssets());
             view.put("mineCapacityKg", IntegratedResourcesModel.miningCapacityAt(ledger, period));
             actions.put("START_EXPANSION", "projectId"); actions.put("SELL_RESIDUAL", "projectId");
+        }
+        if (windDown) {
+            view.put("cessation", run.cessation());
+            view.put("cessationDecisions", board.board().meetings().values().stream().filter(m -> m.topic() == BoardModel.Topic.RESOURCE_CESSATION
+                    && m.status() == BoardModel.MeetingStatus.ADOPTED).map(BoardModel.Meeting::meetingId).sorted().toList());
+            view.put("expenseBills", ledger.bills());
+            if (ledger.exited()) actions.keySet().retainAll(Set.of("COLLECT", "WRITE_OFF", "SELL_RESIDUAL"));
+            else actions.put("EXIT_BUSINESS", "meetingId");
+            actions.put("SETTLE_BILL", "period");
         }
         view.put("actionFields", actions);
         view.put("rules", "arguments所有值为文本，只填所选动作字段。工时1000毫秒，作业到期由系统完成。内部转移不产生集团外部收入或现金；交付不等于回款。客户容量、需求和现金有限，不能猜测接受或未来结果；可观望。");

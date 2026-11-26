@@ -279,9 +279,17 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
      * @param side           方向；已达到目标为空
      * @param priceLimit     价格边界
      * @param deadlineMillis 截止
+     * @param sourceResearchId 新档授权账户能看见的目标来源报告标识
      */
     public record Version(int version, long absoluteTarget, long baseQuantity, long changeQuantity,
-                          Side side, BigDecimal priceLimit, long deadlineMillis) {
+                          Side side, BigDecimal priceLimit, long deadlineMillis,
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                          String sourceResearchId) {
+        /** 兼容未投影报告来源和风控执行边界的历史版本。 */
+        public Version(int version, long absoluteTarget, long baseQuantity, long changeQuantity,
+                       Side side, BigDecimal priceLimit, long deadlineMillis) {
+            this(version, absoluteTarget, baseQuantity, changeQuantity, side, priceLimit, deadlineMillis, null);
+        }
     }
 
     /**

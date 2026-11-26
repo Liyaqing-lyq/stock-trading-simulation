@@ -311,9 +311,9 @@ public final class ComposedWorldScenario {
                     i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
                     0L, end, null));
         }
-        boolean eightDesks = RunManifest.usesMediaDesks(manifest.runId());
+        boolean eightDesks = RunManifest.usesMediaDesks(manifest.policyRunId());
         if (eightDesks) MediaDesks.appoint(appointments, end);
-        if (RunManifest.usesBankCrisis(manifest.runId())) {
+        if (RunManifest.usesBankCrisis(manifest.policyRunId())) {
             appointments.add(new RoleAccess.Appointment("rescue-representative","aged-manager",BankCrisis.PROVIDER,
                     RoleAccess.Role.COMPANY_MANAGER,0L,end,null));
             appointments.add(new RoleAccess.Appointment("resolution-officer","kate",BankCrisis.AUTHORITY,
@@ -324,7 +324,7 @@ public final class ComposedWorldScenario {
         readers.addAll(WorldWebScenario.MEDIA_PERSONS);
         readers.addAll(WorldWebScenario.SOCIAL_PERSONS);
         readers.addAll(extras.readers());
-        if (RunManifest.usesEngineeringCustomerRules(manifest.runId())) readers.add(EngineeringCustomerPolicy.REPRESENTATIVE);
+        if (RunManifest.usesEngineeringCustomerRules(manifest.policyRunId())) readers.add(EngineeringCustomerPolicy.REPRESENTATIVE);
         if (manifest.hasResearch()) {
             readers.add(WorldWebScenario.RESEARCH_SYSTEM_PUBLISHER);
         }
@@ -334,7 +334,7 @@ public final class ComposedWorldScenario {
         EngineeringRun.Config engineering = PrototypeCompanies.PROFILE.equals(
                 manifest.dataVersions().get("profile")) ? PrototypeCompanies.engineering()
                 : baseline ? baselineEngineering() : engineeringConfigWithAcceptance();
-        if (RunManifest.usesEngineeringCustomerRules(manifest.runId())) engineering = new EngineeringRun.Config(engineering.paramSource(), engineering.companies(), Map.of(), EngineeringCustomerPolicy.MANDATE);
+        if (RunManifest.usesEngineeringCustomerRules(manifest.policyRunId())) engineering = new EngineeringRun.Config(engineering.paramSource(), engineering.companies(), Map.of(), EngineeringCustomerPolicy.MANDATE);
         if (OpeningEntityCopies.VERSION.equals(manifest.dataVersions().get(OpeningEntityCopies.KEY)))
             engineering = OpeningEntityCopies.fromManifest(manifest.dataVersions()).engineering(engineering);
         Map<String, edu.cufe.auction.world.BoardModel.Charter> governed =
@@ -348,7 +348,7 @@ public final class ComposedWorldScenario {
         }
         // 只在冻结的核验客户资金的思考经营新档登记主席工作联系入口：入口与角色依据正文同源于真实章程，
         // 未真实读完不可用；旧档不获得新渠道。
-        if (RunManifest.usesFundedOperatingRules(manifest.runId())) {
+        if (RunManifest.usesFundedOperatingRules(manifest.policyRunId())) {
             contacts.addAll(RoleEvidenceDocuments.fundedChairContacts(engineering, governed,
                     registry));
             // 与 SocialRun 的冻结顺序一致：冻结字段逐字相等才允许开局与重开。

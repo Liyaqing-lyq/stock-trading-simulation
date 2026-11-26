@@ -190,6 +190,31 @@ public record GroupsRun(GroupModel.Config config, PlatformPostModel.Config platf
                 Objects.requireNonNull(info, "信息状态")), config);
     }
 
+    /** 新版群/平台使用同一业务确认帧的成稿谱系，内部继承原始根不扩大读者访问权。 */
+    GroupModel.Context context(InformationModel.State info, WorldRuntime runtime, MediaRun media) {
+        var ordinary = context(info, runtime);
+        if (media == null) return ordinary;
+        var posts = GroupMediaBridge.sourceOrigins(state, new PostOrigins(state, publication.platform()));
+        var origins = new GroupModel.VersionOrigins() {
+            @Override public boolean requiresBinding(String docId) {
+                return docId.startsWith(MediaModel.PUBLIC_PREFIX) || posts.covers(docId);
+            }
+
+            @Override public Optional<List<GroupModel.Ref>> originsOf(String docId, long version) {
+                Optional<List<MediaModel.Ref>> roots = posts.covers(docId)
+                        ? posts.originsOf(info, docId, version)
+                        : media.publishedRoots(info, docId, version);
+                return roots.map(refs -> refs.stream()
+                        .map(ref -> new GroupModel.Ref(ref.docId(), ref.version())).toList());
+            }
+        };
+        return new GroupModel.Context(ordinary.citations(), origins, config);
+    }
+
+    PlatformPostModel.Context platformContext(GroupModel.Context context) {
+        return new PlatformPostModel.Context(context.citations(), context.versionOrigins(), state, platformConfig);
+    }
+
     /**
      * 平台受信上下文：额外带上当前群状态，用于展开直接引用的群帖谱系。
      *

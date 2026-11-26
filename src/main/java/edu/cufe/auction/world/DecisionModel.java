@@ -81,6 +81,20 @@ public final class DecisionModel {
     /** 单次冻结输入允许的最大 UTF-8 字节数。 */
     public static final long MAX_INPUT_BYTES = 60_000L;
 
+    /** 标记新十公司档人物可使用较长的个人材料；既有计划没有该字段。 */
+    public static final String EXTENDED_ROLE_INPUT = "131072-chars-262144-utf8-v1";
+    /** 新档可发送的最大 UTF-16 代码单元数，与 String.length 的检查一致。 */
+    public static final int EXTENDED_INPUT_CHARS = 131_072;
+    /** 新档角色观察原文的 UTF-8 上限，HTTP 封装另计。 */
+    public static final int EXTENDED_INPUT_BYTES = 262_144;
+
+    /** 返回冻结输入政策允许的 UTF-8 字节数，未知政策拒绝。 */
+    public static long inputByteLimit(String policy) {
+        if (policy == null) return MAX_INPUT_BYTES;
+        if (EXTENDED_ROLE_INPUT.equals(policy)) return EXTENDED_INPUT_BYTES;
+        throw new IllegalArgumentException("未知人物输入政策");
+    }
+
     /** 当前 session 未开启。 */
     public static final String REASON_SESSION_NOT_OPEN = "SESSION_NOT_OPEN";
     /** session 已开启。 */
@@ -396,15 +410,20 @@ public final class DecisionModel {
      * 1024 只是本地估算余量，不是官方账单上限。费用一律未知。</p>
      *
      * @param route      本次决定冻结的路由
-     * @param inputBytes 冻结输入的 UTF-8 字节数，1..60000
+     * @param inputBytes 冻结输入的 UTF-8 字节数，上限由冻结输入政策决定
+     * @param inputPolicy 本次输入政策，旧档为空
      */
-    public record ProviderPlan(Route route, long inputBytes) {
+    public record ProviderPlan(Route route, long inputBytes, @JsonInclude(JsonInclude.Include.NON_NULL) String inputPolicy) {
+
+        /** 既有提供方计划保留原 60000 字节边界。 */
+        public ProviderPlan(Route route, long inputBytes) { this(route, inputBytes, null); }
 
         /** 校验路由存在与输入字节范围；与输入正文的一致性由 OpenRequest 与决定核。 */
         public ProviderPlan {
             Objects.requireNonNull(route, "路由");
-            if (inputBytes < 1 || inputBytes > MAX_INPUT_BYTES) {
-                throw new IllegalArgumentException("输入字节必须在 1.." + MAX_INPUT_BYTES
+            long limit = inputByteLimit(inputPolicy);
+            if (inputBytes < 1 || inputBytes > limit) {
+                throw new IllegalArgumentException("输入字节必须在 1.." + limit
                         + "：" + inputBytes);
             }
         }
@@ -418,10 +437,23 @@ public final class DecisionModel {
     /** 冻结的运行限制。 */
     public record Limits(int maxAttemptsPerDecision, long maxInputChars, long maxReplyChars,
                          long perCallInputTokens, long perCallOutputTokens, int queueCapacity,
-                         int maxInFlight, long wallTimeoutMillis) {
+                         int maxInFlight, long wallTimeoutMillis,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) String inputPolicy) {
+
+        /** 历史配置没有扩展输入政策，沿用原有序列化与限制。 */
+        public Limits(int maxAttemptsPerDecision, long maxInputChars, long maxReplyChars, long perCallInputTokens,
+                      long perCallOutputTokens, int queueCapacity, int maxInFlight, long wallTimeoutMillis) {
+            this(maxAttemptsPerDecision, maxInputChars, maxReplyChars, perCallInputTokens, perCallOutputTokens,
+                    queueCapacity, maxInFlight, wallTimeoutMillis, null);
+        }
 
         /** 校验限制为正或非负。 */
         public Limits {
+            long bytes = inputByteLimit(inputPolicy);
+            if (inputPolicy != null && (maxInputChars != EXTENDED_INPUT_CHARS
+                    || perCallInputTokens != bytes + ESTIMATE_MARGIN_TOKENS)) {
+                throw new IllegalArgumentException("扩展输入的字符上限或逐次预留不符合冻结政策");
+            }
             if (maxAttemptsPerDecision < 1) {
                 throw new IllegalArgumentException("每次决定至少允许一次尝试");
             }
@@ -856,7 +888,8 @@ public final class DecisionModel {
             if (!config.live()) {
                 throw new IllegalArgumentException("旧档案不得携带提供方计划");
             }
-            if (plan.reservedInputTokens() > config.limits().perCallInputTokens()
+            if (!Objects.equals(plan.inputPolicy(), config.limits().inputPolicy())
+                    || plan.reservedInputTokens() > config.limits().perCallInputTokens()
                     || plan.route().maxOutputTokens() > config.limits().perCallOutputTokens()) {
                 throw new IllegalArgumentException("计划的单次预留超过冻结上限");
             }
@@ -1150,7 +1183,8 @@ public final class DecisionModel {
         }
         Usage reserved;
         if (plan != null) {
-            if (plan.reservedInputTokens() > config.limits().perCallInputTokens()
+            if (!Objects.equals(plan.inputPolicy(), config.limits().inputPolicy())
+                    || plan.reservedInputTokens() > config.limits().perCallInputTokens()
                     || plan.route().maxOutputTokens() > config.limits().perCallOutputTokens()) {
                 return reject(Verdict.REJECTED, REASON_PLAN_EXCEEDS_PER_CALL, state);
             }

@@ -1266,12 +1266,24 @@ cases.push({ name: "operations-god-person-late-response", body: async () => {
   resolve({status:200,payload:secret}); await pending;
   assert.equal(world.$("operations-financial").children.length, 0);
   assert.equal(world.state.operationsView, null);
+  const privatePerson = {timeMillis:"101", observationToken:"8700000000000000000", enabled:true, companies:[{
+    ...secret.companies[0], reports:[{timeMillis:"100", action:"DELIVER", accepted:true, reason:"SHIPPED", amount:"3.00", businessId:"sale-1"}]
+  }]};
+  world.context.renderOperations(privatePerson);
+  const contents = n => [n.textContent,...n.children.flatMap(contents)];
+  assert.equal(world.$("operations-cut").textContent,"世界时点 101 毫秒");
+  assert.ok(contents(world.$("operations-records")).includes("sale-1"));
+  assert.ok(!contents(world.$("operations-records")).includes("确认记录"));
+  assert.ok(!contents(world.$("operations-records")).includes(privatePerson.observationToken));
+  world.context.showMode("admin");
+  assert.ok(!contents(world.$("operations-records")).includes("sale-1"));
+  assert.equal(world.state.operationsView,null);
   return "金额保真、未批预算不填零、身份切换清空、迟到God响应丢弃";
 }});
 
 cases.push({ name: "resource-operations-submit-and-precision", body: async () => {
   let posted;
-  const view = {position:"9", timeMillis:"1", enabled:true, companies:[{kind:"RESOURCE",companyId:"resources",name:"资源公司",
+  const view = {observationToken:"8700000000000000000", timeMillis:"1", enabled:true, companies:[{kind:"RESOURCE",companyId:"resources",name:"资源公司",
     actions:["BEGIN_EXTRACTION","START_EXPANSION"],plan:{actionFields:{BEGIN_EXTRACTION:"jobId, seamId, quantityKg",START_EXPANSION:"projectId"},mineCapacityKg:"1000",transportCapacityKg:"1000",generatorCapacityMwh:"5",remainingBudget:null,
       mineCoal:{quantity:"9007199254740993"},plantFuel:{quantity:"0"},seams:[{seamId:"seam-a",extractionCostPerKg:"1.00"}]},
     financial:{assets:{"经营现金":"9007199254740993.01"},liabilities:{},equity:{}},jobs:{},receivables:{},reports:[]}]};
@@ -1286,6 +1298,7 @@ cases.push({ name: "resource-operations-submit-and-precision", body: async () =>
   assert.ok(world.$("operations-records").children.some(c=>c.textContent.includes("9007199254740993")));
   await world.context.submitOperations({preventDefault(){}});
   assert.equal(posted.url,"/api/me/resources/action");
+  assert.equal(posted.body.expectedPosition,view.observationToken);
   assert.equal(posted.body.fields.quantityKg,"9007199254740993");
   assert.equal(posted.body.companyId,"resources");
   world.$("operations-action").value="START_EXPANSION"; world.context.operationsFields();

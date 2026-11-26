@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** 冻结参数的真实跨期探针：没有预读、经营脚本或规则替代，保存全部原输入与回执。 */
 public final class AutonomousLifecycleProbe {
+    static final String INPUT_EVENTS = "local-input-events.jsonl";
     private static final ObjectMapper JSON = new ObjectMapper();
     /** @param mode ACCOUNTABLE/OPERATING保留v3；PLANNING/PLANNING_OPERATING为v4治理/有来源需求实验；INFORMED_OPERATING显式启用经理经营信息与来源审计；seed只接续已完整结束的同版本档。 */
     public record Config(String mode, int maxHttpCalls, int wallMinutes, long targetMillis,
@@ -31,22 +32,32 @@ public final class AutonomousLifecycleProbe {
                     throw new IllegalArgumentException("专项人物名单须非空且没有重复");
             }
 
-            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING", "COMPANY_INFORMATION_OPERATING", "FORWARD_BUDGET_OPERATING", "AGED_ORDER_OPERATING", "BOARD_PROCEDURE_OPERATING", "ISSUER_REPORT_OPERATING", "ROLE_TABLE_OPERATING", "HYDRO_SETTLEMENT_OPERATING", "PERSONAL_LIMIT_OPERATING", "CONTINUING_ROLES_OPERATING", "ISSUER_CREDIT_OPERATING", "ISSUER_CREDIT_DECISIONS_OPERATING", "PERSONAL_PROFILES_OPERATING", "FUND_MANDATE_OPERATING", "FUND_OFFICE_CONTACTS_OPERATING", "FUND_OFFICE_ROUTING_OPERATING", "MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY").contains(mode)
-                    || maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60
+            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING", "COMPANY_INFORMATION_OPERATING", "FORWARD_BUDGET_OPERATING", "AGED_ORDER_OPERATING", "BOARD_PROCEDURE_OPERATING", "ISSUER_REPORT_OPERATING", "ROLE_TABLE_OPERATING", "HYDRO_SETTLEMENT_OPERATING", "PERSONAL_LIMIT_OPERATING", "CONTINUING_ROLES_OPERATING", "ISSUER_CREDIT_OPERATING", "ISSUER_CREDIT_DECISIONS_OPERATING", "PERSONAL_PROFILES_OPERATING", "FUND_MANDATE_OPERATING", "FUND_OFFICE_CONTACTS_OPERATING", "FUND_OFFICE_ROUTING_OPERATING", "MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY", "OPEN_FUND").contains(mode)
+                    || !("TEN_COMPANY_AUTONOMY".equals(mode) && maxHttpCalls == 0 && wallMinutes == 0)
+                    && (maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60)
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
                     || stepMillis != 3_600_000
                     || sourceCommit == null || sourceCommit.isBlank()) throw new IllegalArgumentException("无效试跑参数");
         }
+        /** 正常十公司以双零显式选择运行至世界目标，无历史试跑调用数/墙钟切段。 */
+        boolean runUntilTarget() { return maxHttpCalls == 0 && wallMinutes == 0; }
+        int callLimit() { return runUntilTarget() ? Integer.MAX_VALUE : maxHttpCalls; }
     }
     /** @param args 独立新输出目录、五槽凭据文件、冻结配置JSON路径 */
     public static void main(String[] args) throws Exception {
         if (args.length != 3) throw new IllegalArgumentException("需要输出目录、凭据文件和参数文件");
-        Path out = Path.of(args[0]);
-        Config config = JSON.readValue(Files.readAllBytes(Path.of(args[2])), Config.class);
+        run(Path.of(args[0]), Path.of(args[2]), () -> new LiveDecisionProvider(KeySlots.load(Path.of(args[1]))));
+    }
+
+    @FunctionalInterface
+    interface ProviderFactory { LiveDecisionProvider open() throws java.io.IOException; }
+
+    static void run(Path out, Path parameterFile, ProviderFactory providers) throws Exception {
+        Config config = JSON.readValue(parameterFile.toFile(), Config.class);
         Path seed = config.seed() == null ? null : validateSeed(config);
         // 初建草稿与本次参数放在一起；接续以种子首帧冻结的草稿为准。
         byte[] draft = java.util.Set.of("OPENING_COPIES","OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE").contains(config.mode()) && seed == null
-                ? Files.readAllBytes(Path.of(args[2]).resolveSibling("opening-copies.json")) : null;
+                ? Files.readAllBytes(parameterFile.resolveSibling("opening-copies.json")) : null;
         Files.createDirectory(out);
         if (draft != null) Files.write(out.resolve("opening-copies.json"), draft);
         JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("config.json").toFile(), config);
@@ -54,21 +65,26 @@ public final class AutonomousLifecycleProbe {
         boolean informed = informedMode(config.mode());
         boolean thinking = thinkingMode(config.mode());
         boolean measured = usesMeasuredLength(config.mode());
-        if (informed) ProbeProviderEvidence.freezePolicy(out, thinking, measured);
+        if (informed) ProbeProviderEvidence.freezePolicy(out, thinking, measured,config.runUntilTarget());
         if (seed != null) {
             Files.copy(seed.resolve("world.journal"), out.resolve("world.journal"));
             Files.copy(seed.resolve(SceneRoutes.FILE_NAME), out.resolve(SceneRoutes.FILE_NAME));
         }
-        var provider = new LiveDecisionProvider(KeySlots.load(Path.of(args[1])));
+        var provider = providers.open();
         var issued = new AtomicInteger();
         var openWorld = new java.util.concurrent.atomic.AtomicReference<edu.cufe.auction.world.WorldRuntime>();
         var lengthPolicy = measured ? new MeasuredLengthPolicy(() -> openWorld.get().snapshot().decisions().orElseThrow()) : null;
-        var evidence = informed ? new ProbeProviderEvidence(out, thinking, lengthPolicy) : null;
+        var evidence = informed ? new ProbeProviderEvidence(out, thinking, lengthPolicy,
+                config.runUntilTarget() ? new TargetTransportPolicy(TargetTransportPolicy.inherited(seed)) : null) : null;
         var activeHost = new java.util.concurrent.atomic.AtomicReference<WorldWebHost>();
         try (var routes = SceneRoutes.open(out)) {
             if (seed == null && routes.view().revision() == 0) routes.replace(0, probeRoutes(routes.view(), config.mode()));
             try (var host = new WorldWebHost(() -> {
                 var world = openWorld(config.mode(), out.resolve("world.journal"));
+                if (config.runUntilTarget() && !edu.cufe.auction.world.RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID.equals(world.profile().manifest().runId())) {
+                    world.close();
+                    throw new IllegalArgumentException("目标运行需要正式十公司第二版");
+                }
                 openWorld.set(world);
                 return new WorldWebHost.Opened(world, world.profile().manifest().runId());
             }, routes, (call, timeout) -> {
@@ -77,7 +93,7 @@ public final class AutonomousLifecycleProbe {
                     catch (Exception stopFailure) { System.err.println("PROBE_STOP_REQUEST_FAILED"); }
                 });
                 int index = issued.incrementAndGet();
-                if (index > config.maxHttpCalls()) return limitFailure(call, "PROBE_CALL_LIMIT");
+                if (index > config.callLimit()) return limitFailure(call, "PROBE_CALL_LIMIT");
                 try {
                     JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("call-" + index + ".json").toFile(), call);
                     var completion = provider.evaluate(call, timeout);
@@ -87,34 +103,55 @@ public final class AutonomousLifecycleProbe {
                 } catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
             })) {
                 activeHost.set(host);
+                var inputEvents = new java.util.concurrent.atomic.AtomicLong();
+                if (config.runUntilTarget()) {
+                    Path path = Files.createFile(out.resolve(INPUT_EVENTS));
+                    host.observeInputBlocks(event -> {
+                        Files.writeString(path,JSON.writeValueAsString(event) + "\n",java.nio.file.StandardOpenOption.APPEND);
+                        inputEvents.incrementAndGet();
+                    });
+                }
                 var initial = host.autonomyStatus();
                 if (lengthPolicy != null && seed != null) {
                     lengthPolicy.restore(seed);
                 }
-                host.startAutonomy(Long.parseLong(initial.position()), routes.view().revision(), config.targetMillis(),
-                        config.stepMillis(), config.persons() == null ? java.util.Set.of() : java.util.Set.copyOf(config.persons()));
+                if (!config.runUntilTarget() || !(Files.exists(out.resolve("STOP")) || Files.exists(out.resolve("CHECKPOINT"))))
+                    host.startAutonomy(Long.parseLong(initial.position()), routes.view().revision(), config.targetMillis(),
+                            config.stepMillis(), config.persons() == null ? java.util.Set.of() : java.util.Set.copyOf(config.persons()));
                 long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(config.wallMinutes());
-                while (host.autonomyStatus().running() && issued.get() < config.maxHttpCalls()
-                        && System.nanoTime() < deadline && !Files.exists(out.resolve("STOP"))
+                while (host.autonomyStatus().running() && issued.get() < config.callLimit()
+                        && (config.runUntilTarget() || System.nanoTime() < deadline) && !Files.exists(out.resolve("STOP"))
+                        && !(config.runUntilTarget() && Files.exists(out.resolve("CHECKPOINT")))
                         && (evidence == null || !(thinking ? evidence.stopRequested() : evidence.failed()))) {
                     Thread.sleep(500);
                     JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("status.json").toFile(), host.autonomyStatus());
                 }
-                String stop = !host.autonomyStatus().running() ? "RUNTIME_STOP"
-                        : Files.exists(out.resolve("STOP")) ? "OPERATOR_STOP"
-                        : issued.get() >= config.maxHttpCalls() ? "HTTP_CALL_LIMIT" : "WALL_CLOCK_LIMIT";
+                var last = host.autonomyStatus();
+                String stop;
+                if (config.runUntilTarget() && Files.exists(out.resolve("STOP"))) stop = "OPERATOR_STOP";
+                else if (config.runUntilTarget() && "TARGET_REACHED".equals(last.reason())) stop = "TARGET_REACHED";
+                else if (config.runUntilTarget() && Files.exists(out.resolve("CHECKPOINT")) && (last.running() || "NOT_STARTED".equals(last.reason())))
+                    stop = "SAFE_CHECKPOINT";
+                else if (!last.running()) stop = "RUNTIME_STOP";
+                else if (Files.exists(out.resolve("STOP"))) stop = "OPERATOR_STOP";
+                else stop = issued.get() >= config.callLimit() ? "HTTP_CALL_LIMIT" : "WALL_CLOCK_LIMIT";
                 if (host.autonomyStatus().running()) host.stopAutonomy();
+                if (config.runUntilTarget()) JSON.writeValue(out.resolve("status.json").toFile(), host.autonomyStatus());
                 long drain = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
-                while (host.liveStatus().physicalInFlight() > 0 && System.nanoTime() < drain) Thread.sleep(100);
+                while ((config.runUntilTarget() ? !host.liveQuiescent() : host.liveStatus().physicalInFlight() > 0)
+                        && System.nanoTime() < drain) Thread.sleep(100);
+                if (config.runUntilTarget() && !host.liveQuiescent()) stop = "UNSETTLED_REQUESTS";
                 if (lengthPolicy != null) evidence.settleMeasuredLengths(null, 1000);
                 if (evidence != null && (thinking ? evidence.stopRequested() : evidence.failed())) {
                     stop = evidence.stopReason();
                     System.err.println(stop);
                 }
                 var result = JSON.createObjectNode().put("probeStop", stop)
-                        .put("httpCalls", Math.min(issued.get(), config.maxHttpCalls())).put("costStatus", "UNKNOWN");
+                        .put("httpCalls", Math.min(issued.get(), config.callLimit())).put("costStatus", "UNKNOWN");
                 if (evidence != null) result.set("providerProvenance",
-                        evidence.summary(Math.min(issued.get(), config.maxHttpCalls()), host.liveStatus().physicalInFlight()));
+                        evidence.summary(Math.min(issued.get(), config.callLimit()), host.liveStatus().physicalInFlight()));
+                if (config.runUntilTarget()) result.putObject("localInputAudit").put("file",INPUT_EVENTS)
+                        .put("events",inputEvents.get()).put("scope","segment").put("providerCalls",0);
                 result.set("config", JSON.valueToTree(config));
                 result.set("autonomy", JSON.valueToTree(host.autonomyStatus()));
                 result.set("live", JSON.valueToTree(host.liveStatus()));
@@ -128,7 +165,7 @@ public final class AutonomousLifecycleProbe {
                     result.set("admin", JSON.valueToTree(host.adminView()));
                 }
                 JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve("result.json").toFile(), result);
-                System.out.println("finished=" + host.autonomyStatus().reason() + " http=" + Math.min(issued.get(), config.maxHttpCalls()));
+                System.out.println("finished=" + host.autonomyStatus().reason() + " http=" + Math.min(issued.get(), config.callLimit()));
             }
         }
         if (measured) MeasuredLengthEvidence.seal(out, seed);
@@ -142,7 +179,7 @@ public final class AutonomousLifecycleProbe {
         if (thinking ? evidence.stopRequested() : evidence.failed()) return limitFailure(call, "PROBE_EVIDENCE_STOP");
         int index = evidence.allocate(issued, call.actionId(), timeout);
         if (index == 0) return limitFailure(call, "PROBE_EVIDENCE_STOP");
-        if (index > config.maxHttpCalls()) return limitFailure(call, "PROBE_CALL_LIMIT");
+        if (index > config.callLimit()) return limitFailure(call, "PROBE_CALL_LIMIT");
         var completion = evidence.evaluate(index, call, timeout, provider);
         // The host registers this immutable completion only after evaluate returns. Never
         // wait for its writer here: the evidence flag already blocks further paid HTTP,
@@ -168,6 +205,7 @@ public final class AutonomousLifecycleProbe {
             case "LOAN_PROMOTION_OPERATING" -> ComposedIndustryScenario.openLoanPromotionOperating(journal);
             case "BASELINE_PARTS_OPERATING" -> ComposedIndustryScenario.openBaselinePartsOperating(journal);
             case "UNPRICED_REFERENCE" -> ComposedIndustryScenario.openUnpricedReferenceOperating(journal, journal.resolveSibling("opening-copies.json"));
+            case "OPEN_FUND" -> ComposedIndustryScenario.openOpenFundOperating(journal);
             case "TEN_COMPANY_AUTONOMY" -> ComposedIndustryScenario.openTenCompanyAutonomy(journal);
             case "PERSON_PAUSE" -> ComposedIndustryScenario.openPersonPauseOperating(journal, journal.resolveSibling("opening-copies.json"));
             case "ISSUER_RESOLUTION" -> ComposedIndustryScenario.openIssuerResolutionOperating(journal, journal.resolveSibling("opening-copies.json"));
@@ -211,14 +249,14 @@ public final class AutonomousLifecycleProbe {
 
     static boolean usesMeasuredLength(String mode) {
         return "ENGINEERING_CUSTOMER_OPERATING".equals(mode) || "COMPANY_INFORMATION_OPERATING".equals(mode) || "FORWARD_BUDGET_OPERATING".equals(mode) || "AGED_ORDER_OPERATING".equals(mode) || "BOARD_PROCEDURE_OPERATING".equals(mode) || "ISSUER_REPORT_OPERATING".equals(mode) || "ROLE_TABLE_OPERATING".equals(mode) || "HYDRO_SETTLEMENT_OPERATING".equals(mode) || "PERSONAL_LIMIT_OPERATING".equals(mode) || "CONTINUING_ROLES_OPERATING".equals(mode) || "ISSUER_CREDIT_OPERATING".equals(mode) || "ISSUER_CREDIT_DECISIONS_OPERATING".equals(mode) || "PERSONAL_PROFILES_OPERATING".equals(mode) || "FUND_MANDATE_OPERATING".equals(mode) || "FUND_OFFICE_CONTACTS_OPERATING".equals(mode) || "FUND_OFFICE_ROUTING_OPERATING".equals(mode)
-                || java.util.Set.of("MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY").contains(mode);
+                || java.util.Set.of("MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY", "OPEN_FUND").contains(mode);
     }
 
     static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING") || mode.equals("FUNDED_THINKING_OPERATING") || mode.equals("PERSONAL_MARKET_OPERATING") || usesMeasuredLength(mode); }
 
     static java.util.List<SceneRoutes.Route> probeRoutes(SceneRoutes.Snapshot original, String mode) {
         boolean thinking = thinkingMode(mode);
-        boolean longStudy = "TEN_COMPANY_AUTONOMY".equals(mode);
+        boolean longStudy = java.util.Set.of("TEN_COMPANY_AUTONOMY", "OPEN_FUND").contains(mode);
         String policy = longStudy ? DecisionModel.Route.LONG_HORIZON : "lifecycle-v1";
         return original.routes().stream().map(r -> new SceneRoutes.Route(r.scene(), r.slotId(), "deepseek-flash", true,
                 longStudy ? DecisionModel.Route.callCeiling(policy) : 2500,
@@ -227,14 +265,14 @@ public final class AutonomousLifecycleProbe {
     }
 
     static String systemPrompt(Config config) {
-        if (java.util.Set.of("OPENING_COPIES","OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY").contains(config.mode())) return LiveDecisionProvider.DECLARED_FIELDS_SYSTEM_TEXT;
+        if (java.util.Set.of("OPENING_COPIES","OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY", "OPEN_FUND").contains(config.mode())) return LiveDecisionProvider.DECLARED_FIELDS_SYSTEM_TEXT;
         if (java.util.Set.of("INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING").contains(config.mode()) || "PERSONAL_PROFILES_OPERATING".equals(config.mode()) || "FUND_MANDATE_OPERATING".equals(config.mode()) || "FUND_OFFICE_CONTACTS_OPERATING".equals(config.mode()) || "FUND_OFFICE_ROUTING_OPERATING".equals(config.mode())) return LiveDecisionProvider.PERSONAL_PROFILE_SYSTEM_TEXT;
         if (java.util.Set.of("MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING").contains(config.mode()) || "CONTINUING_ROLES_OPERATING".equals(config.mode()) || "ISSUER_CREDIT_OPERATING".equals(config.mode()) || "ISSUER_CREDIT_DECISIONS_OPERATING".equals(config.mode())) return LiveDecisionProvider.RESEARCH_NOTE_SYSTEM_TEXT;
         return (config.mode().startsWith("PLANNING") || informedMode(config.mode())) ? LiveDecisionProvider.PLANNING_SYSTEM_TEXT
                 : LiveDecisionProvider.DELIBERATION_SYSTEM_TEXT;
     }
 
-    private static Path validateSeed(Config requested) {
+    static Path validateSeed(Config requested) {
         Path seed = Path.of(requested.seed());
         try {
             for (String name : new String[]{"config.json", "result.json", "system-prompt.txt",
@@ -249,6 +287,15 @@ public final class AutonomousLifecycleProbe {
             Config frozen = JSON.treeToValue(seedConfig, Config.class);
             if (!seedConfig.equals(JSON.readTree(JSON.writeValueAsBytes(frozen))) || !seedConfig.equals(result.path("config")))
                 throw new IllegalArgumentException("种子 config.json 与 result.config 必须完整且一致");
+            if (requested.runUntilTarget()) {
+                String reason = result.path("probeStop").asText();
+                boolean checkpoint = "SAFE_CHECKPOINT".equals(reason) && requested.targetMillis() >= frozen.targetMillis();
+                boolean extension = "TARGET_REACHED".equals(reason) && requested.targetMillis() > frozen.targetMillis();
+                if (!frozen.runUntilTarget() || !(checkpoint || extension)
+                        || !java.util.Objects.equals(frozen.persons(), requested.persons())
+                        || !result.at("/live/fault").isNull() || result.at("/live/completionSlots").asInt(-1) != 0)
+                    throw new IllegalArgumentException("目标运行仅从同范围的已结清安全停点或达标世界接续");
+            }
             if (!requested.mode().equals(frozen.mode()) || !requested.sourceCommit().equals(frozen.sourceCommit())
                     || !systemPrompt(requested).equals(
                             Files.readString(seed.resolve("system-prompt.txt"))))

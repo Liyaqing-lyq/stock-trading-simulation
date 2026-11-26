@@ -157,11 +157,15 @@ function renderGroupAudit(view) {
     : "当前档案未启用群组与平台模块。";
 }
 
+function groupRequestInteger(value) {
+  return state.personGroups?.observationToken ? String(value) : Number(value);
+}
+
 function groupActionDue(action) {
   const view = state.personGroups || {};
   const millis = (view.actionMillis || {})[action];
   const now = BigInt(view.timeMillis || "0");
-  return Number(now + BigInt(millis || "0"));
+  return groupRequestInteger(now + BigInt(millis || "0"));
 }
 
 /** 一次真实动作：due = 当前时点 + 冻结工时；回执只表示已排程。 */
@@ -176,10 +180,10 @@ async function submitGroupAction(extra) {
     const text = item.trim();
     if (!text) continue;
     const parts = text.split("#");
-    cites.push({ docId: parts[0], version: Number(parts[1]) });
+    cites.push({ docId: parts[0], version: groupRequestInteger(parts[1]) });
   }
   const payload = {
-    expectedPosition: Number(view.position),
+    expectedPosition: view.observationToken ?? view.position,
     commandId: "web-g-" + stamp,
     taskId: "web-g-task-" + stamp,
     dueTimeMillis: groupActionDue(action),
@@ -189,7 +193,7 @@ async function submitGroupAction(extra) {
     inviteId: extra.inviteId || $("groups-invite-id").value || "",
     accept: extra.accept !== undefined ? extra.accept : $("groups-accept").checked,
     docId: extra.docId || $("groups-doc-id").value || "",
-    basedOnVersion: Number(extra.basedOnVersion || $("groups-based-on").value || 0),
+    basedOnVersion: groupRequestInteger(extra.basedOnVersion || $("groups-based-on").value || "0"),
     title: extra.title || $("groups-title").value || "",
     body: extra.body || $("groups-body").value || "",
     cites: cites
@@ -228,12 +232,12 @@ async function startGroupRead(docId, version) {
   const generation = state.generation;
   const stamp = String(Date.now());
   const result = await request("POST", "/api/me/read", {
-    expectedPosition: Number(view.position),
+    expectedPosition: view.observationToken ?? view.position,
     commandId: "web-read-g-" + stamp,
     taskId: "web-read-g-task-" + stamp,
-    dueTimeMillis: Number(view.timeMillis || "0") + 1,
+    dueTimeMillis: groupRequestInteger(BigInt(view.timeMillis || "0") + 1n),
     docId: docId,
-    version: Number(version)
+    version: groupRequestInteger(version)
   });
   if (!isCurrent(generation) || state.mode !== "person") return;
   if (result.status === 401 || result.status === 403) { sessionLost(); return; }

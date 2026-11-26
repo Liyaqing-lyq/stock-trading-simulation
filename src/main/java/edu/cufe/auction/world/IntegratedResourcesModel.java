@@ -1755,6 +1755,11 @@ public final class IntegratedResourcesModel {
      */
     public static Outcome exitBusiness(State state, long now, String actor, String commandId,
                                        String approvalRef, FundState funds) {
+        return exitBusiness(state, now, actor, commandId, approvalRef, state.config().approvals().get(approvalRef == null ? "" : approvalRef), funds);
+    }
+
+    static Outcome exitBusiness(State state, long now, String actor, String commandId,
+                                String approvalRef, Approval approval, FundState funds) {
         String content = "EXIT|" + approvalRef;
         Outcome replay = replay(state, commandId, content, funds, null);
         if (replay != null) {
@@ -1772,8 +1777,7 @@ public final class IntegratedResourcesModel {
         if (approvalRef == null || approvalRef.isBlank()) {
             return reject(state, NO_APPROVAL, funds);
         }
-        Approval approval = state.config().approvals().get(approvalRef);
-        if (approval == null || !APPROVAL_EXIT.equals(approval.kind())
+        if (approval == null || !approvalRef.equals(approval.approvalId()) || !APPROVAL_EXIT.equals(approval.kind())
                 || approval.approvedAt() > now) {
             return reject(state, APPROVAL_INVALID, funds);
         }
@@ -1791,6 +1795,24 @@ public final class IntegratedResourcesModel {
         draft.exitLoss = money(state.exitLoss().add(net));
         draft.exited = true;
         return accept(draft, "EXITED", Paid.noop(funds), commandId, content);
+    }
+
+    /** 按原应付费用债权人实际付款；不再次确认费用，也不新增预算承诺。 */
+    static Outcome settleBill(State state, long now, String commandId, long period, FundState funds, FundPayer payer) {
+        String content = "SETTLE_BILL|" + period;
+        Outcome replay = replay(state, commandId, content, funds, payer);
+        if (replay != null) return replay;
+        String denied = guardLedger(state, now, state.config().companyOwnerId());
+        if (denied != null) return reject(state, denied, funds);
+        var bill = state.bills().get(period);
+        if (bill == null || bill.outstanding().signum() == 0) return reject(state, "NO_OUTSTANDING_BILL", funds);
+        BigDecimal payment = money(payer.available(funds).min(bill.outstanding()));
+        if (payment.signum() <= 0) return reject(state, INSUFFICIENT_CASH, funds);
+        var paid = pay(payer, commandId, state.config().companyAccountId(), state.config().opsAccountId(), payment, funds, state);
+        if (!paid.accepted()) return new Outcome(false, paid.reason(), state, paid.funds());
+        var draft = new Draft(state, now);
+        draft.bills.put(period, new ExpenseBill(period, bill.amount(), bill.paid().add(payment)));
+        return accept(draft, "BILL_SETTLED", paid, commandId, content);
     }
 
     // ---------------------------------------------------------------- 收款/坏账/注资
@@ -1946,6 +1968,11 @@ public final class IntegratedResourcesModel {
      */
     public static Outcome closePeriod(State state, long now, String actor, String commandId,
                                       long period, FundState funds, FundPayer payer) {
+        return closePeriod(state, now, actor, commandId, period, funds, payer, null);
+    }
+
+    static Outcome closePeriod(State state, long now, String actor, String commandId,
+                               long period, FundState funds, FundPayer payer, Long ceasedAt) {
         String content = "CLOSE|" + period;
         Outcome replay = replay(state, commandId, content, funds, payer);
         if (replay != null) {
@@ -1973,7 +2000,7 @@ public final class IntegratedResourcesModel {
         if (payer == null) {
             return reject(state, NOT_AUTHORIZED, funds);
         }
-        BigDecimal expense = state.config().fixedExpensePerPeriod();
+        BigDecimal expense = ceasedAt != null && period > ceasedAt / PERIOD_MILLIS ? ZERO : state.config().fixedExpensePerPeriod();
         BigDecimal canPay = payer.available(funds);
         BigDecimal paying = money(expense.min(canPay));
         Paid paid = Paid.noop(funds);

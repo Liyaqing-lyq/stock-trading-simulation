@@ -3149,6 +3149,7 @@ public record Outcome(boolean accepted, String reason, String receipt,
     }
 
     private static void move(Working w, String actor, String from, String to, BigDecimal amount) {
+        if (w.frozen != null && w.frozen.checkAllCashDebits()) requireCashRoom(w, from, amount);
         CashTransfers.Move moved = CashTransfers.move(w.accounts, w.chart().ownerIdOf(actor),
                 from, to, amount);
         if (!moved.accepted()) {

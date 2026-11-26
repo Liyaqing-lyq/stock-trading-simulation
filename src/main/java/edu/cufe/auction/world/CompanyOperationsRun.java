@@ -37,25 +37,31 @@ public record CompanyOperationsRun(String rulesVersion, List<Company> companies,
                                    @JsonInclude(JsonInclude.Include.NON_NULL) HydroCompanyRun hydro,
                                    @JsonInclude(JsonInclude.Include.NON_NULL) DigitalCompanyRun digital,
                                    @JsonInclude(JsonInclude.Include.NON_NULL) AgedCompanyRun aged,
-                                   @JsonInclude(JsonInclude.Include.NON_NULL) ExternalDemandRun externalDemand) {
+                                   @JsonInclude(JsonInclude.Include.NON_NULL) ExternalDemandRun externalDemand,
+                                   @JsonInclude(JsonInclude.Include.NON_EMPTY) Map<String, ManufacturingUpgrade.Batch> upgradeBatches) {
+    /** 历史档未登记制造模板批次。 */
+    public CompanyOperationsRun(String rulesVersion, List<Company> companies, Map<String, ReportEntry> reports,
+                                ResourceCompanyRun resource, HydroCompanyRun hydro, DigitalCompanyRun digital, AgedCompanyRun aged, ExternalDemandRun externalDemand) {
+        this(rulesVersion, companies, reports, resource, hydro, digital, aged, externalDemand, Map.of());
+    }
     /** 旧七参构造不启用外部最终需求，保留原 JSON 形状。 */
     public CompanyOperationsRun(String rulesVersion, List<Company> companies, Map<String, ReportEntry> reports, ResourceCompanyRun resource, HydroCompanyRun hydro, DigitalCompanyRun digital, AgedCompanyRun aged) {
         this(rulesVersion, companies, reports, resource, hydro, digital, aged, null);
     }
     /** 同帧替换最终需求进度，其余经营台账保持不变。 */
     public CompanyOperationsRun withExternalDemand(ExternalDemandRun next) {
-        return new CompanyOperationsRun(rulesVersion, companies, reports, resource, hydro, digital, aged, next);
+        return new CompanyOperationsRun(rulesVersion, companies, reports, resource, hydro, digital, aged, next, upgradeBatches);
     }
     /** 原水电构造保留旧档形状。 */
     public CompanyOperationsRun(String rulesVersion, List<Company> companies, Map<String, ReportEntry> reports, ResourceCompanyRun resource, HydroCompanyRun hydro) { this(rulesVersion, companies, reports, resource, hydro, null, null); }
     /** 同帧替换数字子账。 */
-    public CompanyOperationsRun withDigital(DigitalCompanyRun next) { return new CompanyOperationsRun(rulesVersion, companies, reports, resource, hydro, next, aged, externalDemand); }
+    public CompanyOperationsRun withDigital(DigitalCompanyRun next) { return new CompanyOperationsRun(rulesVersion, companies, reports, resource, hydro, next, aged, externalDemand, upgradeBatches); }
     /** 同帧替换陈酿子账。 */
-    public CompanyOperationsRun withAged(AgedCompanyRun next) { return new CompanyOperationsRun(rulesVersion, companies, reports, resource, hydro, digital, next, externalDemand); }
+    public CompanyOperationsRun withAged(AgedCompanyRun next) { return new CompanyOperationsRun(rulesVersion, companies, reports, resource, hydro, digital, next, externalDemand, upgradeBatches); }
     /** 原资源档案不启用水电。 */
     public CompanyOperationsRun(String rulesVersion, List<Company> companies, Map<String, ReportEntry> reports, ResourceCompanyRun resource) { this(rulesVersion, companies, reports, resource, null); }
     /** 同帧替换水电。 */
-    public CompanyOperationsRun withHydro(HydroCompanyRun next) { return new CompanyOperationsRun(rulesVersion, companies, reports, resource, next, digital, aged, externalDemand); }
+    public CompanyOperationsRun withHydro(HydroCompanyRun next) { return new CompanyOperationsRun(rulesVersion, companies, reports, resource, next, digital, aged, externalDemand, upgradeBatches); }
 
     /** 旧三制造构造保持原JSON，不隐式启用资源公司。 */
     public CompanyOperationsRun(String rulesVersion, List<Company> companies, Map<String, ReportEntry> reports) {
@@ -64,7 +70,14 @@ public record CompanyOperationsRun(String rulesVersion, List<Company> companies,
 
     /** 同帧替换资源子账，其它公司和历史回报保持不变。 */
     public CompanyOperationsRun withResource(ResourceCompanyRun next) {
-        return new CompanyOperationsRun(rulesVersion, companies, reports, next, hydro, digital, aged, externalDemand);
+        return new CompanyOperationsRun(rulesVersion, companies, reports, next, hydro, digital, aged, externalDemand, upgradeBatches);
+    }
+
+    /** 仅替换一份已检验的升级批次，原始业务台账保持同一确认时点。 */
+    CompanyOperationsRun withUpgradeBatch(ManufacturingUpgrade.Batch batch) {
+        var copy = new TreeMap<>(upgradeBatches);
+        copy.put(batch.draft().batchId(), batch);
+        return new CompanyOperationsRun(rulesVersion, companies, reports, resource, hydro, digital, aged, externalDemand, copy);
     }
 
     /** 本组件唯一支持的规则标识；未知版本在构造期拒绝。 */
@@ -97,6 +110,9 @@ public record CompanyOperationsRun(String rulesVersion, List<Company> companies,
             entries.put(entry.getKey(), entry.getValue());
         }
         reports = Collections.unmodifiableMap(entries);
+        upgradeBatches = upgradeBatches == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(upgradeBatches));
+        for (var entry : upgradeBatches.entrySet())
+            if (!entry.getKey().equals(entry.getValue().draft().batchId())) throw new IllegalArgumentException("升级批次索引不一致");
     }
 
     /**
@@ -284,7 +300,7 @@ public record CompanyOperationsRun(String rulesVersion, List<Company> companies,
         }
         Map<String, ReportEntry> next = new LinkedHashMap<>(reports);
         next.put(entry.taskId(), entry);
-        return new CompanyOperationsRun(rulesVersion, companies, next, resource, hydro, digital, aged, externalDemand);
+        return new CompanyOperationsRun(rulesVersion, companies, next, resource, hydro, digital, aged, externalDemand, upgradeBatches);
     }
 
     /**
@@ -309,7 +325,7 @@ public record CompanyOperationsRun(String rulesVersion, List<Company> companies,
         if (!found) {
             throw new IllegalArgumentException("经营子集没有该公司：" + companyPartyId);
         }
-        return new CompanyOperationsRun(rulesVersion, copy, reports, resource, hydro, digital, aged, externalDemand);
+        return new CompanyOperationsRun(rulesVersion, copy, reports, resource, hydro, digital, aged, externalDemand, upgradeBatches);
     }
 
     /**
