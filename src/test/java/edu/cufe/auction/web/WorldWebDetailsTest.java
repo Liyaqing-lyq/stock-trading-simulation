@@ -3,6 +3,9 @@ package edu.cufe.auction.web;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import edu.cufe.auction.model.OrderType;
+import edu.cufe.auction.model.Side;
+import edu.cufe.auction.world.composed.ComposedIndustryScenario;
 import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.CashLedger;
 import edu.cufe.auction.world.DecisionModel;
@@ -89,6 +92,78 @@ class WorldWebDetailsTest {
             host.close();
             host = null;
         }
+    }
+
+    @Test
+    void investorAndFundManagerSeeReferenceQuoteAndDepthAtTheSameCut() throws Exception {
+        Path journal = workDir.resolve("quotes.journal");
+        var opened = new java.util.concurrent.atomic.AtomicReference<WorldRuntime>();
+        start(() -> {
+            var runtime = ComposedIndustryScenario.openManufacturingLifecycleOperating(journal);
+            opened.set(runtime);
+            return new WorldWebHost.Opened(runtime, runtime.profile().manifest().runId());
+        });
+        loginAdmin();
+        cookie = cookieOf(post("/api/session/person", "{\"personId\":\"nina\"}"));
+        WorldRuntime world = opened.get();
+        String symbol = "HY1";
+        long open = 570 * 60_000L;
+        String reference = world.profile().registry().securities().stream().filter(s -> s.symbol().equals(symbol))
+                .findFirst().orElseThrow().initialReferencePrice().toPlainString();
+        host.call(() -> { world.advanceTo(open); return null; });
+        JsonNode opening = compareRoleAndWebQuote(world, symbol);
+        assertEquals(reference, opening.required("referencePrice").asText());
+        assertEquals("OPENING_REFERENCE", opening.required("referenceSource").asText());
+        assertEquals(0L, opening.required("referenceAtMillis").asLong());
+        assertEquals(open, opening.required("referenceAgeMillis").asLong());
+        assertTrue(opening.required("lastPrice").isNull());
+        assertTrue(opening.required("bestBid").isNull());
+        assertTrue(opening.required("bestAsk").isNull());
+
+        host.call(() -> {
+            String seller = world.snapshot().accounts().get("HY-FOUNDER").ownerId();
+            world.scheduleOrder("sell", "sell-task", open + 1, seller, "HY-FOUNDER", symbol,
+                    Side.SELL, OrderType.LIMIT, new BigDecimal("20.00"), 1);
+            world.advanceTo(open + 1);
+            return null;
+        });
+        JsonNode resting = compareRoleAndWebQuote(world, symbol);
+        assertEquals("20.00", resting.required("bestAsk").asText());
+        assertEquals(reference, resting.required("referencePrice").asText());
+        assertTrue(resting.required("lastPrice").isNull());
+        host.call(() -> {
+            world.scheduleOrder("buy", "buy-task", open + 2, "investor", "INV", symbol,
+                    Side.BUY, OrderType.LIMIT, new BigDecimal("21.00"), 1);
+            world.advanceTo(open + 100);
+            return null;
+        });
+        JsonNode filled = compareRoleAndWebQuote(world, symbol);
+        assertEquals("TRADE", filled.required("referenceSource").asText());
+        assertEquals("20.00", filled.required("referencePrice").asText());
+        assertEquals("20.00", filled.required("lastPrice").asText());
+        assertEquals(open + 2, filled.required("referenceAtMillis").asLong());
+        assertEquals(98L, filled.required("referenceAgeMillis").asLong());
+        assertTrue(filled.required("bestBid").isNull());
+        assertTrue(filled.required("bestAsk").isNull());
+        tearDown();
+        try (var restored = ComposedIndustryScenario.openManufacturingLifecycleOperating(journal);
+             var prior = ComposedIndustryScenario.openIntegratedOperating(workDir.resolve("prior.journal"))) {
+            var quote = findRow(restored.autonomyRoleObservation("bob").at("/profile/market"), "symbol", symbol);
+            assertEquals("TRADE", quote.required("referenceSource").asText());
+            assertEquals(98L, quote.required("referenceAgeMillis").asLong());
+            assertFalse(findRow(prior.autonomyRoleObservation("bob").at("/profile/market"), "symbol", symbol)
+                    .has("referencePrice"));
+        }
+    }
+
+    private JsonNode compareRoleAndWebQuote(WorldRuntime world, String symbol) throws Exception {
+        JsonNode manager = host.call(() -> findRow(world.autonomyRoleObservation("bob").at("/profile/market"), "symbol", symbol));
+        JsonNode investor = findRow(getJson("/api/me/view").required("market"), "symbol", symbol);
+        for (String field : List.of("referencePrice", "referenceSource", "referenceAtMillis", "referenceAgeMillis",
+                "lastPrice", "lastTradeQuantity", "lastTradeAtMillis", "bestBid", "bestAsk")) {
+            assertEquals(manager.required(field).asText(), investor.required(field).asText(), field);
+        }
+        return investor;
     }
 
     // ------------------------------------------------------------ 1 公司报表与业务进度

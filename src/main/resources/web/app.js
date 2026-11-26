@@ -638,7 +638,9 @@ async function refreshPerson() {
     cell(tr, row.symbol);
     cell(tr, row.lastPrice, "num");
     cell(tr, row.referencePrice, "num");
-    cell(tr, ({ OPENING_REFERENCE: "开局参考", EX_DIVIDEND_REFERENCE: "除息参考", LAST_TRADE: "实际成交" })[row.referenceSource] || row.referenceSource || "暂无");
+    cell(tr, ({ OPENING_REFERENCE: "开局参考", EX_DIVIDEND_REFERENCE: "除息参考", TRADE: "实际成交", MISSING: "缺少估值依据" })[row.referenceSource] || row.referenceSource || "暂无");
+    cell(tr, row.referenceAtMillis, "num");
+    cell(tr, row.referenceAgeMillis, "num");
     cell(tr, row.lastTradeQuantity, "num");
     cell(tr, row.bestBid, "num");
     cell(tr, row.bestAsk, "num");
