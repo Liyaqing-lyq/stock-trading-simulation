@@ -518,6 +518,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requirePerson(exchange, session.get(), () -> manufacturingAction(exchange, session.get()));
                 return;
             }
+            if ("/api/admin/operations/loan-promotion".equals(path) && ("GET".equals(method) || "POST".equals(method))) {
+                requireAdmin(exchange, session.get(), () -> disclosedLoan(exchange, "POST".equals(method)));
+                return;
+            }
             if ("/api/admin/operations/intake".equals(path) && "POST".equals(method)) {
                 requireAdmin(exchange, session.get(), () -> manufacturingIntake(exchange));
                 return;
@@ -568,6 +572,10 @@ public final class WorldWebServer implements AutoCloseable {
             }
             if ("/api/me/engineering".equals(path) && "GET".equals(method)) {
                 requirePerson(exchange, session.get(), () -> engineeringMe(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/issuer-dividend".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> issuerDividend(exchange, session.get()));
                 return;
             }
             if ("/api/me/engineering/action".equals(path) && "POST".equals(method)) {
@@ -753,6 +761,7 @@ public final class WorldWebServer implements AutoCloseable {
                 && "GET".equals(method))
                 || ("/api/me/operations/action".equals(path) && "POST".equals(method))
                 || ("/api/admin/operations/intake".equals(path) && "POST".equals(method))
+                || ("/api/admin/operations/loan-promotion".equals(path) && ("POST".equals(method) || "GET".equals(method)))
                 || ("/api/me/resources/action".equals(path) && "POST".equals(method))
                 || ("/api/me/digital/action".equals(path) && "POST".equals(method))
                 || ("/api/me/aged/action".equals(path) && "POST".equals(method))
@@ -768,6 +777,7 @@ public final class WorldWebServer implements AutoCloseable {
         }
         if (("/api/me/engineering".equals(path) && "GET".equals(method))
                 || ("/api/me/engineering/action".equals(path) && "POST".equals(method))
+                || ("/api/me/issuer-dividend".equals(path) && "POST".equals(method))
                 || ("/api/me/read".equals(path) && "POST".equals(method))) {
             return true;
         }
@@ -2028,6 +2038,22 @@ public final class WorldWebServer implements AutoCloseable {
         catch (Exception failure) { throw new WorldIoFailure(); }
     }
 
+    private void disclosedLoan(HttpExchange exchange, boolean apply) throws IOException, WorldWebHost.BusyException {
+        JsonNode body = apply ? jsonBody(exchange, Set.of("loanId", "expectedPosition")) : null;
+        try {
+            if (apply) {
+                long position = host.promoteDisclosedLoan(requiredText(body, "loanId"), researchInteger(body, "expectedPosition"));
+                send(exchange, 200, mapper.writeValueAsString(Map.of("position", Long.toString(position))));
+            } else {
+                send(exchange, 200, mapper.writeValueAsString(host.disclosedLoan()));
+            }
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (WorldWebHost.PositionMismatch mismatch) { send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对")); }
+        catch (IllegalArgumentException invalid) { send(exchange, 400, error("INVALID", invalid.getMessage())); }
+        catch (IllegalStateException invalid) { send(exchange, 409, error("CONFLICT", invalid.getMessage())); }
+        catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
     private void manufacturingIntake(HttpExchange exchange) throws IOException, WorldWebHost.BusyException {
         JsonNode body = jsonBody(exchange, Set.of("expectedPosition", "fromVersion", "toVersion", "companyIds", "apply"));
         try {
@@ -2294,6 +2320,50 @@ public final class WorldWebServer implements AutoCloseable {
             throw new WorldIoFailure();
         }
         send(exchange, 200, mapper.writeValueAsString(view));
+    }
+
+    private void issuerDividend(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException {
+        try {
+            var common = Set.of("expectedPosition", "commandId", "taskId", "dueTimeMillis", "companyId", "tool", "meetingId");
+            var agenda = Set.of("materialDeadline", "opensAt", "closesAt");
+            var terms = Set.of("schemeId", "perShare", "recordAt", "exAt", "payAt");
+            var fields = new java.util.HashSet<>(common);
+            fields.addAll(agenda);
+            fields.addAll(terms);
+            JsonNode body = jsonBody(exchange, fields);
+            String tool = requiredText(body, "tool");
+            var extras = switch (tool) {
+                case "issuer.dividend.propose" -> terms;
+                case "issuer.dividend.convene" -> agenda;
+                case "issuer.dividend.authorize" -> Set.<String>of();
+                default -> throw new IllegalArgumentException("未知分红董事动作");
+            };
+            var required = new java.util.HashSet<>(common);
+            required.addAll(extras);
+            if (body.size() != required.size() || !required.stream().allMatch(body::hasNonNull)) {
+                throw new IllegalArgumentException("字段与该分红董事动作不符");
+            }
+            boolean propose = terms.equals(extras), convene = agenda.equals(extras);
+            var perShare = propose ? new java.math.BigDecimal(moneyText(body, "perShare")) : null;
+            if (propose && perShare.signum() <= 0) throw new IllegalArgumentException("每股股息须为正");
+            var command = new WorldWebHost.IssuerDividendCommand(researchInteger(body, "expectedPosition"),
+                    requiredText(body, "commandId"), requiredText(body, "taskId"), researchInteger(body, "dueTimeMillis"),
+                    requiredText(body, "companyId"), tool, requiredText(body, "meetingId"),
+                    convene ? researchInteger(body, "materialDeadline") : 0, convene ? researchInteger(body, "opensAt") : 0,
+                    convene ? researchInteger(body, "closesAt") : 0, propose ? requiredText(body, "schemeId") : "",
+                    perShare, propose ? researchInteger(body, "recordAt") : 0, propose ? researchInteger(body, "exAt") : 0,
+                    propose ? researchInteger(body, "payAt") : 0);
+            send(exchange, 200, mapper.writeValueAsString(host.scheduleIssuerDividend(session.personId(), command)));
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (WorldWebHost.PositionMismatch mismatch) {
+            send(exchange, 409, error("POSITION_MISMATCH", "记录已变化，请刷新后重新核对"));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", invalid.getMessage()));
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
     }
 
     private WorldWebHost.EngineeringCommand engineeringCommand(JsonNode body) {
@@ -2721,6 +2791,7 @@ public final class WorldWebServer implements AutoCloseable {
                 entry.put("lastTradeAtMillis", Long.toString(row.lastTradeAtMillis()));
                 entry.put("bestBid", plain(row.bestBid()));
                 entry.put("bestAsk", plain(row.bestAsk()));
+                if (row.priceBand() != null) entry.put("priceBand", row.priceBand());
                 ValuationModel.Price reference = row.reference();
                 entry.put("referencePrice", reference == null ? null : plain(reference.price()));
                 entry.put("referenceSource", reference == null ? null : reference.source().name());

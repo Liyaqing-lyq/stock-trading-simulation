@@ -181,7 +181,7 @@ public record ClientCompanyReport(String partyKey, String ownerId,
         BigDecimal interest = Money.zero();
         for (Map.Entry<String, BankState.Loan> entry
                 : new TreeMap<>(state.loans()).entrySet()) {
-            String borrower = chart.borrowerOfLoanKey(entry.getKey());
+            String borrower = BankLoanPromotionOpening.beneficialBorrower(state, entry.getKey());
             if (borrower == null) {
                 continue;
             }

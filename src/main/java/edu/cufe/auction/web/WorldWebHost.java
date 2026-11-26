@@ -2689,6 +2689,9 @@ public final class WorldWebHost implements AutoCloseable {
                     holding.put("symbol", line.symbol());
                     holding.put("quantity", num(line.quantity()));
                     holding.put("priceSource", line.price().source().name());
+                    boolean hasPrice = line.price().source() != ValuationModel.PriceSource.MISSING;
+                    holding.put("priceAsOfMillis", hasPrice ? num(line.price().asOfMillis()) : null);
+                    holding.put("priceAgeMillis", hasPrice ? num(line.price().ageMillis()) : null);
                     holding.put("price", dec(line.price().price()));
                     holding.put("value", dec(line.value()));
                     holdingRows.add(holding);
@@ -4304,7 +4307,7 @@ public final class WorldWebHost implements AutoCloseable {
     private List<LivePerson> livePeople(WorldRuntime.Snapshot snapshot) {
         OpeningRegistry registry = runtime.openingRegistry().orElse(null);
         Map<String, LivePerson> people = new LinkedHashMap<>();
-        if (RunManifest.BANK_CRISIS_RUN_ID.equals(runtime.profile().manifest().runId())) {
+        if (RunManifest.usesBankCrisis(runtime.profile().manifest().runId())) {
             for (var office : snapshot.roles().orElseThrow().access().appointments()) {
                 if (office.activeAt(snapshot.timeMillis()) && office.role() == RoleAccess.Role.COMPANY_MANAGER
                         && Set.of(BankCrisis.PROVIDER,BankCrisis.AUTHORITY).contains(office.organizationPartyId()))
@@ -6549,6 +6552,15 @@ public final class WorldWebHost implements AutoCloseable {
         return call(() -> OperationsWeb.view(readyNow(), person));
     }
 
+    /** 管理员查看开局合同与当前分类。 */
+    Map<String, Object> disclosedLoan() throws Exception {
+        return call(() -> readyNow().disclosedLoan());
+    }
+
+    long promoteDisclosedLoan(String loanId, long position) throws Exception {
+        return call(() -> readyNow().promoteDisclosedLoan(loanId, position));
+    }
+
     /** 管理员在当前世界队列校验或提交成组收单规则变更。 */
     long migrateManufacturingIntake(edu.cufe.auction.world.ManufacturingIntake.Migration request, boolean apply) throws Exception {
         return call(() -> {
@@ -8086,6 +8098,14 @@ public final class WorldWebHost implements AutoCloseable {
                     if (!withAttend.contains(PERIODIC_ATTEND_TOOL)) {
                         withAttend.add(PERIODIC_ATTEND_TOOL);
                     }
+                    boolean issuerBoard = current.engineeringDividendIssuer().filter(companyId::equals).isPresent();
+                    if (issuerBoard) {
+                        withAttend.add("issuer.dividend.propose");
+                        if (ownSeat.equals(charter.chairSeatId())) {
+                            withAttend.add("issuer.dividend.convene");
+                            withAttend.add("issuer.dividend.authorize");
+                        }
+                    }
                     card.put("tools", List.copyOf(withAttend));
                     List<Map<String, Object>> meetings = new ArrayList<>();
                     List<BoardModel.Meeting> all = new ArrayList<>(board.board().meetings().values());
@@ -8095,7 +8115,14 @@ public final class WorldWebHost implements AutoCloseable {
                         boolean involved = meeting.convenerSeatId().equals(ownSeat)
                                 || meeting.attendeeSeatIds().contains(ownSeat)
                                 || meeting.recusedSeatIds().contains(ownSeat);
+                        boolean eligibleForDividend = issuerBoard && meeting.topic() == BoardModel.Topic.DIVIDEND_AUTHORIZATION;
+                        if (!involved && !eligibleForDividend) {
+                            continue;
+                        }
                         if (!involved) {
+                            meetings.add(Map.of("meetingId", meeting.meetingId(), "topic", meeting.topic().name(),
+                                    "status", meeting.status().name(), "role", "ELIGIBLE", "opensAt", num(meeting.opensAt()),
+                                    "closesAt", num(meeting.closesAt()), "materialDeadline", num(meeting.materialDeadline())));
                             continue;
                         }
                         Map<String, Object> row = new LinkedHashMap<>();
@@ -8124,6 +8151,12 @@ public final class WorldWebHost implements AutoCloseable {
                         row.put("tally", "yes=" + yes + ",no=" + no + ",abstain=" + abstain);
                         row.put("materials", Integer.toString(meeting.materials().size()));
                         putMeetingProposal(row, meeting, showAppointmentRequest(current));
+                        if (eligibleForDividend && meeting.dividendProposal() != null) {
+                            var terms = meeting.dividendProposal().request();
+                            row.put("dividendRequest", Map.of("schemeId", terms.schemeId(), "symbol", terms.symbol(),
+                                    "perShare", dec(terms.perShare()), "recordAt", num(terms.recordAtMillis()),
+                                    "exAt", num(terms.exAtMillis()), "payAt", num(terms.payAtMillis())));
+                        }
                         row.put("failureReason", meeting.failureReason());
                         meetings.add(row);
                     }
@@ -8397,6 +8430,39 @@ public final class WorldWebHost implements AutoCloseable {
             WorldRuntime.Snapshot after = current.snapshot();
             return new EngineeringActionView(runId, num(after.position()),
                     num(after.timeMillis()), company, tool, receipt);
+        });
+    }
+
+    record IssuerDividendCommand(long position, String command, String task, long due, String company,
+            String tool, String meeting, long materials, long opens, long closes,
+            String scheme, BigDecimal perShare, long recordAt, long exAt, long payAt) { }
+
+    EngineeringActionView scheduleIssuerDividend(String person, IssuerDividendCommand action) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            var snapshot = world.snapshot();
+            if (snapshot.position() != action.position()) throw new PositionMismatch(snapshot.position());
+            if (world.engineeringDividendIssuer().filter(action.company()::equals).isEmpty()) {
+                throw new IllegalArgumentException("该档案未登记这家分红发行人");
+            }
+            DividendModel.SchemeRequest request = null;
+            if ("issuer.dividend.propose".equals(action.tool())) {
+                var issuer = snapshot.engineering().orElseThrow().config().specOf(action.company());
+                var security = world.openingRegistry().orElseThrow().securities().stream()
+                        .filter(s -> action.company().equals(s.issuerOrganizationId())).findFirst().orElseThrow();
+                request = new DividendModel.SchemeRequest(action.scheme(), security.symbol(), issuer.companyOwnerId(),
+                        issuer.companyAccountId(), action.perShare(), action.recordAt(), action.exAt(), action.payAt());
+            }
+            String operation = switch (action.tool()) {
+                case "issuer.dividend.propose" -> "PROPOSE";
+                case "issuer.dividend.convene" -> "CONVENE";
+                case "issuer.dividend.authorize" -> "AUTHORIZE";
+                default -> throw new IllegalArgumentException("未知分红董事动作");
+            };
+            String receipt = world.openRoleSession(person).issuerDividend(action.command(), action.task(), action.due(),
+                    operation, action.meeting(), action.materials(), action.opens(), action.closes(), request);
+            var after = world.snapshot();
+            return new EngineeringActionView(runId, num(after.position()), num(after.timeMillis()), action.company(), action.tool(), receipt);
         });
     }
 

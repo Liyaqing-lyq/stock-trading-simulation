@@ -340,12 +340,22 @@ public record RoleView(long timeMillis, String personPartyId,
      * @param bestBid            买一价；无挂单为空
      * @param bestAsk            卖一价；无挂单为空
      * @param reference          同截止除息参考价；旧档案为 null 且不落 JSON
+     * @param priceBand          当前交易日公开价格带，只在启用限价实验时提供
      */
     public record Market(String symbol, BigDecimal lastPrice, long lastTradeQuantity,
                          long lastTradeAtMillis, BigDecimal bestBid, BigDecimal bestAsk,
                          @com.fasterxml.jackson.annotation.JsonInclude(
                                  com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-                         ValuationModel.Price reference) {
+                         ValuationModel.Price reference,
+                         @com.fasterxml.jackson.annotation.JsonInclude(
+                                 com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                         DailyPriceBand priceBand) {
+
+        /** 兼容只附带估值参考的行情档案。 */
+        public Market(String symbol, BigDecimal lastPrice, long lastTradeQuantity,
+                      long lastTradeAtMillis, BigDecimal bestBid, BigDecimal bestAsk, ValuationModel.Price reference) {
+            this(symbol, lastPrice, lastTradeQuantity, lastTradeAtMillis, bestBid, bestAsk, reference, null);
+        }
 
         /**
          * 旧 6 参构造：保持源码兼容，除息参考为空。

@@ -29,6 +29,7 @@ const OPERATIONS_LABELS = { approvalId:"客户技术准入编号", quantityUnits
 function clearOperationsDom() {
   state.operationsView = null;
   renderIntake({ companies: [] });
+  renderLoanPromotion(null);
   state.operationsRequestedCompany = "";
   for (const id of ["operations-company", "operations-action", "operations-fields", "operations-financial", "operations-records"]) {
     if ($(id)) $(id).replaceChildren();
@@ -81,6 +82,39 @@ function renderOperations(view) {
   select.value = wanted?.companyId || (requested ? "" : companies[0]?.companyId || "");
   renderOperationsCompany();
   renderIntake(view);
+  renderLoanPromotion(view.loanPromotion);
+}
+function renderLoanPromotion(loan) {
+  const section = $("operations-loan-promotion");
+  const visible = state.mode === "admin" && Boolean(loan);
+  section.hidden = !visible;
+  $("loan-promotion-record").textContent = visible
+    ? "合同 " + loan.loanId + " · 银行 " + loan.bankId + " · 借款人 " + loan.borrower
+      + " · 名义本金 " + loan.nominal + " 元 · 表内本金 " + loan.onBook + " 元 · " + loan.allowanceBucket + " 风险桶减值准备 " + loan.allowance + " 元"
+      + " · " + (loan.status === "DETAILED" ? "已列借款人明细" : "仍列汇总敞口") : "";
+  $("loan-promotion-source").textContent = visible ? "原始记录 " + loan.sourcePosition + " · 凭证摘要 " + loan.sourceDigest : "";
+  $("loan-promotion-apply").disabled = !visible || loan.status !== "AGGREGATE";
+  $("loan-promotion-result").textContent = "";
+}
+async function submitLoanPromotion() {
+  const view = state.operationsView;
+  if (state.mode !== "admin" || view?.loanPromotion?.status !== "AGGREGATE") return;
+  const generation = state.generation, version = state.pageVersion;
+  $("loan-promotion-apply").disabled = true;
+  try {
+    const response = await request("POST", "/api/admin/operations/loan-promotion", {
+      loanId: view.loanPromotion.loanId, expectedPosition: view.position
+    });
+    if (!isCurrent(generation) || state.mode !== "admin" || state.pageVersion !== version) return;
+    if (response.status !== 200) {
+      $("loan-promotion-result").textContent = response.payload?.message || "登记未完成，请刷新后核对。";
+      return;
+    }
+    await loadOperations(generation, version);
+  } catch (error) {
+    if (isCurrent(generation) && state.mode === "admin" && state.pageVersion === version)
+      $("loan-promotion-result").textContent = error.message;
+  }
 }
 function renderIntake(view) {
   const section = $("operations-intake");
@@ -243,6 +277,7 @@ async function submitOperations(event) {
   } finally { if (isCurrent(generation) && state.mode === "person") $("operations-submit").disabled = false; }
 }
 document.addEventListener("DOMContentLoaded", () => {
+  $("loan-promotion-apply").addEventListener("click", submitLoanPromotion);
   $("intake-companies").addEventListener("change", () => { $("intake-apply").disabled = true; $("intake-result").textContent = ""; });
   for (const id of ["intake-check", "intake-apply"]) $(id).addEventListener("click", () => {
     submitIntake(id === "intake-apply").catch(error => { if (state.mode === "admin") $("intake-result").textContent = error.message; });

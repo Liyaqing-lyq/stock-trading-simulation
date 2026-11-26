@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import edu.cufe.auction.world.bank.BankActions;
+import edu.cufe.auction.world.composed.BankLoanPromotionOpening;
 import edu.cufe.auction.world.bank.BankConfig;
 import edu.cufe.auction.world.bank.BankMetrics;
 import edu.cufe.auction.world.bank.BankRun;
@@ -112,7 +113,11 @@ public final class IssuerCreditDecisions {
                 borrowers.addObject().put("borrower", borrower).put("bank", bank).put("cashAccount", account)
                         .put("availableCash", cash.toPlainString()).put("deposit", state.depositOf(bank, borrower).toPlainString());
             }
-            for (var loan : new java.util.TreeMap<>(book.loans()).values()) {
+            var contractsAtBank = new java.util.TreeMap<>(book.loans());
+            boolean disclosed = BankLoanPromotionOpening.POOL.equals(state.chart().backgroundBorrowerKey());
+            var historic = disclosed ? BankLoanPromotionOpening.certificate() : null;
+            if (disclosed) contractsAtBank.putIfAbsent(historic.contract().loanId(), historic.contract());
+            for (var loan : contractsAtBank.values()) {
                 if (!bank.equals(loan.bankKey()) || !bankManager && !managed.contains(loan.borrowerKey())) continue;
                 var row = contracts.addObject().put("loanId", loan.loanId()).put("bank", bank)
                         .put("borrower", loan.borrowerKey()).put("amount", loan.amount().toPlainString())
@@ -121,6 +126,12 @@ public final class IssuerCreditDecisions {
                         .put("bankApproved", loan.approvedBy() != null).put("principalDue", loan.drawn().toPlainString());
                 if (loan.trancheId() != null) {
                     var tranche = state.loan(bank, loan.borrowerKey()).tranche(loan.trancheId());
+                    if (disclosed && historic.contract().loanId().equals(loan.loanId())) {
+                        row.put("classification", tranche == null ? "AGGREGATE" : "DETAILED");
+                        tranche = historic.obligation(state);
+                        row.put("sourceDigest", historic.originDigest()).put("sourcePosition", BankLoanPromotionOpening.sourcePosition())
+                                .put("sourceNote","独立实验开局引入的已签约历史贷款；审批和提款为来源实验的受控操作。");
+                    }
                     if (tranche != null && tranche.terms() != null) {
                         var terms = tranche.terms();
                         row.put("maturityAt", terms.maturityMs()).put("overdue", terms.overdue())

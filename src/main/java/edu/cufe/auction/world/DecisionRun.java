@@ -472,6 +472,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("lastTradeAtMillis", quote.lastTradeAtMillis());
             node.put("bestBid", quote.bestBid() == null ? null : money(quote.bestBid()));
             node.put("bestAsk", quote.bestAsk() == null ? null : money(quote.bestAsk()));
+            if (quote.priceBand() != null) node.set("priceBand", MAPPER.valueToTree(quote.priceBand()));
             if (engineering != null && RunManifest.ROLE_MARKET_VALUATION.equals(engineering.path("marketValuationPolicy").asText())) {
                 var reference = quote.reference();
                 if (reference != null) {

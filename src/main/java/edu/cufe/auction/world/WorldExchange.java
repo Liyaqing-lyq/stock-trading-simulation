@@ -1598,6 +1598,12 @@ public final class WorldExchange {
 
     static Outcome expire(State exchange, Map<String, CashLedger.CashAccount> accounts,
                           SecuritiesLedger.State securities, long nowMillis, String scope) {
+        return expire(exchange, accounts, securities, nowMillis, scope, null);
+    }
+
+    /** 除息同批撤出超出新价格带的委托；仍处于价格带内的委托保持顺序及预留。 */
+    static Outcome expire(State exchange, Map<String, CashLedger.CashAccount> accounts,
+                          SecuritiesLedger.State securities, long nowMillis, String scope, DailyPriceBand band) {
         Objects.requireNonNull(exchange, "交易状态");
         Objects.requireNonNull(accounts, "现金账户");
         Objects.requireNonNull(securities, "证券状态");
@@ -1611,7 +1617,8 @@ public final class WorldExchange {
         List<Long> cancelled = new ArrayList<>();
         SecuritiesLedger.State securitiesCandidate = securities;
         for (Order order : exchange.orders()) {
-            if (!order.live() || scope != null && !scope.equals(MarketSessions.END) && !scope.equals(order.symbol())) {
+            if (!order.live() || scope != null && !scope.equals(MarketSessions.END) && !scope.equals(order.symbol())
+                    || band != null && band.contains(order.limitPrice())) {
                 orders.add(order);
                 continue;
             }
@@ -1629,7 +1636,7 @@ public final class WorldExchange {
         }
         State candidate = new State(orders, exchange.trades(), exchange.nextOrderId(),
                 exchange.nextSequence(), exchange.nextTradeId(), scope == null, exchange.reports());
-        String reason = scope == null ? REASON_MARKET_CLOSED : scope.equals(MarketSessions.END) ? scope : MarketSessions.HALT;
+        String reason = band != null ? "EX_DIVIDEND_PRICE_BAND" : scope == null ? REASON_MARKET_CLOSED : scope.equals(MarketSessions.END) ? scope : MarketSessions.HALT;
         return new Outcome(true, reason, null, List.of(), cancelled, candidate,
                 accounts, securitiesCandidate);
     }

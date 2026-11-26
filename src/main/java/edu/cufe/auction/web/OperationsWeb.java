@@ -81,6 +81,9 @@ final class OperationsWeb {
         var run = world.operationsRun().orElse(null);
         boolean lifecycle = RunManifest.MANUFACTURING_LIFECYCLE_VERSION.equals(
                 world.profile().manifest().dataVersions().get(RunManifest.MANUFACTURING_LIFECYCLE_KEY));
+        if (person == null && "contract-bound-v1".equals(world.profile().manifest().dataVersions().get("loan-promotion"))) {
+            result.put("loanPromotion", world.disclosedLoan());
+        }
         if (lifecycle && person == null) result.put("intakeLifecycle",
                 Map.of("fromVersion", ManufacturingIntake.ACTIVE, "toVersion", ManufacturingIntake.RUNOFF));
         if (run != null) for (var company : run.companies()) {

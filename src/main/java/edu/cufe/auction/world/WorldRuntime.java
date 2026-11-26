@@ -22,6 +22,7 @@ import edu.cufe.auction.world.bank.Fund;
 import edu.cufe.auction.world.bank.FundState;
 import edu.cufe.auction.world.bank.Money;
 import edu.cufe.auction.world.composed.BankCompanyReport;
+import edu.cufe.auction.world.composed.BankLoanPromotionOpening;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -3896,6 +3897,10 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(commandId, "命令标识");
         requireText(taskId, "任务标识");
         requireEngineeringDuration(durationMillis, payload.action());
+        if ("CONVENE_DIVIDEND".equals(payload.action())
+                && engineeringDividendIssuer().filter(payload.companyPartyId()::equals).isEmpty()) {
+            throw new IllegalArgumentException("当前版本未启用该公司的分红董事会");
+        }
         EngineeringBoardPayload timed = payload.withFocus(durationMillis);
         String content = mapper.writeValueAsString(timed);
         // 正工时人物动作先落真实 BEGIN 屏障，到期才执行真正的董事动作；
@@ -4038,7 +4043,7 @@ public final class WorldRuntime implements AutoCloseable {
                     + personPartyId + " -> " + actual);
         }
         if ("CONVENE".equals(action) || "CONVENE_APPOINTMENT".equals(action)
-                || "CONVENE_WAIVER".equals(action)) {
+                || "CONVENE_WAIVER".equals(action) || "CONVENE_DIVIDEND".equals(action)) {
             if (!actual.equals(charter.chairSeatId())
                     && !personPartyId.equals(chairPerson(charter))) {
                 throw new IllegalArgumentException("只有章程主席可以召集：" + personPartyId);
@@ -4601,6 +4606,10 @@ public final class WorldRuntime implements AutoCloseable {
                     long due = MarketSessions.firstExpiry(state.exchange());
                     if (due != Long.MAX_VALUE && due > state.timeMillis() && due <= (next == null ? limit : next.dueTimeMillis())
                             && scheduleMissingExpiry(due)) next = peek(limit);
+                }
+                if (hasDisclosedLoan() && needsDisclosedServicing(state, next, limit)) {
+                    promoteDisclosedLoan(BankLoanPromotionOpening.certificate().contract().loanId(), state.position());
+                    continue;
                 }
                 if (next == null) {
                     break;
@@ -6936,7 +6945,7 @@ public final class WorldRuntime implements AutoCloseable {
                     lastTrade == null ? null : lastTrade.price(),
                     lastTrade == null ? 0L : lastTrade.quantity(),
                     lastTrade == null ? -1L : lastTrade.timeMillis(), bestBid, bestAsk,
-                    reference));
+                    reference, dailyPriceBand(snap, symbol, snap.timeMillis())));
         }
         return market;
     }
@@ -8859,7 +8868,7 @@ public final class WorldRuntime implements AutoCloseable {
                 boolean authorized = false;
                 for (var office : observed) if (office.path("bank").asText().equals(draft.bank()))
                     for (var allowed : office.path("actions")) if (allowed.asText().equals(draft.kind())) authorized = true;
-                if (!authorized || !RunManifest.BANK_CRISIS_RUN_ID.equals(manifest.runId())) throw new IOException("本次观察无对应危机权限");
+                if (!authorized || !RunManifest.usesBankCrisis(manifest.runId())) throw new IOException("本次观察无对应危机权限");
                 var crisisKind = BankActions.Kind.valueOf(draft.kind());
                 String org = BankCrisis.office(crisisKind,draft.bank());
                 boolean procedure = BankCrisis.procedural(crisisKind);
@@ -11031,7 +11040,7 @@ public final class WorldRuntime implements AutoCloseable {
     private void completeOrder(PendingTask task) throws IOException {
         OrderPayload payload = mapper.readValue(task.payload(), OrderPayload.class);
         long now = task.dueTimeMillis();
-        String denial = marketRejection(payload.symbol(), now);
+        String denial = marketRejection(payload.symbol(), payload.price(), now);
         if (denial != null) {
             var report = new OrderReport(task.taskId(), payload.commandId(), task.kind(), false, denial,
                     null, List.of(), List.of(), now, state.position() + 1);
@@ -11132,8 +11141,17 @@ public final class WorldRuntime implements AutoCloseable {
                 outcome.exchange().withReport(report), report);
     }
 
-    private String marketRejection(String symbol, long at) {
-        return RunManifest.usesMarketSessions(manifest.runId()) ? MarketSessions.rejection(symbol, at) : null;
+    private String marketRejection(String symbol, BigDecimal limitPrice, long at) {
+        String session = RunManifest.usesMarketSessions(manifest.runId()) ? MarketSessions.rejection(symbol, at) : null;
+        if (session != null) return session;
+        var band = dailyPriceBand(state, symbol, at);
+        if (band != null && band.lower() == null) return "PRICE_BASIS_UNAVAILABLE";
+        return limitPrice != null && band != null && !band.contains(limitPrice) ? DailyPriceBand.OUTSIDE : null;
+    }
+
+    private DailyPriceBand dailyPriceBand(WorldState frame, String symbol, long at) {
+        if (!DailyPriceBand.VERSION.equals(manifest.dataVersions().get("limit-band"))) return null;
+        return DailyPriceBand.at(registry, frame.exchange(), frame.position(), at, symbol, frame.dividends());
     }
 
     private boolean scheduleMissingExpiry(long due) throws IOException {
@@ -13929,8 +13947,11 @@ public final class WorldRuntime implements AutoCloseable {
             case "IMPLEMENT_COMMERCIALIZATION" ->
                     outcome = BoardModel.executeAdoptedCommercializationApproval(board, now,
                             p.meetingId());
-            case "CONVENE", "CONVENE_APPOINTMENT", "CONVENE_WAIVER", "CONVENE_COMMERCIALIZATION" -> {
-                BoardModel.Topic topic = "CONVENE_COMMERCIALIZATION".equals(p.action())
+            case "CONVENE", "CONVENE_APPOINTMENT", "CONVENE_WAIVER", "CONVENE_COMMERCIALIZATION", "CONVENE_DIVIDEND" -> {
+                if ("CONVENE_DIVIDEND".equals(p.action()) && (!scopedDividend() || !EngineeringIssuerDividend.ISSUER.equals(p.companyPartyId())))
+                    throw new IllegalArgumentException("本发行人未启用分红");
+                BoardModel.Topic topic = "CONVENE_DIVIDEND".equals(p.action()) ? BoardModel.Topic.DIVIDEND_AUTHORIZATION
+                        : "CONVENE_COMMERCIALIZATION".equals(p.action())
                         || p.commercialization() != null
                         ? BoardModel.Topic.COMMERCIALIZATION_APPROVAL
                         : ("CONVENE_APPOINTMENT".equals(p.action())
@@ -14067,6 +14088,7 @@ public final class WorldRuntime implements AutoCloseable {
                 if (outcome.accepted()) {
                     BoardModel.Meeting opened = outcome.state().meeting(p.meetingId());
                     boolean hasProposal = switch (opened.topic()) {
+                        case DIVIDEND_AUTHORIZATION -> scopedDividend() && opened.dividendProposal() != null;
                         case BUDGET -> !opened.proposedLines().isEmpty();
                         case MANAGER_APPOINTMENT -> opened.appointmentProposal() != null;
                         case COMMERCIALIZATION_APPROVAL ->
@@ -16522,6 +16544,9 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private void validateFundsBankFrame(WorldState candidate, WorldState previous,
                                         WorldCommit commit) throws IOException {
+        if (hasDisclosedLoan() && !commit.commandId().startsWith("loan-promotion:")
+                && needsDisclosedServicing(previous, pendingTaskOf(previous, commit.commandId()), candidate.timeMillis()))
+            throw new IOException("合同在执行前或到期前缺少历史债权提升批次");
         if (bankActionFrame(previous, commit)) {
             // 银行人物动作（存款/取现/支付/借贷）与 B6 同一套 BEGIN→完成重算；
             // 其 freezing 输入也是同一份“活动订单逐桶冻结”。
@@ -16826,6 +16851,11 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("工程排程命令正文无法解析：" + commit.commandId(), invalid);
         }
         requireEngineeringTargetKind(wrapper.targetKind(), commit.commandContent());
+        if (PendingTask.ENGINEERING_BOARD_V1.equals(wrapper.targetKind())
+                && "CONVENE_DIVIDEND".equals(content.path("action").asText())
+                && engineeringDividendIssuer().filter(content.path("companyPartyId").asText()::equals).isEmpty()) {
+            throw new IOException("工程分红待办与版本登记的发行人不符");
+        }
         JsonNode focus = content.get("focusMillis");
         if (focus == null || !focus.isNumber()) {
             return;
@@ -16853,7 +16883,7 @@ public final class WorldRuntime implements AutoCloseable {
      * 到会计划，集合也仍然是到会两种。</p>
      */
     private static final Set<String> ENGINEERING_BOARD_ACTIONS = Set.of(
-            "CONVENE", "CONVENE_APPOINTMENT", "CONVENE_WAIVER", "CONVENE_COMMERCIALIZATION", "MATERIAL",
+            "CONVENE", "CONVENE_APPOINTMENT", "CONVENE_WAIVER", "CONVENE_COMMERCIALIZATION", "CONVENE_DIVIDEND", "MATERIAL",
             "PROPOSE_APPOINTMENT", "PROPOSE_BUDGET", "PROPOSE_WAIVER", "PROPOSE_COMMERCIALIZATION", "IMPLEMENT_COMMERCIALIZATION", "VOTE", "IMPLEMENT",
             "ATTEND", "ATTEND_RECUSED");
 
@@ -17741,6 +17771,8 @@ public final class WorldRuntime implements AutoCloseable {
         BankActions.Book book = base.bankActions() == null ? BankActions.Book.empty()
                 : base.bankActions();
         BankActions.Loan loan = book.loan(draft.loanId());
+        if (loan == null && hasDisclosedLoan() && BankLoanPromotionOpening.certificate().contract().loanId().equals(draft.loanId()))
+            loan = BankLoanPromotionOpening.certificate().contract();
         if (loan != null && draft.kind() != BankActions.Kind.LOAN_REQUEST) {
             // 已有合同只认合同上的借款人；不是自己的合同会在完成帧被真实授权拒绝。
             return loan.borrowerKey();
@@ -17768,7 +17800,7 @@ public final class WorldRuntime implements AutoCloseable {
         String party = request.customerKey();
         String crisisOffice = BankCrisis.office(request.kind(), request.bankKey());
         if (crisisOffice != null) {
-            if (!RunManifest.BANK_CRISIS_RUN_ID.equals(manifest.runId()) || !crisisOffice.equals(party)
+            if (!RunManifest.usesBankCrisis(manifest.runId()) || !crisisOffice.equals(party)
                     || !BankCrisis.eligible(IssuerCreditDecisions.managed(base.roles().access(),person,now),crisisOffice,request.bankKey()))
                 throw new IllegalArgumentException("本人没有该机构的危机动作权限");
             return;
@@ -17899,6 +17931,12 @@ public final class WorldRuntime implements AutoCloseable {
         String receipt = "";
         if (resolution.reason() != null) {
             reason = resolution.reason();
+        } else if (hasDisclosedLoan() && BankLoanPromotionOpening.certificate().contract().loanId().equals(request.loanId())
+                && switch (request.kind()) {
+                    case LOAN_REQUEST, LOAN_ACCEPT, LOAN_APPROVE, LOAN_DRAW -> true;
+                    default -> false;
+                }) {
+            reason = "DISCLOSED_LOAN_ALREADY_DRAWN";
         } else {
             BankActions.Outcome outcome = null;
             String failure = null;
@@ -17951,7 +17989,8 @@ public final class WorldRuntime implements AutoCloseable {
         events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()));
         if (accepted && request.kind() == BankActions.Kind.LOAN_DRAW) {
-            PendingTask accrual = bankAccrualTask(base, task, request, loans, now);
+            var drawn = loans.loan(request.loanId());
+            PendingTask accrual = drawn == null ? null : bankAccrualTask(base, request.requestId(), drawn, now + drawn.tenorMs());
             if (accrual != null) {
                 pending.add(accrual);
                 used.add(accrual.taskId());
@@ -17968,20 +18007,14 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 提款成功时按合同到期排一条真实计息任务（系统日程，不占人物焦点）。 */
-    private PendingTask bankAccrualTask(WorldState base, PendingTask task,
-                                        BankActions.Request request, BankActions.Book loans,
-                                        long now) throws IOException {
-        BankActions.Loan loan = loans.loan(request.loanId());
-        if (loan == null || loan.tenorMs() <= 0 || loan.trancheId() == null) {
-            return null;
-        }
-        long maturity = now + loan.tenorMs();
+    private PendingTask bankAccrualTask(WorldState base, String requestId, BankActions.Loan loan, long maturity) throws IOException {
+        if (loan.tenorMs() <= 0 || loan.trancheId() == null) return null;
         BankActions.Request accrue = new BankActions.Request(
-                request.requestId() + ":accrue@" + maturity, BankActions.Kind.LOAN_ACCRUE,
+                requestId + ":accrue@" + maturity, BankActions.Kind.LOAN_ACCRUE,
                 loan.bankKey(), loan.borrowerKey(), null, null, loan.amount(), 0L, 0L, "",
                 loan.loanId(), maturity);
         BankActionPayload payload = new BankActionPayload(
-                request.requestId() + ":accrue@" + maturity, "", "", loan.borrowerKey(),
+                requestId + ":accrue@" + maturity, "", "", loan.borrowerKey(),
                 mapper.writeValueAsString(accrue), maturity, 0L, true);
         return new PendingTask(freeTaskId(base, "bank-accrue:" + loan.loanId()), maturity,
                 WorldScheduler.Phase.COMPLETION, PendingTask.BANK_ACTION_V1,
@@ -17992,7 +18025,7 @@ public final class WorldRuntime implements AutoCloseable {
                                                         BankActions.Request request, long now) {
         String crisisOffice = BankCrisis.office(request.kind(),request.bankKey());
         if (crisisOffice != null) {
-            if (!RunManifest.BANK_CRISIS_RUN_ID.equals(manifest.runId()) || action.system()
+            if (!RunManifest.usesBankCrisis(manifest.runId()) || action.system()
                     || !crisisOffice.equals(request.customerKey()) || action.appointmentId() == null
                     || !BankCrisis.eligible(IssuerCreditDecisions.managed(base.roles().access(),action.personPartyId(),now),crisisOffice,request.bankKey())
                     || !activeAppointment(base.roles(),action.appointmentId(),action.personPartyId(),crisisOffice,now))
@@ -19397,6 +19430,16 @@ public final class WorldRuntime implements AutoCloseable {
                     || !frameDomainEvents(commit).equals(replayed.events())) {
                 throw new IOException("研发初始化与真实入口派生不一致：" + id + " " + diff);
             }
+            return;
+        }
+        if (id.startsWith("loan-promotion:")) {
+            var request = readScheduleContent(commit, LoanPromotionRequest.class, "历史贷款提升");
+            ReplayedFrame rebuilt;
+            try { rebuilt = disclosedLoanFrame(previous, request); }
+            catch (IllegalArgumentException | IllegalStateException invalid) { throw new IOException("历史贷款提升未绑定原合同或位置", invalid); }
+            if (!frameDifference(rebuilt.state(), candidate).isEmpty() || !id.equals(rebuilt.commandId())
+                    || !commit.commandContent().equals(rebuilt.content()) || !commit.result().equals(rebuilt.result())
+                    || !frameDomainEvents(commit).equals(rebuilt.events())) throw new IOException("历史贷款提升批次与原合同不符");
             return;
         }
         if (id.startsWith("manufacturing-intake:")) {
@@ -22726,7 +22769,7 @@ public final class WorldRuntime implements AutoCloseable {
                 }
             }
             for (Map.Entry<String, BankState.Loan> entry : new TreeMap<>(bankState.loans()).entrySet()) {
-                String borrower = chart.borrowerOfLoanKey(entry.getKey());
+                String borrower = BankLoanPromotionOpening.beneficialBorrower(bankState, entry.getKey());
                 if (borrower == null) {
                     continue;
                 }
@@ -23562,6 +23605,8 @@ public final class WorldRuntime implements AutoCloseable {
             // 纯研发完成帧：非董事会工程子集不变；预算/董事会由 validateResearch 按原承诺与现金重演。
             return;
         }
+        if (scopedDividend() && completedTaskIds(commit).stream().map(id -> pendingOf(previous, id)).filter(Objects::nonNull)
+                .anyMatch(t -> isDividendKind(t.kind()))) return; // validateDividendBatch 重演并比较完整工程状态。
         EngineeringRun before = previous.engineering();
         if (companyDecisionsEnabled() && commit.commandId().startsWith("task:")) {
             PendingTask original = pendingOf(previous, commit.commandId().substring(5));
@@ -24991,7 +25036,7 @@ public final class WorldRuntime implements AutoCloseable {
                     throw new IOException("无分红动作的批次不得携带分红事件：" + event.type());
                 }
             }
-            if (!dividendMeetings(previous).equals(dividendMeetings(candidate))) {
+            if (!scopedDividend() && !dividendMeetings(previous).equals(dividendMeetings(candidate))) {
                 throw new IOException("无分红治理动作的批次修改了已确认分红会议");
             }
             validateDividendSchedule(commit, candidate, previous);
@@ -25011,11 +25056,14 @@ public final class WorldRuntime implements AutoCloseable {
         if (!Objects.equals(candidate.accounts(), expected.accounts())) {
             throw new IOException("分红批次现金与重算不一致：" + consumed.taskId());
         }
-        if (!Objects.equals(candidate.governance(), expected.governance())) {
+        if (!Objects.equals(dividendBoard(candidate), expected.governance())
+                || scopedDividend() && (!Objects.equals(previous.governance(), candidate.governance())
+                || !candidate.engineering().equals(previous.engineering().withBoard(EngineeringIssuerDividend.ISSUER, expected.governance())))) {
             throw new IOException("分红批次董事会状态与重算不一致：" + consumed.taskId());
         }
-        if (!Objects.equals(candidate.securities(), previous.securities())
-                || !Objects.equals(candidate.exchange(), previous.exchange())
+        var released = exBandRelease(previous, consumed, expected.accepted(), expected.dividends());
+        if (!Objects.equals(candidate.securities(), released == null ? previous.securities() : released.securities())
+                || !Objects.equals(candidate.exchange(), released == null ? previous.exchange() : released.exchange())
                 || !Objects.equals(candidate.manufacturing(), previous.manufacturing())
                 || !Objects.equals(candidate.roles(), previous.roles())
                 || !Objects.equals(candidate.information(), previous.information())
@@ -25030,6 +25078,7 @@ public final class WorldRuntime implements AutoCloseable {
         expectedEvents.add(new WorldEvent("task-completed:" + consumed.taskId(),
                 "TASK_COMPLETED_V1", consumed.payload()));
         expectedEvents.addAll(validateDividendPending(commit, previous, candidate, consumed, expected));
+        if (released != null) expectedEvents.add(exBandReleaseEvent(consumed, released));
         boolean pays = expected.accepted() && PendingTask.DIVIDEND_SETTLE_V1.equals(consumed.kind());
         if (pays) {
             DividendCashProof proof = expectedCashProof(previous, consumed);
@@ -25078,7 +25127,7 @@ public final class WorldRuntime implements AutoCloseable {
     private DividendExpectation recomputeDividend(WorldState previous, PendingTask task, long position)
             throws IOException {
         DividendModel.State d0 = previous.dividends();
-        BoardRun run = previous.governance();
+        BoardRun run = dividendBoard(previous);
         Map<String, CashLedger.CashAccount> accounts = previous.accounts();
         if (isDividendGovernanceTask(previous, task)) {
             String meetingId;
@@ -25159,7 +25208,7 @@ public final class WorldRuntime implements AutoCloseable {
                     true, board.reason());
         }
         if (PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(task.kind())) {
-            if (payload.seatId() == null || !payload.seatId().equals(charter.chairSeatId())) {
+            if (payload.seatId() == null || !payload.seatId().equals(dividendCharter().chairSeatId())) {
                 return new DividendExpectation(run, d0, accounts, false, REASON_NOT_AUTHORIZED);
             }
             BoardModel.Meeting target = run.board().meeting(payload.meetingId());
@@ -25279,6 +25328,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (request == null) {
             return "MISSING_REQUEST";
         }
+        if (scopedDividend()) return EngineeringIssuerDividend.binding(engineeringConfig.specOf(EngineeringIssuerDividend.ISSUER), registry, request);
         if (manufacturingConfig == null || charter == null || registry == null) {
             return "MISSING_COMPANY_CONFIG";
         }
@@ -25388,11 +25438,11 @@ public final class WorldRuntime implements AutoCloseable {
         String schemeId = payload.schemeId();
         if (PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(task.kind())) {
             schemeId = "";
-            BoardModel.Meeting meeting = previous.governance().board().meeting(payload.meetingId());
-            if (charter.chairSeatId().equals(payload.seatId()) && meeting != null
+            BoardModel.Meeting meeting = dividendBoard(previous).board().meeting(payload.meetingId());
+            if (dividendCharter().chairSeatId().equals(payload.seatId()) && meeting != null
                     && task.dueTimeMillis() > meeting.closesAt()) {
                 BoardModel.Outcome execution = BoardModel.executeAdoptedDividendResolution(
-                        previous.governance().board(), task.dueTimeMillis(), payload.meetingId());
+                        dividendBoard(previous).board(), task.dueTimeMillis(), payload.meetingId());
                 if (execution.accepted()) schemeId = meeting.dividendProposal().request().schemeId();
             }
         } else if (PendingTask.DIVIDEND_IMPAIR_V1.equals(task.kind())) {
@@ -25540,6 +25590,7 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private boolean isDividendGovernanceTask(WorldState world, PendingTask task) throws IOException {
+        if (scopedDividend()) return false; // 工程董事会的真实到会、材料、投票由工程回放核对。
         String meetingId;
         switch (task.kind()) {
             case PendingTask.GOVERNANCE_MATERIAL_V1, PendingTask.GOVERNANCE_VOTE_V1 ->
@@ -28004,6 +28055,7 @@ public final class WorldRuntime implements AutoCloseable {
                                            List<String> recusedSeatIds) throws IOException {
         requireGovernanceEnabled();
         requireOpen();
+        if (scopedDividend()) throw new IllegalArgumentException("工程发行人会议必须由本人到会与表决");
         requireWriter();
         requireNotPaused();
         requireText(commandId, "命令标识");
@@ -28215,9 +28267,52 @@ public final class WorldRuntime implements AutoCloseable {
         return scheduleExternalTask(task, commandId, content);
     }
 
+    private boolean scopedDividend() {
+        return EngineeringIssuerDividend.enabled(manifest);
+    }
+
+    /** 返回当前版本允许执行董事会分红的工程发行人。 */
+    public Optional<String> engineeringDividendIssuer() {
+        return scopedDividend() ? Optional.of(EngineeringIssuerDividend.ISSUER) : Optional.empty();
+    }
+
+    private BoardModel.Charter dividendCharter() {
+        return scopedDividend() ? engineeringConfig.specOf(EngineeringIssuerDividend.ISSUER).charter() : charter;
+    }
+
+    private BoardRun dividendBoard(WorldState base) {
+        return scopedDividend() ? base.engineering().boardOf(EngineeringIssuerDividend.ISSUER) : base.governance();
+    }
+
+    synchronized String issuerDividendBoard(WorldRoleSession session, String command, String task, long due, String action,
+            String meeting, long materials, long opens, long closes, DividendModel.SchemeRequest request) throws IOException {
+        if (!scopedDividend()) throw new IllegalArgumentException("本档未启用工程发行人分红");
+        String person = session.personPartyId(), issuer = EngineeringIssuerDividend.ISSUER;
+        BoardModel.Charter board = dividendCharter();
+        String seat = board.seatOf(person);
+        if (seat == null) throw new IllegalArgumentException("本人不是此发行人的董事");
+        requireText(meeting, "分红会议");
+        return switch (action) {
+            case "CONVENE" -> {
+                if (!board.chairSeatId().equals(seat)) throw new IllegalArgumentException("只有发行人主席可召集");
+                yield scheduleEngineeringBoard(command, task, due, new EngineeringBoardPayload(command, issuer, "CONVENE_DIVIDEND",
+                        person, seat, meeting, materials, opens, closes, List.of(), List.of(), "", "", 0L, List.of(), "", null), DEFAULT_FOCUS_MILLIS);
+            }
+            case "PROPOSE" -> {
+                if (request == null || schemeBindingProblem(request) != null) throw new IllegalArgumentException("分红方案与发行人不符");
+                yield scheduleDividendProposal(command, task, due, seat, meeting, List.of(), request);
+            }
+            case "AUTHORIZE" -> {
+                if (!board.chairSeatId().equals(seat)) throw new IllegalArgumentException("只有发行人主席可实施决议");
+                yield scheduleDividendAuthorization(command, task, due, seat, meeting);
+            }
+            default -> throw new IllegalArgumentException("未知分红董事动作");
+        };
+    }
+
     /** 主席席位绑定的人物（公告发布者）。 */
     private String chairPerson() {
-        return chairPersonOf(charter);
+        return chairPersonOf(dividendCharter());
     }
 
     private static String chairPersonOf(BoardModel.Charter charter) {
@@ -28319,7 +28414,7 @@ public final class WorldRuntime implements AutoCloseable {
 
     private void completeDividendProposal(PendingTask task, DividendActionPayload payload)
             throws IOException {
-        BoardRun run = state.governance();
+        BoardRun run = dividendBoard(state);
         String binding = schemeBindingProblem(payload.request());
         if (binding != null) {
             finishDividend(task, payload.commandId(), payload.meetingId(), payload.schemeId(),
@@ -28348,8 +28443,8 @@ public final class WorldRuntime implements AutoCloseable {
 
     private void completeDividendAuthorize(PendingTask task, DividendActionPayload payload)
             throws IOException {
-        BoardRun run = state.governance();
-        if (payload.seatId() == null || !payload.seatId().equals(charter.chairSeatId())) {
+        BoardRun run = dividendBoard(state);
+        if (payload.seatId() == null || !payload.seatId().equals(dividendCharter().chairSeatId())) {
             finishDividend(task, payload.commandId(), payload.meetingId(), "", false,
                     REASON_NOT_AUTHORIZED, List.of(), state.dividends(), run);
             return;
@@ -28413,8 +28508,9 @@ public final class WorldRuntime implements AutoCloseable {
         WorldState candidate = next(task.dueTimeMillis(), WorldScheduler.Phase.COMPLETION.name(),
                 state.accounts(), pending, state.delivered(), used, state.commandContents(),
                 state.commandOutcomes(), state.securities(), state.exchange(),
-                state.manufacturing(), updated, state.roles(), state.information(),
-                state.trading(), state.decisions(), d0.state());
+                state.manufacturing(), scopedDividend() ? state.governance() : updated, state.roles(), state.information(),
+                state.trading(), state.decisions(), d0.state(), state.beliefs(), state.media(), state.interviews(), state.evidence(), state.social(),
+                scopedDividend() ? state.engineering().withBoard(EngineeringIssuerDividend.ISSUER, updated) : state.engineering());
         commitAndApply(payload.commandId(), task.payload(), "AUTHORIZED", events, candidate);
     }
 
@@ -28612,6 +28708,8 @@ public final class WorldRuntime implements AutoCloseable {
         events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()));
         events.addAll(effects);
+        var released = exBandRelease(state, task, accepted, dividends);
+        if (released != null) events.add(exBandReleaseEvent(task, released));
         DividendReport report = new DividendReport(task.taskId(), commandId, task.kind(),
                 meetingId, schemeId, state.position() + 1, task.dueTimeMillis(), accepted, reason);
         events.add(new WorldEvent("dividend-report:" + task.taskId(), "DIVIDEND_REPORT_V1",
@@ -28619,11 +28717,28 @@ public final class WorldRuntime implements AutoCloseable {
         Map<String, String> contents = state.commandContents();
         Map<String, String> outcomes = state.commandOutcomes();
         WorldState candidate = next(task.dueTimeMillis(), task.phase().name(), state.accounts(),
-                pending, state.delivered(), used, contents, outcomes, state.securities(),
-                state.exchange(), state.manufacturing(), governance, state.roles(),
-                state.information(), state.trading(), state.decisions(), dividends);
+                pending, state.delivered(), used, contents, outcomes, released == null ? state.securities() : released.securities(),
+                released == null ? state.exchange() : released.exchange(), state.manufacturing(), scopedDividend() ? state.governance() : governance, state.roles(),
+                state.information(), state.trading(), state.decisions(), dividends, state.beliefs(), state.media(), state.interviews(), state.evidence(), state.social(),
+                scopedDividend() && governance != null ? state.engineering().withBoard(EngineeringIssuerDividend.ISSUER, governance) : state.engineering());
         commitAndApply("div-batch:" + task.taskId(), task.payload(),
                 accepted ? "ACCEPTED" : "REJECTED", events, candidate);
+    }
+
+    private WorldExchange.Outcome exBandRelease(WorldState before, PendingTask task, boolean accepted,
+                                                DividendModel.State dividends) throws IOException {
+        if (!accepted || !PendingTask.DIVIDEND_BOOK_EX_V1.equals(task.kind())
+                || !DailyPriceBand.VERSION.equals(manifest.dataVersions().get("limit-band"))) return null;
+        var payload = mapper.readValue(task.payload(), DividendActionPayload.class);
+        String symbol = DividendModel.scheme(dividends, payload.schemeId()).symbol();
+        var band = DailyPriceBand.at(registry, before.exchange(), before.position(), task.dueTimeMillis(), symbol, dividends);
+        var released = WorldExchange.expire(before.exchange(), before.accounts(), before.securities(), task.dueTimeMillis(), symbol, band);
+        return released.cancelledOrderIds().isEmpty() ? null : released;
+    }
+
+    private WorldEvent exBandReleaseEvent(PendingTask task, WorldExchange.Outcome released) throws IOException {
+        return new WorldEvent("ex-price-band:" + task.taskId(), "EX_DIVIDEND_ORDER_RELEASE_V1",
+                mapper.writeValueAsString(released.cancelledOrderIds()));
     }
 
     private String writeDividendReport(DividendReport report) throws IOException {
@@ -29663,6 +29778,11 @@ public final class WorldRuntime implements AutoCloseable {
                     orderedOpenings, snap.accounts(), snap.exchange());
         }
         if (RunManifest.usesMarketSessions(manifest.runId())) MarketSessions.describe(root, now, snap.exchange().closed());
+        if (DailyPriceBand.VERSION.equals(manifest.dataVersions().get("limit-band"))) {
+            root.withObject("/exchangeSessions").put("limitPolicy", "EXP 股票限价必须在本人行情 priceBand 的 lower 与 upper 之间，含两端。上下限按上一有成交日收盘价的±10%四舍五入到分；从未成交用开局估值。触及边界不保证成交，同价按入簿先后等待真实对手。");
+            if (manifest.hasDividend()) root.withObject("/exchangeSessions").put("exDividendRule",
+                    "实际除息时从当日基准扣除已确认每股股息，超出新范围的原挂单自动撤销，其余保留排位。现金付款沿用同一基准。");
+        }
         if (RunManifest.ROLE_MARKET_VALUATION.equals(manifest.dataVersions().get("role-market-valuation")))
             root.put("marketValuationPolicy", RunManifest.ROLE_MARKET_VALUATION);
         if ("office-policy-v1".equals(manifest.dataVersions().get("media-editorial-view")) && snap.media() != null) {
@@ -31867,7 +31987,7 @@ public final class WorldRuntime implements AutoCloseable {
                     break;
                 }
                 RoleTradingModel.TargetVersion version = parent.current();
-                String denial = marketRejection(parent.symbol(), now);
+                String denial = marketRejection(parent.symbol(), draft.limitPrice(), now);
                 if (denial != null) {
                     reason = denial;
                     break;
@@ -36045,6 +36165,96 @@ public final class WorldRuntime implements AutoCloseable {
         return new ReplayedFrame(candidate,id,content,"HYDRO_SETTLED",List.of(new WorldEvent(id,"HYDRO_SETTLED_V1",content)),1);
     }
 
+    private record LoanPromotionRequest(String loanId, long expectedPosition) { }
+
+    private boolean hasDisclosedLoan() {
+        return "contract-bound-v1".equals(manifest.dataVersions().get("loan-promotion"));
+    }
+
+    /** 查看原合同绑定的债务人、来源和当前唯一的贷款分类。 */
+    public synchronized Map<String, Object> disclosedLoan() {
+        if (!hasDisclosedLoan()) throw new IllegalStateException("此档没有已披露历史贷款");
+        var cert = BankLoanPromotionOpening.certificate();
+        var bank = state.bank().decode(state.accounts()).state();
+        var t = cert.obligation(bank);
+        var c = cert.contract();
+        boolean pooled = bank.loan(c.bankKey(), BankLoanPromotionOpening.POOL).tranche(t.trancheId()) != null;
+        var row = new LinkedHashMap<String,Object>();
+        row.put("position", state.position()); row.put("status", pooled ? "AGGREGATE" : "DETAILED");
+        row.put("loanId", c.loanId()); row.put("bankId", c.bankKey()); row.put("borrower", c.borrowerKey());
+        row.put("nominal", t.contract()); row.put("onBook", t.onbook());
+        // 准备按银行风险桶计量。明细桶允许另有合同，故明确列出其范围。
+        String bucket = pooled ? BankLoanPromotionOpening.POOL : c.borrowerKey();
+        row.put("allowance", bank.gl(c.bankKey(),bank.chart().llpFor(bucket)).negate());
+        row.put("allowanceBucket", bucket); row.put("interestDue", t.interestReceivable());
+        row.put("sourceDigest", cert.originDigest()); row.put("sourcePosition", BankLoanPromotionOpening.sourcePosition());
+        return Map.copyOf(row);
+    }
+
+    /** 将已披露的唯一历史期次提升为债务人明细，同一成功命令重试返回原确认位置。
+     * @param loanId 已登记的合同标识
+     * @param expectedPosition 所见确认位置
+     * @return 变更所在的确认位置
+     * @throws IOException 提交失败 */
+    public synchronized long promoteDisclosedLoan(String loanId, long expectedPosition) throws IOException {
+        requireOpen(); requireWriter(); requireNotPaused();
+        if (!hasDisclosedLoan()) throw new IllegalStateException("此档没有已披露历史贷款");
+        if (!BankLoanPromotionOpening.certificate().contract().loanId().equals(loanId))
+            throw new IllegalArgumentException("合同未在来源档登记");
+        String key = "loan-promotion:" + loanId;
+        var committed = commitSource.nonSnapshotByCommand(key);
+        if (committed.isPresent()) {
+            long position = committed.orElseThrow().position();
+            if (expectedPosition != position - 1 && expectedPosition != state.position())
+                throw new IllegalStateException("所见确认位置已过期");
+            return position;
+        }
+        var frame = disclosedLoanFrame(state, new LoanPromotionRequest(loanId, expectedPosition));
+        commitAndApply(frame.commandId(), frame.content(), frame.result(), frame.events(), frame.state());
+        return state.position();
+    }
+
+    private ReplayedFrame disclosedLoanFrame(WorldState base, LoanPromotionRequest request) throws IOException {
+        if (!hasDisclosedLoan()) throw new IllegalStateException("此档没有已披露历史贷款");
+        var cert = BankLoanPromotionOpening.certificate();
+        var c = cert.contract();
+        if (!c.loanId().equals(request.loanId())) throw new IllegalArgumentException("历史合同不符");
+        if (base.position() != request.expectedPosition()) throw new IllegalStateException("所见确认位置已过期");
+        var decoded = base.bank().decode(base.accounts());
+        var moved = cert.promote(decoded.state(), base.accounts());
+        if (moved == decoded.state()) throw new IllegalStateException("期次已提升");
+        var contracts = new TreeMap<String,BankActions.Loan>();
+        if (base.bankActions() != null) contracts.putAll(base.bankActions().loans());
+        if (contracts.putIfAbsent(c.loanId(), c) != null) throw new IllegalStateException("已有同名合同");
+        var loans = BankActions.derive(new BankActions.Book(contracts), moved);
+        var due = cert.obligation(moved).terms().maturityMs();
+        if (due < base.timeMillis()) throw new IllegalStateException("合同到期前缺少计息日程");
+        String id = "loan-promotion:" + c.loanId(), body = mapper.writeValueAsString(request);
+        var timer = bankAccrualTask(base, id, c, due);
+        var pending = new ArrayList<>(base.pending()); pending.add(timer);
+        var used = new LinkedHashSet<>(base.usedTaskIds()); used.add(timer.taskId());
+        var candidate = bankCandidate(base, base.timeMillis(), base.lastPhase(), base.accounts(), pending, used,
+                base.commandContents(), base.commandOutcomes(), BankRun.of(decoded.config(), moved, decoded.book()), loans);
+        return new ReplayedFrame(candidate, id, body, "LOAN_PROMOTED", List.of(new WorldEvent(id,"DISCLOSED_LOAN_PROMOTED_V1",body),
+                new WorldEvent("schedule:"+timer.taskId(),"TASK_SCHEDULED_V1",mapper.writeValueAsString(timer))), 1);
+    }
+
+    private boolean needsDisclosedServicing(WorldState base, PendingTask next, long limit) throws IOException {
+        var c = BankLoanPromotionOpening.certificate().contract();
+        if (base.bankActions() != null && base.bankActions().loan(c.loanId()) != null) return false;
+        if ((next == null ? limit : next.dueTimeMillis()) >= c.tenorMs()) return true;
+        if (next == null || !PendingTask.BANK_ACTION_V1.equals(next.kind())) return false;
+        var action = bankActionPayload(next.payload());
+        var request = mapper.readValue(action.requestJson(), BankActions.Request.class);
+        if (!c.bankKey().equals(request.bankKey()) || !c.borrowerKey().equals(request.customerKey())
+                || resolveBankActionActor(base, action, request, next.dueTimeMillis()).reason() != null) return false;
+        if (c.loanId().equals(request.loanId()))
+            return request.kind() == BankActions.Kind.LOAN_REPAY || request.kind() == BankActions.Kind.LOAN_PAY_INTEREST;
+        var requested = base.bankActions() == null ? null : base.bankActions().loan(request.loanId());
+        return request.kind() == BankActions.Kind.LOAN_DRAW && requested != null
+                && requested.status() == BankActions.LoanStatus.APPROVED;
+    }
+
     /** 在一次确认边界校验或提交全部目标公司的收单规则变更。
      * @param request 含原版本、目标版本、全部目标及所见位置的计划
      * @param apply 为真时写一个不可分割的规则变更批次，为假时只校验
@@ -37903,15 +38113,16 @@ public final class WorldRuntime implements AutoCloseable {
                     + manifest.rulesVersion());
         }
         if (manifest.hasDividend()) {
-            if (charter == null || information == null) {
+            var issuingCharter = scopedDividend() ? engineering.specOf(EngineeringIssuerDividend.ISSUER).charter() : charter;
+            if (issuingCharter == null || information == null) {
                 throw new IllegalArgumentException("分红档案必须有董事会章程与资料阅读配置");
             }
-            String chairPerson = chairPersonOf(charter);
+            String chairPerson = chairPersonOf(issuingCharter);
             if (!information.readers().contains(chairPerson)) {
                 throw new IllegalArgumentException("分红档案的章程主席必须是资料读者（公告发布者）："
                         + chairPerson);
             }
-            requireNoSelfFloat(registry, charter, openings);
+            requireNoSelfFloat(registry, issuingCharter, openings);
         }
         this.registry = registry;
         this.manufacturingConfig = manufacturing;

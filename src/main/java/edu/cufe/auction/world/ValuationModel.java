@@ -287,7 +287,7 @@ public final class ValuationModel {
      * @param dividends    分红状态
      * @return 除息参考价、原价格或缺价
      */
-    private static Price withExDividend(Price base, String symbol, long cutoffMillis,
+    static Price withExDividend(Price base, String symbol, long cutoffMillis,
                                         DividendModel.State dividends) {
         if (base.source() == PriceSource.MISSING) {
             return base;

@@ -197,6 +197,8 @@ public final class ComposedWorldScenario {
                         "group_name", money("9.90"), "lcr_min", money("0.01"),
                         "maturity_gap_min", money("-0.90"),
                         "impair_cover_min", money("0.01")));
+        if (BankLoanPromotionOpening.POOL.equals(profile.backgroundBorrowerKey()))
+            builder.includeInGroup(BankLoanPromotionOpening.POOL, groups.get(BankLoanPromotionOpening.POOL));
         if (BankCrisis.PROVIDER.equals(profile.providerKey())) {
             var first = new ArrayList<>(profile.depositAccounts());
             first.add("INT.PAYABLE");
@@ -311,7 +313,7 @@ public final class ComposedWorldScenario {
         }
         boolean eightDesks = RunManifest.usesMediaDesks(manifest.runId());
         if (eightDesks) MediaDesks.appoint(appointments, end);
-        if (RunManifest.BANK_CRISIS_RUN_ID.equals(manifest.runId())) {
+        if (RunManifest.usesBankCrisis(manifest.runId())) {
             appointments.add(new RoleAccess.Appointment("rescue-representative","aged-manager",BankCrisis.PROVIDER,
                     RoleAccess.Role.COMPANY_MANAGER,0L,end,null));
             appointments.add(new RoleAccess.Appointment("resolution-officer","kate",BankCrisis.AUTHORITY,

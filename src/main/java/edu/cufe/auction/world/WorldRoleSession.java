@@ -1404,6 +1404,13 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
                 companyPartyId, action.name(), fields, durationMillis);
     }
 
+    /** 以本人真实席位办理冻结工程发行人的分红会议、提案或已通过决议的实施。 */
+    public String issuerDividend(String commandId, String taskId, long dueMillis, String action, String meetingId,
+                                long materialDeadline, long opensAt, long closesAt, DividendModel.SchemeRequest request) throws IOException {
+        return runtime.issuerDividendBoard(this, commandId, taskId, dueMillis, action, meetingId,
+                materialDeadline, opensAt, closesAt, request);
+    }
+
     /** 安排本人陈酿经营工作，真实任职和工时由世界复核。 */
     public String agedAction(String commandId, String taskId, long dueMillis, String companyPartyId,
             AgedOperations.Request request, long durationMillis) throws java.io.IOException {

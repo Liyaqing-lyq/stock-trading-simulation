@@ -414,6 +414,46 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.BANK_CRISIS_RUN_ID);
     }
 
+    /**
+     * 冻结限价申报区间的实验档。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openPriceBandOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.PRICE_BAND_RUN_ID);
+    }
+
+    /**
+     * 指定工程发行人现金分红的实验档。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openIssuerDividendOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.ISSUER_DIVIDEND_RUN_ID);
+    }
+
+    /**
+     * 具名详细借款人承接已冻结聚合债权的实验档。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openLoanPromotionOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.LOAN_PROMOTION_RUN_ID);
+    }
+
+    /**
+     * 同时启用工程分红、日价格带与开局贷款明细，供跨模块核验。
+     * @param journal 独立组合实验日志
+     * @return 已建立或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openBaselinePartsOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.BASELINE_PARTS_RUN_ID);
+    }
+
     /** @param journal 独立交易时段实验档 @return 严格恢复或首次建立的交易世界 @throws Exception 建立或恢复失败 */
     public static WorldRuntime openMarketSessionsOperating(Path journal) throws Exception {
         return openCompanyInformationOperating(journal, MarketSessions.RUN_ID);
@@ -504,7 +544,7 @@ public final class ComposedIndustryScenario {
                         "book-" + issuer, "impair-" + issuer));
             }
         }
-        boolean crisis = RunManifest.BANK_CRISIS_RUN_ID.equals(thinkingRunId);
+        boolean crisis = RunManifest.usesBankCrisis(thinkingRunId);
         if (crisis) {
             parties.put(BankCrisis.PROVIDER, new BankingProfile.PartyRef(BankCrisis.PROVIDER,BankCrisis.PROVIDER,BankCrisisOpening.PROVIDER_CASH,null));
             parties.put(BankCrisis.AUTHORITY, new BankingProfile.PartyRef(BankCrisis.AUTHORITY,BankCrisis.AUTHORITY,BankCrisisOpening.AUTHORITY_CASH,null));
@@ -512,7 +552,14 @@ public final class ComposedIndustryScenario {
         var profile = new BankingProfile(original.banks(), parties, original.custodians(), buckets, original.groups(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::loanGl).distinct().sorted().toList() : original.loanAccounts(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, crisis ? BankCrisis.PROVIDER : original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
-        var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.usesIssuerCredit(thinkingRunId)), crisis ? BankCrisisOpening.endowment() : ComposedWorldScenario.endowment(), Map.of(), Map.of());
+        boolean promotion = RunManifest.usesLoanPromotion(thinkingRunId);
+        var endowment = crisis ? BankCrisisOpening.endowment() : ComposedWorldScenario.endowment();
+        if (promotion) {
+            profile = BankLoanPromotionOpening.profile(profile);
+            endowment = BankLoanPromotionOpening.endowment(endowment);
+        }
+        var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.usesIssuerCredit(thinkingRunId)),
+                endowment, Map.of(), Map.of());
         var charters = new TreeMap<>(ComposedManufacturingThreeScenario.charters());
         List<BoardModel.Seat> seats = new ArrayList<>();
         for (int i = 0; i < 5; i++) seats.add(new BoardModel.Seat("resource-seat-" + i, DIRECTORS.get(i)));
@@ -571,6 +618,7 @@ public final class ComposedIndustryScenario {
         if (RunManifest.usesEngineeringCustomerRules(thinkingRunId)) openingRegistry = EngineeringCustomerPolicy.register(openingRegistry);
         if (RunManifest.usesMediaDesks(thinkingRunId)) openingRegistry = MediaDesks.register(openingRegistry);
         if (crisis) openingRegistry = BankCrisisOpening.allocate(openingAccounts, openingRegistry);
+        if (promotion) openingRegistry = BankLoanPromotionOpening.register(openingAccounts, openingRegistry);
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -643,7 +691,10 @@ public final class ComposedIndustryScenario {
                 data.put("wait-empty-args", "allow-empty-object-v1");
             }
             if (RunManifest.usesMediaDesks(thinkingRunId)) data.put("media-template-catalog", MediaModel.EIGHT_DESKS);
-            if (RunManifest.BANK_CRISIS_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.usesPriceBand(thinkingRunId)) data.put("limit-band", "previous-close-10pct-exp-v1");
+            if (RunManifest.usesIssuerDividend(thinkingRunId)) data.put("issuer-dividend", "engineering-eng-a-v1");
+            if (RunManifest.usesLoanPromotion(thinkingRunId)) data.put("loan-promotion", "contract-bound-v1");
+            if (RunManifest.usesBankCrisis(thinkingRunId)) {
                 data.put("bank-crisis-authority", "finite-provider-v1");
                 data.put("role-sellable-holdings", "settled-lots-v1");
             }
@@ -696,8 +747,10 @@ public final class ComposedIndustryScenario {
                 data.put("customer-contract-policy", RunManifest.FUNDED_CONTRACT_POLICY);
                 data.put("board-tool-scope", "charter-chair-v1");
             }
+            var modules = new TreeMap<>(runManifest.moduleVersions());
+            if (RunManifest.usesIssuerDividend(thinkingRunId)) modules.put("dividend", 1);
             runManifest = new RunManifest(thinkingRunId, runManifest.seed(), runManifest.rulesVersion(),
-                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+                    modules, data, runManifest.modelConfigVersion());
         }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,
                 new ComposedWorldScenario.Extras(charters, List.of(), readers));

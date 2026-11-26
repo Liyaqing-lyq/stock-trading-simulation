@@ -104,9 +104,41 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 有有限资金来源和独立处置职权的十公司危机档。 */
     public static final String BANK_CRISIS_RUN_ID = "web-bank-crisis-operating-v1";
 
+    /** 冻结限价申报区间的实验档。 */
+    public static final String PRICE_BAND_RUN_ID = "web-price-band-operating-v1";
+
+    /** 指定工程发行人现金分红的实验档。 */
+    public static final String ISSUER_DIVIDEND_RUN_ID = "web-issuer-dividend-operating-v1";
+
+    /** 具名详细借款人承接已冻结聚合债权的实验档。 */
+    public static final String LOAN_PROMOTION_RUN_ID = "web-loan-promotion-operating-v1";
+
+    /** 同时启用工程分红、每日价格带及具名借款人登记的实验档。 */
+    public static final String BASELINE_PARTS_RUN_ID = "web-baseline-parts-operating-v1";
+
+    /** 是否冻结每日申报价格带。 */
+    public static boolean usesPriceBand(String id) {
+        return PRICE_BAND_RUN_ID.equals(id) || BASELINE_PARTS_RUN_ID.equals(id);
+    }
+
+    /** 是否启用工程发行人现金分红。 */
+    public static boolean usesIssuerDividend(String id) {
+        return ISSUER_DIVIDEND_RUN_ID.equals(id) || BASELINE_PARTS_RUN_ID.equals(id);
+    }
+
+    /** 是否包含有来源凭证的开局贷款。 */
+    public static boolean usesLoanPromotion(String id) {
+        return LOAN_PROMOTION_RUN_ID.equals(id) || BASELINE_PARTS_RUN_ID.equals(id);
+    }
+
+    /** 是否包含有真实有限资金及独立处置权限的银行开局。 */
+    public static boolean usesBankCrisis(String id) {
+        return BANK_CRISIS_RUN_ID.equals(id) || usesPriceBand(id) || usesIssuerDividend(id) || usesLoanPromotion(id);
+    }
+
     /** 是否允许制造公司在安全点成组停止新签。 */
     public static boolean usesManufacturingLifecycle(String id) {
-        return MANUFACTURING_LIFECYCLE_RUN_ID.equals(id) || BANK_CRISIS_RUN_ID.equals(id);
+        return MANUFACTURING_LIFECYCLE_RUN_ID.equals(id) || usesBankCrisis(id);
     }
 
     private static boolean usesIntegratedOpening(String id) {
@@ -1177,6 +1209,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             throw new IllegalArgumentException("经理经营信息必须显式使用 manager-v1 / deliberation-v4 / delta-v1 / external-demand=v1，且不得混用固定行为策略");
         if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion) && dataVersions!=null && List.of("industry-baseline-v1", "industry-prototype-v1").contains(dataVersions.get(DATA_PROFILE))) {
             expected.keySet().removeAll(List.of("manufacturing","governance","dividend","manufacturing-funding"));
+            if (usesIssuerDividend(runId)) expected.put("dividend", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "
@@ -1271,7 +1304,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("wait-empty-args", "allow-empty-object-v1");
             }
             if (usesMediaDesks(runId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
-            if (BANK_CRISIS_RUN_ID.equals(runId)) {
+            if (usesPriceBand(runId)) expectedData.put("limit-band", "previous-close-10pct-exp-v1");
+            if (usesIssuerDividend(runId)) expectedData.put("issuer-dividend", "engineering-eng-a-v1");
+            if (usesLoanPromotion(runId)) expectedData.put("loan-promotion", "contract-bound-v1");
+            if (usesBankCrisis(runId)) {
                 expectedData.put("bank-crisis-authority", "finite-provider-v1");
                 expectedData.put("role-sellable-holdings", "settled-lots-v1");
             }

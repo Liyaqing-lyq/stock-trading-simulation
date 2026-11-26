@@ -79,6 +79,10 @@ public final class WorldWebApp {
         boolean fundContactsMode = mode.equals("world-fund-office-contacts-operating");
         boolean fundMandateMode = mode.equals("world-fund-mandate-operating");
         boolean personalProfilesMode = mode.equals("world-personal-profiles-operating");
+        boolean baselinePartsMode = mode.equals("world-baseline-parts-operating");
+        boolean priceBandMode = mode.equals("world-price-band-operating");
+        boolean issuerDividendMode = mode.equals("world-issuer-dividend-operating");
+        boolean loanPromotionMode = mode.equals("world-loan-promotion-operating");
         boolean bankCrisisMode = mode.equals("world-bank-crisis-operating");
         boolean manufacturingLifecycleMode = mode.equals("world-manufacturing-lifecycle-operating");
         boolean integratedMode = mode.equals("world-integrated-operating");
@@ -86,7 +90,7 @@ public final class WorldWebApp {
         boolean sessionsMode = mode.equals("world-market-sessions-operating");
         boolean creditDecisionsMode = mode.equals("world-issuer-credit-decisions-operating");
         boolean issuerCreditMode = mode.equals("world-issuer-credit-operating") || creditDecisionsMode;
-        boolean continuingRolesMode = mode.equals("world-continuing-roles-operating") || issuerCreditMode || fundMandateMode || fundContactsMode || fundRoutingMode || bankCrisisMode || manufacturingLifecycleMode || integratedMode || personalProfilesMode || mediaDesksMode || sessionsMode;
+        boolean continuingRolesMode = mode.equals("world-continuing-roles-operating") || issuerCreditMode || fundMandateMode || fundContactsMode || fundRoutingMode || baselinePartsMode || priceBandMode || issuerDividendMode || loanPromotionMode || bankCrisisMode || manufacturingLifecycleMode || integratedMode || personalProfilesMode || mediaDesksMode || sessionsMode;
         boolean personalLimitMode = mode.equals("world-personal-limit-operating") || continuingRolesMode;
         boolean hydroSettlementMode = mode.equals("world-hydro-settlement-operating") || personalLimitMode;
         boolean tableMode = mode.equals("world-role-table-operating") || hydroSettlementMode;
@@ -114,7 +118,7 @@ public final class WorldWebApp {
                 && !mode.equals("composed") && !mode.equals("custody") && !mode.equals("research") && !mode.equals("world") && !mode.equals("world-manager") && !mode.equals("world-debug") && !mode.equals("world-ready") && !mode.equals("world-manufacturing") && !mode.equals("world-industry") && !mode.equals("world-hydro") && !mode.equals("world-baseline") && !(mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode)) && !mode.equals("world-behavior")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-contextual-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating、world-continuing-roles-operating 、world-issuer-credit-operating、world-issuer-credit-decisions-operating、world-integrated-operating、world-manufacturing-lifecycle-operating、world-bank-crisis-operating、world-media-desks-operating、world-market-sessions-operating 、world-personal-profiles-operating 、world-fund-mandate-operating 、world-fund-office-routing-operating 或 world-fund-office-contacts-operating");
+                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-contextual-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating、world-continuing-roles-operating 、world-issuer-credit-operating、world-issuer-credit-decisions-operating、world-integrated-operating、world-manufacturing-lifecycle-operating、world-bank-crisis-operating、world-baseline-parts-operating、world-price-band-operating、world-issuer-dividend-operating、world-loan-promotion-operating、world-media-desks-operating、world-market-sessions-operating 、world-personal-profiles-operating 、world-fund-mandate-operating 、world-fund-office-routing-operating 或 world-fund-office-contacts-operating");
         }
         boolean worldMode = mode.equals("world");
         boolean managerMode = mode.equals("world-manager");
@@ -164,6 +168,10 @@ public final class WorldWebApp {
         WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode))
                 ? new WorldWebHost(() -> {
                     var runtime=sessionsMode ? ComposedIndustryScenario.openMarketSessionsOperating(workDir.resolve("world-market-sessions-operating-v1.journal"))
+                            : baselinePartsMode ? ComposedIndustryScenario.openBaselinePartsOperating(workDir.resolve("world-baseline-parts-operating-v1.journal"))
+                            : priceBandMode ? ComposedIndustryScenario.openPriceBandOperating(workDir.resolve("world-price-band-operating-v1.journal"))
+                            : issuerDividendMode ? ComposedIndustryScenario.openIssuerDividendOperating(workDir.resolve("world-issuer-dividend-operating-v1.journal"))
+                            : loanPromotionMode ? ComposedIndustryScenario.openLoanPromotionOperating(workDir.resolve("world-loan-promotion-operating-v1.journal"))
                             : bankCrisisMode ? ComposedIndustryScenario.openBankCrisisOperating(workDir.resolve("world-bank-crisis-operating-v1.journal"))
                             : manufacturingLifecycleMode ? ComposedIndustryScenario.openManufacturingLifecycleOperating(workDir.resolve("world-manufacturing-lifecycle-operating-v1.journal"))
                             : integratedMode ? ComposedIndustryScenario.openIntegratedOperating(workDir.resolve("world-integrated-operating-v1.journal"))

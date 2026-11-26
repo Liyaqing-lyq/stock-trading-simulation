@@ -644,7 +644,13 @@ async function refreshPerson() {
     cell(tr, row.lastTradeQuantity, "num");
     cell(tr, row.bestBid, "num");
     cell(tr, row.bestAsk, "num");
+    if (row.priceBand) {
+      const b = row.priceBand;
+      const source = { PREVIOUS_TRADED_CLOSE: "前次收盘", OPENING_REFERENCE: "开局参考", EX_DIVIDEND_REFERENCE: "除息参考" };
+      cell(tr, b.lower == null ? "缺少有效基准，暂停申报" : b.lower + " – " + b.upper + "（" + source[b.source] + " " + b.basis + "）");
+    }
   });
+  $("person-price-band-heading").hidden = !(view.market || []).some(row => row.priceBand);
   $("person-catalog").textContent = view.catalog === 0
     ? "当前没有可见资料。" : "共 " + view.catalog + " 条可见目录项。";
   await renderPersonalDialogue(generation);
@@ -2936,6 +2942,8 @@ function renderPerformance(view) {
     cell(tr, row.symbol);
     cell(tr, row.quantity, "num");
     cell(tr, label("priceSource", row.priceSource));
+    cell(tr, row.priceAsOfMillis, "num");
+    cell(tr, row.priceAgeMillis, "num");
     cell(tr, row.price, "num");
     cell(tr, row.value, "num");
   });
@@ -4654,6 +4662,11 @@ async function renderPersonalInterview(tools, generation) {
 // 页面上不出现的字段绝不会被发送出去（防止旧值混入新请求）。
 
 const ENGINEERING_FIELD_SPECS = {
+  schemeId: { id: "eng-dividend-scheme", label: "分红方案编号" },
+  perShare: { id: "eng-dividend-per-share", label: "每股现金股息（元）" },
+  recordAt: { id: "eng-dividend-record", label: "股权登记时点（世界毫秒）" },
+  exAt: { id: "eng-dividend-ex", label: "除息时点（世界毫秒）" },
+  payAt: { id: "eng-dividend-pay", label: "派息时点（世界毫秒）" },
   contractId: {
     id: "eng-contract", label: "合同标识", hint: "例如 B-1；必须是本人实际读过机会后签下的合同。"
   },
@@ -4781,6 +4794,20 @@ const ENGINEERING_FIELD_SPECS = {
 };
 
 const ENGINEERING_TOOL_FIELDS = {
+  "issuer.dividend.convene": {
+    fields: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    required: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    note: "主席召集本发行人的分红会议。董事须分别到会、阅读材料和投票。"
+  },
+  "issuer.dividend.propose": {
+    fields: ["meetingId", "schemeId", "perShare", "recordAt", "exAt", "payAt"],
+    required: ["meetingId", "schemeId", "perShare", "recordAt", "exAt", "payAt"],
+    note: "由出席的董事提交本公司方案。登记、除息和派息使用世界时点。"
+  },
+  "issuer.dividend.authorize": {
+    fields: ["meetingId"], required: ["meetingId"],
+    note: "主席签发已通过的分红决议，系统在方案规定的时点登记和派付。"
+  },
   "engineering.sign": {
     fields: ["contractId"], required: ["contractId"],
     note: "签约只用到合同标识：合同条款来自冻结机会，不能在这里改价。"
@@ -4908,6 +4935,9 @@ const ENGINEERING_TOOL_FIELDS = {
 };
 
 const ENGINEERING_TOOL_LABELS = {
+  "issuer.dividend.convene": "召集分红会议",
+  "issuer.dividend.propose": "提出每股股息方案",
+  "issuer.dividend.authorize": "签发已通过的分红决议",
   "board.convene": "召集会议",
   "board.conveneWaiver": "召集豁免会议",
   "board.attend": "参与登记",
@@ -5132,6 +5162,9 @@ const ENGINEERING_KIND_TEXT = {
 };
 
 function meetingProposalText(row) {
+  const dividend = row.dividendRequest;
+  if (dividend) return dividend.schemeId + " · " + dividend.symbol + " 每股 " + dividend.perShare
+    + " 元 · 登记 " + dividend.recordAt + " · 除息 " + dividend.exAt + " · 派息 " + dividend.payAt;
   const request = row.appointmentRequest;
   if (!request) return row.proposedLines || "—";
   if (request.action === "REVOKE") {
@@ -6041,11 +6074,12 @@ function fillPersonalEngineeringCompanies(companies) {
     }
 
     if (company.seatId) {
-      card.appendChild(engineeringTable("我参与或召集的会议（他人选票只给计数）",
+      card.appendChild(engineeringTable("本人与会或可出席的董事会会议",
         ["会议", "议题", "状态", "我的角色", "我的票", "计数", "材料", "提案", "结果"],
         (company.meetings || []).map(row => [row.meetingId,
           label("topic", row.topic), row.status,
-          row.role === "CONVENER" ? "召集" : row.role === "RECUSED" ? "回避" : "到会",
+          row.role === "CONVENER" ? "召集" : row.role === "RECUSED" ? "回避"
+            : row.role === "ELIGIBLE" ? "可出席" : "到会",
           row.myVote || "未投", row.tally, row.materials, meetingProposalText(row), row.failureReason])));
     }
 
@@ -6149,7 +6183,7 @@ function engineeringToolDefaults(tool, now) {
   const defaults = {};
   if (now === null) return defaults;
   if (tool === "board.convene" || tool === "board.conveneWaiver"
-      || tool === "board.conveneAppointment") {
+      || tool === "board.conveneAppointment" || tool === "issuer.dividend.convene") {
     defaults.materialDeadline = String(now + 60_000);
     defaults.opensAt = String(now + 120_000);
     defaults.closesAt = String(now + 180_000);
@@ -6495,8 +6529,8 @@ function engineeringFieldValues() {
 }
 
 const ENGINEERING_INT_FIELDS = ["trancheIndex", "units", "docVersion", "durationMillis",
-  "materialDeadline", "opensAt", "closesAt", "effectiveAt", "endsAt", "period"];
-const ENGINEERING_MONEY_FIELDS = ["amount", "laborLimit", "procurementLimit"];
+  "materialDeadline", "opensAt", "closesAt", "effectiveAt", "endsAt", "period", "recordAt", "exAt", "payAt"];
+const ENGINEERING_MONEY_FIELDS = ["amount", "laborLimit", "procurementLimit", "perShare"];
 
 /** 提交前校验：只针对当前工具可见字段；返回中文提示列表，空表示通过。 */
 function engineeringValidate(tool, values) {
@@ -6527,6 +6561,12 @@ function engineeringValidate(tool, values) {
   }
   if (values.amount && /^\d+(\.\d{1,2})?$/.test(values.amount) && Number(values.amount) <= 0) {
     errors.push("「" + fieldLabel("amount") + "」必须大于 0");
+  }
+  if (tool === "issuer.dividend.propose") {
+    if (values.perShare && Number(values.perShare) <= 0) errors.push("每股股息须大于 0");
+    if (values.recordAt && values.exAt && values.payAt
+        && !(Number(values.dueTimeMillis) <= Number(values.recordAt) && Number(values.recordAt) < Number(values.exAt)
+        && Number(values.exAt) <= Number(values.payAt))) errors.push("登记不能早于提案，除息须晚于登记，派息不能早于除息");
   }
   if (values.materialDeadline && values.opensAt
       && Number(values.opensAt) < Number(values.materialDeadline)) {
@@ -6748,7 +6788,8 @@ async function submitEngineeringAction(event) {
   const body = engineeringActionBody(tool, values);
   let result;
   try {
-    result = await request("POST", "/api/me/engineering/action", body);
+    const endpoint = tool.startsWith("issuer.dividend.") ? "/api/me/issuer-dividend" : "/api/me/engineering/action";
+    result = await request("POST", endpoint, body);
   } catch (failure) {
     setMessage("engineering-action-error", failure.message);
     return;

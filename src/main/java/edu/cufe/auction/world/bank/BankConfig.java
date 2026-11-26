@@ -1058,6 +1058,16 @@ public record Clue(String name, String url, String doc) {
      */
         public Builder groupMap(Map<String, String> value) { groupMap = new LinkedHashMap<>(value); return this; }
 
+        /** 将一个已披露主体纳入其实际集团，只撤销该主体原有的集团豁免。
+         * @param member 已登记风险桶
+         * @param group 实际所属集团
+         * @return 本构造器 */
+        public Builder includeInGroup(String member, String group) {
+            groupMap.put(member, group);
+            groupExclusionReasons.remove(member);
+            return this;
+        }
+
         /**
 
      * 集团排除理由。
