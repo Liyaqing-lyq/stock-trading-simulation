@@ -4271,9 +4271,21 @@ public final class WorldWebHost implements AutoCloseable {
     private List<LivePerson> livePeople(WorldRuntime.Snapshot snapshot) {
         OpeningRegistry registry = runtime.openingRegistry().orElse(null);
         Map<String, LivePerson> people = new LinkedHashMap<>();
-        for (String person : LIVE_ROLE_PERSONS) {
-            people.put(person, livePersonOf(registry, person,
-                    person.equals("alice") ? "research" : "trading"));
+        if (usesFundOfficeRouting()) {
+            var access = snapshot.roles().orElseThrow().access();
+            for (var appointment : access.appointments()) {
+                if (!appointment.activeAt(snapshot.timeMillis()) || access.mandates().stream()
+                        .noneMatch(m -> m.organizationPartyId().equals(appointment.organizationPartyId()))) continue;
+                String scene = switch (appointment.role()) {
+                    case RESEARCHER -> "research";
+                    case PORTFOLIO_MANAGER, RISK_OFFICER, EXECUTION_TRADER -> "trading";
+                    default -> null;
+                };
+                if (scene != null) addLiveScene(people, registry, appointment.personPartyId(), scene);
+            }
+        } else {
+            for (String person : LIVE_ROLE_PERSONS)
+                people.put(person, livePersonOf(registry, person, person.equals("alice") ? "research" : "trading"));
         }
         if (snapshot.media().isPresent() && snapshot.roles().isPresent()) {
             var media = snapshot.media().orElseThrow();
@@ -4284,8 +4296,7 @@ public final class WorldWebHost implements AutoCloseable {
                         || (appointment.role() != RoleAccess.Role.JOURNALIST
                             && appointment.role() != RoleAccess.Role.EDITOR)) continue;
                 // 既有四岗的路由不因新增媒体任职被静默替换。
-                people.putIfAbsent(appointment.personPartyId(),
-                        livePersonOf(registry, appointment.personPartyId(), "media"));
+                addLiveScene(people, registry, appointment.personPartyId(), "media");
             }
         }
         if (registry != null && snapshot.roles().isPresent()
@@ -4295,7 +4306,7 @@ public final class WorldWebHost implements AutoCloseable {
                 var owner = account == null ? null : registry.owner(account.ownerId());
                 if (owner != null && owner.kind() == OpeningRegistry.OwnerKind.PERSON
                         && registered.personPartyId().equals(owner.partyId()))
-                    people.putIfAbsent(owner.partyId(), livePersonOf(registry, owner.partyId(), "trading"));
+                    addLiveScene(people, registry, owner.partyId(), "trading");
             }
         }
         // schema15：已配置联系目标与真实预约参与者（含尚未接受）走 media 技术路由；
@@ -4333,8 +4344,24 @@ public final class WorldWebHost implements AutoCloseable {
         return List.copyOf(people.values());
     }
 
+    private boolean usesFundOfficeRouting() {
+        return "active-appointments-v1".equals(runtime.profile().manifest().dataVersions().get("fund-office-routing"));
+    }
+
+    private void addLiveScene(Map<String, LivePerson> people, OpeningRegistry registry, String person, String scene) {
+        LivePerson prior = people.get(person);
+        if (prior == null) {
+            people.put(person, livePersonOf(registry, person, scene));
+        } else if (usesFundOfficeRouting() && !prior.scenes().contains(scene)) {
+            List<String> scenes = new ArrayList<>(prior.scenes());
+            scenes.add(scene);
+            people.put(person, new LivePerson(person, prior.name(), prior.sceneId(), List.copyOf(scenes), prior.governanceCompanies()));
+        }
+    }
+
     private void addSocialPerson(Map<String, LivePerson> people, OpeningRegistry registry,
                                  String person, String channel) {
+        if (usesFundOfficeRouting() && channel.startsWith("基金工作/")) return;
         // 在职董事和经理已有治理路由，董事会工作信函不构成媒体任职或采访活动。
         if (RunManifest.usesFundedOperatingRules(runtime.profile().manifest().runId())
                 && RoleEvidenceDocuments.CHAIR_CONTACT_CHANNEL.equals(channel)
@@ -5881,7 +5908,8 @@ public final class WorldWebHost implements AutoCloseable {
                 throw new SceneRejected("只有公司治理场景可以绑定公司");
             } else {
                 for (String person : distinct) {
-                    if (!scene.equals(sceneFor(person))) {
+                    if (livePeople(current.snapshot()).stream().noneMatch(row ->
+                            row.personPartyId().equals(person) && row.scenes().contains(scene))) {
                         throw new SceneRejected(
                                 "该场景不是此人物当前的模型路由：" + person);
                     }

@@ -374,6 +374,16 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.FUND_CONTACTS_RUN_ID);
     }
 
+    /**
+     * 在基金工作地址档基础上，按实际任职选择机构决策场景。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openFundOfficeRoutingOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.FUND_ROUTING_RUN_ID);
+    }
+
     /** @param journal 独立八媒体档路径 @return 启用八类采编合同的世界 @throws Exception 无法建立或恢复时抛出 */
     public static WorldRuntime openMediaDesksOperating(Path journal) throws Exception {
         return openCompanyInformationOperating(journal, RunManifest.MEDIA_DESKS_RUN_ID);
@@ -599,6 +609,7 @@ public final class ComposedIndustryScenario {
                 data.put("research-manager-view", "project-state-v1");
             }
             if (RunManifest.usesPersonalProfiles(thinkingRunId)) data.putAll(RunManifest.personalProfilePolicies());
+            if (RunManifest.usesFundOfficeRouting(thinkingRunId)) data.put("fund-office-routing", "active-appointments-v1");
             if (RunManifest.usesFundContacts(thinkingRunId)) data.put("fund-office-contacts", "appointment-pair-v1");
             if (RunManifest.usesFundMandate(thinkingRunId)) {
                 data.put("fund-mandate-document", "opening-register-v1");

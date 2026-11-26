@@ -98,7 +98,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** 是否启用基金在岗人员工作地址。 */
     public static boolean usesFundContacts(String id) {
-        return FUND_CONTACTS_RUN_ID.equals(id) || INTEGRATED_RUN_ID.equals(id);
+        return FUND_CONTACTS_RUN_ID.equals(id) || FUND_ROUTING_RUN_ID.equals(id) || INTEGRATED_RUN_ID.equals(id);
     }
 
     /** 是否按实验交易时段受理申报。 */
@@ -114,6 +114,14 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** 带按收发双方任职核验的基金内部工作地址。 */
     public static final String FUND_CONTACTS_RUN_ID = "web-fund-office-contacts-operating-v1";
+
+    /** 以生效的产品任职决定研究和交易调度的实验档。 */
+    public static final String FUND_ROUTING_RUN_ID = "web-fund-office-routing-operating-v1";
+
+    /** 新档的机构调度来自真实在岗人员。 */
+    public static boolean usesFundOfficeRouting(String id) {
+        return FUND_ROUTING_RUN_ID.equals(id);
+    }
 
     /** 是否发布机构产品的开局委托书。 */
     public static boolean usesFundMandate(String runId) {
@@ -1229,6 +1237,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
             if (usesPersonalProfiles(runId)) expectedData.putAll(personalProfilePolicies());
+            if (usesFundOfficeRouting(runId)) expectedData.put("fund-office-routing", "active-appointments-v1");
             if (usesFundContacts(runId)) expectedData.put("fund-office-contacts", "appointment-pair-v1");
             if (usesFundMandate(runId)) {
                 expectedData.put("fund-mandate-document", "opening-register-v1");
