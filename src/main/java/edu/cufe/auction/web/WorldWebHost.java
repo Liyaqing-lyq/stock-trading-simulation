@@ -343,6 +343,8 @@ public final class WorldWebHost implements AutoCloseable {
         if (edu.cufe.auction.world.RoleDeliberation.isPlanning(input.path("engineering").path("roleContextVersion").asText())
                 && facts.path("engineering") instanceof com.fasterxml.jackson.databind.node.ObjectNode eng) {
             eng.remove("planning");
+            // 本人刚写下的笔记不会自行触发下一次付费复查。资料变化仍由正式阅读和目录字段追踪。
+            eng.remove("researchNotes");
             for (var director : eng.path("directorships"))
                 for (var meeting : director.path("meetings"))
                     ((com.fasterxml.jackson.databind.node.ObjectNode) meeting).remove("planningPrerequisites");
@@ -427,6 +429,9 @@ public final class WorldWebHost implements AutoCloseable {
                                         long last, long review) {
         var facts = wakeFacts(input);
         if (facts.equals(previous)) return false;
+        if ("role-choice-v1".equals(runtime.profile().manifest().dataVersions().get("public-post-wake"))) {
+            return !BoardWaitBroadcast.deferChosenPosts(previous, facts, input, last, review);
+        }
         return !edu.cufe.auction.world.EngineeringCustomerPolicy.VERSION.equals(
                 runtime.profile().manifest().dataVersions().get(edu.cufe.auction.world.EngineeringCustomerPolicy.KEY))
                 || !BoardWaitBroadcast.defer(previous, facts, input, last, review);
@@ -4990,8 +4995,8 @@ public final class WorldWebHost implements AutoCloseable {
                         document.publisherPartyId().equals(personId), read, List.copyOf(refs)));
             }
             List<GroupFeedView> feed = new ArrayList<>();
-            for (PublicationRun.FeedEntry entry : PublicationRun.feed(
-                    run.publication().platform(), mediaForFeed(snapshot), infoOf(snapshot), now,
+            for (PublicationRun.FeedEntry entry : PublicationRun.feedForOutlets(
+                    run.publication().platform(), snapshot.media().map(MediaRun::states).orElse(List.of()), infoOf(snapshot), now,
                     run.feedLimit())) {
                 feed.add(new GroupFeedView(entry.docId(), num(entry.version()), entry.title(),
                         entry.publisherPartyId(), num(entry.publishedAt()), entry.kind().name()));
@@ -5222,13 +5227,6 @@ public final class WorldWebHost implements AutoCloseable {
 
     private static InformationModel.State infoOf(WorldRuntime.Snapshot snapshot) {
         return snapshot.information().orElseThrow().information();
-    }
-
-    private static MediaModel.State mediaForFeed(WorldRuntime.Snapshot snapshot) {
-        if (snapshot.media().isEmpty() || snapshot.media().orElseThrow().states().isEmpty()) {
-            return null;
-        }
-        return snapshot.media().orElseThrow().states().get(0);
     }
 
     private static InformationModel.Document documentOf(WorldRuntime.Snapshot snapshot,

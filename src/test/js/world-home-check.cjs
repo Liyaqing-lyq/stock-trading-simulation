@@ -193,6 +193,7 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   home.onAutonomy=async()=>({...live.autonomy,position:'42'});
   home.onOverview=()=>new Promise(resolve=>resolveView=resolve);
   const stale=latePoll();await flush();home.clear();resolveView(live);await stale;
+  assert.equal(nodes.get('world-autonomy-status').textContent, '', 'leaving admin removes the last role and failure counts');
   assert.equal(content(nodes.get('world-company-list')).trim(),'','late poll cannot display admin data after leaving');
   home.render(connectedView);
   let calls=0,finish;

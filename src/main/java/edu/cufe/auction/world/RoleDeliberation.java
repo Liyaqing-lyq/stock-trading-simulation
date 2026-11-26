@@ -66,8 +66,8 @@ public final class RoleDeliberation {
         }
     }
 
-    private record InputFacts(boolean deliberative, boolean planning, long time, Set<String> objectives) {
-        private static final InputFacts LEGACY = new InputFacts(false, false, 0L, Set.of());
+    private record InputFacts(boolean deliberative, boolean planning, long time, Set<String> objectives, boolean publicPostChoice) {
+        private static final InputFacts LEGACY = new InputFacts(false, false, 0L, Set.of(), false);
     }
 
     private static InputFacts inputFacts(String text) {
@@ -81,7 +81,8 @@ public final class RoleDeliberation {
         for (JsonNode goal : engineering.path("deliberation").path("objectives")) {
             objectives.add(goal.path("id").asText());
         }
-        return new InputFacts(true, isPlanning(version), input.path("time").asLong(), Set.copyOf(objectives));
+        return new InputFacts(true, isPlanning(version), input.path("time").asLong(), Set.copyOf(objectives),
+                "role-choice-v1".equals(engineering.path("publicPostWakePolicy").asText()));
     }
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -221,6 +222,10 @@ public final class RoleDeliberation {
         boolean planning = facts.planning();
         String reviewField = planning ? "reviewAfterMillis" : "nextReviewAt";
         Set<String> fields = new java.util.HashSet<>(); statement.fieldNames().forEachRemaining(fields::add);
+        if (facts.publicPostChoice() && "role.wait".equals(reply.path("tool").asText())
+                && fields.remove("publicPostWake")
+                && !Set.of("IMMEDIATE", "ON_REVIEW").contains(statement.path("publicPostWake").asText()))
+            throw new IllegalArgumentException("BAD_DELIBERATION");
         if (!statement.isObject() || !fields.equals(Set.of("objective", "basis", reviewField))
                 || !statement.path("objective").isTextual() || !statement.path("basis").isTextual()
                 || statement.path("basis").asText().isBlank() || statement.path("basis").asText().length() > 600
@@ -232,7 +237,10 @@ public final class RoleDeliberation {
             if (!own || review <= 0 || review > MONTH) throw new IllegalArgumentException("BAD_DELIBERATION");
             try { Math.addExact(now, review); } catch (ArithmeticException overflow) { throw new IllegalArgumentException("BAD_DELIBERATION", overflow); }
         } else if (!own || review <= now || review - now > MONTH) throw new IllegalArgumentException("BAD_DELIBERATION");
-        var action = (ObjectNode) reply.deepCopy(); action.remove("decision"); return action;
+        var action = (ObjectNode) reply.deepCopy();
+        action.remove("decision");
+        PersonalResearchNotes.validateAndRemove(action, inputText);
+        return action;
     }
 
     /** @param run 决定状态 @param person 本人 @param fallback 旧版回访时间 @return 最新合法声明的复查时点 */

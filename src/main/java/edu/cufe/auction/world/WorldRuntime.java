@@ -29350,12 +29350,33 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         String roleContext = manifest.dataVersions().get("role-context");
+        if ("role-choice-v1".equals(manifest.dataVersions().get("public-post-wake")))
+            root.put("publicPostWakePolicy", "role-choice-v1");
         if ("authority-v1".equals(roleContext) || RoleDeliberation.hasEvidence(roleContext)) {
             root.put("roleContextVersion", roleContext);
             root.put("authorityBasis", "appointments和permissions仅列雇佣任职及其岗位权限，不是全部权限清单。directorships来自公司真实章程席位，董事资格独立于雇佣；chair=true才有主席召集权。tools是本次可发起工具合同，执行时仍复核权限、时间及材料。候选人没有经理经营权，董事也不能代经理经营。");
         }
         if (RoleDeliberation.isDeliberative(roleContext))
             RoleDeliberation.append(root, person, now, snap.decisions(), snap.pending());
+        if ("office-policy-v1".equals(manifest.dataVersions().get("media-editorial-view")) && snap.media() != null) {
+            for (var office : snap.roles().access().appointments()) {
+                if (!office.personPartyId().equals(person) || !office.activeAt(now)) continue;
+                var policy = snap.media().config().policyOf(office.organizationPartyId());
+                if (policy == null) continue;
+                String purpose = switch (office.role()) {
+                    case JOURNALIST -> "自行判断哪些选题值得调查。可阅读、采访、提出选题、凭已核实的资料投稿或暂缓。";
+                    case EDITOR -> "独立审阅本社稿件，核对依据和表述，可退回、批准、发布或暂缓。";
+                    default -> null;
+                };
+                if (purpose == null) continue;
+                var goal = root.withObject("/deliberation").withArray("objectives").addObject();
+                goal.put("id", "appointment:" + office.id()).put("organizationPartyId", office.organizationPartyId())
+                        .put("role", office.role().name()).put("purpose", purpose);
+                var minimum = goal.putObject("minimumIndependentSources");
+                policy.enabledTemplates().forEach((template, count) -> minimum.put(template.name(), count));
+                root.put("editorialProcedure", "选题使用本岗位启用的模板名。后续使用media内的storyId与revisionNo。投稿的evidence使用本人已读且仍能引用的lastReadRef，同源转载共算一组。审阅须先读完当前draftDocId及其版本，批准后才可发布。");
+            }
+        }
         if ("product-office-v1".equals(manifest.dataVersions().get("institutional-objectives"))
                 && snap.roles() != null) {
             RoleDeliberation.appendInvestmentObjectives(root, snap.roles().access(), person, now);
@@ -29369,6 +29390,12 @@ public final class WorldRuntime implements AutoCloseable {
         if (PersonalMarket.VERSION.equals(manifest.dataVersions().get(PersonalMarket.POLICY)))
             PersonalMarket.append(root, PersonalMarket.accounts(snap.roles(), person), snap.exchange(), snap.decisions(), person, snap.position(),
                     PersonalMarket.LIMIT_RULES_VERSION.equals(manifest.dataVersions().get(PersonalMarket.LIMIT_RULES)));
+        if ("v1".equals(manifest.dataVersions().get("personal-research-notes"))) {
+            var information = snap.information().information();
+            PersonalResearchNotes.append(root, person, snap.decisions(), recallAt(snap, person), read ->
+                    InformationModel.visible(InformationModel.audienceOf(information, read.docId()).orElseThrow(),
+                            snap.roles().access(), person, now, read.publishedAt(), groupAccess(snap), roleBoards(snap)));
+        }
         if (RoleDeliberation.CONTEXTUAL_VERSION.equals(roleContext))
             RoleGovernanceOutcomeContext.append(root, person, now, snap.decisions(), snap.engineering(), snap.roles(), company -> {
                 BoardRun board = PeriodicWorldEngine.boardOf(snap.engineering(), snap.governance(), company);
@@ -34094,13 +34121,7 @@ public final class WorldRuntime implements AutoCloseable {
     /** 真实平台目录：平台公开帖 + 媒体公开发布成稿，按冻结顺序排列并截到冻结上限。 */
     private List<GroupFeedItem> publicationFeed(WorldState base, InformationModel.State info,
                                                 long at) {
-        GroupsRun run = base.groups();
-        if (!manifest.hasGroups() || run == null || info == null) {
-            return List.of();
-        }
-        List<PublicationRun.FeedEntry> entries = PublicationRun.feed(
-                run.publication().platform(), mediaForFeed(base.media()), info, at,
-                run.feedLimit());
+        List<PublicationRun.FeedEntry> entries = publicationFeedEntries(base, info, at);
         List<GroupFeedItem> items = new ArrayList<>();
         for (PublicationRun.FeedEntry entry : entries) {
             items.add(new GroupFeedItem(entry.rank(), entry.docId(), entry.version(),
@@ -34110,25 +34131,6 @@ public final class WorldRuntime implements AutoCloseable {
         return items;
     }
 
-    /** 平台目录用的媒体视图：单机构直接用其状态；多机构合并稿件与版本，策略沿用第一份。 */
-    private static MediaModel.State mediaForFeed(MediaRun media) {
-        if (media == null || media.states().isEmpty()) {
-            return null;
-        }
-        if (media.states().size() == 1) {
-            return media.states().get(0);
-        }
-        List<MediaModel.Story> stories = new ArrayList<>();
-        List<MediaModel.Revision> revisions = new ArrayList<>();
-        List<MediaModel.Lineage> lineage = new ArrayList<>();
-        for (MediaModel.State state : media.states()) {
-            stories.addAll(state.stories());
-            revisions.addAll(state.revisions());
-            lineage.addAll(state.lineage());
-        }
-        return new MediaModel.State(stories, revisions, lineage, media.states().get(0).policy());
-    }
-
     /** 本次决定输入实际包含的平台目录条目（与投影同一实现）。 */
     private List<PublicationRun.FeedEntry> publicationFeedEntries(WorldState base,
             InformationModel.State info, long at) {
@@ -34136,7 +34138,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (!manifest.hasGroups() || run == null || info == null) {
             return List.of();
         }
-        return PublicationRun.feed(run.publication().platform(), mediaForFeed(base.media()), info,
+        return PublicationRun.feedForOutlets(run.publication().platform(),
+                base.media() == null ? List.of() : base.media().states(), info,
                 at, run.feedLimit());
     }
 

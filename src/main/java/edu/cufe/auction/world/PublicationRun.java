@@ -176,6 +176,12 @@ public final class PublicationRun {
      */
     public static List<FeedEntry> feed(PlatformPostModel.State platform, MediaModel.State media,
                                        InformationModel.State info, long at, int limit) {
+        return feedForOutlets(platform, media == null ? List.of() : List.of(media), info, at, limit);
+    }
+
+    /** 按各家媒体自己的版本历史取得已发布稿件，与公开帖子一起排序并截取目录上限。 */
+    public static List<FeedEntry> feedForOutlets(PlatformPostModel.State platform, List<MediaModel.State> outlets,
+                                                InformationModel.State info, long at, int limit) {
         Objects.requireNonNull(platform, "平台状态");
         Objects.requireNonNull(info, "信息状态");
         if (at < 0) {
@@ -191,7 +197,7 @@ public final class PublicationRun {
                 addCandidate(candidates, post.docId(), post.version(), FeedKind.PLATFORM_POST, info);
             }
         }
-        if (media != null) {
+        for (MediaModel.State media : outlets) {
             for (MediaModel.Story story : media.stories()) {
                 if (story.publicDocId().isEmpty()) {
                     continue;

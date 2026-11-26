@@ -77,9 +77,24 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 明示本人自有账户空簿限价申报条件的经营档。 */
     public static final String PERSONAL_LIMIT_RUN_ID = "web-personal-limit-operating-v1";
 
+    /** 同一十公司世界启用个人研究笔记、媒体采编视图与可选公开动态唤醒。 */
+    public static final String CONTINUING_ROLES_RUN_ID = "web-continuing-roles-operating-v1";
+
+    /** 新经营档冻结的角色与账户配置版本。 */
+    public static final Map<String, String> CONTINUING_ROLE_POLICIES = Map.of(
+            "investor-opening", "three-households-v1",
+            "personal-research-notes", "v1",
+            "media-editorial-view", "office-policy-v1",
+            "public-post-wake", "role-choice-v1");
+
+    /** 判断本档是否沿用个人账户空簿限价申报规则。 */
+    public static boolean usesPersonalLimitRules(String runId) {
+        return PERSONAL_LIMIT_RUN_ID.equals(runId) || CONTINUING_ROLES_RUN_ID.equals(runId);
+    }
+
     /** 判断本档是否区分水电累计物量与已结电费。 */
     public static boolean usesHydroSettlementView(String runId) {
-        return HYDRO_SETTLEMENT_RUN_ID.equals(runId) || PERSONAL_LIMIT_RUN_ID.equals(runId);
+        return HYDRO_SETTLEMENT_RUN_ID.equals(runId) || usesPersonalLimitRules(runId);
     }
 
     /** 判断本档是否沿用超限时的角色输入紧凑表格。 */
@@ -1143,7 +1158,10 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
-            if (PERSONAL_LIMIT_RUN_ID.equals(runId)) {
+            if (CONTINUING_ROLES_RUN_ID.equals(runId)) {
+                expectedData.putAll(CONTINUING_ROLE_POLICIES);
+            }
+            if (usesPersonalLimitRules(runId)) {
                 expectedData.put(PersonalMarket.LIMIT_RULES, PersonalMarket.LIMIT_RULES_VERSION);
             }
             if (usesHydroSettlementView(runId)) {

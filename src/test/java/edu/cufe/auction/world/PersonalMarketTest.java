@@ -86,6 +86,46 @@ class PersonalMarketTest {
         assertThrows(Exception.class,()->ComposedIndustryScenario.openFundedThinkingOperating(file));
     }
 
+    @Test void threePrivateInvestorsShareTheExistingEndowmentAndTradeOnlyTheirOwnAssets() throws Exception {
+        Path journal = dir.resolve("separate-investors.journal");
+        WorldRuntime.Snapshot settled;
+        try (var previous = ComposedIndustryScenario.openPersonalLimitOperating(dir.resolve("original.journal"));
+             var world = ComposedIndustryScenario.openContinuingRolesOperating(journal)) {
+            var accounts = Map.of("investor", "INV", "nina", "HOUSE-NINA", "omar", "HOUSE-OMAR");
+            for (var entry : accounts.entrySet()) {
+                var view = world.autonomyRoleObservation(entry.getKey());
+                assertTrue(tool(view, PersonalMarket.SUBMIT), entry.getKey());
+                assertTrue(PersonalMarket.observedAccount(view, entry.getValue()));
+                for (String other : accounts.values()) {
+                    if (!other.equals(entry.getValue())) assertFalse(PersonalMarket.observedAccount(view, other));
+                }
+            }
+            var initialCash = accounts.values().stream().map(a -> cash(world, a)).reduce(BigDecimal.ZERO, BigDecimal::add);
+            assertEquals(cash(previous, "INV"), initialCash);
+            for (var security : world.profile().registry().securities()) {
+                assertEquals(shares(previous, "INV", security.symbol()), accounts.values().stream()
+                        .mapToLong(a -> shares(world, a, security.symbol())).sum());
+            }
+            assertFalse(tool(previous.autonomyRoleObservation("nina"), PersonalMarket.SUBMIT));
+            assertFalse(tool(world.autonomyRoleObservation("dave"), PersonalMarket.SUBMIT));
+            String symbol = symbol(world);
+            assertNull(decide(world, "omar", "wrong-owner", PersonalMarket.SUBMIT, limit("HOUSE-NINA", symbol, "BUY", 2, "10")));
+            var beforeNina = cash(world, "HOUSE-NINA");
+            var beforeOmar = cash(world, "HOUSE-OMAR");
+            var offer = decide(world, "omar", "own-offer", PersonalMarket.SUBMIT, limit("HOUSE-OMAR", symbol, "SELL", 2, "10"));
+            world.advanceTo(offer.dueMillis());
+            var bid = decide(world, "nina", "own-bid", PersonalMarket.SUBMIT, limit("HOUSE-NINA", symbol, "BUY", 2, "11"));
+            world.advanceTo(bid.dueMillis());
+            assertEquals(1, exchange(world).trades().size());
+            assertEquals(beforeOmar.add(new BigDecimal("20.00")), cash(world, "HOUSE-OMAR"));
+            assertEquals(beforeNina.subtract(new BigDecimal("20.00")), cash(world, "HOUSE-NINA"));
+            settled = world.snapshot();
+        }
+        try (var restored = ComposedIndustryScenario.openContinuingRolesOperating(journal)) {
+            assertEquals(settled, restored.snapshot());
+        }
+    }
+
     @Test void firstPersonalLimitOrderNeedsOnlyOwnAvailableAssetsOnAnEmptyBook() throws Exception {
         Path file = dir.resolve("personal-limit.journal");
         WorldRuntime.Snapshot saved;

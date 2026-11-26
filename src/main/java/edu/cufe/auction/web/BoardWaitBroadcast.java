@@ -27,6 +27,56 @@ final class BoardWaitBroadcast {
         return onlyNewPlatformPost(previous, facts);
     }
 
+    // 只在本人最近一次有效 WAIT 明确选择后合并；到期、自己或联系人的帖子、媒体成稿、更正等仍及时处理。
+    static boolean deferChosenPosts(JsonNode previous, JsonNode facts, JsonNode input, long last, long review) {
+        JsonNode decision = input.at("/engineering/deliberation/recentDecisions/0");
+        long now = input.path("time").asLong();
+        if (previous == null || now < last || now >= review
+                || !"WAIT".equals(decision.path("outcome").asText())
+                || !"role.wait".equals(decision.path("tool").asText())
+                || decision.path("observedAt").asLong(-1) != last
+                || decision.path("derivedReviewAt").asLong(-1) != review
+                || !"ON_REVIEW".equals(decision.at("/ownStatement/publicPostWake").asText())) return false;
+
+        JsonNode oldCatalog = previous.at("/profile/catalog"), catalog = facts.at("/profile/catalog");
+        JsonNode oldFeed = previous.at("/groups/feed"), feed = facts.at("/groups/feed");
+        if (!oldCatalog.isArray() || !catalog.isArray() || !oldFeed.isArray() || !feed.isArray()
+                || catalog.size() <= oldCatalog.size() || feed.size() < oldFeed.size()) return false;
+        var oldIds = new HashSet<String>();
+        oldCatalog.forEach(row -> oldIds.add(row.path("docId").asText()));
+        var contacts = new HashSet<String>();
+        contacts.add(facts.path("person").asText());
+        facts.at("/social/contacts").forEach(row -> contacts.add(row.path("targetPartyId").asText()));
+        var added = new java.util.HashMap<String, JsonNode>();
+        var restored = ((ObjectNode) facts).deepCopy();
+        var retainedCatalog = restored.withObject("/profile").putArray("catalog");
+        for (var row : catalog) {
+            String id = row.path("docId").asText();
+            if (oldIds.contains(id)) retainedCatalog.add(row);
+            else added.put(id, row);
+        }
+        // 旧目录条目仍须一字不变，新目录条目须全部在可见 feed 内证明是陌生人的首版广场帖。
+        int retained = 0;
+        for (var row : feed) {
+            JsonNode entry = added.remove(row.path("docId").asText());
+            if (entry != null) {
+                if (!"PLATFORM_POST".equals(row.path("kind").asText()) || row.path("version").asLong() != 1
+                        || !row.path("version").equals(entry.path("version")) || !row.path("title").equals(entry.path("title"))
+                        || row.path("publisher").asText().isEmpty() || contacts.contains(row.path("publisher").asText()))
+                    return false;
+            } else {
+                if (retained >= oldFeed.size()) return false;
+                var old = (ObjectNode) oldFeed.get(retained++).deepCopy();
+                var current = (ObjectNode) row.deepCopy();
+                old.remove("rank"); current.remove("rank");
+                if (!old.equals(current)) return false;
+            }
+        }
+        if (!added.isEmpty()) return false;
+        restored.withObject("/groups").set("feed", oldFeed);
+        return previous.equals(restored);
+    }
+
     private static boolean quietDirector(JsonNode input, JsonNode director, long last, long now) {
         // 交易账户、其他任职、已跟进的非会议资料或公开判断各有其自己的信息需求。
         for (String path : List.of("/appointments", "/profile/accounts", "/profile/holdings", "/profile/activeReadings",

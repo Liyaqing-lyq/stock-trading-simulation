@@ -653,8 +653,10 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("timeMillis", notice.timeMillis());
         }
 
-        if (TOOL_CONTRACT_VERSION_V4.equals(toolContractVersion) && view.media() != null
-                && !view.media().isEmpty()) {
+        boolean editorialOffice = TOOL_CONTRACT_VERSION_V6.equals(toolContractVersion)
+                && engineering != null && engineering.has("editorialProcedure");
+        if ((TOOL_CONTRACT_VERSION_V4.equals(toolContractVersion) || editorialOffice)
+                && view.media() != null && !view.media().isEmpty()) {
             // schema16 最小稿件投影：只用于让模型拿到本人可见的 storyId/版次/状态与实际可读标识，
             // 不含真实根、私证、策略、其他机构或隐藏字段；旧 v1–v3 输入逐字不变。
             ArrayNode stories = root.putArray("media");

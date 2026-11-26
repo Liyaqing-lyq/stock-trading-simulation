@@ -344,6 +344,16 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.PERSONAL_LIMIT_RUN_ID);
     }
 
+    /**
+     * 打开具有跨期研究笔记、两社采编资料和自选复查时机的十公司档。
+     * @param journal 独立世界日志
+     * @return 新建或严格恢复的世界
+     * @throws Exception 运行档或日志不相容
+     */
+    public static WorldRuntime openContinuingRolesOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.CONTINUING_ROLES_RUN_ID);
+    }
+
     private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
         return open(journal, true, true, true, true, false, false, true, true,
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true,
@@ -357,6 +367,7 @@ public final class ComposedIndustryScenario {
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating, String thinkingRunId) throws Exception {
         boolean thinking = thinkingRunId != null;
+        boolean separateInvestorAccounts = connected || RunManifest.CONTINUING_ROLES_RUN_ID.equals(thinkingRunId);
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -389,7 +400,7 @@ public final class ComposedIndustryScenario {
             buckets.keySet().retainAll(parties.keySet());
             deposits.removeIf(d->parties.values().stream().noneMatch(ref->d.equals(ref.depositGl())) && original.custodians().values().stream().noneMatch(ref->d.equals(ref.liabilityId())));
         }
-        if(connected) {
+        if (separateInvestorAccounts) {
             parties.put("nina",new BankingProfile.PartyRef("nina","nina","HOUSE-NINA",null));
             parties.put("omar",new BankingProfile.PartyRef("omar","omar","HOUSE-OMAR",null));
         }
@@ -444,7 +455,10 @@ public final class ComposedIndustryScenario {
         if (hydro) openingAccounts.addAll(HydroIndustryConfig.ACCOUNTS);
         var openingRegistry = hydro ? hydroRegistry(registry()) : registry();
         if(baseline) { openingAccounts=new ArrayList<>(BaselineIndustryConfig.openings(openingAccounts));openingRegistry=BaselineIndustryConfig.registry(openingRegistry,openingAccounts); }
-        if(connected) { openingAccounts=new ArrayList<>(ConnectedWorldOpening.accounts(openingAccounts));openingRegistry=ConnectedWorldOpening.registry(openingRegistry); }
+        if (separateInvestorAccounts) {
+            openingAccounts = new ArrayList<>(ConnectedWorldOpening.accounts(openingAccounts));
+            openingRegistry = ConnectedWorldOpening.registry(openingRegistry);
+        }
         if (operating) {
             openingAccounts.add(ExternalDemandOpening.account());
             var externalParties = new ArrayList<>(openingRegistry.parties());
@@ -518,7 +532,10 @@ public final class ComposedIndustryScenario {
                 data.put("belief-company-scope", "manufacturing-orders-v1");
                 data.put("research-manager-view", "project-state-v1");
             }
-            if (RunManifest.PERSONAL_LIMIT_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.CONTINUING_ROLES_RUN_ID.equals(thinkingRunId)) {
+                data.putAll(RunManifest.CONTINUING_ROLE_POLICIES);
+            }
+            if (RunManifest.usesPersonalLimitRules(thinkingRunId)) {
                 data.put(PersonalMarket.LIMIT_RULES, PersonalMarket.LIMIT_RULES_VERSION);
             }
             if (RunManifest.usesHydroSettlementView(thinkingRunId)) {

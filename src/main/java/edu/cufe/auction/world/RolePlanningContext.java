@@ -39,6 +39,15 @@ public final class RolePlanningContext {
             guide.put("waitContract", "等待输出{tool:role.wait,decision:{objective:本人目标id,basis:条件或缺项,reviewAfterMillis:正整数毫秒时长}}，不得带args。时长不超过30日，不能使用绝对复查字段；等待不会执行后继动作。");
             guide.put("decisionCadence", "本人可见新事实、本人动作完成或声明的相对复查时长到期会重新评估；每次一个动作。严格格式失败耗尽重试后，本人相同事实暂停调用，真实新事实可重新唤醒，其他人继续运行。");
         }
+        if ("role-choice-v1".equals(eng.path("publicPostWakePolicy").asText())) {
+            String choice = "仅role.wait的decision可选publicPostWake。IMMEDIATE（默认）表示新事实提前唤醒。"
+                    + "ON_REVIEW表示仅将陌生人的新广场帖留到本次复查。联系人、私信、正式报道、更正及其他事实变化仍可提前唤醒。";
+            String contract = "每轮一个JSON对象，包含tool与decision（objective、basis、reviewAfterMillis）。"
+                    + "复查时长为从本次input.time起的正整数毫秒，至多30日。等待说明条件或缺项且不带args，其余动作按工具合同提供args。"
+                    + choice + " 可选顶层privateNote记录本人判断，结构见engineering.researchNotes.contract。";
+            delib.put("replyContract", contract);
+            if (eng.path("decisionGuide") instanceof ObjectNode guide) guide.put("waitContract", contract);
+        }
         for (var director : eng.path("directorships")) {
             var d = (ObjectNode) director;
             correctProcedure(d);

@@ -76,9 +76,15 @@ public final class LiveDecisionProvider implements WorldWebHost.DecisionProvider
             decision只能有这三个字段；reviewAfterMillis必须大于0且不超过2592000000，由冻结input.time加该时长推导复查时点，不使用绝对复查字段。
             非role.wait另加args对象；WAIT不带args。basis只写可审计结论摘要，不写完整推理，等待说明条件或缺项，事件可提前唤醒。""";
 
+    /** 持续角色档的回执合同；旧运行继续使用原系统提示。 */
+    public static final String RESEARCH_NOTE_SYSTEM_TEXT = PLANNING_SYSTEM_TEXT
+            .replace("decision只能有这三个字段；", "decision除上述必填字段外仅允许冻结合同列出的可选字段；")
+            + "\n可在决定顶层自愿附上privateNote，记下自己的判断及未来复查条件，格式见engineering.researchNotes.contract。";
+
     private static String systemText(DecisionRun.Call call) {
         try {
             var root = new com.fasterxml.jackson.databind.ObjectMapper().readTree(call.inputText());
+            if ("v1".equals(root.at("/engineering/researchNotes/version").textValue())) return RESEARCH_NOTE_SYSTEM_TEXT;
             if (edu.cufe.auction.world.RoleDeliberation.isPlanning(root.path("engineering").path("roleContextVersion").asText()))
                 return PLANNING_SYSTEM_TEXT;
             if (edu.cufe.auction.world.RoleDeliberation.isDeliberative(root.path("engineering").path("roleContextVersion").asText()))

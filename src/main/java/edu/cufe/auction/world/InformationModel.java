@@ -1122,7 +1122,7 @@ public final class InformationModel {
 
     // ---------------------------------------------------------------- 内部
 
-    private static boolean visible(Audience audience, RoleAccess.State access, String personPartyId,
+    static boolean visible(Audience audience, RoleAccess.State access, String personPartyId,
                                    long now, long docVersionPublishedAt, GroupAccess groups,
                                    BoardAccess boards) {
         switch (audience.kind()) {

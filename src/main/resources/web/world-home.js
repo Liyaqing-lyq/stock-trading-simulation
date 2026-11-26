@@ -354,6 +354,9 @@ window.WorldHome = (() => {
     },
     clear(){
       clearTimeout(autonomyTimer);autonomyTimer=null;$("world-autonomy").hidden=true;
+      $("world-autonomy-status").textContent="";
+      $("world-autonomy-start").disabled=true;
+      $("world-autonomy-stop").disabled=true;
       generation++;running=false;stepping=false;clearTimeout(runTimer);runTimer=null;
       view=null;selected="";initialized=false;selectedSource="";periodSelection=null;
       $("world-connected").hidden=true;$("world-orders-panel").hidden=true;

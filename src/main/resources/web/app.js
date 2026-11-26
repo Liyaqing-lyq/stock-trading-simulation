@@ -192,6 +192,7 @@ function clearAdminDom() {
 }
 
 function clearPersonDom() {
+  clearPersonalBank();
   clearPersonalMedia();
   clearPersonalInterview();
   clearPersonalEvidence();
@@ -224,9 +225,7 @@ function showMode(mode) {
     clearAdminDom();
     clearHistoryDom();
   }
-  if (mode !== "person") {
-    clearPersonDom();
-  }
+  clearPersonDom();
   show("login", mode === "login");
   show("admin", mode === "admin");
   show("person", mode === "person");
