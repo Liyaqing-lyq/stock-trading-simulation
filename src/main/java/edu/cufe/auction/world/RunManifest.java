@@ -135,6 +135,13 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 正常参考价、十个发行人的自主运行开局。 */
     public static final String TEN_COMPANY_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v2";
 
+    /** 普通十公司长程研究使用按正文计时的第三版开局。 */
+    public static final String STUDY_TEN_COMPANY_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v3";
+    /** 冻结资料阅读计时口径的数据版本键。 */
+    public static final String DOCUMENT_READING_CLOCK = "document-reading-clock";
+    /** 第三版普通十公司冻结的正文阅读速度版本。 */
+    public static final String BODY_PACING_300 = "body-pacing-300-v1";
+
     /** 旧十公司开局沿用最初的主体、采购与唤醒规则。 */
     public static final String ORIGINAL_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v1";
 
@@ -151,7 +158,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 是否采用第二版十公司开局及其显式衍生实验 */
     public static boolean usesCurrentTenCompany(String id) {
-        return TEN_COMPANY_AUTONOMY_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
+        return TEN_COMPANY_AUTONOMY_RUN_ID.equals(id) || STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
+                || OPEN_FUND_RUN_ID.equals(id)
                 || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
     }
 
@@ -1378,6 +1386,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (usesMediaDesks(policyId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
             if (UNPRICED_REFERENCE_RUN_ID.equals(policyId)) expectedData.put("unpriced-opening-reference", "HY1-cost-only-v1");
             if (usesIssuerResolution(policyId)) expectedData.put("issuer-failure", "bank-resolution-halt-v1");
+            if (STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(policyId)) expectedData.put(DOCUMENT_READING_CLOCK, BODY_PACING_300);
             if (usesPersonDecisionPause(policyId)) expectedData.put("person-decision-pause", "confirmed-person-v1");
             if (usesOwnerBankValuation(policyId)) {
                 expectedData.put("owner-bank-valuation", "owner-claims-v1");

@@ -6266,7 +6266,7 @@ public final class WorldRuntime implements AutoCloseable {
                 pendingActionsAt(state, requireDecisions(), personPartyId), allowedToolsOf(view), decisionConfig,
                 toolContractVersion(), manifest.hasDialogue() ? interviewInput(state, personPartyId, state.timeMillis()) : null,
                 engineeringInput(state, personPartyId, state.timeMillis()), manifest.hasGroups()
-                        ? groupsInput(state, state.information().information(), view.profile(), state.timeMillis()) : null, ownVisibleReadTimes(state, view), roleInputFormat());
+                        ? groupsInput(state, state.information().information(), view.profile(), state.timeMillis()) : null, ownVisibleReadTimes(state, view), visibleReadingDurations(state, view), roleInputFormat());
     }
 
     private String roleInputFormat() {
@@ -6278,6 +6278,19 @@ public final class WorldRuntime implements AutoCloseable {
     /** @return 本运行是否按实际发行人、签发时点和公开版本编号处理财报 */
     public boolean usesIssuerReportVersions() {
         return "versioned-v1".equals(manifest.dataVersions().get("issuer-period-reports"));
+    }
+
+    private Map<String, Long> visibleReadingDurations(WorldState snapshot, RoleTradingView view) {
+        if (!RunManifest.BODY_PACING_300.equals(manifest.dataVersions().get(RunManifest.DOCUMENT_READING_CLOCK)))
+            return Map.of();
+        var versions = new LinkedHashMap<String, Long>();
+        for (var entry : view.profile().catalog()) versions.put(entry.docId(), entry.version());
+        var durations = new LinkedHashMap<String, Long>();
+        for (var doc : snapshot.information().information().documents()) {
+            Long version = versions.get(doc.docId());
+            if (version != null) durations.put(doc.docId(), doc.at(version).readDurationMillis());
+        }
+        return durations;
     }
 
     private Map<String, Long> ownVisibleReadTimes(WorldState snapshot, RoleTradingView view) {
@@ -7455,7 +7468,7 @@ public final class WorldRuntime implements AutoCloseable {
                             ? groupsInput(state, state.information() == null ? null
                                     : state.information().information(), view.profile(),
                                     cutoffTime)
-                            : null, ownVisibleReadTimes(state, view), roleInputFormat());
+                            : null, ownVisibleReadTimes(state, view), visibleReadingDurations(state, view), roleInputFormat());
             if (decisionConfig.live()
                     && informationConfig != null && informationConfig.recallPolicy() != null) {
                 // 新档：先量实际字符/字节，超限在构造 ProviderPlan 之前就明确失败，整批不提交
@@ -10458,7 +10471,7 @@ public final class WorldRuntime implements AutoCloseable {
                             ? groupsInput(previous, previous.information() == null ? null
                                     : previous.information().information(), view.profile(),
                                     cutoffTime)
-                            : null, ownVisibleReadTimes(previous, view), roleInputFormat());
+                            : null, ownVisibleReadTimes(previous, view), visibleReadingDurations(previous, view), roleInputFormat());
             DecisionModel.Decision historical = DecisionModel.decision(historicalDecisions.state(),
                     request.actionId()).orElseThrow(() -> new IOException("历史决定缺失：" + request.actionId()));
             legacyInputs.add(new LegacyOperatingReportOrder.InputPair(input, historical.inputText()));
@@ -10870,7 +10883,7 @@ public final class WorldRuntime implements AutoCloseable {
                         ? groupsInput(previous, previous.information() == null ? null
                                 : previous.information().information(),
                                 view.profile(), decision.cutoffTimeMillis())
-                        : null, ownVisibleReadTimes(previous, view), roleInputFormat());
+                        : null, ownVisibleReadTimes(previous, view), visibleReadingDurations(previous, view), roleInputFormat());
         regenerated = historicalDecisionInput(regenerated, decision.inputText(), decision.cutoffPosition());
         if (!regenerated.equals(decision.inputText())) {
             throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());
@@ -23025,6 +23038,8 @@ public final class WorldRuntime implements AutoCloseable {
     private void validateInformation(WorldState candidate, WorldState previous) throws IOException {
         InformationRun run = candidate.information();
         InformationModel.State information = run.information();
+        if (!java.util.Objects.equals(information.readingClock(), manifest.dataVersions().get(RunManifest.DOCUMENT_READING_CLOCK)))
+            throw new IOException("资料阅读工时与冻结清单不一致");
         if (!information.persons().equals(informationConfig.readers())) {
             throw new IOException("登记读者与冻结配置不一致");
         }
@@ -27245,7 +27260,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (informationConfig != null) {
             information = new InformationRun(
-                    InformationModel.open(registry, informationConfig.readers()), Map.of());
+                    InformationModel.open(registry, informationConfig.readers(),
+                            manifest.dataVersions().get(RunManifest.DOCUMENT_READING_CLOCK)), Map.of());
         }
         RoleTradingRun trading = manifest.hasTrading() ? RoleTradingRun.opening() : null;
         DecisionRun decisions = manifest.hasDecisions()

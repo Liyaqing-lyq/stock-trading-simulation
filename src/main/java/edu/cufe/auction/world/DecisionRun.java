@@ -405,6 +405,15 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                             String toolContractVersion, com.fasterxml.jackson.databind.JsonNode interview,
                             com.fasterxml.jackson.databind.JsonNode engineering, com.fasterxml.jackson.databind.JsonNode groups,
                             Map<String, Long> ownVisibleReadTimes, String roleInputFormat) {
+        return inputText(view, wakeReason, cutoffTimeMillis, pending, tools, config, toolContractVersion,
+                interview, engineering, groups, ownVisibleReadTimes, Map.of(), roleInputFormat);
+    }
+
+    static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
+                            List<PendingAction> pending, List<String> tools, DecisionModel.Config config,
+                            String toolContractVersion, com.fasterxml.jackson.databind.JsonNode interview,
+                            com.fasterxml.jackson.databind.JsonNode engineering, com.fasterxml.jackson.databind.JsonNode groups,
+                            Map<String, Long> ownVisibleReadTimes, Map<String, Long> visibleReadingDurations, String roleInputFormat) {
         Objects.requireNonNull(view, "观察视图");
         Objects.requireNonNull(config, "冻结配置");
         Objects.requireNonNull(toolContractVersion, "工具合同版本");
@@ -495,6 +504,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("docId", entry.docId());
             node.put("version", entry.version());
             node.put("title", entry.title());
+            Long duration = visibleReadingDurations.get(entry.docId());
+            if (duration != null) node.put("readDurationMillis", duration.longValue());
             Long lastRead = ownVisibleReadTimes.get(entry.docId());
             if (lastRead != null) node.put("lastReadAtMillis", lastRead);
         }

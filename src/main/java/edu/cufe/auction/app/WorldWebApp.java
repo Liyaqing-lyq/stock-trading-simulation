@@ -8,6 +8,8 @@ import edu.cufe.auction.web.WorldWebHost;
 import edu.cufe.auction.web.WorldWebScenario;
 import edu.cufe.auction.web.WorldWebServer;
 import edu.cufe.auction.world.WorldRuntime;
+import edu.cufe.auction.world.RunManifest;
+import edu.cufe.auction.world.WorldJournalScanner;
 import edu.cufe.auction.world.composed.ComposedIndustryScenario;
 
 import java.io.IOException;
@@ -178,7 +180,7 @@ public final class WorldWebApp {
                     var runtime=sessionsMode ? ComposedIndustryScenario.openMarketSessionsOperating(workDir.resolve("world-market-sessions-operating-v1.journal"))
                             : manufacturingUpgradeMode ? ComposedIndustryScenario.openManufacturingUpgradeOperating(workDir.resolve("world-manufacturing-upgrade-v1.journal"))
                             : openFundMode ? ComposedIndustryScenario.openOpenFundOperating(workDir.resolve("world-open-fund-v1.journal"))
-                            : tenCompanyMode ? ComposedIndustryScenario.openTenCompanyAutonomy(tenCompanyJournal(workDir))
+                            : tenCompanyMode ? ComposedIndustryScenario.openStudyTenCompanyAutonomy(tenCompanyJournal(workDir))
                             : personPauseMode ? ComposedIndustryScenario.openPersonPauseOperating(workDir.resolve("world-person-pause-v1.journal"), workDir.resolve("opening-copies.json"))
                             : issuerResolutionMode ? ComposedIndustryScenario.openIssuerResolutionOperating(workDir.resolve("world-issuer-resolution-v1.journal"), workDir.resolve("opening-copies.json"))
                             : unpricedReferenceMode ? ComposedIndustryScenario.openUnpricedReferenceOperating(workDir.resolve("world-unpriced-reference-v1.journal"), workDir.resolve("opening-copies.json"))
@@ -462,10 +464,20 @@ public final class WorldWebApp {
         return String.join(java.io.File.pathSeparator, parts);
     }
 
-    static Path tenCompanyJournal(Path workDir) {
-        Path current = workDir.resolve("world-ten-company-autonomy-v2.journal");
-        Path original = workDir.resolve("world-ten-company-autonomy-v1.journal");
-        return Files.exists(current) || !Files.exists(original) ? current : original;
+    static Path tenCompanyJournal(Path workDir) throws IOException {
+        Path current = workDir.resolve("world-ten-company-autonomy-v3.journal");
+        for (String id : java.util.List.of(RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
+                RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID, RunManifest.ORIGINAL_TEN_COMPANY_RUN_ID)) {
+            Path file = workDir.resolve("world-" + id.substring("web-".length()) + ".journal");
+            if (!Files.exists(file)) continue;
+            if (!Files.isRegularFile(file)) throw new IOException("十公司日志路径不是文件：" + file);
+            if (Files.size(file) == 0) continue;
+            var first = WorldJournalScanner.readPrefix(file, 1, null).first();
+            if (first == null || !id.equals(first.runId()))
+                throw new IOException("十公司日志文件名和存档版本不符：" + file);
+            return file;
+        }
+        return current;
     }
 
     private static WorldRuntime openThinkingOperating(Path workDir) throws Exception {

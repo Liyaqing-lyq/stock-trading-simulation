@@ -100,14 +100,24 @@ def audit(source, target_days=None):
             raise ValueError("需要 delta-v1 十公司日志，每个确认位置应有一份状态差量")
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
-        if run_id != "web-ten-company-autonomy-v2" or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2 紧凑日志")
+        if run_id not in {"web-ten-company-autonomy-v2", "web-ten-company-autonomy-v3"} or delta["version"] != "delta-v1":
+            raise ValueError("此脚本仅复算标准十公司 v2、v3 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")
         prior_digest = delta["resultDigest"]
         patch = delta["patch"]
         if position == 1:
+            manifests = [decode(e["payload"])["manifest"] for e in events if e["type"] == "RUN_MANIFEST_V1"]
+            if len(manifests) != 1 or manifests[0]["runId"] != run_id or patch["value"]["runId"] != run_id:
+                raise ValueError("开局清单、状态与普通十公司运行身份不符")
+            policies = manifests[0]["dataVersions"]
+            clock = "document-reading-clock"
+            third = run_id == "web-ten-company-autonomy-v3"
+            if (policies.get("branch-profile-run") != run_id
+                    or (third and policies.get(clock) != "body-pacing-300-v1")
+                    or (not third and clock in policies)):
+                raise ValueError("开局版本与十公司阅读时钟合同不符")
             state = {name: patch["value"][name] for name in FIELDS}
         else:
             for name in FIELDS:

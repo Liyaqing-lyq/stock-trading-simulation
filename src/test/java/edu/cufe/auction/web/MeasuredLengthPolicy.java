@@ -24,15 +24,23 @@ final class MeasuredLengthPolicy {
 
     static boolean matches(DecisionRun.Call call, LiveCompletionInbox.Completion completion,
                            LiveDecisionProvider.ProviderProvenance provenance) {
+        return "PROVIDER_LENGTH".equals(completion.failureCode()) && "LENGTH".equals(provenance.outcome())
+                && measuredFailure(call, completion, provenance)
+                && "length".equals(provenance.invocation().finishReason()) && completion.reply().usage().outputTokens()==8192;
+    }
+
+    /** 有身份、完整调用政策、单次用量和同一尝试的提供方失败回执。 */
+    static boolean measuredFailure(DecisionRun.Call call, LiveCompletionInbox.Completion completion,
+                                   LiveDecisionProvider.ProviderProvenance provenance) {
         var reply = completion.reply();
         var usage = reply.usage();
         var invocation = provenance.invocation();
         var plan = call.plan();
         return plan != null && plan.inputBytes() == call.inputText().getBytes(StandardCharsets.UTF_8).length
-                && "PROVIDER_LENGTH".equals(completion.failureCode()) && !completion.businessReply()
+                && completion.failureCode() != null && !completion.businessReply()
                 && reply.body().isEmpty() && LiveDecisionProvider.USAGE_SOURCE.equals(reply.usageSource())
                 && LiveDecisionProvider.THINKING_PROVENANCE_SCHEMA.equals(provenance.schema())
-                && "LENGTH".equals(provenance.outcome()) && completion.failureCode().equals(provenance.failureCode())
+                && completion.failureCode().equals(provenance.failureCode())
                 && plan.route().model().equals(provenance.requestedModel())
                 && safeId(provenance.providerReportedModel()) && safeId(provenance.requestId())
                 && call.runId().equals(reply.runId()) && call.runId().equals(provenance.runId())
@@ -41,12 +49,12 @@ final class MeasuredLengthPolicy {
                 && call.attemptNo() == reply.attemptNo() && call.attemptNo() == provenance.attemptNo()
                 && call.recoveryGeneration() == reply.recoveryGeneration()
                 && call.recoveryGeneration() == provenance.recoveryGeneration()
-                && invocation != null && "length".equals(invocation.finishReason())
+                && invocation != null
                 && "enabled".equals(invocation.thinkingType()) && "high".equals(invocation.reasoningEffort())
                 && DeepSeekClient.THINKING_HIGH_POLICY.equals(invocation.providerPolicy())
                 && invocation.providerPolicy().equals(plan.route().providerPolicy())
                 && invocation.maxOutputTokens() == 8192 && plan.route().maxOutputTokens() == 8192
-                && usage != null && usage.attempts() == 1 && usage.inputTokens() > 0 && usage.outputTokens() == 8192;
+                && usage != null && usage.attempts() == 1 && usage.inputTokens() > 0 && usage.outputTokens() <= invocation.maxOutputTokens();
     }
 
     /** 先验证每段真实来源，再将本世界的每次历史截断绑定到已核验的原回执和真实扣量。 */

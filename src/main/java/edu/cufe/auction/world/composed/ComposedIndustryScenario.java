@@ -539,12 +539,29 @@ public final class ComposedIndustryScenario {
      * @throws Exception 开局或存档校验失败
      */
     public static WorldRuntime openTenCompanyAutonomy(Path journal) throws Exception {
-        if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal)>0) {
-            var first = WorldJournalScanner.readPrefix(journal,1,java.io.OutputStream.nullOutputStream()).first();
-            if (first != null && RunManifest.ORIGINAL_TEN_COMPANY_RUN_ID.equals(first.runId()))
-                return openOriginalTenCompanyAutonomy(journal);
+        return openStandardTenCompany(journal, RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID);
+    }
+
+    /**
+     * 首建正文计时的十公司研究档；已有普通十公司存档保留其冻结版本。
+     * @param journal 确认日志文件
+     * @return 新建或严格恢复的普通十公司世界
+     * @throws Exception 存档身份、开局或逐帧重演失败
+     */
+    public static WorldRuntime openStudyTenCompanyAutonomy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID);
+    }
+
+    private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
+        String runId = defaultRunId;
+        if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
+            var first = WorldJournalScanner.readPrefix(journal, 1, null).first();
+            if (first == null || !java.util.Set.of(RunManifest.ORIGINAL_TEN_COMPANY_RUN_ID,
+                    RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID, RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID)
+                    .contains(first.runId())) throw new java.io.IOException("存档不是普通十公司世界");
+            runId = first.runId();
         }
-        return openCompanyInformationOperating(journal,RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID);
+        return openCompanyInformationOperating(journal, runId);
     }
 
     /** 使用首版十公司清单的主体、开局和输入上限，供历史运行的恢复与复验。 */
@@ -883,6 +900,9 @@ public final class ComposedIndustryScenario {
             }
             if (RunManifest.UNPRICED_REFERENCE_RUN_ID.equals(thinkingRunId)) data.put("unpriced-opening-reference", "HY1-cost-only-v1");
             if (RunManifest.usesIssuerResolution(thinkingRunId)) data.put("issuer-failure", "bank-resolution-halt-v1");
+            if (RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(thinkingRunId)) {
+                data.put(RunManifest.DOCUMENT_READING_CLOCK, RunManifest.BODY_PACING_300);
+            }
             if (RunManifest.usesPersonDecisionPause(thinkingRunId)) data.put("person-decision-pause", "confirmed-person-v1");
             if (ownerBankValuation) {
                 data.put("owner-bank-valuation", "owner-claims-v1");

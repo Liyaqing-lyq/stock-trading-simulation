@@ -12,6 +12,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -20,7 +22,11 @@ class TargetTransportProbeTest {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private JsonNode run(String name, Path seed, long target, List<String> people, LiveDecisionProvider provider) throws Exception {
-        var cfg = new AutonomousLifecycleProbe.Config("TEN_COMPANY_AUTONOMY",0,0,target,3_600_000L,
+        return run("TEN_COMPANY_AUTONOMY",name,seed,target,people,provider);
+    }
+
+    private JsonNode run(String mode, String name, Path seed, long target, List<String> people, LiveDecisionProvider provider) throws Exception {
+        var cfg = new AutonomousLifecycleProbe.Config(mode,0,0,target,3_600_000L,
                 seed == null ? null : seed.toString(),"transport-fixture",people);
         var params = root.resolve(name+".json");
         JSON.writeValue(params.toFile(),cfg);
@@ -98,6 +104,90 @@ class TargetTransportProbeTest {
         } finally { http.stop(0); }
     }
 
+    private static void respond(com.sun.net.httpserver.HttpExchange exchange, String finish, String body,
+                                boolean declareModel, boolean toolCall) throws java.io.IOException {
+        var response=JSON.createObjectNode().put("id","local-measured");
+        if (declareModel) response.put("model","deepseek-flash");
+        var choice=response.putArray("choices").addObject().put("index",0).put("finish_reason",finish);
+        var message=choice.putObject("message").put("role","assistant").put("content",body);
+        if (toolCall) message.putArray("tool_calls").addObject().put("id","local-tool");
+        int outputTokens="length".equals(finish) ? 8192 : 456;
+        response.putObject("usage").put("prompt_tokens",8900).put("completion_tokens",outputTokens).put("total_tokens",8900+outputTokens);
+        byte[] bytes=JSON.writeValueAsBytes(response);
+        exchange.sendResponseHeaders(200,bytes.length);
+        exchange.getResponseBody().write(bytes);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
+    void measuredNonBusinessReceiptNeedsAttributableIdentityUsageAndFinish(String variant) throws Exception {
+        var http=HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
+        var actors=new CopyOnWriteArrayList<String>();
+        http.createContext("/chat/completions",exchange->{
+            try {
+                var input=JSON.readTree(JSON.readTree(exchange.getRequestBody()).at("/messages/1/content").asText());
+                String person=input.path("person").asText(); actors.add(person);
+                String finish="stop",body="";
+                if (person.equals("bob") || variant.equals("SUCCESS_WITHOUT_MODEL")) {
+                    var answer=JSON.createObjectNode().put("tool","role.wait");
+                    answer.putObject("decision").put("objective",input.at("/engineering/deliberation/objectives/0/id").asText())
+                            .put("basis","等待本人复核").put("reviewAfterMillis",60_000);
+                    body=answer.toString();
+                } else finish=switch(variant) {
+                    case "FILTERED" -> "content_filter";
+                    case "TOOL_CALLS" -> "tool_calls";
+                    case "MISSING_FINISH" -> null;
+                    default -> "stop";
+                };
+                boolean tool=person.equals("alice") && (variant.equals("TOOL_CALLS") || variant.equals("MIXED_TOOL"));
+                respond(exchange,finish,body,!variant.equals("MISSING_MODEL") && !variant.equals("SUCCESS_WITHOUT_MODEL"),tool);
+            } finally { exchange.close(); }
+        });
+        http.start();
+        try {
+            var uri=URI.create("http://127.0.0.1:"+http.getAddress().getPort()+"/chat/completions");
+            var provider=new LiveDecisionProvider(slot->new DeepSeekClient(()->"sk-fixture-aaaaaaaaaaaaaaaa",uri));
+            var people=List.of("alice","bob");
+            String mode=variant.equals("EMPTY") ? "TEN_COMPANY_STUDY" : "TEN_COMPANY_AUTONOMY";
+            var first=run(mode,"first",null,100,people,provider);
+            if (!List.of("EMPTY","FILTERED","TOOL_CALLS").contains(variant)) {
+                assertTrue(first.path("probeStop").asText().startsWith("PROBE_PROVIDER_"));
+                assertEquals(List.of("alice"),actors);
+                return;
+            }
+            String code="PROVIDER_"+variant;
+            assertEquals("TARGET_REACHED",first.path("probeStop").asText());
+            assertEquals(List.of("alice","bob"),actors);
+            assertEquals(1,first.at("/providerProvenance/transport/failuresByCode/"+code).asInt());
+            assertEquals(0,first.at("/providerProvenance/transport/consecutive").asInt());
+            var seed=root.resolve("first");
+            assertThrows(IllegalArgumentException.class,()->run(mode.equals("TEN_COMPANY_STUDY") ? "TEN_COMPANY_AUTONOMY" : "TEN_COMPANY_STUDY",
+                    "wrong-mode",seed,200,people,provider));
+            var second=run(mode,"second",seed,200,people,provider);
+            assertEquals(variant.equals("EMPTY") ? edu.cufe.auction.world.RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID
+                    : edu.cufe.auction.world.RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID,second.at("/live/runId").asText());
+            assertEquals("TARGET_REACHED",second.path("probeStop").asText());
+            assertEquals(0,second.path("httpCalls").asInt());
+            assertEquals(List.of("alice","bob"),actors);
+            try (var world=AutonomousLifecycleProbe.openWorld(mode,root.resolve("second/world.journal"))) {
+                var decisions=world.snapshot().decisions().orElseThrow();
+                var alice=decisions.state().decisions().stream().filter(d->d.personPartyId().equals("alice")).findFirst().orElseThrow();
+                var attempt=alice.lastAttempt();
+                assertEquals("TECHNICAL_FAILED",alice.outcome().name()); assertEquals("",alice.recordedTool());
+                assertNull(decisions.actionRef(alice.actionId()));
+                assertTrue(attempt.replyReceived()); assertEquals("",attempt.replyBody()); assertEquals(code,attempt.reason());
+                assertEquals(8900,attempt.declaredUsage().inputTokens()); assertEquals(456,attempt.declaredUsage().outputTokens());
+                assertEquals(attempt.declaredUsage(),attempt.settled());
+                assertEquals("WAIT",decisions.state().decisions().stream().filter(d->d.personPartyId().equals("bob")).findFirst().orElseThrow().outcome().name());
+            }
+            var policyFile=seed.resolve(ProbeProviderEvidence.POLICY_FILE);
+            var policyBytes=Files.readAllBytes(policyFile);
+            try {
+                ProbeProviderEvidence.freezePolicy(seed,true,true,TargetTransportPolicy.LEGACY_VERSION);
+                assertThrows(IllegalArgumentException.class,()->ProbeProviderEvidence.validateSeed(seed,first,true,true));
+            } finally { Files.write(policyFile,policyBytes); }
+        } finally { http.stop(0); }
+    }
+
     @Test void authStopsEvenWithOtherCallsAvailable() throws Exception {
         var http=HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
         http.createContext("/chat/completions",exchange -> {
@@ -114,7 +204,8 @@ class TargetTransportProbeTest {
         } finally { http.stop(0); }
     }
 
-    @Test void repeatedUnavailableProviderStopsBeforeTheWorldTarget() throws Exception {
+    @ParameterizedTest @ValueSource(booleans={false,true})
+    void consecutiveUnusableResponsesStopBeforeTheWorldTarget(boolean mixMeasuredAndTransport) throws Exception {
         Path out=root.resolve("outage"), cfg=root.resolve("outage.json");
         var people=List.of("alice","bob");
         JSON.writeValue(cfg.toFile(),new AutonomousLifecycleProbe.Config("TEN_COMPANY_AUTONOMY",0,0,90_000L,
@@ -122,8 +213,12 @@ class TargetTransportProbeTest {
         var count=new java.util.concurrent.atomic.AtomicInteger();
         var http=HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
         http.createContext("/chat/completions", exchange -> {
-            count.incrementAndGet();
-            try { exchange.sendResponseHeaders(503,-1); } finally { exchange.close(); }
+            int index=count.incrementAndGet();
+            try {
+                if (mixMeasuredAndTransport && index%4==0) respond(exchange,"length","",true,false);
+                else if (mixMeasuredAndTransport && index%2==0) respond(exchange,"stop","",true,false);
+                else exchange.sendResponseHeaders(503,-1);
+            } finally { exchange.close(); }
         });
         http.start();
         try {
@@ -141,6 +236,11 @@ class TargetTransportProbeTest {
             var result=JSON.readTree(out.resolve("result.json").toFile());
             assertEquals(TargetTransportPolicy.STOP,result.path("probeStop").asText());
             assertEquals(8,count.get());
+            if (mixMeasuredAndTransport) {
+                assertEquals(2,result.at("/providerProvenance/transport/failuresByCode/PROVIDER_EMPTY").asInt());
+                assertEquals(2,result.at("/providerProvenance/transport/failuresByCode/PROVIDER_LENGTH").asInt());
+                assertEquals(4,result.at("/providerProvenance/transport/failuresByCode/HTTP_SERVICE_UNAVAILABLE").asInt());
+            }
             assertEquals(8,result.at("/providerProvenance/transport/consecutive").asInt());
             assertTrue(result.at("/autonomy/timeMillis").asLong()<90_000);
         } finally { http.stop(0); }

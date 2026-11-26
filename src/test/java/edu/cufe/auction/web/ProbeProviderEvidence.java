@@ -46,14 +46,14 @@ final class ProbeProviderEvidence {
 
     static ObjectNode policy(boolean thinking) { return policy(thinking, false); }
 
-    private static ObjectNode policy(boolean thinking, boolean measured) { return policy(thinking,measured,false); }
+    private static ObjectNode policy(boolean thinking, boolean measured) { return policy(thinking,measured,null); }
 
-    private static ObjectNode policy(boolean thinking, boolean measured, boolean target) {
+    private static ObjectNode policy(boolean thinking, boolean measured, String targetPolicy) {
         var result = JSON.createObjectNode().put("schema", thinking ? LiveDecisionProvider.THINKING_PROVENANCE_SCHEMA : LiveDecisionProvider.PROVENANCE_SCHEMA)
                 .put("identityScope", "PROVIDER_DECLARED_ONLY").put("underlyingModelVersion", "UNKNOWN");
         if (thinking) result.put("providerPolicy", DeepSeekClient.THINKING_HIGH_POLICY);
         if (measured) result.put("technicalFailurePolicy", MeasuredLengthPolicy.VERSION);
-        if (target) result.put("transportFailurePolicy",TargetTransportPolicy.VERSION);
+        if (targetPolicy != null) result.put("transportFailurePolicy",targetPolicy);
         return result;
     }
 
@@ -66,11 +66,15 @@ final class ProbeProviderEvidence {
     }
 
     static void freezePolicy(Path out, boolean thinking, boolean measured) throws IOException {
-        freezePolicy(out,thinking,measured,false);
+        freezePolicy(out,thinking,measured,(String) null);
     }
 
     static void freezePolicy(Path out, boolean thinking, boolean measured, boolean target) throws IOException {
-        JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve(POLICY_FILE).toFile(), policy(thinking, measured, target));
+        freezePolicy(out,thinking,measured,target ? TargetTransportPolicy.VERSION : null);
+    }
+
+    static void freezePolicy(Path out, boolean thinking, boolean measured, String targetPolicy) throws IOException {
+        JSON.writerWithDefaultPrettyPrinter().writeValue(out.resolve(POLICY_FILE).toFile(), policy(thinking, measured, targetPolicy));
     }
 
     void settleMeasuredLengths(String nextActionId, long timeoutMillis) {
@@ -117,18 +121,18 @@ final class ProbeProviderEvidence {
         synchronized (this) {
             completed++;
             count(audited.provenance());
-            boolean transientFailure = transport != null && TargetTransportPolicy.transientFailure(audited.provenance(),audited.completion());
-            if (transport != null) {
-                transport.record(index,transientFailure,audited.completion().failureCode());
-                if (stopReason == null && transport.tripped()) stopReason = TargetTransportPolicy.STOP;
-            }
-            if (thinking && stopReason == null && !transientFailure) {
+            boolean isolated = transport != null && transport.isolatedFailure(call,audited.provenance(),audited.completion());
+            boolean measured = measuredLength != null && MeasuredLengthPolicy.matches(call,audited.completion(),audited.provenance());
+            if (thinking && stopReason == null && !isolated) {
                 if (!audited.completion().businessReply()) {
-                    if (measuredLength == null || !MeasuredLengthPolicy.matches(call, audited.completion(), audited.provenance())
-                            || !measuredLength.remember(call, audited.completion().reply()))
+                    if (!measured || !measuredLength.remember(call, audited.completion().reply()))
                         stopReason = transport == null ? TECHNICAL_FAILURE : TECHNICAL_FAILURE + ":" + audited.completion().failureCode();
                 }
                 else if (!completeMetadata(audited.provenance(), audited.completion())) stopReason = UNKNOWN_EVIDENCE;
+            }
+            if (transport != null) {
+                transport.record(index,isolated,measured,audited.completion().failureCode());
+                if (stopReason == null && transport.tripped()) stopReason = TargetTransportPolicy.STOP;
             }
         }
         // 已收到的完成候选必须原样返回。每项落盘独立尝试，额外证据失败不能覆盖已付费结果。
@@ -171,9 +175,12 @@ final class ProbeProviderEvidence {
     static void validateSeed(Path seed, JsonNode result, boolean thinking, boolean measured) throws IOException {
         var cfg = result.has("config") ? JSON.treeToValue(result.get("config"),AutonomousLifecycleProbe.Config.class) : null;
         boolean target = cfg != null && cfg.runUntilTarget();
-        var policy = target ? new TargetTransportPolicy(TargetTransportPolicy.inherited(cfg.seed() == null ? null : Path.of(cfg.seed()))) : null;
+        var parent = target && cfg.seed() != null ? Path.of(cfg.seed()) : null;
+        String version = target ? TargetTransportPolicy.frozenVersion(seed) : null;
+        if (parent != null && !version.equals(TargetTransportPolicy.frozenVersion(parent))) throw invalid();
+        var policy = target ? new TargetTransportPolicy(version,TargetTransportPolicy.inherited(parent)) : null;
         if (!Files.isRegularFile(seed.resolve(POLICY_FILE))
-                || !policy(thinking, measured, target).equals(JSON.readTree(seed.resolve(POLICY_FILE).toFile())))
+                || !policy(thinking, measured, version).equals(JSON.readTree(seed.resolve(POLICY_FILE).toFile())))
             throw invalid();
         JsonNode calls = result.path("httpCalls");
         if (!calls.isIntegralNumber() || !calls.canConvertToInt() || calls.intValue() < 0 || calls.intValue() > evidenceCallLimit(result))
@@ -207,10 +214,10 @@ final class ProbeProviderEvidence {
                 if (!edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION.equals(
                         JSON.readTree(frozenCall.inputText()).path("engineering").path("roleContextVersion").asText())) throw invalid();
                 validateInvocation(provenance, frozenCall, completion);
-                boolean transientFailure = target && TargetTransportPolicy.transientFailure(provenance,completion);
-                if (policy != null) policy.record(index,transientFailure,completion.failureCode());
-                if (measured && !completion.businessReply() && !transientFailure && !MeasuredLengthPolicy.matches(frozenCall, completion, provenance))
-                    throw invalid();
+                boolean isolated = policy != null && policy.isolatedFailure(frozenCall,provenance,completion);
+                boolean length = measured && MeasuredLengthPolicy.matches(frozenCall,completion,provenance);
+                if (policy != null) policy.record(index,isolated,length,completion.failureCode());
+                if (measured && !completion.businessReply() && !isolated && !length) throw invalid();
             }
             else if (provenance.invocation() != null) throw invalid();
             var identity = JSON.createObjectNode();

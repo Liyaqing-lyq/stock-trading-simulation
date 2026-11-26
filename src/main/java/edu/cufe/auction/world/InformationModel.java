@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -195,9 +196,24 @@ public final class InformationModel {
             internalSourceIds = internalIds(internalSourceIds);
         }
 
-        private DocumentVersion asVersion(long version) {
+        private DocumentVersion asVersion(long version, String readingClock) {
+            long duration = readDurationMillis;
+            if (readingClock != null) {
+                // 汉字逐字计，连续的非汉字字母或数字作一单位。已有更长工时的材料保留原时长。
+                long units = 0;
+                boolean inWord = false;
+                for (int offset = 0; offset < body.length();) {
+                    int codePoint = body.codePointAt(offset);
+                    offset += Character.charCount(codePoint);
+                    boolean ideograph = Character.isIdeographic(codePoint);
+                    boolean word = !ideograph && Character.isLetterOrDigit(codePoint);
+                    if (ideograph || (word && !inWord)) units++;
+                    inWord = word;
+                }
+                duration = Math.max(duration, units * 200L); // 300 单位/分钟。
+            }
             return new DocumentVersion(version, title, body, publicSourceDescription, publishedAt,
-                    readDurationMillis, internalSourceIds);
+                    duration, internalSourceIds);
         }
     }
 
@@ -481,14 +497,23 @@ public final class InformationModel {
      * @param active           活动阅读，按阅读标识排序
      * @param closed           已终结阅读，按阅读标识排序
      * @param observations     个人经历，按读者/资料/版本排序
+     * @param readingClock 新档正文阅读工时版本，旧档缺省
      * @param nextReadSequence 下一个阅读序号，从 1 开始
      */
     public record State(List<String> persons, List<Document> documents, List<Reading> active,
                         List<ClosedReading> closed, List<ReadObservation> observations,
-                        long nextReadSequence) {
+                        long nextReadSequence, @JsonInclude(JsonInclude.Include.NON_NULL) String readingClock) {
+
+        /** 为原固定工时状态保留原来的构造入口。 */
+        public State(List<String> persons, List<Document> documents, List<Reading> active,
+                     List<ClosedReading> closed, List<ReadObservation> observations, long nextReadSequence) {
+            this(persons, documents, active, closed, observations, nextReadSequence, null);
+        }
 
         /** 深拷贝、排序并校验全部内部不变量。 */
         public State {
+            if (readingClock != null && !RunManifest.BODY_PACING_300.equals(readingClock))
+                throw new IllegalArgumentException("未知的资料阅读工时版本：" + readingClock);
             persons = sortedText(persons, "登记读者");
 
             List<Document> documentList = sorted(documents, Comparator.comparing(Document::docId));
@@ -621,6 +646,10 @@ public final class InformationModel {
      * @throws IllegalArgumentException 登记为空、人物未登记或不是人物、清单重复
      */
     public static State open(OpeningRegistry registry, List<String> participants) {
+        return open(registry, participants, null);
+    }
+
+    static State open(OpeningRegistry registry, List<String> participants, String readingClock) {
         if (registry == null) {
             throw new IllegalArgumentException("开局登记不能为空");
         }
@@ -631,7 +660,7 @@ public final class InformationModel {
                 throw new IllegalArgumentException("读者未登记或不是人物：" + partyId);
             }
         }
-        return new State(list, List.of(), List.of(), List.of(), List.of(), 1);
+        return new State(list, List.of(), List.of(), List.of(), List.of(), 1, readingClock);
     }
 
     /**
@@ -665,9 +694,9 @@ public final class InformationModel {
             throw new IllegalArgumentException("直投对象未登记：" + audience.partyId());
         }
         List<Document> documents = new ArrayList<>(state.documents());
-        documents.add(new Document(docId, publisherPartyId, audience, List.of(first.asVersion(1))));
+        documents.add(new Document(docId, publisherPartyId, audience, List.of(first.asVersion(1, state.readingClock()))));
         return new State(state.persons(), documents, state.active(), state.closed(), state.observations(),
-                state.nextReadSequence());
+                state.nextReadSequence(), state.readingClock());
     }
 
     /**
@@ -694,12 +723,12 @@ public final class InformationModel {
             throw new IllegalArgumentException("新版本发布时间必须晚于上一版：" + docId);
         }
         List<DocumentVersion> versions = new ArrayList<>(document.versions());
-        versions.add(next.asVersion(last.version() + 1));
+        versions.add(next.asVersion(last.version() + 1, state.readingClock()));
         List<Document> documents = new ArrayList<>(state.documents());
         documents.set(documents.indexOf(document),
                 new Document(document.docId(), document.publisherPartyId(), document.audience(), versions));
         return new State(state.persons(), documents, state.active(), state.closed(), state.observations(),
-                state.nextReadSequence());
+                state.nextReadSequence(), state.readingClock());
     }
 
     /**
@@ -850,7 +879,7 @@ public final class InformationModel {
         List<Reading> active = new ArrayList<>(state.active());
         active.add(new Reading(readId, personPartyId, docId, version, now, due));
         State next = new State(state.persons(), state.documents(), active, state.closed(),
-                state.observations(), state.nextReadSequence() + 1);
+                state.observations(), state.nextReadSequence() + 1, state.readingClock());
         return new Outcome(Status.STARTED, next, null);
     }
 
@@ -950,7 +979,7 @@ public final class InformationModel {
             closed.add(new ClosedReading(reading.readId(), personPartyId, reading.docId(), reading.version(),
                     reading.startedAt(), reading.dueAt(), completedAt, CloseReason.DENIED));
             State denied = new State(state.persons(), state.documents(), active, closed, observations,
-                    state.nextReadSequence());
+                    state.nextReadSequence(), state.readingClock());
             return new Outcome(Status.DENIED, denied, null);
         }
 
@@ -965,7 +994,7 @@ public final class InformationModel {
             observations.add(observation);
         }
         State completed = new State(state.persons(), state.documents(), active, closed, observations,
-                state.nextReadSequence());
+                state.nextReadSequence(), state.readingClock());
         return new Outcome(Status.COMPLETED, completed, observation);
     }
 
@@ -1021,7 +1050,7 @@ public final class InformationModel {
         closed.add(new ClosedReading(reading.readId(), personPartyId, reading.docId(), reading.version(),
                 reading.startedAt(), reading.dueAt(), now, CloseReason.CANCELLED));
         State next = new State(state.persons(), state.documents(), active, closed, state.observations(),
-                state.nextReadSequence());
+                state.nextReadSequence(), state.readingClock());
         return new Outcome(Status.CANCELLED, next, null);
     }
 
