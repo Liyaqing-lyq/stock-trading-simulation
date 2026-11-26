@@ -75,6 +75,43 @@ class MarketSessionsTest {
         }
     }
 
+    @Test void threeFullyFundedBuyersCanWaitAllDayWithoutASeller() throws Exception {
+        Path journal = dir.resolve("one-sided");
+        var people = java.util.Map.of("investor", "INV", "nina", "HOUSE-NINA", "omar", "HOUSE-OMAR");
+        try (var w = ComposedIndustryScenario.openIntegratedOperating(journal);
+             var idle = ComposedIndustryScenario.openIntegratedOperating(dir.resolve("same-day-control"))) {
+            w.advanceTo(OPEN);
+            var initialCash = w.snapshot().accounts();
+            var initialLots = w.snapshot().securities().orElseThrow().lots();
+            for (String person : List.of("investor", "nina", "omar")) {
+                String account = people.get(person);
+                long available = initialCash.get(account).cash().longValueExact();
+                var request = PersonalMarketTest.decide(w, person, "bid-" + person, PersonalMarket.SUBMIT,
+                        args(account, "AGED").put("quantity", available));
+                w.advanceTo(request.dueMillis());
+                assertTrue(exchange(w).reports().get(request.taskId()).accepted());
+                assertEquals(initialCash.get(account).cash(), WorldExchange.frozenCash(exchange(w), account));
+            }
+            var excess = PersonalMarketTest.decide(w, "nina", "extra", PersonalMarket.SUBMIT, args("HOUSE-NINA", "AGED"));
+            w.advanceTo(excess.dueMillis());
+            assertTrue(exchange(w).reports().get(excess.taskId()).reason().startsWith("INSUFFICIENT"));
+            assertEquals(3, exchange(w).liveOrders().size());
+            assertTrue(exchange(w).trades().isEmpty());
+            w.advanceTo(CLOSE);
+            assertTrue(exchange(w).liveOrders().isEmpty());
+            idle.advanceTo(CLOSE);
+            assertEquals(idle.snapshot().accounts(), w.snapshot().accounts());
+            for (String account : people.values()) assertEquals(initialCash.get(account), w.snapshot().accounts().get(account));
+            assertEquals(initialLots, w.snapshot().securities().orElseThrow().lots());
+            for (String account : people.values()) assertEquals(0, WorldExchange.frozenCash(exchange(w), account).signum());
+        }
+        try (var restored = ComposedIndustryScenario.openIntegratedOperating(journal)) {
+            assertEquals(3, exchange(restored).orders().size());
+            assertTrue(exchange(restored).trades().isEmpty());
+            assertTrue(exchange(restored).liveOrders().isEmpty());
+        }
+    }
+
     @Test void institutionalChildNeedsRealMandateAndIsRecheckedAtExecution() throws Exception {
         try (var w = ComposedIndustryScenario.openMarketSessionsOperating(dir.resolve("fund"))) {
             long t = OPEN;
