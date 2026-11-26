@@ -75,9 +75,12 @@ public final class WorldWebApp {
         }
 
         String mode = args.length > 3 ? args[3] : "live";
+        boolean fundMandateMode = mode.equals("world-fund-mandate-operating");
         boolean personalProfilesMode = mode.equals("world-personal-profiles-operating");
-        boolean issuerCreditMode = mode.equals("world-issuer-credit-operating");
-        boolean continuingRolesMode = mode.equals("world-continuing-roles-operating") || issuerCreditMode || personalProfilesMode;
+        boolean mediaDesksMode = mode.equals("world-media-desks-operating");
+        boolean creditDecisionsMode = mode.equals("world-issuer-credit-decisions-operating");
+        boolean issuerCreditMode = mode.equals("world-issuer-credit-operating") || creditDecisionsMode;
+        boolean continuingRolesMode = mode.equals("world-continuing-roles-operating") || issuerCreditMode || fundMandateMode || personalProfilesMode || mediaDesksMode;
         boolean personalLimitMode = mode.equals("world-personal-limit-operating") || continuingRolesMode;
         boolean hydroSettlementMode = mode.equals("world-hydro-settlement-operating") || personalLimitMode;
         boolean tableMode = mode.equals("world-role-table-operating") || hydroSettlementMode;
@@ -105,7 +108,7 @@ public final class WorldWebApp {
                 && !mode.equals("composed") && !mode.equals("custody") && !mode.equals("research") && !mode.equals("world") && !mode.equals("world-manager") && !mode.equals("world-debug") && !mode.equals("world-ready") && !mode.equals("world-manufacturing") && !mode.equals("world-industry") && !mode.equals("world-hydro") && !mode.equals("world-baseline") && !(mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode)) && !mode.equals("world-behavior")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-contextual-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating、world-continuing-roles-operating 、world-issuer-credit-operating 或 world-personal-profiles-operating");
+                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-contextual-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating、world-continuing-roles-operating 、world-issuer-credit-operating、world-issuer-credit-decisions-operating、world-media-desks-operating 、world-personal-profiles-operating 或 world-fund-mandate-operating");
         }
         boolean worldMode = mode.equals("world");
         boolean managerMode = mode.equals("world-manager");
@@ -154,7 +157,10 @@ public final class WorldWebApp {
         }
         WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode))
                 ? new WorldWebHost(() -> {
-                    var runtime=personalProfilesMode ? ComposedIndustryScenario.openPersonalProfilesOperating(workDir.resolve("world-personal-profiles-operating-v1.journal"))
+                    var runtime=mediaDesksMode ? ComposedIndustryScenario.openMediaDesksOperating(workDir.resolve("world-media-desks-operating-v1.journal"))
+                            : fundMandateMode ? ComposedIndustryScenario.openFundMandateOperating(workDir.resolve("world-fund-mandate-operating-v1.journal"))
+                            : personalProfilesMode ? ComposedIndustryScenario.openPersonalProfilesOperating(workDir.resolve("world-personal-profiles-operating-v1.journal"))
+                            : creditDecisionsMode ? ComposedIndustryScenario.openIssuerCreditDecisionsOperating(workDir.resolve("world-issuer-credit-decisions-operating-v1.journal"))
                             : issuerCreditMode ? ComposedIndustryScenario.openIssuerCreditOperating(workDir.resolve("world-issuer-credit-operating-v1.journal"))
                             : continuingRolesMode ? ComposedIndustryScenario.openContinuingRolesOperating(workDir.resolve("world-continuing-roles-operating-v1.journal"))
                             : personalLimitMode ? ComposedIndustryScenario.openPersonalLimitOperating(workDir.resolve("world-personal-limit-operating-v1.journal"))

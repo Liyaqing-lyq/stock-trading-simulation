@@ -966,6 +966,19 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                     return List.of(new String[]{"companyPartyId", "string"},
                             new String[]{"contractId", "string"});
                 }
+                case IssuerCreditDecisions.REQUEST -> {
+                    return List.of(new String[]{"bank","string"}, new String[]{"borrower","string"}, new String[]{"loanId","string"},
+                            new String[]{"amount","decimal"}, new String[]{"rateU","long"}, new String[]{"tenorMs","long"}, new String[]{"purpose","string"});
+                }
+                case IssuerCreditDecisions.ACCEPT, IssuerCreditDecisions.APPROVE, IssuerCreditDecisions.DRAW -> {
+                    return List.<String[]>of(new String[]{"loanId","string"});
+                }
+                case IssuerCreditDecisions.INTEREST, IssuerCreditDecisions.REPAY -> {
+                    return List.of(new String[]{"loanId","string"}, new String[]{"amount","decimal"});
+                }
+                case IssuerCreditDecisions.DEPOSIT, IssuerCreditDecisions.WITHDRAW -> {
+                    return List.of(new String[]{"bank","string"}, new String[]{"borrower","string"}, new String[]{"amount","decimal"});
+                }
                 case ResourceDecisionTools.ACT, HydroDecisionTools.ACT, DigitalDecisionTools.ACT, AgedDecisionTools.ACT -> {
                     return List.of(new String[]{"action", "string"}, new String[]{"arguments", "object"});
                 }

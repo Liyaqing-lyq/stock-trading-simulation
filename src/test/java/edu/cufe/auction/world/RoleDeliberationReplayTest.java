@@ -8,6 +8,25 @@ import static org.junit.jupiter.api.Assertions.*;
 class RoleDeliberationReplayTest {
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    @Test void onlyTheNewWaitContractAcceptsAnEmptyParameterObject() throws Exception {
+        String old = """
+                {"time":10,"engineering":{"roleContextVersion":"deliberation-v4",
+                "deliberation":{"objectives":[{"id":"person:investor"}]}}}
+                """;
+        String current = old.replace("\"deliberation\":", "\"waitArgsPolicy\":\"allow-empty-object-v1\",\"deliberation\":");
+        var reply = JSON.createObjectNode().put("tool", "role.wait");
+        reply.putObject("decision").put("objective", "person:investor").put("basis", "等复尺确认").put("reviewAfterMillis", 86400000);
+        reply.putObject("args");
+        assertTrue(RoleDeliberation.validatedAction(old, reply).has("args"));
+        assertEquals(JSON.readTree("{\"tool\":\"role.wait\"}"), RoleDeliberation.validatedAction(current, reply));
+        assertTrue(reply.has("args"), "原回执保留空对象");
+        reply.withObject("/args").put("quantity", 1);
+        assertTrue(RoleDeliberation.validatedAction(current, reply).has("args"));
+        reply.putObject("args");
+        reply.put("tool", "role.library.search");
+        assertTrue(RoleDeliberation.validatedAction(current, reply).has("args"));
+    }
+
     @Test void sameFrozenInputStillChecksEachReplyAndDifferentInputsWithTheSameHashKeepTheirOwnObjectives()
             throws Exception {
         String first = """

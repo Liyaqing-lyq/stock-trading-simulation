@@ -17,7 +17,7 @@ public final class AutonomousLifecycleProbe {
                          long stepMillis, String seed, String sourceCommit) {
         /** 约束试跑边界，额度是上限，不是调用承诺或经营验收。 */
         public Config {
-            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING", "COMPANY_INFORMATION_OPERATING", "FORWARD_BUDGET_OPERATING", "AGED_ORDER_OPERATING", "BOARD_PROCEDURE_OPERATING", "ISSUER_REPORT_OPERATING", "ROLE_TABLE_OPERATING", "HYDRO_SETTLEMENT_OPERATING", "PERSONAL_LIMIT_OPERATING", "CONTINUING_ROLES_OPERATING", "ISSUER_CREDIT_OPERATING", "PERSONAL_PROFILES_OPERATING").contains(mode)
+            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING", "COMPANY_INFORMATION_OPERATING", "FORWARD_BUDGET_OPERATING", "AGED_ORDER_OPERATING", "BOARD_PROCEDURE_OPERATING", "ISSUER_REPORT_OPERATING", "ROLE_TABLE_OPERATING", "HYDRO_SETTLEMENT_OPERATING", "PERSONAL_LIMIT_OPERATING", "CONTINUING_ROLES_OPERATING", "ISSUER_CREDIT_OPERATING", "ISSUER_CREDIT_DECISIONS_OPERATING", "PERSONAL_PROFILES_OPERATING", "FUND_MANDATE_OPERATING").contains(mode)
                     || maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
                     || stepMillis != 3_600_000
@@ -141,7 +141,9 @@ public final class AutonomousLifecycleProbe {
 
     static edu.cufe.auction.world.WorldRuntime openWorld(String mode, Path journal) throws Exception {
         return switch (mode) {
+            case "FUND_MANDATE_OPERATING" -> ComposedIndustryScenario.openFundMandateOperating(journal);
             case "PERSONAL_PROFILES_OPERATING" -> ComposedIndustryScenario.openPersonalProfilesOperating(journal);
+            case "ISSUER_CREDIT_DECISIONS_OPERATING" -> ComposedIndustryScenario.openIssuerCreditDecisionsOperating(journal);
             case "ISSUER_CREDIT_OPERATING" -> ComposedIndustryScenario.openIssuerCreditOperating(journal);
             case "CONTINUING_ROLES_OPERATING" -> ComposedIndustryScenario.openContinuingRolesOperating(journal);
             case "PERSONAL_LIMIT_OPERATING" -> ComposedIndustryScenario.openPersonalLimitOperating(journal);
@@ -170,7 +172,7 @@ public final class AutonomousLifecycleProbe {
     }
 
     static boolean usesMeasuredLength(String mode) {
-        return "ENGINEERING_CUSTOMER_OPERATING".equals(mode) || "COMPANY_INFORMATION_OPERATING".equals(mode) || "FORWARD_BUDGET_OPERATING".equals(mode) || "AGED_ORDER_OPERATING".equals(mode) || "BOARD_PROCEDURE_OPERATING".equals(mode) || "ISSUER_REPORT_OPERATING".equals(mode) || "ROLE_TABLE_OPERATING".equals(mode) || "HYDRO_SETTLEMENT_OPERATING".equals(mode) || "PERSONAL_LIMIT_OPERATING".equals(mode) || "CONTINUING_ROLES_OPERATING".equals(mode) || "ISSUER_CREDIT_OPERATING".equals(mode) || "PERSONAL_PROFILES_OPERATING".equals(mode);
+        return "ENGINEERING_CUSTOMER_OPERATING".equals(mode) || "COMPANY_INFORMATION_OPERATING".equals(mode) || "FORWARD_BUDGET_OPERATING".equals(mode) || "AGED_ORDER_OPERATING".equals(mode) || "BOARD_PROCEDURE_OPERATING".equals(mode) || "ISSUER_REPORT_OPERATING".equals(mode) || "ROLE_TABLE_OPERATING".equals(mode) || "HYDRO_SETTLEMENT_OPERATING".equals(mode) || "PERSONAL_LIMIT_OPERATING".equals(mode) || "CONTINUING_ROLES_OPERATING".equals(mode) || "ISSUER_CREDIT_OPERATING".equals(mode) || "ISSUER_CREDIT_DECISIONS_OPERATING".equals(mode) || "PERSONAL_PROFILES_OPERATING".equals(mode) || "FUND_MANDATE_OPERATING".equals(mode);
     }
 
     static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING") || mode.equals("FUNDED_THINKING_OPERATING") || mode.equals("PERSONAL_MARKET_OPERATING") || usesMeasuredLength(mode); }
@@ -183,8 +185,8 @@ public final class AutonomousLifecycleProbe {
     }
 
     private static String systemPrompt(Config config) {
-        if ("PERSONAL_PROFILES_OPERATING".equals(config.mode())) return LiveDecisionProvider.PERSONAL_PROFILE_SYSTEM_TEXT;
-        if ("CONTINUING_ROLES_OPERATING".equals(config.mode()) || "ISSUER_CREDIT_OPERATING".equals(config.mode())) return LiveDecisionProvider.RESEARCH_NOTE_SYSTEM_TEXT;
+        if ("PERSONAL_PROFILES_OPERATING".equals(config.mode()) || "FUND_MANDATE_OPERATING".equals(config.mode())) return LiveDecisionProvider.PERSONAL_PROFILE_SYSTEM_TEXT;
+        if ("CONTINUING_ROLES_OPERATING".equals(config.mode()) || "ISSUER_CREDIT_OPERATING".equals(config.mode()) || "ISSUER_CREDIT_DECISIONS_OPERATING".equals(config.mode())) return LiveDecisionProvider.RESEARCH_NOTE_SYSTEM_TEXT;
         return (config.mode().startsWith("PLANNING") || informedMode(config.mode())) ? LiveDecisionProvider.PLANNING_SYSTEM_TEXT
                 : LiveDecisionProvider.DELIBERATION_SYSTEM_TEXT;
     }

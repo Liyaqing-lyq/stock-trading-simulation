@@ -5,6 +5,7 @@ import edu.cufe.auction.world.CashLedger;
 import edu.cufe.auction.world.EngineeringRun;
 import edu.cufe.auction.world.EngineeringCustomerPolicy;
 import edu.cufe.auction.world.InformationRun;
+import edu.cufe.auction.world.MediaDesks;
 import edu.cufe.auction.world.OpeningRegistry;
 import edu.cufe.auction.world.RoleAccess;
 import edu.cufe.auction.world.RoleEvidenceDocuments;
@@ -300,6 +301,8 @@ public final class ComposedWorldScenario {
                     i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
                     0L, end, null));
         }
+        boolean eightDesks = RunManifest.MEDIA_DESKS_RUN_ID.equals(manifest.runId());
+        if (eightDesks) MediaDesks.appoint(appointments, end);
         List<String> readers = new ArrayList<>(List.of("alice", "bob", "carol", "dave", "erin",
                 WorldWebScenario.INVESTOR));
         readers.addAll(WorldWebScenario.MEDIA_PERSONS);
@@ -347,7 +350,8 @@ public final class ComposedWorldScenario {
                         WorldWebScenario.COMPANY, "fund-a", List.of("ACC-FUND"))), appointments),
                 info,
                 decisions, null,
-                WorldWebScenario.mediaConfig(), WorldWebScenario.interviewConfig(),
+                eightDesks ? MediaDesks.media(WorldWebScenario.mediaConfig()) : WorldWebScenario.mediaConfig(),
+                eightDesks ? MediaDesks.interviews(WorldWebScenario.interviewConfig()) : WorldWebScenario.interviewConfig(),
                 WorldWebScenario.dialogueConfig(), WorldWebScenario.evidenceConfig(),
                 WorldWebScenario.socialConfig(), WorldWebScenario.SOCIAL_BLOCK_MILLIS,
                 contacts, engineering,

@@ -115,6 +115,8 @@ public final class MediaModel {
     /** 本阶段唯一允许启用的两类模板。 */
     private static final Set<TemplateKind> PHASE_ONE =
             Set.of(TemplateKind.WIRE, TemplateKind.INVESTIGATIVE);
+    /** 八类采编开局的模板目录版本。 */
+    public static final String EIGHT_DESKS = "eight-desks-v1";
 
     private static final String DRAFT_PREFIX = "media-draft:";
     private static final String PUBLIC_PREFIX = "media-public:";
@@ -123,7 +125,7 @@ public final class MediaModel {
     }
 
     /**
-     * 媒体模板：按专题登记八类名称，本阶段只启用前两类。
+     * 媒体模板：原目录开放通讯和调查，八类编辑部开局分别冻结本社模板。
      */
     public enum TemplateKind {
         /** 通讯／快讯。 */
@@ -162,18 +164,29 @@ public final class MediaModel {
      * 冻结的实验策略：媒体组织、启用模板与来源下限、四类正耗时、回忆参数。
      *
      * @param mediaOrganizationPartyId 媒体组织标识
-     * @param enabledTemplates         启用模板 → 最少独立来源组（本阶段只允许 WIRE/INVESTIGATIVE）
+     * @param enabledTemplates         启用模板及对应的最少独立来源组
      * @param writeMillis              写作耗时，正毫秒
      * @param reviewMillis             审阅耗时，正毫秒
      * @param publishMillis            发布耗时，正毫秒
      * @param draftReadMillis          组织草稿的固定阅读耗时，正毫秒
      * @param publicReadMillis         公开成稿的固定阅读耗时，正毫秒
      * @param recallPolicy             回忆参数，决定证据是否仍可被记起
+     * @param templateCatalog          明确启用的模板目录，旧档为 null
      */
     public record Policy(String mediaOrganizationPartyId, Map<TemplateKind, Integer> enabledTemplates,
                          long writeMillis, long reviewMillis, long publishMillis,
                          long draftReadMillis, long publicReadMillis,
-                         CognitionRecall.Policy recallPolicy) {
+                         CognitionRecall.Policy recallPolicy,
+                         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                         String templateCatalog) {
+
+        /** 按原两类模板合同创建策略，保持原开局及历史序列化。 */
+        public Policy(String mediaOrganizationPartyId, Map<TemplateKind, Integer> enabledTemplates,
+                      long writeMillis, long reviewMillis, long publishMillis, long draftReadMillis,
+                      long publicReadMillis, CognitionRecall.Policy recallPolicy) {
+            this(mediaOrganizationPartyId, enabledTemplates, writeMillis, reviewMillis, publishMillis,
+                    draftReadMillis, publicReadMillis, recallPolicy, null);
+        }
 
         /** 校验组织、模板范围与全部正耗时。 */
         public Policy {
@@ -183,9 +196,11 @@ public final class MediaModel {
             if (copy.isEmpty()) {
                 throw new IllegalArgumentException("至少启用一个媒体模板");
             }
+            if (templateCatalog != null && !EIGHT_DESKS.equals(templateCatalog))
+                throw new IllegalArgumentException("未知媒体模板目录：" + templateCatalog);
             for (Map.Entry<TemplateKind, Integer> entry : copy.entrySet()) {
                 Objects.requireNonNull(entry.getKey(), "模板种类");
-                if (!PHASE_ONE.contains(entry.getKey())) {
+                if (templateCatalog == null && !PHASE_ONE.contains(entry.getKey())) {
                     throw new IllegalArgumentException("本阶段未启用的模板：" + entry.getKey());
                 }
                 if (entry.getValue() == null || entry.getValue() < 1) {
@@ -887,6 +902,10 @@ public final class MediaModel {
         if (problem != null) {
             return evidenceReject(state, information, context.evidence(), problem);
         }
+        if (story.template() == TemplateKind.AGGREGATOR && (request.evidence().isEmpty()
+                || !context.privateEvidence().isEmpty()
+                || request.evidence().stream().anyMatch(ref -> !ref.docId().startsWith(PUBLIC_PREFIX))))
+            return evidenceReject(state, information, context.evidence(), "AGGREGATOR_REQUIRES_PUBLISHED_STORY");
         List<Ref> roots;
         try {
             roots = rootsFor(state, mediaContext, information, request.evidence(),
@@ -1346,11 +1365,11 @@ public final class MediaModel {
                 return REASON_EVIDENCE;
             }
         }
-        Set<String> recalled = new LinkedHashSet<>();
+        Map<String, String> recalled = new TreeMap<>();
         CognitionRecall.Result recall = CognitionRecall.recall(information, author, now,
                 policy.recallPolicy());
         for (CognitionRecall.Item item : recall.selected()) {
-            recalled.add(item.observation().docId() + '\u0000' + item.observation().version());
+            recalled.put(item.observation().docId() + '\u0000' + item.observation().version(), item.lastReadId());
         }
         for (ReadingRef ref : evidence) {
             // 旧次序：先判公开性，再判是否读过；拒绝码会被旧档案引用，不能换
@@ -1361,13 +1380,13 @@ public final class MediaModel {
             if (document.audience().kind() != AudienceKind.PUBLIC) {
                 return REASON_EVIDENCE_NOT_PUBLIC;
             }
-            String problem = citationProblem(information, author, ref, recalled, now);
+            String problem = citationProblem(information, author, ref, recalled, policy, now);
             if (problem != null) {
                 return problem;
             }
         }
         for (ReadingRef ref : privateRefs) {
-            String problem = citationProblem(information, author, ref, recalled, now);
+            String problem = citationProblem(information, author, ref, recalled, policy, now);
             if (problem != null) {
                 return problem;
             }
@@ -1380,7 +1399,7 @@ public final class MediaModel {
 
     /** 单条引用的通用校验：存在、已读、序号一致、可回忆。 */
     private static String citationProblem(InformationModel.State information, String author,
-                                          ReadingRef ref, Set<String> recalled, long now) {
+                                          ReadingRef ref, Map<String, String> recalled, Policy policy, long now) {
         Document document = documentOf(information, ref.docId());
         if (document == null || document.at(ref.version()) == null) {
             return REASON_EVIDENCE_NOT_READ;
@@ -1388,10 +1407,12 @@ public final class MediaModel {
         if (!InformationModel.canCite(information, author, ref.docId(), ref.version(), now)) {
             return REASON_EVIDENCE_NOT_READ;
         }
-        if (ordinalOf(information, author, ref.docId(), ref.version()) != ref.index()) {
+        String key = ref.docId() + '\u0000' + ref.version();
+        String lastRead = EIGHT_DESKS.equals(policy.templateCatalog()) ? recalled.get(key) : null;
+        if (ordinalOf(information, author, ref.docId(), ref.version(), lastRead) != ref.index()) {
             return REASON_EVIDENCE_INDEX;
         }
-        if (!recalled.contains(ref.docId() + '\u0000' + ref.version())) {
+        if (!recalled.containsKey(key)) {
             return REASON_EVIDENCE_NOT_RECALLABLE;
         }
         return null;
@@ -1681,13 +1702,14 @@ public final class MediaModel {
 
     /** 本人阅读序号：与运行层 readingOrdinals 同一口径（READ-n 序，其后按标识）。 */
     private static int ordinalOf(InformationModel.State information, String person, String docId,
-                                 long version) {
-        String readId = null;
-        for (ReadObservation observation : information.observations()) {
-            if (observation.personPartyId().equals(person)
-                    && observation.docId().equals(docId) && observation.version() == version) {
-                readId = observation.readId();
-                break;
+                                 long version, String readId) {
+        if (readId == null) {
+            for (ReadObservation observation : information.observations()) {
+                if (observation.personPartyId().equals(person)
+                        && observation.docId().equals(docId) && observation.version() == version) {
+                    readId = observation.readId();
+                    break;
+                }
             }
         }
         if (readId == null) {

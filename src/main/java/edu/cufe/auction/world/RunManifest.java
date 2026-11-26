@@ -80,15 +80,35 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 同一十公司世界启用个人研究笔记、媒体采编视图与可选公开动态唤醒。 */
     public static final String CONTINUING_ROLES_RUN_ID = "web-continuing-roles-operating-v1";
 
+    /** 同一十公司开局下的八家独立采编机构。 */
+    public static final String MEDIA_DESKS_RUN_ID = "web-media-desks-operating-v1";
+
     /** 有本人开局自述和实际资产对照的经营档。 */
     public static final String PERSONAL_PROFILES_RUN_ID = "web-personal-profiles-operating-v1";
+
+    /** 延续个人档并登记基金产品的实际受托账册与四岗程序。 */
+    public static final String FUND_MANDATE_RUN_ID = "web-fund-mandate-operating-v1";
+
+    /** 指定档是否继承个人档的资料、检索与互动。 */
+    public static boolean usesPersonalProfiles(String runId) {
+        return PERSONAL_PROFILES_RUN_ID.equals(runId) || FUND_MANDATE_RUN_ID.equals(runId);
+    }
 
     /** 继承持续角色档、为九家非银行发行人分别登记授信科目的实验档。 */
     public static final String ISSUER_CREDIT_RUN_ID = "web-issuer-credit-operating-v1";
 
+    /** 从发行人授信档继承，在决定合同内开放真实经理的贷款工作。 */
+    public static final String CREDIT_DECISIONS_RUN_ID = "web-issuer-credit-decisions-operating-v1";
+
+    /** 是否使用分发行人的授信账。 */
+    public static boolean usesIssuerCredit(String runId) {
+        return ISSUER_CREDIT_RUN_ID.equals(runId) || CREDIT_DECISIONS_RUN_ID.equals(runId);
+    }
+
     /** 判断运行是否采用三个独立投资者及持续角色输入。 */
     public static boolean usesContinuingRoles(String runId) {
-        return CONTINUING_ROLES_RUN_ID.equals(runId) || ISSUER_CREDIT_RUN_ID.equals(runId) || PERSONAL_PROFILES_RUN_ID.equals(runId);
+        return CONTINUING_ROLES_RUN_ID.equals(runId) || usesIssuerCredit(runId)
+                || usesPersonalProfiles(runId) || MEDIA_DESKS_RUN_ID.equals(runId);
     }
 
     /** 新经营档冻结的角色与账户配置版本。 */
@@ -1177,8 +1197,14 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
-            if (PERSONAL_PROFILES_RUN_ID.equals(runId)) expectedData.putAll(personalProfilePolicies());
-            if (ISSUER_CREDIT_RUN_ID.equals(runId)) expectedData.put("issuer-credit", "separate-loan-ledgers-v1");
+            if (usesPersonalProfiles(runId)) expectedData.putAll(personalProfilePolicies());
+            if (FUND_MANDATE_RUN_ID.equals(runId)) {
+                expectedData.put("fund-mandate-document", "opening-register-v1");
+                expectedData.put("wait-empty-args", "allow-empty-object-v1");
+            }
+            if (MEDIA_DESKS_RUN_ID.equals(runId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (CREDIT_DECISIONS_RUN_ID.equals(runId)) expectedData.put("issuer-credit-decisions", "manager-loan-v1");
+            if (usesIssuerCredit(runId)) expectedData.put("issuer-credit", "separate-loan-ledgers-v1");
             if (usesContinuingRoles(runId)) {
                 expectedData.putAll(CONTINUING_ROLE_POLICIES);
             }

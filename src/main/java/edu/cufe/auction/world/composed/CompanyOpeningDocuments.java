@@ -112,7 +112,9 @@ public final class CompanyOpeningDocuments {
         if (edu.cufe.auction.world.RoleDeliberation.hasEvidence(world.profile().manifest().dataVersions().get("role-context"))) {
             edu.cufe.auction.world.RoleEvidenceDocuments.publish(world, extraCandidates);
         }
-        if (RunManifest.PERSONAL_PROFILES_RUN_ID.equals(world.profile().manifest().runId())) {
+        if (RunManifest.FUND_MANDATE_RUN_ID.equals(world.profile().manifest().runId())) FundMandateDocument.publish(world);
+        if (RunManifest.usesPersonalProfiles(world.profile().manifest().runId())
+                || RunManifest.MEDIA_DESKS_RUN_ID.equals(world.profile().manifest().runId())) {
             world.schedulePublishDocument("opening-personal-contacts", "opening-personal-contacts-task", 1L,
                     WorldWebScenario.SOCIAL_CONTACT_DOC, WorldWebScenario.INVESTOR, InformationModel.Audience.publicAudience(),
                     "持有人公开联系说明（EXP）", "登记的一对一私信地址：" + String.join("、", WorldWebScenario.SOCIAL_PERSONS),

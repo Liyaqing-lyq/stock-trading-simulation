@@ -66,8 +66,10 @@ public final class RoleDeliberation {
         }
     }
 
-    private record InputFacts(boolean deliberative, boolean planning, long time, Set<String> objectives, boolean publicPostChoice) {
-        private static final InputFacts LEGACY = new InputFacts(false, false, 0L, Set.of(), false);
+    static final String EMPTY_WAIT_ARGS = "allow-empty-object-v1";
+    private record InputFacts(boolean deliberative, boolean planning, long time, Set<String> objectives,
+                              boolean publicPostChoice, boolean emptyWaitArgs) {
+        private static final InputFacts LEGACY = new InputFacts(false, false, 0L, Set.of(), false, false);
     }
 
     private static InputFacts inputFacts(String text) {
@@ -82,7 +84,8 @@ public final class RoleDeliberation {
             objectives.add(goal.path("id").asText());
         }
         return new InputFacts(true, isPlanning(version), input.path("time").asLong(), Set.copyOf(objectives),
-                "role-choice-v1".equals(engineering.path("publicPostWakePolicy").asText()));
+                "role-choice-v1".equals(engineering.path("publicPostWakePolicy").asText()),
+                EMPTY_WAIT_ARGS.equals(engineering.path("waitArgsPolicy").asText()));
     }
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -245,6 +248,8 @@ public final class RoleDeliberation {
         } else if (!own || review <= now || review - now > MONTH) throw new IllegalArgumentException("BAD_DELIBERATION");
         var action = (ObjectNode) reply.deepCopy();
         action.remove("decision");
+        if (facts.emptyWaitArgs() && "role.wait".equals(action.path("tool").asText())
+                && action.path("args").isObject() && action.path("args").isEmpty()) action.remove("args");
         PersonalResearchNotes.validateAndRemove(action, inputText);
         PersonalContactHistory.validateAndRemove(action, inputText);
         return action;

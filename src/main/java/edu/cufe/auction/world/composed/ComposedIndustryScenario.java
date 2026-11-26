@@ -364,6 +364,16 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.PERSONAL_PROFILES_RUN_ID);
     }
 
+    /** 打开或恢复带有机构受托账册与四岗工作流程的个人经营档。 */
+    public static WorldRuntime openFundMandateOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.FUND_MANDATE_RUN_ID);
+    }
+
+    /** @param journal 独立八媒体档路径 @return 启用八类采编合同的世界 @throws Exception 无法建立或恢复时抛出 */
+    public static WorldRuntime openMediaDesksOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.MEDIA_DESKS_RUN_ID);
+    }
+
     /**
      * 开启为各非银行发行人单独核算贷款和减值的经营实验档。
      * @param journal 新世界或同版本的日志
@@ -372,6 +382,16 @@ public final class ComposedIndustryScenario {
      */
     public static WorldRuntime openIssuerCreditOperating(Path journal) throws Exception {
         return openCompanyInformationOperating(journal, RunManifest.ISSUER_CREDIT_RUN_ID);
+    }
+
+    /**
+     * 开启向银行和借款人经理提供模型贷款工具的独立实验档。
+     * @param journal 同版本的存档或新建路径
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化、恢复或校验失败
+     */
+    public static WorldRuntime openIssuerCreditDecisionsOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.CREDIT_DECISIONS_RUN_ID);
     }
 
     private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
@@ -431,7 +451,7 @@ public final class ComposedIndustryScenario {
             parties.put(customer.ownerId(), new BankingProfile.PartyRef(EngineeringCustomerPolicy.CUSTOMER,
                     customer.ownerId(), customer.cashAccountId(), customer.depositGl()));
         }
-        if (RunManifest.ISSUER_CREDIT_RUN_ID.equals(thinkingRunId)) {
+        if (RunManifest.usesIssuerCredit(thinkingRunId)) {
             for (String issuer : List.of(ComposedManufacturingThreeScenario.TECH, ComposedManufacturingThreeScenario.STRUCT,
                     ComposedManufacturingThreeScenario.VERSA, ComposedPharmaScenario.PHARMA, RESOURCE,
                     HydroIndustryConfig.COMPANY, DigitalIndustryConfig.COMPANY, AgedIndustryConfig.COMPANY)) {
@@ -442,7 +462,7 @@ public final class ComposedIndustryScenario {
         var profile = new BankingProfile(original.banks(), parties, original.custodians(), buckets, original.groups(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::loanGl).distinct().sorted().toList() : original.loanAccounts(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
-        var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.ISSUER_CREDIT_RUN_ID.equals(thinkingRunId)), ComposedWorldScenario.endowment(), Map.of(), Map.of());
+        var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.usesIssuerCredit(thinkingRunId)), ComposedWorldScenario.endowment(), Map.of(), Map.of());
         var charters = new TreeMap<>(ComposedManufacturingThreeScenario.charters());
         List<BoardModel.Seat> seats = new ArrayList<>();
         for (int i = 0; i < 5; i++) seats.add(new BoardModel.Seat("resource-seat-" + i, DIRECTORS.get(i)));
@@ -469,7 +489,8 @@ public final class ComposedIndustryScenario {
         if (thinking) {
             var limits = decisions.limits();
             var timings = new TreeMap<>(decisions.actionMillisByTool());
-            if (RunManifest.PERSONAL_PROFILES_RUN_ID.equals(thinkingRunId)) timings.put("role.library.search", 1000L);
+            if (RunManifest.CREDIT_DECISIONS_RUN_ID.equals(thinkingRunId)) IssuerCreditDecisions.addTimings(timings);
+            if (RunManifest.usesPersonalProfiles(thinkingRunId)) timings.put("role.library.search", 1000L);
             if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
                 timings.put(PersonalMarket.SUBMIT, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
                 timings.put(PersonalMarket.CANCEL, timings.get(RoleTradingView.TOOL_CHILD_CANCEL));
@@ -497,6 +518,7 @@ public final class ComposedIndustryScenario {
             openingRegistry = new OpeningRegistry(externalParties, externalOwners, openingRegistry.securities(), openingRegistry.allocations());
         }
         if (RunManifest.usesEngineeringCustomerRules(thinkingRunId)) openingRegistry = EngineeringCustomerPolicy.register(openingRegistry);
+        if (RunManifest.MEDIA_DESKS_RUN_ID.equals(thinkingRunId)) openingRegistry = MediaDesks.register(openingRegistry);
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -561,8 +583,14 @@ public final class ComposedIndustryScenario {
                 data.put("belief-company-scope", "manufacturing-orders-v1");
                 data.put("research-manager-view", "project-state-v1");
             }
-            if (RunManifest.PERSONAL_PROFILES_RUN_ID.equals(thinkingRunId)) data.putAll(RunManifest.personalProfilePolicies());
-            if (RunManifest.ISSUER_CREDIT_RUN_ID.equals(thinkingRunId)) data.put("issuer-credit", "separate-loan-ledgers-v1");
+            if (RunManifest.usesPersonalProfiles(thinkingRunId)) data.putAll(RunManifest.personalProfilePolicies());
+            if (RunManifest.FUND_MANDATE_RUN_ID.equals(thinkingRunId)) {
+                data.put("fund-mandate-document", "opening-register-v1");
+                data.put("wait-empty-args", "allow-empty-object-v1");
+            }
+            if (RunManifest.MEDIA_DESKS_RUN_ID.equals(thinkingRunId)) data.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (RunManifest.CREDIT_DECISIONS_RUN_ID.equals(thinkingRunId)) data.put("issuer-credit-decisions", "manager-loan-v1");
+            if (RunManifest.usesIssuerCredit(thinkingRunId)) data.put("issuer-credit", "separate-loan-ledgers-v1");
             if (RunManifest.usesContinuingRoles(thinkingRunId)) {
                 data.putAll(RunManifest.CONTINUING_ROLE_POLICIES);
             }

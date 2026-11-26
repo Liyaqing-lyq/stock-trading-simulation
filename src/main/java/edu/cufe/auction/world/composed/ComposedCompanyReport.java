@@ -256,7 +256,7 @@ public record ComposedCompanyReport(String companyPartyId, String basis,
         liabilities.put("托管客户负债", position.custodyClientLiabilities());
         income.put("已实现证券投资损益（累计）", position.realizedSecuritiesPnl());
         income.put("存款利息收入（累计）", position.depositInterest());
-        expense.put("借款利息费用（累计）", position.loanInterest());
+        expense.put("借款利息费用（累计）", position.loanInterestExpense());
         sources.add("BankState/CashLedger 派生：银行存款、应收存款利息与唯一现金权威");
         sources.add("SecuritiesLedger + WorldExchange 派生：持仓按成本计值、已实现损益来自真实成交");
 

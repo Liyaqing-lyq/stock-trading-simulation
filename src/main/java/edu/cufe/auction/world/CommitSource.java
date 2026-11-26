@@ -22,6 +22,10 @@ interface CommitSource {
         return commits().stream().map(WorldJournal::withoutSnapshot).toList();
     }
 
+    default Optional<WorldCommit> nonSnapshotByCommand(String command) {
+        return nonSnapshotCommits().stream().filter(c -> c.commandId().equals(command)).findFirst();
+    }
+
     /** @param position 确认位置 @return 该位置批次；不存在时为空 */
     Optional<WorldCommit> commitAt(long position);
 
@@ -62,6 +66,9 @@ final class JournalCommitSource implements CommitSource {
 
     @Override
     public Optional<WorldCommit> nonSnapshotCommitAt(long position) { return journal.nonSnapshotCommitAt(position); }
+
+    @Override
+    public Optional<WorldCommit> nonSnapshotByCommand(String command) { return journal.nonSnapshotByCommand(command); }
 
     @Override
     public Optional<WorldCommit> commitAt(long position) {

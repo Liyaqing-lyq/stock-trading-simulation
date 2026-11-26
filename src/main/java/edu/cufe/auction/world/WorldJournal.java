@@ -204,6 +204,11 @@ public final class WorldJournal implements AutoCloseable {
                 ? java.util.Optional.of(candidate) : java.util.Optional.empty();
     }
 
+    synchronized java.util.Optional<WorldCommit> nonSnapshotByCommand(String command) {
+        Integer index = commands.get(command);
+        return index == null ? java.util.Optional.empty() : java.util.Optional.of(history.get(index));
+    }
+
     /** 精确读取现有非快照索引；越界为空，不读取或重建历史状态。 */
     synchronized java.util.Optional<WorldCommit> nonSnapshotCommitAt(long position) {
         if (position <= base || position - base > history.size()) return java.util.Optional.empty();
