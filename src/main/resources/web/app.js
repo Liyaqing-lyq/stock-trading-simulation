@@ -2471,12 +2471,17 @@ async function loadPersonalBank(generation) {
 const BANK_KIND_LABELS = {
   DEPOSIT: "存入", WITHDRAW: "取出", PAY: "支付",
   LOAN_REQUEST: "贷款申请", LOAN_ACCEPT: "接受冻结条款", LOAN_APPROVE: "批准本行合同",
-  LOAN_DRAW: "提款放款", LOAN_REPAY: "还本", LOAN_PAY_INTEREST: "付息"
+  LOAN_DRAW: "提款放款", LOAN_REPAY: "还本", LOAN_PAY_INTEREST: "付息",
+  FACILITY_AUTHORIZE: "授权应急额度", FACILITY_DRAW: "提取应急资金", FACILITY_PAY: "偿还应急融资",
+  RESOLUTION_OPEN: "开始银行处置", RESOLUTION_DISTRIBUTE: "依顺位分配准备金"
 };
 
 function renderPersonalBankOps(view) {
   state.personalBank = view;
   const kinds = (view && view.entitlements) || [];
+  $("person-bank-facility-note").textContent = view?.facilityTerms
+    ? [view.facilityTerms, ...(view.facilities || []).map(f => f.id + " · 额度 " + f.limit + " 元，未偿本金 " + f.outstanding + " 元")].join(" ")
+    : "";
   show("person-bank-ops", Boolean(view && view.available) && kinds.length > 0);
   const kindSel = $("person-bank-kind");
   const previous = kindSel.value;
@@ -2551,7 +2556,9 @@ function togglePersonalBankRows() {
     || kind === "LOAN_REPAY" || kind === "LOAN_PAY_INTEREST";
   show("person-bank-source-row", funds);
   show("person-bank-payee-row", kind === "PAY");
-  show("person-bank-amount-row", funds || lifecycle || kind === "LOAN_REQUEST");
+  const facility = kind.startsWith("FACILITY_");
+  show("person-bank-facility-row", facility);
+  show("person-bank-amount-row", funds || lifecycle || kind === "LOAN_REQUEST" || facility);
   show("person-bank-loan-row", lifecycle);
   show("person-bank-terms-row", kind === "LOAN_REQUEST");
 }
@@ -2597,6 +2604,9 @@ async function submitPersonalBankAction() {
     if (kind === "PAY") {
       body.payeeToken = $("person-bank-payee").value;
     }
+    if (kind.startsWith("FACILITY_")) body.loanId = $("person-bank-facility-id").value.trim();
+    if (kind.startsWith("RESOLUTION_")) body.amount = "0";
+    if (kind.startsWith("FACILITY_") || kind.startsWith("RESOLUTION_")) delete body.organizationPartyId;
     if (kind === "LOAN_REQUEST") {
       body.rateU = rateUnits($("person-bank-rate").value);
       body.tenorMs = tenorMillis($("person-bank-tenor").value);
@@ -2639,6 +2649,9 @@ async function submitPersonalBankAction() {
 
 /** 切换身份/离开人物视角时清空本人银行卡片，避免旧身份的存款留在页面上。 */
 function clearPersonalBank() {
+  $("person-bank-facility-note").textContent = "";
+  $("person-bank-facility-id").value = "";
+  show("person-bank-facility-row", false);
   state.personalBank = null;
   if (!$("person-bank-owners")) return;
   $("person-bank-owners").replaceChildren();
