@@ -485,6 +485,23 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> reveal(exchange, slotId));
                 return;
             }
+            if ("/api/me/portfolio-history".equals(path) && "GET".equals(method)) {
+                requirePerson(exchange, session.get(), () -> {
+                    String query = exchange.getRequestURI().getRawQuery();
+                    if (query == null || !query.matches("digest=[0-9a-f]{64}")) {
+                        send(exchange, 400, error("INVALID", "需要一份本人观察的摘要"));
+                        return;
+                    }
+                    try {
+                        var result = host.portfolioHistory(session.get().personId(), query.substring(7));
+                        send(exchange, 200, mapper.writeValueAsString(result));
+                    } catch (IllegalArgumentException absent) {
+                        send(exchange, 404, error("NOT_FOUND", "没有这份个人观察"));
+                    } catch (WorldWebHost.BusyException busy) { throw busy; }
+                    catch (Exception failure) { throw new WorldIoFailure(); }
+                });
+                return;
+            }
             if ("/api/me/view".equals(path) && "GET".equals(method)) {
                 requirePerson(exchange, session.get(), () -> personView(exchange, session.get()));
                 return;
@@ -749,7 +766,7 @@ public final class WorldWebServer implements AutoCloseable {
                 || ("/api/me/read".equals(path) && "POST".equals(method))) {
             return true;
         }
-        return "/api/me/view".equals(path) && "GET".equals(method);
+        return ("/api/me/view".equals(path) || "/api/me/portfolio-history".equals(path)) && "GET".equals(method);
     }
 
     private Optional<WebSessions.Session> resolveSession(HttpExchange exchange) {

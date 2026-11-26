@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import edu.cufe.auction.world.composed.ComposedIndustryScenario;
+import edu.cufe.auction.web.WorldWebHost;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
@@ -137,6 +138,20 @@ class PersonalResearchNotesTest {
             assertEquals("first-view", world.autonomyRoleObservation("nina").at("/engineering/researchNotes/previous/actionId").asText());
             assertEquals("changed-view", current(world, "nina").path("actionId").asText());
             assertEquals(1, world.snapshot().exchange().orElseThrow().orders().size());
+        }
+        try (var host = new WorldWebHost(() -> new WorldWebHost.Opened(
+                ComposedIndustryScenario.openPersonalProfilesOperating(journal), RunManifest.PERSONAL_PROFILES_RUN_ID))) {
+            var page = host.personPage("nina");
+            var cuts = JSON.valueToTree(page.personalResearch()).path("portfolioHistory");
+            String digest = cuts.get(cuts.size() - 1).required("digest").asText();
+            var history = host.portfolioHistory("nina", digest);
+            assertEquals("3000.00", history.accounts().get(0).get("availableCash"));
+            assertEquals(10, history.holdings().size());
+            assertTrue(history.holdings().stream().allMatch(h -> "HOUSE-NINA".equals(h.get("accountId"))));
+            var prior = history.holdings().stream().filter(h -> h.get("quantity").equals(h.get("available"))).count();
+            assertEquals(10, prior);
+            assertTrue(page.view().holdings().stream().anyMatch(h -> h.quantity() > h.available()));
+            assertThrows(IllegalArgumentException.class, () -> host.portfolioHistory("omar", digest));
         }
     }
 

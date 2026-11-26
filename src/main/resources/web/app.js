@@ -196,6 +196,8 @@ function clearPersonDom() {
   $("person-research-timeline").replaceChildren();
   $("person-research-card").hidden = true;
   state.personRelations = null;
+  $("relation-history").replaceChildren();
+  $("relation-history-label").hidden = true;
   $("relation-search").value = "";
   $("relation-layer").value = "";
   $("relation-focus").replaceChildren();
@@ -691,15 +693,32 @@ function renderPersonResearch(research) {
   }
 }
 
-function renderPersonRelations(view) {
+function renderPersonRelations(view, historical = false) {
   const person = view.personPartyId;
+  if (!historical) {
+    const cuts = view.personalResearch?.portfolioHistory || [];
+    const selector = $("relation-history");
+    selector.replaceChildren();
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "当前关系";
+    selector.appendChild(option);
+    for (const cut of cuts) {
+      const entry = document.createElement("option");
+      entry.value = cut.digest;
+      entry.textContent = "本人资产观察 · " + cut.timeMillis + " 毫秒";
+      selector.appendChild(entry);
+    }
+    selector.value = "";
+    $("relation-history-label").hidden = cuts.length === 0;
+  }
   const roles = { RESEARCHER: "研究员", PORTFOLIO_MANAGER: "基金经理", RISK_OFFICER: "风控",
     EXECUTION_TRADER: "交易员", JOURNALIST: "记者", EDITOR: "编辑", COMPANY_MANAGER: "公司经理" };
   const rows = [
     ...(view.activeAppointments || []).map(a => ({ from: person, layer: "任职", relation: roles[a.role] || a.role,
       to: a.organization, validFrom: a.startsAt, validUntil: a.endsAt, basis: "任期 " + a.startsAt + " 至 " + a.endsAt + " 毫秒" })),
     ...view.accounts.map(a => ({ from: person, layer: "账户", relation: a.kind === "PERSONAL" ? "本人所有" : "获授权查看",
-      to: a.accountId, basis: "账户属主 " + a.ownerId })),
+      to: a.accountId, basis: "账户属主 " + a.ownerId + " · 可用 " + a.availableCash + " 元" })),
     ...view.holdings.map(h => ({ from: h.accountId, layer: "持仓", relation: "持有",
       to: h.symbol, quantity: h.quantity, unit: "股", basis: h.quantity + " 股，可卖 " + h.available + " 股" })),
     ...(view.media?.documents?.rows || []).map(d => ({ from: person, layer: "阅读", relation: "读完",
@@ -708,7 +727,7 @@ function renderPersonRelations(view) {
       relation: ({DIRECT_MESSAGE: "来信", INTERVIEW_TURN: "采访发言", NAMED_FORECAST: "具名预测"})[d.kind],
       to: person, basis: d.docId + " v" + d.version }))
   ];
-  state.personRelations = { person, timeMillis: view.timeMillis, rows };
+  state.personRelations = { person, timeMillis: view.timeMillis, rows, historical };
   const focus = $("relation-focus");
   const previous = focus.value;
   const nodes = new Set([person, ...rows.flatMap(row => [row.from, row.to])]);
@@ -769,7 +788,8 @@ function filterPersonRelations() {
     link.append(document.createTextNode("→ " + row.relation + " → "), nodeButton(row.to));
     branches.get(row.from).append(link);
   }
-  $("relation-cut").textContent = "世界时点 " + state.personRelations.timeMillis + " 毫秒 · " + rows.length + " 条可见关系";
+  $("relation-cut").textContent = (state.personRelations.historical ? "本人当时所见资产 " : "当前世界时点 ")
+    + state.personRelations.timeMillis + " 毫秒 · " + rows.length + " 条可见关系";
   $("relation-export").disabled = rows.length === 0;
 }
 
@@ -1983,10 +2003,26 @@ $("relation-search").addEventListener("input", filterPersonRelations);
 $("relation-layer").addEventListener("change", filterPersonRelations);
 $("relation-focus").addEventListener("change", filterPersonRelations);
 $("relation-depth").addEventListener("change", filterPersonRelations);
+$("relation-history").addEventListener("change", () => guard(showRelationHistory()));
+async function showRelationHistory() {
+  const digest = $("relation-history").value;
+  const generation = state.generation;
+  state.personRelations = null;
+  $("relation-graph").replaceChildren();
+  $("relation-focus").replaceChildren();
+  fillTable("relation-edges", [], () => undefined);
+  $("relation-export").disabled = true;
+  $("relation-cut").textContent = "正在读取…";
+  const result = await request("GET", digest ? "/api/me/portfolio-history?digest=" + encodeURIComponent(digest) : "/api/me/view");
+  if (!isCurrent(generation) || state.mode !== "person" || $("relation-history").value !== digest) return;
+  if (result.status === 401) { sessionLost(); return; }
+  if (result.status !== 200) { $("relation-cut").textContent = "这份观察当前不可用。"; return; }
+  renderPersonRelations(result.payload, Boolean(digest));
+}
 $("relation-export").addEventListener("click", () => {
   if (state.mode !== "person" || !state.personRelations) return;
   const { person, timeMillis } = state.personRelations;
-  const payload = JSON.stringify({ person, timeMillis, focus: $("relation-focus").value,
+  const payload = JSON.stringify({ person, timeMillis, observation: state.personRelations.historical ? "本人历史资产" : "当前关系", focus: $("relation-focus").value,
     depth: Number($("relation-depth").value), layer: $("relation-layer").value,
     search: $("relation-search").value, relations: visiblePersonRelations() }, null, 2);
   const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));

@@ -921,6 +921,12 @@ public final class WorldWebHost implements AutoCloseable {
                 if (contacts.path("namedReadings").size() > 0) research.put("namedReadings", contacts.get("namedReadings"));
                 if (contacts.path("assessments").size() > 0) research.put("contactAssessments", contacts.get("assessments"));
                 var actions = input.at("/deliberation/recentDecisions");
+                var cuts = snapshot.decisions().orElseThrow().state().decisions().stream()
+                        .filter(decision -> personId.equals(decision.personPartyId()))
+                        .sorted(Comparator.comparingLong(DecisionModel.Decision::cutoffPosition).reversed())
+                        .limit(MAX_ROWS).map(decision -> Map.of("digest", decision.inputDigest(),
+                                "timeMillis", num(decision.cutoffTimeMillis()))).distinct().toList();
+                if (!cuts.isEmpty()) research.put("portfolioHistory", cuts);
                 for (var row : actions) {
                     var basis = row.path("basedOnNote").textValue();
                     if (basis != null && (basis.equals(notes.at("/current/actionId").textValue())
@@ -931,6 +937,48 @@ public final class WorldWebHost implements AutoCloseable {
                 }
             }
             return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research);
+        });
+    }
+
+    /** 本人决定时收到、当前仍获准查看的资产及观察时点。 */
+    public record PortfolioHistory(String personPartyId, String timeMillis,
+                                   List<Map<String,String>> accounts, List<Map<String,String>> holdings) { }
+
+    /**
+     * 读取本人决定时实际收到的资产观察，并按当前权限复核每个账户。
+     * @param person 已验证会话中的人物
+     * @param digest 本人冻结输入摘要
+     * @return 原截止的可见资产
+     * @throws Exception 世界读取失败或该观察不可用
+     */
+    public PortfolioHistory portfolioHistory(String person, String digest) throws Exception {
+        return call(() -> {
+            var world = readyNow();
+            if (!"household-plans-v1".equals(world.profile().manifest().dataVersions().get("personal-opening-profiles")))
+                throw new IllegalArgumentException("没有这份个人观察");
+            var decision = world.snapshot().decisions().orElseThrow().state().decisions().stream()
+                    .filter(d -> person.equals(d.personPartyId()) && d.inputDigest().equals(digest))
+                    .findFirst().orElseThrow(() -> new IllegalArgumentException("没有这份个人观察"));
+            var input = (com.fasterxml.jackson.databind.node.ObjectNode) PAYLOAD_MAPPER.readTree(decision.inputText());
+            edu.cufe.auction.world.RoleInputTables.expand(input);
+            var current = new HashMap<String, RoleView.Account>();
+            for (var a : world.roleView(person).accounts()) current.put(a.accountId(), a);
+            var accounts = new ArrayList<Map<String,String>>();
+            var holdings = new ArrayList<Map<String,String>>();
+            var allowed = new HashSet<String>();
+            for (var a : input.at("/profile/accounts")) {
+                String id = a.required("accountId").asText();
+                if (!current.containsKey(id)) continue;
+                allowed.add(id);
+                accounts.add(Map.of("accountId", id, "kind", a.required("kind").asText(),
+                        "ownerId", current.get(id).ownerId(), "availableCash", a.required("availableCash").asText()));
+            }
+            for (var h : input.at("/profile/holdings")) {
+                String id = h.required("accountId").asText();
+                if (allowed.contains(id)) holdings.add(Map.of("accountId", id, "symbol", h.required("symbol").asText(),
+                        "quantity", h.required("quantity").asText(), "available", h.required("available").asText()));
+            }
+            return new PortfolioHistory(person, num(decision.cutoffTimeMillis()), accounts, holdings);
         });
     }
 
