@@ -1846,7 +1846,7 @@ public final class WorldRuntime implements AutoCloseable {
             childManifest = json.convertValue(content.get("manifest"), RunManifest.class);
         } catch (IOException | RuntimeException invalid) {
             throw new BranchRejectedException(BRANCH_CHILD_INVALID,
-                    "子档首帧缺少可解析的来源或清单", invalid);
+                    "当前版本无法解析子档首帧来源或清单。可在本机查看归档：WorldWebApp --archive inspect \"" + childFile + "\"", invalid);
         }
         if (origin == null || childManifest == null) {
             throw new BranchRejectedException(BRANCH_ORIGIN_INCOMPLETE, "子档首帧缺少来源或清单");
@@ -8817,6 +8817,12 @@ public final class WorldRuntime implements AutoCloseable {
                 PendingTask planned = manufacturingFundPlannedTask(taskId, due, duration, mapper.writeValueAsString(payload));
                 return new PlacedAction(recorded.actionId(), tool, planned.kind(), taskId, commandId,
                         planned.dueTimeMillis(), planned.payload(), null, null);
+            }
+            case PersonalLibrarySearch.TOOL -> {
+                if (!"visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
+                    throw new IOException("该档未启用资料检索");
+                kind = PendingTask.ROLE_LIBRARY_SEARCH_V1;
+                body = strict(PersonalLibrarySearch.Request.class, args);
             }
             case RoleTradingView.TOOL_READING_START -> {
                 kind = PendingTask.ROLE_TRADING_READ_V1;
@@ -18393,7 +18399,8 @@ public final class WorldRuntime implements AutoCloseable {
                  PendingTask.INFORMATION_COMPLETE_READ_V1 -> completeInformation(task);
             case PendingTask.ROLE_TRADING_READ_V1,
                  PendingTask.ROLE_TRADING_UNREAD_V1 -> completeRoleReading(task);
-            case PendingTask.ROLE_TRADING_RESEARCH_V1,
+            case PendingTask.ROLE_LIBRARY_SEARCH_V1,
+                 PendingTask.ROLE_TRADING_RESEARCH_V1,
                  PendingTask.ROLE_TRADING_TARGET_V1,
                  PendingTask.ROLE_TRADING_REVIEW_V1,
                  PendingTask.ROLE_TRADING_CONFIRM_V1,
@@ -28812,6 +28819,8 @@ public final class WorldRuntime implements AutoCloseable {
                 && activeManager(snap.roles(), person, snap.research().companyPartyId(), now)) {
             tools.add(ResearchDecisionTools.ACT);
         }
+        if ("visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
+            tools.add(PersonalLibrarySearch.TOOL);
         // 同一人可能同时是工程公司与章程公司董事：去重但保留首次出现顺序，保证输入可逐字重演。
         if (manufacturingDecisionEnabled() && snap.manufacturing() != null
                 && activeManager(snap.roles(), person, manufacturingCompanyParty(), now)) {
@@ -29350,6 +29359,9 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         String roleContext = manifest.dataVersions().get("role-context");
+        if ("visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
+            PersonalLibrarySearch.append(root, person, snap.trading(), snap.decisions(),
+                    () -> roleView(snap, person, snap.roles().access()));
         if ("role-choice-v1".equals(manifest.dataVersions().get("public-post-wake")))
             root.put("publicPostWakePolicy", "role-choice-v1");
         if ("authority-v1".equals(roleContext) || RoleDeliberation.hasEvidence(roleContext)) {
@@ -29358,6 +29370,10 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (RoleDeliberation.isDeliberative(roleContext))
             RoleDeliberation.append(root, person, now, snap.decisions(), snap.pending());
+        if (PersonalOpeningProfiles.VERSION.equals(manifest.dataVersions().get("personal-opening-profiles"))) {
+            PersonalOpeningProfiles.append(root, person, now, PersonalMarket.accounts(snap.roles(), person),
+                    orderedOpenings, snap.accounts(), snap.exchange());
+        }
         if ("office-policy-v1".equals(manifest.dataVersions().get("media-editorial-view")) && snap.media() != null) {
             for (var office : snap.roles().access().appointments()) {
                 if (!office.personPartyId().equals(person) || !office.activeAt(now)) continue;
@@ -29394,7 +29410,10 @@ public final class WorldRuntime implements AutoCloseable {
             var information = snap.information().information();
             PersonalResearchNotes.append(root, person, snap.decisions(), recallAt(snap, person), read ->
                     InformationModel.visible(InformationModel.audienceOf(information, read.docId()).orElseThrow(),
-                            snap.roles().access(), person, now, read.publishedAt(), groupAccess(snap), roleBoards(snap)));
+                            snap.roles().access(), person, now, read.publishedAt(), groupAccess(snap), roleBoards(snap)),
+                    "household-plans-v1".equals(manifest.dataVersions().get("personal-opening-profiles")));
+            if (PersonalContactHistory.VERSION.equals(manifest.dataVersions().get(PersonalContactHistory.POLICY)))
+                PersonalContactHistory.append(root, person, snap.decisions());
         }
         if (RoleDeliberation.CONTEXTUAL_VERSION.equals(roleContext))
             RoleGovernanceOutcomeContext.append(root, person, now, snap.decisions(), snap.engineering(), snap.roles(), company -> {
@@ -31361,6 +31380,13 @@ public final class WorldRuntime implements AutoCloseable {
         BeliefRun beliefsAfter = state.beliefs();
 
         switch (task.kind()) {
+            case PendingTask.ROLE_LIBRARY_SEARCH_V1 -> {
+                if (!"visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
+                    throw new IOException("该档未启用资料检索");
+                subject = mapper.readValue(payload.body(), PersonalLibrarySearch.Request.class).query();
+                accepted = true;
+                reason = "SEARCHED";
+            }
             case PendingTask.ROLE_TRADING_RESEARCH_V1 -> {
                 WorldRoleSession.ResearchDraft draft = mapper.readValue(payload.body(),
                         WorldRoleSession.ResearchDraft.class);
@@ -32910,6 +32936,7 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("人物回报与原请求不一致：" + report.taskId());
         }
         String field = switch (request.kind()) {
+            case PendingTask.ROLE_LIBRARY_SEARCH_V1 -> "query";
             case PendingTask.ROLE_TRADING_READ_V1, PendingTask.ROLE_TRADING_UNREAD_V1 -> "docId";
             case PendingTask.ROLE_TRADING_RESEARCH_V1 -> "researchId";
             case PendingTask.ROLE_TRADING_CHILD_V1, PendingTask.ROLE_TRADING_CHILD_CANCEL_V1 -> "childId";
@@ -37591,7 +37618,8 @@ public final class WorldRuntime implements AutoCloseable {
             requireNotBranchFile(file);
         }
         WorldJournal opened = new WorldJournal(file, manifest.runId(), base,
-                "gzip-frame-v1".equals(manifest.dataVersions().get("journal-codec")));
+                "gzip-frame-v1".equals(manifest.dataVersions().get("journal-codec")),
+                mode == null ? openingContent(ordered) : null);
         this.journal = opened;
         this.branchOrigin = mode == null ? null : mode.origin();
         this.commitSource = base == 0L ? new JournalCommitSource(opened)

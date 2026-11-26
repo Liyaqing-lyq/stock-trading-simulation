@@ -3,6 +3,7 @@ package edu.cufe.auction.world;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -17,7 +18,7 @@ import java.util.Optional;
 /**
  * 世界日志的只读扫描器：按长度、长度反码、JSON 与 SHA-256 逐帧核对，不取写锁、不建文件、不截尾。
  *
- * <p>用途只有一个：给独立分支读一条<b>别人</b>的日志。父档正被其写入者使用时，本类只打开
+ * <p>用于分支核对与离线历史导出。父档正被其写入者使用时，本类只打开
  * {@link StandardOpenOption#READ} 通道，因此不加锁、不创建、不截断，也不改动父档一个字节；
  * 这与 {@link WorldJournal} 的构造语义（CREATE + WRITE + 文件锁 + 修不完整尾）刻意不同，
  * 不能互相替代。</p>
@@ -162,14 +163,34 @@ public final class WorldJournalScanner {
      * @throws IOException 文件不可读或帧损坏
      */
     public static Scan scanTo(Path file, long stopAtPosition) throws IOException {
+        List<Frame> frames = new ArrayList<>();
+        var scan = walk(file, stopAtPosition, frames, null);
+        return new Scan(file.toAbsolutePath(), scan.first() == null ? null : scan.first().runId(),
+                scan.first() == null ? 0 : scan.first().position() - 1, frames.stream().map(Frame::commit).toList(),
+                frames, scan.confirmedBytes(), scan.fileBytes(), scan.tailIncomplete());
+    }
+
+    /** 流式扫描所选前缀的首末批次和物理边界；空档首末批次均为空。 */
+    public record Prefix(WorldCommit first, WorldCommit last, long confirmedBytes, long fileBytes, boolean tailIncomplete) { }
+
+    /**
+     * 逐帧核对物理格式、摘要和位置，可同时复制所读到的原始帧。内存用量与帧大小有关。
+     * @param file 本机日志
+     * @param position 目标位置；Long.MAX_VALUE 读取到打开时的文件末尾
+     * @param bytes 原始前缀输出；只查看时可为空，失败可能已写入部分字节
+     * @return 实际首末位置及字节边界，调用方须判断是否到达所需位置
+     * @throws IOException 物理帧损坏或读写失败
+     */
+    public static Prefix readPrefix(Path file, long position, OutputStream bytes) throws IOException {
+        return walk(file, position, null, bytes);
+    }
+
+    private static Prefix walk(Path file, long stopAtPosition, List<Frame> frames, OutputStream bytes) throws IOException {
         if (stopAtPosition < 1) {
             throw new IllegalArgumentException("扫描截止位置必须为正：" + stopAtPosition);
         }
         Path absolute = file.toAbsolutePath();
-        List<WorldCommit> commits = new ArrayList<>();
-        List<Frame> frames = new ArrayList<>();
-        String runId = null;
-        long base = 0;
+        WorldCommit first = null, last = null;
         long fileBytes;
         try (FileChannel channel = FileChannel.open(absolute, StandardOpenOption.READ)) {
             fileBytes = channel.size();
@@ -206,28 +227,29 @@ public final class WorldJournalScanner {
                     throw new CorruptFrameException("世界日志帧 JSON 不合法：" + invalid.getMessage(),
                             offset);
                 }
-                if (runId == null) {
-                    runId = commit.runId();
-                    base = commit.position() - 1L;
-                    if (base < 0) {
-                        throw new CorruptFrameException("世界日志首帧位置非法", offset);
-                    }
-                } else if (!runId.equals(commit.runId())) {
+                if (first == null) {
+                    first = commit;
+                } else if (!first.runId().equals(commit.runId())) {
                     throw new CorruptFrameException("世界日志运行标识在同一文件内改变", offset);
                 }
-                long expected = base + commits.size() + 1L;
+                long expected = last == null ? first.position() : last.position() + 1;
                 if (commit.position() != expected) {
                     throw new CorruptFrameException("世界日志提交位置不连续：期望 " + expected
                             + "，实际 " + commit.position(), offset);
                 }
                 long end = offset + 8L + length + DIGEST_BYTES;
-                commits.add(commit);
-                frames.add(new Frame(commit, offset, end));
+                last = commit;
+                if (frames != null) frames.add(new Frame(commit, offset, end));
+                if (bytes != null) {
+                    bytes.write(header.array());
+                    bytes.write(payload);
+                    bytes.write(checksum);
+                }
                 offset = end;
                 stopped = commit.position() >= stopAtPosition;
             }
             boolean tail = !stopped && offset < fileBytes;
-            return new Scan(absolute, runId, base, commits, frames, offset, fileBytes, tail);
+            return new Prefix(first, last, offset, fileBytes, tail);
         }
     }
 

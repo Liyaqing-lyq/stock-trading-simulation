@@ -672,6 +672,16 @@ public final class WorldWebHost implements AutoCloseable {
         return writer.isAlive();
     }
 
+    /** 等待运行工厂完成开局或续跑，保留实际恢复异常供启动入口报告。 */
+    public void awaitOpening() throws Exception {
+        try {
+            ready.get();
+        } catch (ExecutionException failure) {
+            if (failure.getCause() instanceof Exception error) throw error;
+            throw new IllegalStateException("世界初始化失败", failure.getCause());
+        }
+    }
+
     /** @return 队列当前长度（测试/观测用） */
     public int queueSize() {
         return queue.size();
@@ -844,7 +854,7 @@ public final class WorldWebHost implements AutoCloseable {
 
     /** 个人页面在同一截止取角色投影与可选采编数据；旧档案media为空。 */
     public record PersonPage(RoleView view, Map<String, Object> media,
-                             List<Map<String, Object>> publicReports) { }
+                             List<Map<String, Object>> publicReports, Map<String, Object> personalResearch) { }
 
     /**
      * 读取指定已验证人物的个人页面；正文仅取实际可回忆经历，不查管理端原件。
@@ -859,7 +869,7 @@ public final class WorldWebHost implements AutoCloseable {
             RoleTradingView trading = snapshot.media().isPresent() ? current.openRoleSession(personId).view() : null;
             RoleView view = trading == null ? current.roleView(personId) : trading.profile();
             var publicReports = CompanyPublications.personalReports(current, snapshot, view);
-            if (trading == null) return new PersonPage(view, null, publicReports);
+            if (trading == null) return new PersonPage(view, null, publicReports, Map.of());
             List<Map<String, Object>> stories = new ArrayList<>();
             Set<String> visibleStories = new LinkedHashSet<>();
             for (RoleTradingView.MediaStory story : trading.media()) {
@@ -897,7 +907,30 @@ public final class WorldWebHost implements AutoCloseable {
             media.put("stories", bounded(stories)); media.put("reports", bounded(reports));
             media.put("documents", bounded(documents));
             media.put("tools", trading.tools());
-            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports);
+            Map<String, Object> research = new LinkedHashMap<>();
+            if ("household-plans-v1".equals(current.profile().manifest().dataVersions().get("personal-opening-profiles"))) {
+                var input = current.autonomyRoleObservation(personId).path("engineering");
+                for (var goal : input.at("/deliberation/objectives")) {
+                    if (goal.has("personalPlan")) research.put("goal", goal);
+                }
+                var notes = input.path("researchNotes");
+                for (String field : List.of("previous", "current")) {
+                    if (notes.has(field)) research.put(field, notes.get(field));
+                }
+                var contacts = input.path("contactHistory");
+                if (contacts.path("namedReadings").size() > 0) research.put("namedReadings", contacts.get("namedReadings"));
+                if (contacts.path("assessments").size() > 0) research.put("contactAssessments", contacts.get("assessments"));
+                var actions = input.at("/deliberation/recentDecisions");
+                for (var row : actions) {
+                    var basis = row.path("basedOnNote").textValue();
+                    if (basis != null && (basis.equals(notes.at("/current/actionId").textValue())
+                            || basis.equals(notes.at("/previous/actionId").textValue()))) {
+                        research.put("decision", row);
+                        break;
+                    }
+                }
+            }
+            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research);
         });
     }
 

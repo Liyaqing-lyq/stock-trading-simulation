@@ -133,6 +133,66 @@ class AgedOrderTermsTest {
         }
     }
 
+    @Test void directorsCanFundAnAlreadyRejectedReceiptAndManagerCanReturnAfterTermEnd() throws Exception {
+        Path journal = dir.resolve("late-budget.journal");
+        List<String> directors = BaselineIndustryConfig.directors(COMPANY);
+        long period = AgedIndustryConfig.PERIOD_MILLIS;
+        var procurement = BoardModel.BudgetCategory.PROCUREMENT;
+        var price = new BigDecimal("50.00");
+        var order = Map.of("orderId", "late-budget-order", "units", "5");
+        var receipt = Map.of("orderId", "late-budget-order");
+        BigDecimal openingTotal;
+        try (var w = ComposedIndustryScenario.openContinuingRolesOperating(journal)) {
+            openingTotal = total(w);
+            OperationsFixture.grantLinesAndAppoint(w, COMPANY, directors, MANAGER, "first-term",
+                    List.of(new BoardModel.BudgetLine(0, procurement, price)));
+            assertTrue(act(w, "order", AgedOperations.Action.ORDER_RAW, order).accepted());
+            w.advanceTo(period);
+            var supplier = cash(w, AgedIndustryConfig.SUPPLIER_ACCOUNT);
+            var company = cash(w, AgedIndustryConfig.COMPANY_ACCOUNT);
+            assertEquals("BUDGET_NOT_SET", act(w, "before-budget", AgedOperations.Action.RECEIVE_RAW, receipt).reason());
+            assertEquals(company, cash(w, AgedIndustryConfig.COMPANY_ACCOUNT));
+            assertEquals(supplier, cash(w, AgedIndustryConfig.SUPPLIER_ACCOUNT));
+
+            // 复用同届董事此前已读的材料；第二期刚开始，原在岗经理不需要再次被任命。
+            String doc = "first-term-budget-doc", meeting = "late-budget";
+            long now = w.snapshot().timeMillis();
+            w.scheduleCompanyBoardConvene("bc", "bct", now+10, COMPANY, CHAIR, meeting, now+100, now+200, now+3000, false);
+            for (int i=0; i<4; i++)
+                w.scheduleCompanyBoardAttend("ba"+i, "bat"+i, now+20+i, COMPANY, directors.get(i), meeting);
+            w.scheduleCompanyBoardMaterial("bm", "bmt", now+30, COMPANY, CHAIR, meeting, "material", doc, 1);
+            w.scheduleCompanyBoardBudgetProposal("bp", "bpt", now+40, COMPANY, CHAIR, meeting,
+                    List.of(new BoardModel.BudgetLine(1, procurement, price)));
+            for (int i=0; i<4; i++)
+                w.scheduleCompanyBoardVote("bv"+i, "bvt"+i, now+2000+i, COMPANY, directors.get(i), meeting, BoardModel.Vote.YES, 1000);
+            w.scheduleCompanyBoardImplement("bi", "bit", now+4000, COMPANY, CHAIR, meeting);
+            w.advanceTo(now+4000);
+            assertEquals(price, BoardModel.availableBudget(w.boardOfCompany(COMPANY).orElseThrow().board(), 1, procurement));
+            assertEquals(supplier, cash(w, AgedIndustryConfig.SUPPLIER_ACCOUNT));
+            assertTrue(act(w, "after-budget", AgedOperations.Action.RECEIVE_RAW, receipt).accepted());
+            assertEquals(company.subtract(price), cash(w, AgedIndustryConfig.COMPANY_ACCOUNT));
+            assertEquals(supplier.add(price), cash(w, AgedIndustryConfig.SUPPLIER_ACCOUNT));
+            assertEquals("UNKNOWN_ORDER", act(w, "duplicate", AgedOperations.Action.RECEIVE_RAW, receipt).reason());
+            assertEquals(supplier.add(price), cash(w, AgedIndustryConfig.SUPPLIER_ACCOUNT));
+
+            w.advanceTo(3*period+86400000);
+            assertTrue(w.autonomyRoleObservation(MANAGER).at("/engineering/managerships").isEmpty());
+            assertThrows(IllegalArgumentException.class, () -> act(w, "expired", AgedOperations.Action.ORDER_RAW,
+                    Map.of("orderId","new-order","units","5")));
+            OperationsFixture.grantBudgetAndAppoint(w, COMPANY, directors, MANAGER, "new-term", List.of(3L,4L));
+            assertTrue(act(w, "new-order", AgedOperations.Action.ORDER_RAW, Map.of("orderId","new-order","units","5")).accepted());
+            w.advanceTo(4*period);
+            var before = cash(w, AgedIndustryConfig.SUPPLIER_ACCOUNT);
+            assertTrue(act(w, "renewed-receipt", AgedOperations.Action.RECEIVE_RAW, Map.of("orderId","new-order")).accepted());
+            assertEquals(before.add(price), cash(w, AgedIndustryConfig.SUPPLIER_ACCOUNT));
+            assertEquals(openingTotal, total(w));
+        }
+        try (var w = ComposedIndustryScenario.openContinuingRolesOperating(journal)) {
+            assertEquals(openingTotal, total(w));
+            assertEquals(10, w.operationsRun().orElseThrow().aged().ledger().rawLots().stream().mapToLong(lot -> lot.remaining()).sum());
+        }
+    }
+
     private static void checkTerms(JsonNode terms) {
         assertEquals("下单不付现", terms.required("orderPayment").asText());
         assertEquals(1, terms.required("earliestReceiptAfterPeriods").intValue());

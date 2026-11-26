@@ -163,6 +163,12 @@ public final class RoleDeliberation {
                     if (isPlanning(frozen.path("engineering").path("roleContextVersion").asText())) {
                         try {
                             validatedAction(d.inputText(), reply);
+                            if (d.status() == DecisionModel.Status.RECORDED && reply.has("basedOnNote")
+                                    && "v2".equals(frozen.at("/engineering/researchNotes/version").textValue()))
+                                row.put("basedOnNote", reply.get("basedOnNote").textValue());
+                            if (d.status() == DecisionModel.Status.RECORDED && reply.has("basedOnContactAssessment")
+                                    && PersonalContactHistory.VERSION.equals(frozen.at("/engineering/contactHistory/version").textValue()))
+                                row.put("basedOnContactAssessment", reply.get("basedOnContactAssessment").textValue());
                             long duration = reply.path("decision").path("reviewAfterMillis").longValue();
                             row.put("reviewAfterMillis", duration).put("derivedReviewAt", Math.addExact(frozen.path("time").longValue(), duration));
                         } catch (IllegalArgumentException | ArithmeticException invalid) { row.put("invalidStatement", true); }
@@ -240,6 +246,7 @@ public final class RoleDeliberation {
         var action = (ObjectNode) reply.deepCopy();
         action.remove("decision");
         PersonalResearchNotes.validateAndRemove(action, inputText);
+        PersonalContactHistory.validateAndRemove(action, inputText);
         return action;
     }
 

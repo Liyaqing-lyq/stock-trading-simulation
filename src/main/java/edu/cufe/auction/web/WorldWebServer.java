@@ -2694,11 +2694,15 @@ public final class WorldWebServer implements AutoCloseable {
             response.put("holdings", holdings);
             response.put("market", market);
             response.put("appointments", view.appointments().size());
+            response.put("activeAppointments", view.appointments().stream().map(a -> Map.of(
+                    "organization", a.organizationPartyId(), "role", a.role().name(),
+                    "startsAt", Long.toString(a.startsAt()), "endsAt", Long.toString(a.endsAt()))).toList());
             response.put("catalog", view.catalog().size());
             response.put("readings", view.readings().size());
             response.put("observations", view.observations().size());
             response.put("permissions", view.permissions().size());
             if (!page.publicReports().isEmpty()) response.put("publicReports", page.publicReports());
+            if (!page.personalResearch().isEmpty()) response.put("personalResearch", page.personalResearch());
             if (page.media() != null) response.put("media", page.media());
             send(exchange, 200, mapper.writeValueAsString(response));
         } catch (WorldWebHost.BusyException busy) {

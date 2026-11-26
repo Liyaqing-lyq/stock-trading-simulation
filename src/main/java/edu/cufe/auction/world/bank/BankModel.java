@@ -178,7 +178,7 @@ public record Outcome(boolean accepted, String reason, String receipt,
             case FACILITY_PROVISION -> facilityProvision(w, config, cmd);
             case FACILITY_DEFAULT -> facilityDefault(w, cmd);
             case MIGRATE -> migrate(w, config, cmd, now);
-            case ACCRUE_LOAN -> accrueLoanCommand(w, cmd, now);
+            case ACCRUE_LOAN -> accrueLoanCommand(w, cmd, now, BankConfig.ISSUER_CREDIT_ARCHIVE.equals(config.archiveId()));
             case ACCRUE_DEPOSIT -> accrueDepositCommand(w, cmd, now);
             case PAY_LOAN_INTEREST -> payLoanInterest(w, cmd, now);
             case PAY_DEPOSIT_INTEREST -> payDepositInterest(w, cmd, now);
@@ -846,14 +846,20 @@ public record Outcome(boolean accepted, String reason, String receipt,
         w.receipt.put("amount", Money.text(amount));
     }
 
-    private static void accrueLoanCommand(Working w, BankCommand cmd, long now) {
+    private static void accrueLoanCommand(Working w, BankCommand cmd, long now, boolean checkMaturity) {
         String bank = cmd.text("bank");
         String borrower = cmd.text("borrower");
         long toMs = cmd.integer("toMs");
         requireActor(cmd, bank);
         requireBank(w, bank);
-        accrueLoan(w, bank, borrower, optionalTranche(cmd), toMs, now);
+        String trancheId = optionalTranche(cmd);
+        accrueLoan(w, bank, borrower, trancheId, toMs, now);
         BankState.Loan loan = w.draft.loan(bank, borrower);
+        if (checkMaturity && trancheId != null && toMs >= requireTranche(loan, trancheId).terms().maturityMs()) {
+            loan = new BankState.Loan(loan.tranches().stream().map(tranche ->
+                    tranche.trancheId().equals(trancheId) ? matured(tranche) : tranche).toList());
+            w.draft.putLoan(bank, borrower, loan);
+        }
         w.receipt.put("borrower", borrower);
         w.receipt.put("toMs", Long.toString(toMs));
         w.receipt.put("accrued", Money.text(loan.accruedInterest()));
@@ -926,13 +932,7 @@ public record Outcome(boolean accepted, String reason, String receipt,
         List<BankState.Tranche> next = new ArrayList<>();
         for (BankState.Tranche tranche : loan.tranches()) {
             if (tranche.terms() != null && now >= tranche.terms().maturityMs()) {
-                boolean settled = tranche.contract().signum() == 0
-                        && tranche.interestReceivable().signum() == 0;
-                next.add(new BankState.Tranche(tranche.trancheId(), tranche.source(),
-                        tranche.contract(), tranche.onbook(), tranche.writtenOff(),
-                        tranche.terms().withStatus(
-                                settled ? BankState.SETTLED : BankState.PAST_DUE, !settled),
-                        null));
+                next.add(matured(tranche));
             } else {
                 next.add(tranche);
             }
@@ -944,6 +944,13 @@ public record Outcome(boolean accepted, String reason, String receipt,
         w.receipt.put("overdue", Boolean.toString(updated.overdue()));
         w.receipt.put("principal", Money.text(updated.contract()));
         w.receipt.put("interestReceivable", Money.text(updated.interestReceivable()));
+    }
+
+    private static BankState.Tranche matured(BankState.Tranche tranche) {
+        boolean settled = tranche.contract().signum() == 0 && tranche.interestReceivable().signum() == 0;
+        return new BankState.Tranche(tranche.trancheId(), tranche.source(), tranche.contract(),
+                tranche.onbook(), tranche.writtenOff(),
+                tranche.terms().withStatus(settled ? BankState.SETTLED : BankState.PAST_DUE, !settled), null);
     }
 
     // ------------------------------------------------------------ 承诺

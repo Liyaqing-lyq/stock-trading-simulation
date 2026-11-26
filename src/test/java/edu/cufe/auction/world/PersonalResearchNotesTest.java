@@ -86,6 +86,60 @@ class PersonalResearchNotesTest {
         return note;
     }
 
+    @Test void correctedReportChangesOnlyTheReaderWhoReadItAndItsNoteCanSupportAnOrder() throws Exception {
+        Path journal = dir.resolve("personal-revisions.journal");
+        String doc = "customer-progress";
+        try (var world = ComposedIndustryScenario.openPersonalProfilesOperating(journal)) {
+            long at = world.snapshot().timeMillis() + 1;
+            world.schedulePublishDocument("announce", "announce", at, doc, "investor",
+                    InformationModel.Audience.publicAudience(), "客户进度", "客户称已完成验收",
+                    "受控验收材料", 1000, List.of());
+            world.advanceTo(at);
+            world.openRoleSession("nina").startReading("read-first", "read-first", at + 1, doc, 1);
+            world.advanceTo(at + 1001);
+            var first = note("验收已经完成，还要看款项何时到账");
+            ((ObjectNode) first.at("/evidence/0")).put("docId", doc);
+            assertEquals(DecisionModel.Outcome.WAIT, waitWithNote(world, "nina", "first-view", first));
+            long next = world.snapshot().timeMillis() + ManufacturingTemplateModel.PERIOD_MILLIS;
+            world.schedulePublishDocumentVersion("correct", "correct", next, doc, "客户更正",
+                    "已验收的是首批，余单尚未交付", "受控验收材料", 1000, List.of());
+            world.advanceTo(next);
+            var revised = note("只对首批的回款作判断").put("revises", "first-view")
+                    .put("changeReason", "客户更正了验收范围");
+            ((ObjectNode) revised.at("/evidence/0")).put("docId", doc).put("version", 2);
+            assertEquals(DecisionModel.Outcome.TECHNICAL_FAILED, waitWithNote(world, "nina", "unread-update", revised));
+            assertEquals(first, current(world, "nina").path("note"));
+            world.openRoleSession("nina").startReading("read-update", "read-update", next + 60_000, doc, 2);
+            world.advanceTo(next + 61_000);
+            assertEquals(DecisionModel.Outcome.WAIT, waitWithNote(world, "nina", "changed-view", revised));
+            var notes = world.autonomyRoleObservation("nina").at("/engineering/researchNotes");
+            assertEquals(first, notes.at("/previous/note"));
+            assertEquals(revised, notes.at("/current/note"));
+            assertTrue(current(world, "omar").isMissingNode());
+
+            var order = JSON.createObjectNode().put("tool", PersonalMarket.SUBMIT).put("basedOnNote", "changed-view");
+            String symbol = world.profile().registry().securities().get(0).symbol();
+            order.putObject("args").put("accountId", "HOUSE-NINA").put("symbol", symbol)
+                    .put("side", "SELL").put("quantity", 1).put("limitPrice", "10.00");
+            assertEquals(DecisionModel.Outcome.INTENT, decide(world, "nina", "act-on-change", order));
+            var action = world.snapshot().decisions().orElseThrow().actionRef("act-on-change");
+            world.advanceTo(action.dueMillis());
+            var feedback = world.autonomyRoleObservation("nina").at("/engineering/deliberation/lastActionResult");
+            assertEquals("changed-view", feedback.path("basedOnNote").asText());
+            assertEquals("APPLIED", feedback.path("execution").asText());
+            assertEquals("ACTIVE", feedback.path("orderStatus").asText());
+            assertEquals(1, world.snapshot().exchange().orElseThrow().orders().stream()
+                    .filter(o -> "HOUSE-NINA".equals(o.accountId()) && o.live()).count());
+            var foreign = JSON.createObjectNode().put("tool", "role.wait").put("basedOnNote", "changed-view");
+            assertEquals(DecisionModel.Outcome.TECHNICAL_FAILED, decide(world, "omar", "foreign-note", foreign));
+        }
+        try (var world = ComposedIndustryScenario.openPersonalProfilesOperating(journal)) {
+            assertEquals("first-view", world.autonomyRoleObservation("nina").at("/engineering/researchNotes/previous/actionId").asText());
+            assertEquals("changed-view", current(world, "nina").path("actionId").asText());
+            assertEquals(1, world.snapshot().exchange().orElseThrow().orders().size());
+        }
+    }
+
     private static JsonNode current(WorldRuntime world, String person) throws Exception {
         return world.autonomyRoleObservation(person).at("/engineering/researchNotes/current");
     }
@@ -102,14 +156,18 @@ class PersonalResearchNotesTest {
     }
 
     private static DecisionModel.Outcome waitWithNote(WorldRuntime world, String person, String id, JsonNode note) throws Exception {
+        var reply = JSON.createObjectNode().put("tool", "role.wait");
+        if (note != null) reply.set("privateNote", note);
+        return decide(world, person, id, reply);
+    }
+
+    private static DecisionModel.Outcome decide(WorldRuntime world, String person, String id, ObjectNode reply) throws Exception {
         world.beginDecisionSession("session-" + id);
         var route = new DecisionModel.Route("trading", "key-1", "deepseek-flash", 1L, 25, 1_000_000, 2048, 1);
         world.openDecisions("open-" + id, List.of(new DecisionRun.Request(person, id, "wake", route)));
         var call = world.dispatchLiveDecision("dispatch-" + id, id).call();
         assertNotNull(call);
-        var reply = JSON.createObjectNode().put("tool", "role.wait");
         reply.putObject("decision").put("objective", JSON.readTree(call.inputText()).at("/engineering/deliberation/objectives/0/id").asText()).put("basis", "等待披露").put("reviewAfterMillis", 60_000);
-        if (note != null) reply.set("privateNote", note);
         var typed = new DecisionModel.Reply(call.runId(), id, call.attemptId(), call.attemptNo(), call.recoveryGeneration(),
                 reply.toString(), DecisionModel.Usage.unknownCost(1, 100, 30), "fixture:research");
         assertEquals(WorldRuntime.CompletionOffer.QUEUED, world.offerLiveDecisionCompletion(LiveCompletionInbox.Completion.business(typed)));

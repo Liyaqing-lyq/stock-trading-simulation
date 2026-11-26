@@ -354,6 +354,26 @@ public final class ComposedIndustryScenario {
         return openCompanyInformationOperating(journal, RunManifest.CONTINUING_ROLES_RUN_ID);
     }
 
+    /**
+     * 开启含家庭现金安排与个人初始自述的实验档。
+     * @param journal 新建或同版本存档路径
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或存档不相容
+     */
+    public static WorldRuntime openPersonalProfilesOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.PERSONAL_PROFILES_RUN_ID);
+    }
+
+    /**
+     * 开启为各非银行发行人单独核算贷款和减值的经营实验档。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openIssuerCreditOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.ISSUER_CREDIT_RUN_ID);
+    }
+
     private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
         return open(journal, true, true, true, true, false, false, true, true,
                 edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true,
@@ -367,7 +387,7 @@ public final class ComposedIndustryScenario {
 
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating, String thinkingRunId) throws Exception {
         boolean thinking = thinkingRunId != null;
-        boolean separateInvestorAccounts = connected || RunManifest.CONTINUING_ROLES_RUN_ID.equals(thinkingRunId);
+        boolean separateInvestorAccounts = connected || RunManifest.usesContinuingRoles(thinkingRunId);
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -411,10 +431,18 @@ public final class ComposedIndustryScenario {
             parties.put(customer.ownerId(), new BankingProfile.PartyRef(EngineeringCustomerPolicy.CUSTOMER,
                     customer.ownerId(), customer.cashAccountId(), customer.depositGl()));
         }
+        if (RunManifest.ISSUER_CREDIT_RUN_ID.equals(thinkingRunId)) {
+            for (String issuer : List.of(ComposedManufacturingThreeScenario.TECH, ComposedManufacturingThreeScenario.STRUCT,
+                    ComposedManufacturingThreeScenario.VERSA, ComposedPharmaScenario.PHARMA, RESOURCE,
+                    HydroIndustryConfig.COMPANY, DigitalIndustryConfig.COMPANY, AgedIndustryConfig.COMPANY)) {
+                buckets.put(issuer, new BankingProfile.RiskBucket("book-" + issuer, "issuer-" + issuer,
+                        "book-" + issuer, "impair-" + issuer));
+            }
+        }
         var profile = new BankingProfile(original.banks(), parties, original.custodians(), buckets, original.groups(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::loanGl).distinct().sorted().toList() : original.loanAccounts(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
-        var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile), ComposedWorldScenario.endowment(), Map.of(), Map.of());
+        var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.ISSUER_CREDIT_RUN_ID.equals(thinkingRunId)), ComposedWorldScenario.endowment(), Map.of(), Map.of());
         var charters = new TreeMap<>(ComposedManufacturingThreeScenario.charters());
         List<BoardModel.Seat> seats = new ArrayList<>();
         for (int i = 0; i < 5; i++) seats.add(new BoardModel.Seat("resource-seat-" + i, DIRECTORS.get(i)));
@@ -441,6 +469,7 @@ public final class ComposedIndustryScenario {
         if (thinking) {
             var limits = decisions.limits();
             var timings = new TreeMap<>(decisions.actionMillisByTool());
+            if (RunManifest.PERSONAL_PROFILES_RUN_ID.equals(thinkingRunId)) timings.put("role.library.search", 1000L);
             if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
                 timings.put(PersonalMarket.SUBMIT, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
                 timings.put(PersonalMarket.CANCEL, timings.get(RoleTradingView.TOOL_CHILD_CANCEL));
@@ -532,7 +561,9 @@ public final class ComposedIndustryScenario {
                 data.put("belief-company-scope", "manufacturing-orders-v1");
                 data.put("research-manager-view", "project-state-v1");
             }
-            if (RunManifest.CONTINUING_ROLES_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.PERSONAL_PROFILES_RUN_ID.equals(thinkingRunId)) data.putAll(RunManifest.personalProfilePolicies());
+            if (RunManifest.ISSUER_CREDIT_RUN_ID.equals(thinkingRunId)) data.put("issuer-credit", "separate-loan-ledgers-v1");
+            if (RunManifest.usesContinuingRoles(thinkingRunId)) {
                 data.putAll(RunManifest.CONTINUING_ROLE_POLICIES);
             }
             if (RunManifest.usesPersonalLimitRules(thinkingRunId)) {

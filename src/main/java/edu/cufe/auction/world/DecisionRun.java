@@ -761,6 +761,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
         RolePlanningContext.append(root, wakeReason, config);
         EngineeringManagerHistory.project(root);
+        PersonalContactHistory.project(root);
         boolean useTables = RoleInputTables.VERSION.equals(roleInputFormat);
         if (BoardProcedureView.VERSION.equals(roleInputFormat) || useTables) BoardProcedureView.project(root);
         try {
@@ -867,6 +868,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             return List.of();
         }
         if (TOOL_CONTRACT_VERSION_V6.equals(version)) {
+            if (PersonalLibrarySearch.TOOL.equals(tool)) return List.<String[]>of(new String[]{"query", "string"});
             // 只声明模型可选的业务对象；actor/seat 由运行层按本人真实任职派生，不能自授
             switch (tool) {
                 case PersonalMarket.SUBMIT -> {

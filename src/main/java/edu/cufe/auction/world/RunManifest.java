@@ -80,6 +80,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 同一十公司世界启用个人研究笔记、媒体采编视图与可选公开动态唤醒。 */
     public static final String CONTINUING_ROLES_RUN_ID = "web-continuing-roles-operating-v1";
 
+    /** 有本人开局自述和实际资产对照的经营档。 */
+    public static final String PERSONAL_PROFILES_RUN_ID = "web-personal-profiles-operating-v1";
+
+    /** 继承持续角色档、为九家非银行发行人分别登记授信科目的实验档。 */
+    public static final String ISSUER_CREDIT_RUN_ID = "web-issuer-credit-operating-v1";
+
+    /** 判断运行是否采用三个独立投资者及持续角色输入。 */
+    public static boolean usesContinuingRoles(String runId) {
+        return CONTINUING_ROLES_RUN_ID.equals(runId) || ISSUER_CREDIT_RUN_ID.equals(runId) || PERSONAL_PROFILES_RUN_ID.equals(runId);
+    }
+
     /** 新经营档冻结的角色与账户配置版本。 */
     public static final Map<String, String> CONTINUING_ROLE_POLICIES = Map.of(
             "investor-opening", "three-households-v1",
@@ -87,9 +98,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             "media-editorial-view", "office-policy-v1",
             "public-post-wake", "role-choice-v1");
 
+    /** 此档的初始自述指纹、互动和检索规则，均随首帧固定。 */
+    public static Map<String, String> personalProfilePolicies() {
+        return Map.of("personal-opening-profiles", PersonalOpeningProfiles.VERSION,
+                "personal-opening-profiles-sha256", PersonalOpeningProfiles.fingerprint(),
+                "personal-contact-history", "answered-contacts-v1",
+                "person-library-search", "visible-index-v1");
+    }
+
     /** 判断本档是否沿用个人账户空簿限价申报规则。 */
     public static boolean usesPersonalLimitRules(String runId) {
-        return PERSONAL_LIMIT_RUN_ID.equals(runId) || CONTINUING_ROLES_RUN_ID.equals(runId);
+        return PERSONAL_LIMIT_RUN_ID.equals(runId) || usesContinuingRoles(runId);
     }
 
     /** 判断本档是否区分水电累计物量与已结电费。 */
@@ -1158,7 +1177,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
             if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
             if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
-            if (CONTINUING_ROLES_RUN_ID.equals(runId)) {
+            if (PERSONAL_PROFILES_RUN_ID.equals(runId)) expectedData.putAll(personalProfilePolicies());
+            if (ISSUER_CREDIT_RUN_ID.equals(runId)) expectedData.put("issuer-credit", "separate-loan-ledgers-v1");
+            if (usesContinuingRoles(runId)) {
                 expectedData.putAll(CONTINUING_ROLE_POLICIES);
             }
             if (usesPersonalLimitRules(runId)) {

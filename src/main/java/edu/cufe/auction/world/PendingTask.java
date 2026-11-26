@@ -216,6 +216,9 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 人物会话：开始阅读一个明确版本，并核对本次观察任职（COMPLETION）。 */
     public static final String ROLE_TRADING_READ_V1 = "ROLE_TRADING_READ_V1";
 
+    /** 本人在目录与已读资料中检索自选关键词；检索本身不产生阅读经历。 */
+    public static final String ROLE_LIBRARY_SEARCH_V1 = "ROLE_LIBRARY_SEARCH_V1";
+
     /** 人物会话：取消本人正在读的一单（COMPLETION）。 */
     public static final String ROLE_TRADING_UNREAD_V1 = "ROLE_TRADING_UNREAD_V1";
 
@@ -403,7 +406,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  INFORMATION_PUBLISH_V1, INFORMATION_PUBLISH_VERSION_V1,
                  INFORMATION_START_READ_V1, INFORMATION_CANCEL_READ_V1,
                  INFORMATION_COMPLETE_READ_V1,
-                 ROLE_TRADING_READ_V1, ROLE_TRADING_UNREAD_V1,
+                 ROLE_LIBRARY_SEARCH_V1, ROLE_TRADING_READ_V1, ROLE_TRADING_UNREAD_V1,
                  ROLE_TRADING_RESEARCH_V1, ROLE_TRADING_TARGET_V1,
                  ROLE_TRADING_REVIEW_V1, ROLE_TRADING_CONFIRM_V1,
                  ROLE_TRADING_HALT_V1, ROLE_TRADING_CANCEL_V1,

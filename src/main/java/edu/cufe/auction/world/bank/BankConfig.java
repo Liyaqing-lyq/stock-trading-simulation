@@ -22,6 +22,8 @@ import java.util.TreeSet;
  * 指纹精确序列化所有行为与声明字段（比率 6 位、金额 2 位、文本原样）。</p>
  */
 public final class BankConfig {
+    /** 九家发行人独立授信、按每份合同的计息到期帧判断逾期的实验档。 */
+    public static final String ISSUER_CREDIT_ARCHIVE = "COMPOSED-ISSUER-CREDIT-EXP-V1";
 
     /** 元数据上限：precision 与 |scale| 都不超过该值。 */
     private static final int MAX_META = 40;

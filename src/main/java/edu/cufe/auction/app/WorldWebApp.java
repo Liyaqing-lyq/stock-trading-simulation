@@ -55,12 +55,18 @@ public final class WorldWebApp {
     }
 
     /**
-     * 启动并阻塞，直至进程结束或启动失败。
+     * 启动并阻塞，直至进程结束或启动失败。本机管理员可在原模块不可用时用
+     * {@code --archive inspect|show 日志 [位置|end]} 查看档案，或用
+     * {@code --archive export 日志 位置|end 新文件} 导出原始前缀；此模式不加载密钥或启动世界。
      *
      * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating 或 world-continuing-roles-operating，均可省略
      * @throws Exception 启动失败（凭据、目录、端口、世界）
      */
     public static void main(String[] args) throws Exception {
+        if (args.length > 0 && "--archive".equals(args[0])) {
+            System.out.println(WorldArchive.run(args));
+            return;
+        }
         Path workDir = Path.of(args.length > 0 ? args[0] : DEFAULT_WORK_DIR);
         Path keyFile = Path.of(args.length > 1 ? args[1] : DEFAULT_KEY_FILE);
         int port = args.length > 2 ? Integer.parseInt(args[2]) : DEFAULT_PORT;
@@ -69,7 +75,9 @@ public final class WorldWebApp {
         }
 
         String mode = args.length > 3 ? args[3] : "live";
-        boolean continuingRolesMode = mode.equals("world-continuing-roles-operating");
+        boolean personalProfilesMode = mode.equals("world-personal-profiles-operating");
+        boolean issuerCreditMode = mode.equals("world-issuer-credit-operating");
+        boolean continuingRolesMode = mode.equals("world-continuing-roles-operating") || issuerCreditMode || personalProfilesMode;
         boolean personalLimitMode = mode.equals("world-personal-limit-operating") || continuingRolesMode;
         boolean hydroSettlementMode = mode.equals("world-hydro-settlement-operating") || personalLimitMode;
         boolean tableMode = mode.equals("world-role-table-operating") || hydroSettlementMode;
@@ -97,7 +105,7 @@ public final class WorldWebApp {
                 && !mode.equals("composed") && !mode.equals("custody") && !mode.equals("research") && !mode.equals("world") && !mode.equals("world-manager") && !mode.equals("world-debug") && !mode.equals("world-ready") && !mode.equals("world-manufacturing") && !mode.equals("world-industry") && !mode.equals("world-hydro") && !mode.equals("world-baseline") && !(mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode)) && !mode.equals("world-behavior")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-contextual-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating 或 world-continuing-roles-operating");
+                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-contextual-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating、world-continuing-roles-operating 、world-issuer-credit-operating 或 world-personal-profiles-operating");
         }
         boolean worldMode = mode.equals("world");
         boolean managerMode = mode.equals("world-manager");
@@ -146,7 +154,9 @@ public final class WorldWebApp {
         }
         WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode))
                 ? new WorldWebHost(() -> {
-                    var runtime=continuingRolesMode ? ComposedIndustryScenario.openContinuingRolesOperating(workDir.resolve("world-continuing-roles-operating-v1.journal"))
+                    var runtime=personalProfilesMode ? ComposedIndustryScenario.openPersonalProfilesOperating(workDir.resolve("world-personal-profiles-operating-v1.journal"))
+                            : issuerCreditMode ? ComposedIndustryScenario.openIssuerCreditOperating(workDir.resolve("world-issuer-credit-operating-v1.journal"))
+                            : continuingRolesMode ? ComposedIndustryScenario.openContinuingRolesOperating(workDir.resolve("world-continuing-roles-operating-v1.journal"))
                             : personalLimitMode ? ComposedIndustryScenario.openPersonalLimitOperating(workDir.resolve("world-personal-limit-operating-v1.journal"))
                             : hydroSettlementMode ? ComposedIndustryScenario.openHydroSettlementOperating(workDir.resolve("world-hydro-settlement-operating-v1.journal"))
                             : tableMode ? ComposedIndustryScenario.openRoleTableOperating(workDir.resolve("world-role-table-operating-v1.journal"))
@@ -278,12 +288,13 @@ public final class WorldWebApp {
 
         try {
             // 先确认世界真的能打开（失败即退出，不监听端口）
+            host.awaitOpening();
             host.adminSnapshot();
         } catch (Exception failure) {
             System.err.println("世界初始化失败，未启动 Web 服务：" + failure.getMessage());
             host.close();
             routes.close();
-            throw new IOException("Web 启动失败：世界初始化失败");
+            throw new IOException("Web 启动失败：" + failure.getMessage(), failure);
         }
 
         String bootstrap = newBootstrap();

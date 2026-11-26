@@ -170,15 +170,24 @@ public final class ComposedWorldScenario {
 
     /** 同一冻结银行规则用于显式的新主体集合；旧入口仍取原档案。 */
     static BankConfig config(BankingProfile profile) {
+        return config(profile, false);
+    }
+
+    static BankConfig config(BankingProfile profile, boolean issuerCredit) {
         Map<String, BankConfig.DepositOffer> offers = new LinkedHashMap<>();
         offers.put(BANK, new BankConfig.DepositOffer(BANK, "OFF-" + BANK,
                 InterestAccrual.rateU(new BigDecimal("0.02")), 365L * 86_400_000L,
                 BankRules.CREDIT_OFFER));
-        return new BankConfig.Builder(profile).version(24).archiveId("COMPOSED-BANK-EXP")
+        Map<String, String> groups = new java.util.TreeMap<>(profile.parties().containsKey("cufe")
+                ? Map.of("cufe", "G-CUFE", "eng-a", "G-ENGA", "eng-b", "G-ENGB") : Map.of("eng-a", "G-ENGA"));
+        if (issuerCredit) profile.buckets().forEach((borrower, bucket) -> {
+            if (bucket.group() != null) groups.put(borrower, bucket.group());
+        });
+        return new BankConfig.Builder(profile).version(24).archiveId(issuerCredit ? BankConfig.ISSUER_CREDIT_ARCHIVE : "COMPOSED-BANK-EXP")
                 .label(RunManifest.RULES_COMPOSED_BANK_WORLD_V2)
                 .coverageRule("DECLARED_UNIVERSE_V1")
                 .interest(BankConfig.Interest.act365()).depositOffers(offers)
-                .groupMap(profile.parties().containsKey("cufe") ? Map.of("cufe", "G-CUFE", "eng-a", "G-ENGA", "eng-b", "G-ENGB") : Map.of("eng-a","G-ENGA"))
+                .groupMap(groups)
                 .thresholds(Map.of("cet1_min", money("0.01"), "cet1_buffer", money("0.01"),
                         "t1_min", money("0.01"), "tcr_min", money("0.01"),
                         "lev_min", money("0.01"), "single_name", money("9.90"),

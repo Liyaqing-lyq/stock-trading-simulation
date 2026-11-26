@@ -1,0 +1,493 @@
+{
+  "aged-company-director-1": {
+    "initialExperience": "我照着亲友的口述做腌菜时，味道差别来自静置的日子而非配料表。",
+    "purpose": "让家族食谱保留原来制作所需的等待时间。",
+    "reviewCondition": "不同人对同一批次的日期有分歧时查当时的笔记。",
+    "reviewDay": 17,
+    "tradeoff": "给家人准确时间很重要，亲友的记忆又未必能精确到某一天。",
+    "worldQuestion": "经营材料给出的日期各指生产、熟成还是可销售？等待时间的依据是什么？"
+  },
+  "aged-company-director-2": {
+    "initialExperience": "我曾负责登记聚餐意向，口头感兴趣和实际到场的人数相差很大。",
+    "purpose": "为社区聚餐提前梳理真正需要准备的份数。",
+    "reviewCondition": "预约数或已确认到场人数改变时重算准备范围。",
+    "reviewDay": 6,
+    "tradeoff": "准备充足会增加剩余，过度压缩又可能使晚到的人没有份。",
+    "worldQuestion": "资料里的数量对应渠道准备接货、已经接货还是终端实际售出？"
+  },
+  "aged-company-director-3": {
+    "initialExperience": "我做过陶器，作品出窑并不表示可以立刻用于盛食。",
+    "purpose": "记录自己的手工课程从取料到真正能使用的时间。",
+    "reviewCondition": "加工完成与可交付日期出现差异时核对条件。",
+    "reviewDay": 10,
+    "tradeoff": "想尽快送出成品，另一方面还要留出查验的时间。",
+    "worldQuestion": "某批货的完成记录与客户能够接货的时点之间，还有哪些条件尚待确认？"
+  },
+  "aged-company-director-4": {
+    "initialExperience": "我在旧书市集替亲友摆过摊，摊位收到的书和读者真正带走的书各有一张清单。",
+    "purpose": "给亲友的代售物品留下逐件交接记录。",
+    "reviewCondition": "收到退回、取走或货款确认时逐项对照。",
+    "reviewDay": 7,
+    "tradeoff": "简化登记会省下当场时间，收摊后分账时却更难回忆。",
+    "worldQuestion": "一笔渠道款对应哪一次出库或售出，什么时候能从我能看的材料确认？"
+  },
+  "aged-company-director-5": {
+    "initialExperience": "我翻找旧照片时发现，用年份分类容易漏掉一家人跨年的团聚。",
+    "purpose": "妥善安排和家人一起整理老照片的时间。",
+    "reviewCondition": "有人补充照片拍摄地点或否认原有日期时重看。",
+    "reviewDay": 20,
+    "tradeoff": "按统一日期归档比较快，逐人核对可能发现值得保留的细节。",
+    "worldQuestion": "几次披露使用的期间和批次是否相同，能否把看似不同的数字放在一条时间线上？"
+  },
+  "aged-manager": {
+    "initialExperience": "我发现家中同一天放进柜子的东西，也会因为取用顺序不同而剩下不同批次。",
+    "purpose": "维护一份家用储藏物品的日期记录。",
+    "reviewCondition": "发出与盘点的数量对不上时检查日期。",
+    "reviewDay": 8,
+    "tradeoff": "做完整盘点占用休息，跳过核对会让家人重复采买。",
+    "worldQuestion": "如果看到库存和终端报告，它们分别记录什么时点、哪些批次，哪里还需发问？"
+  },
+  "alice": {
+    "initialExperience": "我整理地方志时见过同一个数字被三本书转引，原来的表却用了不同单位。",
+    "purpose": "为自己的读书小组写一份能回溯原出处的月度笔记。",
+    "reviewCondition": "在两个场合碰到同一组数字或原表更新时回看最早的出处。",
+    "reviewDay": 12,
+    "tradeoff": "核对每一处引文会占用我筹备读书会的时间，同时兼任的事务也有不同的披露边界。",
+    "worldQuestion": "如果同一事项出现在基金研究材料和公开报道里，我能找到各自独立的来源吗？哪些内容可在当前身份引用？"
+  },
+  "bea": {
+    "initialExperience": "我校订展览说明时曾收到两位读者对相同照片的不同解释。",
+    "purpose": "让自己参与编辑的口述资料保留可供质疑和修改的注释。",
+    "reviewCondition": "出现新的署名解释或原照片补充说明时回看已有注释。",
+    "reviewDay": 11,
+    "tradeoff": "询问更多人需要较长准备，准时展出也有明确约定。",
+    "worldQuestion": "新收到的解释能否补足原稿缺项，还是只是重新表述同一段来源？"
+  },
+  "bob": {
+    "initialExperience": "我和家人共用周历，发现把可以改期的事写成硬约反而会造成失约。",
+    "purpose": "给家人留出可以预先确定的共处时间，使临时请求有地方安放。",
+    "reviewCondition": "两件原先独立的安排落到同一时段时重新排时间。",
+    "reviewDay": 7,
+    "tradeoff": "提前定下安排比较省心，但新情况也可能值得改期；工作上的受托资金另有用途。",
+    "worldQuestion": "现在待办的会议、材料阅读与产品工作分别需要什么时段？哪些已经承诺，哪些仍可由我安排？"
+  },
+  "carol": {
+    "initialExperience": "我帮亲友交接照护时发现，只有联系人没有替代方案很难应付临时变动。",
+    "purpose": "把家中应急安排写成别人能接手的清单。",
+    "reviewCondition": "关键联系人或交接时点改变时核对备用安排。",
+    "reviewDay": 9,
+    "tradeoff": "写得太细不易维护，写得太粗又会让后来的人猜测。",
+    "worldQuestion": "一个关键条件改变后，当时记录的备用安排还有哪些能在本人权限内执行？"
+  },
+  "dave": {
+    "initialExperience": "有一次我把路线长度和实际跑完的距离记在了一栏，回看时才发现两者不同。",
+    "purpose": "训练长跑时照自己的记录分配体力，把周末时间留给约好的跑伴。",
+    "reviewCondition": "预约与完成记录不一致时回看两张记录的时间。",
+    "reviewDay": 5,
+    "tradeoff": "赶着完成计划容易牺牲核对时间，逐项复核也可能错过原先的约定。",
+    "worldQuestion": "我所见的决定、委托和执行回报是否对应同一件事？差别出现在哪个时点？"
+  },
+  "digital-company-director-1": {
+    "initialExperience": "我协助排课时，两门课都排进日历，但只有一间教室能用。",
+    "purpose": "给社区技能班排出可持续的讲课时段。",
+    "reviewCondition": "场地或讲师的可用时间变化时核对排期。",
+    "reviewDay": 7,
+    "tradeoff": "增加课程能照顾更多人，同时会挤压布置和收场时间。",
+    "worldQuestion": "业务材料里的交付安排是否占用同一段时间？我能核对到哪些已经实际发生的交付？"
+  },
+  "digital-company-director-2": {
+    "initialExperience": "我清点过一份家庭订阅表，付款月数并不能说明实际使用了多少次。",
+    "purpose": "帮助家人评估长期订阅是不是仍然有用。",
+    "reviewCondition": "一次续期开始或新增使用记录时再看过去一段时间。",
+    "reviewDay": 15,
+    "tradeoff": "取消太早会失去便利，继续保留也可能只剩习惯。",
+    "worldQuestion": "一次服务的签约、使用与续订，在已有公开记录中可以区分到哪一步？"
+  },
+  "digital-company-director-3": {
+    "initialExperience": "我记录课程进度时，下载材料和做完练习曾被我写在同一列。",
+    "purpose": "按真实完成情况安排个人自学项目。",
+    "reviewCondition": "课后练习结果或下一阶段先修材料到手时回看进度。",
+    "reviewDay": 13,
+    "tradeoff": "追求全部学完会拖延应用，太快跳过练习也会高估掌握程度。",
+    "worldQuestion": "所见资料对技术准入和实际提供服务各有什么记录？哪一段还需要进一步说明？"
+  },
+  "digital-company-director-4": {
+    "initialExperience": "我帮邻居设置设备，首次安装常比后续维护久，单看次数会错估工作量。",
+    "purpose": "记录自己为邻里提供技术帮助所花的时间。",
+    "reviewCondition": "同类求助连续出现或所需时间改变时重排。",
+    "reviewDay": 8,
+    "tradeoff": "答应更多求助可能让人受益，也会占掉已答应家人的时间。",
+    "worldQuestion": "若需求突然增加，已知的服务次数和实际承担工作量是否支持同一解释？"
+  },
+  "digital-company-director-5": {
+    "initialExperience": "我更换旧电脑时，才发现一些文件只有软件快捷方式没有原件。",
+    "purpose": "为个人资料整理出将来可以迁移的目录。",
+    "reviewCondition": "重要文件只能从一个入口打开时复查备份。",
+    "reviewDay": 18,
+    "tradeoff": "早一点备份费时间，等到设备更换才处理又难找人确认。",
+    "worldQuestion": "若一个介绍被更新，能否从我看过的旧版本还原哪些判断依赖原表述？"
+  },
+  "digital-manager": {
+    "initialExperience": "我带过一次短期学习小组，报名人数与每周真正提问的人不同。",
+    "purpose": "给自己组织的兴趣小组留出稳定答疑时间。",
+    "reviewCondition": "一段时间内问题集中在相同环节时重新估算答疑时长。",
+    "reviewDay": 9,
+    "tradeoff": "固定答疑容易提前安排，按需调整也可能更符合大家的时间。",
+    "worldQuestion": "新收到的服务记录能说明哪个环节经常被问到，哪些需要看到后续履约再确认？"
+  },
+  "ed": {
+    "initialExperience": "我接手过一份多人改过的活动通知，过期时间因为被复制而保留在两个版本里。",
+    "purpose": "为社区简报保留一份能追踪更正的底稿。",
+    "reviewCondition": "两个版本指向不同日期、或有人指出标题有歧义时复查底稿。",
+    "reviewDay": 4,
+    "tradeoff": "修订太晚会让旧消息继续流转，每个细节都等齐也会耽搁发出。",
+    "worldQuestion": "同一报道有不同版本时，最后一个已核实的版本是什么，哪部分仍只有投稿人的说法？"
+  },
+  "eng-a-customer-representative": {
+    "initialExperience": "我参与社区活动场地交接时，两方对同一处磨损的描述相同，照片却是两个房间。",
+    "purpose": "把自己参与的使用需求讨论记清，使交接人员能区分已看见的情况与待确认事项。",
+    "reviewCondition": "有新验收材料或有人提出需求范围不同的时候复查清单。",
+    "reviewDay": 6,
+    "tradeoff": "尽早交接有利于使用，保留未核实项也关系到后续责任划分。",
+    "worldQuestion": "对方描述的完成范围与我在本人可见材料中能核实的范围一致吗？"
+  },
+  "erin": {
+    "initialExperience": "我收拾旧相册时，发现不同亲戚都记得借出一件东西，却没人记得交接日期。",
+    "purpose": "整理家庭旧物的借用清单，让东西能回到实际持有人手里。",
+    "reviewCondition": "相互矛盾的归还时间出现时回看各人留下的记录。",
+    "reviewDay": 16,
+    "tradeoff": "追问旧账会耗费人情；交接记录缺失也使下次安排更难。",
+    "worldQuestion": "两家公司同时要求我出席时，哪些通知已经收到，哪次会议我实际到过？"
+  },
+  "frank": {
+    "initialExperience": "我组织家庭观星时订过多个日期，天气条件不同，每次能做的观测也不同。",
+    "purpose": "把社区科普活动的阶段安排写得让参与人知道何时可以暂停。",
+    "reviewCondition": "原定观察条件变化或新增设备限制出现时再定下一步。",
+    "reviewDay": 12,
+    "tradeoff": "提前约齐别人需要明确日期，保留退出条件也很重要。",
+    "worldQuestion": "项目达到某一阶段时，记录中哪些条件已经具备，哪一个仍是下一阶段的前提？"
+  },
+  "grace": {
+    "initialExperience": "我替亲友整理过数张内容相近的预约单，早期版本上的时间后来改过。",
+    "purpose": "让家人的就诊资料有清楚的日期和版本，方便下次说明。",
+    "reviewCondition": "意见或日期有变动时核对究竟是哪一张单。",
+    "reviewDay": 8,
+    "tradeoff": "迅速找到一张单子很方便，确认最后一次更改却需要多花时间。",
+    "worldQuestion": "如果两份材料记载的阶段时点不同，我实际看到的是哪个版本、谁发布的？"
+  },
+  "heidi": {
+    "initialExperience": "我做过家庭植物生长记录，两盆花照明时间不同却共用了一条曲线。",
+    "purpose": "学习判断个人阅读中的证据是否可以互相比较。",
+    "reviewCondition": "观察条件改变或有人给出不同解释时重检记录。",
+    "reviewDay": 19,
+    "tradeoff": "同一图表便于讲给家人听，同时容易掩盖不同条件。",
+    "worldQuestion": "两个项目的阶段结果是否在同一条件下取得，哪些差别会限制我作比较？"
+  },
+  "hydro-director-1": {
+    "initialExperience": "我对照过两年同月份的徒步日志，同一路段在不同日期的可走程度并不一样。",
+    "purpose": "安排一家人的河畔出行，并留下能应对临时变化的备选日期。",
+    "reviewCondition": "抵达前收到新的现场记录时重新看行程。",
+    "reviewDay": 8,
+    "tradeoff": "提前约人需要确定日子，等到情况明朗又可能大家都没空。",
+    "worldQuestion": "同一期间的实际水电记录是否支持把上期情况沿用到本期，哪里仍有不确定？"
+  },
+  "hydro-director-2": {
+    "initialExperience": "我换过缴费方式，计量日期、出账日期和扣款日期曾分属三个星期。",
+    "purpose": "把家中每月实际收到的公用事业账单核对清楚。",
+    "reviewCondition": "新的结算单到手或出账与实扣不一致时核对。",
+    "reviewDay": 15,
+    "tradeoff": "自动记一笔最轻松，不同日期产生争议时需要原始账单。",
+    "worldQuestion": "报告里的电量、应收和收到的现金各属于哪一段期间，能否对上？"
+  },
+  "hydro-director-3": {
+    "initialExperience": "我换泳池后发现长度不同，单看往返次数会误判练习量。",
+    "purpose": "给自己的游泳训练保留一份连续且可比较的记录。",
+    "reviewCondition": "记录口径改变或比较的条件不同后再对照。",
+    "reviewDay": 12,
+    "tradeoff": "合并记录省事，重新标明尺度才适合长期比较。",
+    "worldQuestion": "不同期间发电量采用相同的计量口径吗？累计数与当期新增能否分别核实？"
+  },
+  "hydro-director-4": {
+    "initialExperience": "我接过临时维修电话，先前没有记录故障开始的时间，大家很难判断影响多久。",
+    "purpose": "给社区维护志愿者留够交接时间。",
+    "reviewCondition": "出现新故障时间或其他人的记录与自己不同再复核。",
+    "reviewDay": 5,
+    "tradeoff": "马上帮忙能缩短等待，找齐信息也会占用值班空档。",
+    "worldQuestion": "当材料给出异常变化时，能否找出开始时间、持续范围和较早的记录？"
+  },
+  "hydro-director-5": {
+    "initialExperience": "我曾把短程探访排得太紧，一次路程延误就压缩了后面的安排。",
+    "purpose": "留出可自行安排的周末陪伴家中长辈。",
+    "reviewCondition": "路程、约见或原先可用的人手变化时回看安排。",
+    "reviewDay": 7,
+    "tradeoff": "答应所有邀约可以照顾更多人，分开安排才有余地。",
+    "worldQuestion": "如果会议时间有变，我会不会因此错过已安排的阅读或其他会面？"
+  },
+  "hydro-manager": {
+    "initialExperience": "我在河堤拍过一组跨季节照片，固定的钟点并不总有相似光线。",
+    "purpose": "把个人摄影计划排到真正有光线和体力的时段。",
+    "reviewCondition": "实地条件偏离拍摄记录时考虑调整时间。",
+    "reviewDay": 14,
+    "tradeoff": "反复到场有机会补全记录，但每次都占用路程和休息。",
+    "worldQuestion": "在实际读到的几期运行记录里，季节、观测区间和设备条件是否允许直接比较？"
+  },
+  "investor": {
+    "initialExperience": "上次整理维修报价时，我发现分开进场的工序要分别预留材料款。我习惯先核对报价包含哪些项目。",
+    "purpose": "给家中旧房的分段维修留出首笔预算，同时保留后续工程可调整的余地。",
+    "reviewCondition": "收到分项报价或发现首批材料款超过预留时重估。",
+    "reviewDay": 14,
+    "targetLiquidCash": "4400.00",
+    "tradeoff": "先留足现金可以按原计划进场；若材料报价迟迟未定，过早定下整笔预算也会挤占其他安排。",
+    "worldQuestion": "如果一份报价写的是累计承诺，我能从哪些已公开的记录分清实际已付与还在等待的款项？"
+  },
+  "ivan": {
+    "initialExperience": "一次户外活动因天气改期时，最难找的是尚未通知到的名单。",
+    "purpose": "让自己参与的志愿项目保留完整的退出交接资料。",
+    "reviewCondition": "原先的进展依据失效时盘点已经承诺和仍可撤回的事。",
+    "reviewDay": 10,
+    "tradeoff": "把准备继续做下去可能节约重启成本，也会占用其他活动的时间。",
+    "worldQuestion": "一项公开计划若暂缓，之前已经发生的投入和可停止的承诺能否在资料中区分？"
+  },
+  "judy": {
+    "initialExperience": "我曾连续学过数月乐器，练习次数增加时，合奏的配合并没有立即变化。",
+    "purpose": "为家中的长期学习计划保留几个可以改变安排的时间点。",
+    "reviewCondition": "外部反馈和自己的训练记录持续不同步时回顾。",
+    "reviewDay": 22,
+    "tradeoff": "持续投入有助于熟悉材料，换方法也可能比延长练习更合适。",
+    "worldQuestion": "新增投入之后有哪些可见的新证据，若暂未看到变化，记录能支持多长时期的比较？"
+  },
+  "kate": {
+    "initialExperience": "我参加科普读书会时，常把观察到的结果和作者猜测另外抄在两栏。",
+    "purpose": "形成一本自己能够解释清楚的实验阅读笔记。",
+    "reviewCondition": "新材料改变原有解释或说明观察局限时回看原句。",
+    "reviewDay": 12,
+    "tradeoff": "准备充分会占用与同伴交流的时间，太快分享又容易把假设说实。",
+    "worldQuestion": "若我读到研发进展，哪些结果是已经观察到的，哪些只是关于下一阶段的判断？"
+  },
+  "mfgstruct-d1": {
+    "initialExperience": "我帮家人做木架时，钻孔和装配两项工作都在等同一块台面。",
+    "purpose": "让家庭共用的工作台在约好的日期确实能空出来。",
+    "reviewCondition": "两个安排碰到同一场地或工具时核对先后次序。",
+    "reviewDay": 9,
+    "tradeoff": "把两个项目都排进日历显得快，留出换工序时间才能按期收拾。",
+    "worldQuestion": "两类产品在所见经营计划里是否同一时段占用设备，哪些环节还有余量？"
+  },
+  "mfgstruct-d2": {
+    "initialExperience": "我和亲友轮用一套工具，借得多的附件不一定是真正用得久的附件。",
+    "purpose": "整理个人购置耐用工具的使用记录。",
+    "reviewCondition": "使用时长或排队时间有新记录时复查。",
+    "reviewDay": 21,
+    "tradeoff": "添置一个备用件能少等待，借用现有工具也能节省保管空间。",
+    "worldQuestion": "新增设备的理由来自利用时长、等候时间还是预测需求？可见材料各支持哪一项？"
+  },
+  "mfgstruct-d3": {
+    "initialExperience": "我修柜门时先装了把手，才发现之后刷漆又得拆下。",
+    "purpose": "安排家里一项修缮时，将能并行与必须等前一道工序的事情分开。",
+    "reviewCondition": "后续步骤的前置条件发生变化时重排。",
+    "reviewDay": 11,
+    "tradeoff": "先完成看得见的一项有成就感，但返工可能更费时间。",
+    "worldQuestion": "扩产项目从付款到能使用产能，中间哪些步骤已经发生，哪些仍在计划？"
+  },
+  "mfgstruct-d4": {
+    "initialExperience": "我登记共享梯子时，有人只借十分钟，工具回来却要花很久清理。",
+    "purpose": "把邻里共享物品的维护负担分得更清楚。",
+    "reviewCondition": "实际清理或检修时间偏离原先估算时再议。",
+    "reviewDay": 10,
+    "tradeoff": "简化约定有利于互助，同一套轮值也可能忽略维护差异。",
+    "worldQuestion": "产量相同的两项业务，占用的材料和设备时间是否也相同？"
+  },
+  "mfgstruct-d5": {
+    "initialExperience": "我骑车换过两条路线，同样里程因换乘和坡度而用时不同。",
+    "purpose": "给自己的骑行行程留出可调整的转换路段。",
+    "reviewCondition": "路况、同行者或换乘条件改变时重看路线。",
+    "reviewDay": 6,
+    "tradeoff": "按距离排计划很直观，给路况留余量又会减少能参加的活动。",
+    "worldQuestion": "计划与最终交付相差的部分，能否在材料准备、排产或运输的时段中定位？"
+  },
+  "mfgstruct-mgr": {
+    "initialExperience": "我做工作凳时，能同时准备木料和图纸，却没法同时占用同一把锯。",
+    "purpose": "让自己做家具的长期兴趣能和现有家务并行。",
+    "reviewCondition": "同一工具被不同安排占用或材料未齐时重看准备表。",
+    "reviewDay": 13,
+    "tradeoff": "等所有工具空闲才动手比较稳，也可能错过原定空闲时段。",
+    "worldQuestion": "同时收到不同产品需求时，目前可见的是客户意向、明确订单还是已经排入的产能？"
+  },
+  "mfgtech-d1": {
+    "initialExperience": "我帮人调过无线设备，现场信号和说明书中的测试条件不完全相同。",
+    "purpose": "让自己答应指导的学生在每次见面前有清楚的问题清单。",
+    "reviewCondition": "书面说明和实际观察出现差异时回看条件。",
+    "reviewDay": 6,
+    "tradeoff": "过早给结论能节约见面时间，但弄错前提会让人重做。",
+    "worldQuestion": "客户给出的认证条件与目前已知的验证结果是否针对同一代产品？"
+  },
+  "mfgtech-d2": {
+    "initialExperience": "我发现用两种设置拍的照片即使标称像素相同，在暗处效果也会不同。",
+    "purpose": "比较个人摄影器材时保留原始样片。",
+    "reviewCondition": "新的比较改变光线或设置时复看原图。",
+    "reviewDay": 15,
+    "tradeoff": "只记下参数比较省事，逐张检查样片更占休息时间。",
+    "worldQuestion": "两份技术材料里的比较是否基于同一代产品、同一测试范围？"
+  },
+  "mfgtech-d3": {
+    "initialExperience": "我筹备演出时找到了插头相同的线，接好后才发现用途不同。",
+    "purpose": "使社区活动里借出的音响配件能够按原样交还。",
+    "reviewCondition": "替换零件或借用渠道变化时再核一次。",
+    "reviewDay": 7,
+    "tradeoff": "快速凑齐设备便于排练，逐件试用更能发现不相容。",
+    "worldQuestion": "采购和认证说明指向的具体器件是否一致？有哪些兼容问题只得到口头解释？"
+  },
+  "mfgtech-d4": {
+    "initialExperience": "我报过一门动手课，听完演示后才发现练习材料并不会同时到手。",
+    "purpose": "规划自己的晚间培训，给实际练习留出时间。",
+    "reviewCondition": "练习条件齐备或原来承诺的材料迟到时复查安排。",
+    "reviewDay": 12,
+    "tradeoff": "尽早开始能赶上同伴，等材料齐备能减少中断。",
+    "worldQuestion": "披露里准备生产所需的条件哪些已有交付记录，哪些只有订购或计划？"
+  },
+  "mfgtech-d5": {
+    "initialExperience": "我修好过一盏间歇熄灭的台灯，现场点亮和连续使用一周给出了不同反馈。",
+    "purpose": "整理朋友间互助维修的回访记录。",
+    "reviewCondition": "得到连续使用反馈或同一故障再次出现时重查记录。",
+    "reviewDay": 14,
+    "tradeoff": "一次结案可以腾出时间，回访也许能发现尚未消失的问题。",
+    "worldQuestion": "首批交付和随后客户使用反馈，分别能告诉我什么？现在证据到哪一步？"
+  },
+  "mfgtech-mgr": {
+    "initialExperience": "我参加手工兴趣班时，把接线步骤记全以后，仍要靠实物试一遍才能找出接触不良。",
+    "purpose": "给自己制作的电子小物留一份能重复的检验步骤。",
+    "reviewCondition": "设计有更改或不同使用者反馈不一致时复查。",
+    "reviewDay": 10,
+    "tradeoff": "做出第一件作品比较快，每次都复测又会减少试新设计的时间。",
+    "worldQuestion": "一项设计更改后，已有测试记录还适用于哪些环节？我实际读到了哪一版？"
+  },
+  "mfgversa-d1": {
+    "initialExperience": "我曾替两个活动登记同一露台，预订时间没有算上撤场。",
+    "purpose": "使社区活动预订与实际使用的场地有据可查。",
+    "reviewCondition": "新增活动与已有撤场时段重合时重新分配。",
+    "reviewDay": 5,
+    "tradeoff": "多留空档可以减少冲突，也会拒绝一些有意义的活动。",
+    "worldQuestion": "两项业务的排程是否把切换工作也算进了各自需要的时间？"
+  },
+  "mfgversa-d2": {
+    "initialExperience": "我安排跨城探亲时，去程票能改而落脚处要重新确认，两个条件常常一起被忽略。",
+    "purpose": "把自己的旅行计划拆成可以独立改期的部分。",
+    "reviewCondition": "关键环节的确认状态改变时重看相邻安排。",
+    "reviewDay": 18,
+    "tradeoff": "提前全部订好省心，留出替代办法也可能避免整程改期。",
+    "worldQuestion": "一个环节改期后，其他相关订单哪部分可以单独履行，哪部分还要确认？"
+  },
+  "mfgversa-d3": {
+    "initialExperience": "我裁布做包时发现，图纸面积相同，拼接方式不同仍会留下不同大小的余料。",
+    "purpose": "在旧物修复课里比较不同用料的实际损耗。",
+    "reviewCondition": "工具、版型或余料登记有变时重新比较。",
+    "reviewDay": 11,
+    "tradeoff": "统一估算比较快，逐次记录能解释为何剩料不一样。",
+    "worldQuestion": "不同产品使用的材料及实际损耗，在我能查阅的资料中是否能逐项比较？"
+  },
+  "mfgversa-d4": {
+    "initialExperience": "我代收过团购物件，显示发出并不说明每位参与者都已收到。",
+    "purpose": "给家人维护一份能区分承诺与实际交付的代办清单。",
+    "reviewCondition": "有签收、退回或补发时对照对应条目。",
+    "reviewDay": 4,
+    "tradeoff": "尽快报平安可以让大家少等，但漏掉一位会给后续交接添麻烦。",
+    "worldQuestion": "记录里的合同、发出和客户收货，是三个时点还是同一笔业务的重复描述？"
+  },
+  "mfgversa-d5": {
+    "initialExperience": "我走过有多条支线的山路，行前同样的里程在路口拥挤时差别很大。",
+    "purpose": "给个人长线徒步留出中途休整与折返的选择。",
+    "reviewCondition": "实际进度或同行人的返程条件改变时重看路线。",
+    "reviewDay": 16,
+    "tradeoff": "坚持原计划可能错过返程，提早折返也会放弃已准备的景点。",
+    "worldQuestion": "如果一批业务不能照原计划继续，哪些资源已经付出、哪些安排仍可调整？"
+  },
+  "mfgversa-mgr": {
+    "initialExperience": "我和两位朋友合做过模型，一项延误会同时影响下一位拿到工具的时间。",
+    "purpose": "排好个人兴趣活动借用工具的交接，不耽误他人下一次使用。",
+    "reviewCondition": "其他人的实际开工时间与我的交付记录错开时重排。",
+    "reviewDay": 8,
+    "tradeoff": "做完自己手上的部分再交最省力；别人已有安排时也可以重新协商。",
+    "worldQuestion": "看到一项设备或材料延迟时，哪些后续工作确实依赖它，哪些只是排在它之后？"
+  },
+  "nina": {
+    "initialExperience": "我上次换租时，旧房退押与新房交款相隔数日。现在看房前我会先问清楚两笔款各在什么时候办理。",
+    "purpose": "两天后看房前，准备好换租所需的押金和首期租金。",
+    "reviewCondition": "拿到房东给出的交款时点或看房日到来时重算差额。",
+    "reviewDay": 2,
+    "targetLiquidCash": "3400.00",
+    "tradeoff": "按时备款可以保留挑选房源的机会；也可以推迟搬家，放弃这次看房安排。",
+    "worldQuestion": "我今天还能动用多少钱，自己的未成交申报会怎样影响看房时能准备的现款？"
+  },
+  "omar": {
+    "initialExperience": "我以前参加短课时，发现课时相同的课程练习量不同，于是会把课程大纲和教材费用列在一起。",
+    "purpose": "在下一期进修报名时为学费和教材备款，同时比较课程内容是否值得占用这笔钱。",
+    "reviewCondition": "拿到新一期大纲、教材清单或报名日到来时核对预算。",
+    "reviewDay": 45,
+    "targetLiquidCash": "1200.00",
+    "tradeoff": "留出报名费可以保留入学选择；如果课程不合适，我也可以延后一个学期再报名。",
+    "worldQuestion": "到了比较课程的日子，哪些材料已经读懂，哪些结论仍只是别人的转述？我自己的账户还能留多少选择？"
+  },
+  "resource-director-1": {
+    "initialExperience": "我修补过一批旧纸，真正费时的是清理背胶，页数不能直接代表工作量。",
+    "purpose": "有条理地修复一本家传图册，决定哪些页值得先花力气。",
+    "reviewCondition": "发现新破损或实际修补时间明显不同后重新排序。",
+    "reviewDay": 12,
+    "tradeoff": "手上已有工具适合先做容易的页，最易损的一页也可能更等不起。",
+    "worldQuestion": "披露中不同资源工作的数量能直接比较吗，还是分别需要不同工序？"
+  },
+  "resource-director-2": {
+    "initialExperience": "我参加过一季种植，领走的种子数和最终能分给邻居的收获相差不少。",
+    "purpose": "给社区园圃的耗材和收获分别记账。",
+    "reviewCondition": "萌发或损耗的实际记录与预想不同后再估算。",
+    "reviewDay": 19,
+    "tradeoff": "多播可以覆盖损耗，也要给后续养护留下时间和空间。",
+    "worldQuestion": "投入量、可用资源和最终交付量是否用了同一口径？各项数字是哪一期？"
+  },
+  "resource-director-3": {
+    "initialExperience": "我出游时按人数平均分水，在气温变化后发现每段路的补给消耗不同。",
+    "purpose": "让家庭露营活动不过量携带补给。",
+    "reviewCondition": "气温、路线或实际用量改变时复查。",
+    "reviewDay": 6,
+    "tradeoff": "带得充足更安心，增加负重也可能缩短能走的路。",
+    "worldQuestion": "资源备量变化之后，现有实际耗用记录是否能解释同样的变化？"
+  },
+  "resource-director-4": {
+    "initialExperience": "我整理维修队轮值时，有一项拖得很久，因为大家以为另一人已接手。",
+    "purpose": "安排自己能持续承担的志愿维修工作。",
+    "reviewCondition": "未完工作没有接手人或超出承诺日期时重新查看。",
+    "reviewDay": 9,
+    "tradeoff": "把所有活都接下显得可靠，留出交接点才可能长期坚持。",
+    "worldQuestion": "资料中的维护或交付承诺由谁接受，是否已有真实执行结果？"
+  },
+  "resource-director-5": {
+    "initialExperience": "我清点过一排旧书，架上书少可能是借走，也可能是暂时挪去修补。",
+    "purpose": "弄清自己参与的共享书架里哪些书真的有人借。",
+    "reviewCondition": "借阅登记和实物清点不合时重核去向。",
+    "reviewDay": 14,
+    "tradeoff": "立即添书能填满空位，等归还记录也许更符合实际需要。",
+    "worldQuestion": "资源账面减少的数量中，能看出哪些已交付、哪些另有去向吗？"
+  },
+  "resource-manager": {
+    "initialExperience": "我清理绳具时，发现使用次数相近的两件东西因储存方式不同而磨损不同。",
+    "purpose": "为自己维护的一组登山装备安排必要保养。",
+    "reviewCondition": "检查结果和上一次记录不一致时重排维护。",
+    "reviewDay": 10,
+    "tradeoff": "把时间都用在保养上会减少出行，忽略磨损也会影响已经约好的行程。",
+    "worldQuestion": "不同批次资源的状态有无新记录，是否足以支持我继续沿用上次的估算？"
+  },
+  "rita": {
+    "initialExperience": "我为社区口述史剪短音频时，去掉一句限定条件就会改变讲述者原意。",
+    "purpose": "把采访录音整理得让受访者能够找到原话。",
+    "reviewCondition": "当引用被缩短或当事人提出异议时回听上下文。",
+    "reviewDay": 3,
+    "tradeoff": "及时交稿和给受访者核对用语都要占用同一段时间。",
+    "worldQuestion": "公开动态中被引用的句子，和我确实读到的原文有没有同样的限定？"
+  },
+  "sam": {
+    "initialExperience": "我和邻居画旧街道地图时，两位老人把不同年份的桥称为同一座。",
+    "purpose": "梳理一条社区故事里各位讲述者各自亲历的部分。",
+    "reviewCondition": "后来讲述与早先笔记不符时核对各人的时间和位置。",
+    "reviewDay": 8,
+    "tradeoff": "追溯细节会占用与知情人见面的时间，只听一个版本也可能遗漏情况。",
+    "worldQuestion": "两个愿意谈同一件事的人，是否各自见过这件事，还是都引用一个来源？"
+  }
+}

@@ -94,6 +94,11 @@ public final class WorldJournal implements AutoCloseable {
 
     /** 新档显式选择压缩写入；恢复按每帧自身标志解码，既有字节不改写。 */
     WorldJournal(Path file, String runId, long base, boolean compress) throws IOException {
+        this(file, runId, base, compress, null);
+    }
+
+    /** 正常续跑时先在写锁内核对原开局，只有相容的运行才可修复其残尾。 */
+    WorldJournal(Path file, String runId, long base, boolean compress, String expectedOpening) throws IOException {
         this.compress = compress;
         if (Thread.currentThread().isInterrupted()) {
             throw new IOException("当前线程已中断；由上层处理取消后在有效工作线程恢复日志");
@@ -116,7 +121,7 @@ public final class WorldJournal implements AutoCloseable {
             if (fileLock == null) {
                 throw new IOException("世界日志已有写入者");
             }
-            recover();
+            recover(expectedOpening);
         } catch (IOException | RuntimeException failure) {
             channel.close();
             if (failure instanceof OverlappingFileLockException) {
@@ -259,7 +264,7 @@ public final class WorldJournal implements AutoCloseable {
         channel.close();
     }
 
-    private void recover() throws IOException {
+    private void recover(String expectedOpening) throws IOException {
         long confirmed = 0;
         while (confirmed < channel.size()) {
             channel.position(confirmed);
@@ -290,6 +295,9 @@ public final class WorldJournal implements AutoCloseable {
             }
             try {
                 WorldCommit batch = mapper.readValue(JournalFrameCodec.decode(payload, headerLength), WorldCommit.class);
+                if (confirmed == 0 && expectedOpening != null && !expectedOpening.equals(batch.commandContent())) {
+                    throw new IOException("运行清单或开局现金与持久记录不一致，续跑与派生均未开启。可用原版本打开，或在本机查看归档：WorldWebApp --archive inspect \"" + file + "\"");
+                }
                 if (!runId.equals(batch.runId()) || batch.position() != base + history.size() + 1L
                         || commands.containsKey(batch.commandId())) {
                     throw new IOException("世界日志运行、提交位置或命令标识不匹配");

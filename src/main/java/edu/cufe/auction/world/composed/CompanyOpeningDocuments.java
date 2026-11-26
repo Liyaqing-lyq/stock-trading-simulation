@@ -112,6 +112,17 @@ public final class CompanyOpeningDocuments {
         if (edu.cufe.auction.world.RoleDeliberation.hasEvidence(world.profile().manifest().dataVersions().get("role-context"))) {
             edu.cufe.auction.world.RoleEvidenceDocuments.publish(world, extraCandidates);
         }
+        if (RunManifest.PERSONAL_PROFILES_RUN_ID.equals(world.profile().manifest().runId())) {
+            world.schedulePublishDocument("opening-personal-contacts", "opening-personal-contacts-task", 1L,
+                    WorldWebScenario.SOCIAL_CONTACT_DOC, WorldWebScenario.INVESTOR, InformationModel.Audience.publicAudience(),
+                    "持有人公开联系说明（EXP）", "登记的一对一私信地址：" + String.join("、", WorldWebScenario.SOCIAL_PERSONS),
+                    "实验开局公开通讯录，仅提供联系渠道", WorldWebScenario.SOCIAL_READ_MILLIS, List.of());
+            var hotline = WorldWebScenario.interviewConfig().contacts().get(0);
+            world.schedulePublishDocument("opening-holder-interview", "opening-holder-interview-task", 1L,
+                    hotline.docId(), hotline.targetPartyId(), InformationModel.Audience.publicAudience(),
+                    "公开采访预约说明（EXP）", hotline.targetPartyId() + "：" + hotline.channel() + "。" + hotline.description(),
+                    "实验开局公开渠道，具体采访需本人接受", WorldWebScenario.SOCIAL_READ_MILLIS, List.of());
+        }
         world.advanceTo(1L);
     }
 

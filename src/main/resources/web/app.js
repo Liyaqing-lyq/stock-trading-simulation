@@ -42,6 +42,7 @@ const state = {
   engineeringRequest: 0,
   history: null,
   branch: null,
+  personRelations: null,
   personEngineering: null
 };
 
@@ -192,6 +193,17 @@ function clearAdminDom() {
 }
 
 function clearPersonDom() {
+  $("person-research-timeline").replaceChildren();
+  $("person-research-card").hidden = true;
+  state.personRelations = null;
+  $("relation-search").value = "";
+  $("relation-layer").value = "";
+  $("relation-focus").replaceChildren();
+  $("relation-depth").value = "2";
+  $("relation-graph").replaceChildren();
+  $("relation-cut").textContent = "";
+  $("person-relations").hidden = true;
+  fillTable("relation-edges", [], () => undefined);
   clearPersonalBank();
   clearPersonalMedia();
   clearPersonalInterview();
@@ -572,6 +584,8 @@ async function refreshPerson() {
   }
   setMessage("person-error", "");
   const view = result.payload;
+  renderPersonRelations(view);
+  renderPersonResearch(view.personalResearch);
   renderPersonalMedia(view.media);
   await loadGroups(generation, null);
   if (!isCurrent(generation) || state.mode !== "person") return;
@@ -635,6 +649,142 @@ async function refreshPerson() {
   await renderPersonalEngineering(generation);
   if (isCurrent(generation) && state.mode === "person") renderPersonalReports(view.publicReports || []);
 }
+
+function renderPersonResearch(research) {
+  const timeline = $("person-research-timeline");
+  timeline.replaceChildren();
+  $("person-research-card").hidden = !research;
+  if (!research) return;
+  function add(label, value) {
+    if (value === undefined || value === null || value === "") return;
+    const term = document.createElement("dt");
+    const detail = document.createElement("dd");
+    term.textContent = label;
+    detail.textContent = value;
+    timeline.append(term, detail);
+  }
+  if (research.goal) {
+    const plan = research.goal.personalPlan;
+    add("开局经历（实验设定）", plan.initialExperience);
+    add("个人目标", research.goal.purpose);
+    add("取舍", research.goal.tradeoff);
+    add("何时复查个人安排", plan.reviewCondition);
+    add("我想查证的问题", plan.worldQuestion);
+    if (plan.targetLiquidCash !== undefined) add("资金安排", "希望保留 " + plan.targetLiquidCash + " 元，当前可用 " + plan.availableCash + " 元");
+  }
+  for (const [label, entry] of [["先前判断", research.previous], ["当前判断", research.current]]) {
+    if (!entry) continue;
+    add(label, entry.note.judgment);
+    add("判断时点", entry.observedAt + " 毫秒");
+    add("依据", entry.note.evidence.map(ref => ref.docId + " v" + ref.version).join("、"));
+    add("修正原因", entry.note.changeReason);
+    add("再次评估的条件", entry.note.reviewCondition);
+  }
+  if (research.decision) {
+    const row = research.decision;
+    add("引用判断的决定", row.tool + " · " + (row.ownStatement?.basis || ""));
+    add("执行回报", row.businessReject || row.orderStatus || row.execution || row.outcome);
+  }
+  for (const item of research.contactAssessments || []) {
+    add("我对 " + item.assessment.personPartyId + " 的判断", item.assessment.judgment);
+    add("交往依据", item.assessment.docId + " v" + item.assessment.version);
+  }
+}
+
+function renderPersonRelations(view) {
+  const person = view.personPartyId;
+  const roles = { RESEARCHER: "研究员", PORTFOLIO_MANAGER: "基金经理", RISK_OFFICER: "风控",
+    EXECUTION_TRADER: "交易员", JOURNALIST: "记者", EDITOR: "编辑", COMPANY_MANAGER: "公司经理" };
+  const rows = [
+    ...(view.activeAppointments || []).map(a => ({ from: person, layer: "任职", relation: roles[a.role] || a.role,
+      to: a.organization, validFrom: a.startsAt, validUntil: a.endsAt, basis: "任期 " + a.startsAt + " 至 " + a.endsAt + " 毫秒" })),
+    ...view.accounts.map(a => ({ from: person, layer: "账户", relation: a.kind === "PERSONAL" ? "本人所有" : "获授权查看",
+      to: a.accountId, basis: "账户属主 " + a.ownerId })),
+    ...view.holdings.map(h => ({ from: h.accountId, layer: "持仓", relation: "持有",
+      to: h.symbol, quantity: h.quantity, unit: "股", basis: h.quantity + " 股，可卖 " + h.available + " 股" })),
+    ...(view.media?.documents?.rows || []).map(d => ({ from: person, layer: "阅读", relation: "读完",
+      to: d.docId + " v" + d.version, basis: d.title + " · 完成于 " + d.completedAtMillis + " 毫秒" })),
+    ...(view.personalResearch?.namedReadings || []).map(d => ({ from: d.personPartyId, layer: "交往",
+      relation: ({DIRECT_MESSAGE: "来信", INTERVIEW_TURN: "采访发言", NAMED_FORECAST: "具名预测"})[d.kind],
+      to: person, basis: d.docId + " v" + d.version }))
+  ];
+  state.personRelations = { person, timeMillis: view.timeMillis, rows };
+  const focus = $("relation-focus");
+  const previous = focus.value;
+  const nodes = new Set([person, ...rows.flatMap(row => [row.from, row.to])]);
+  focus.replaceChildren(...Array.from(nodes, node => new Option(node, node)));
+  focus.value = nodes.has(previous) ? previous : person;
+  $("person-relations").hidden = false;
+  filterPersonRelations();
+}
+
+function visiblePersonRelations() {
+  const query = $("relation-search").value.trim().toLowerCase();
+  const layer = $("relation-layer").value;
+  const { rows } = state.personRelations;
+  const focus = $("relation-focus").value;
+  const near = new Set([focus]);
+  if ($("relation-depth").value === "2") {
+    for (const row of rows) {
+      if (row.from === focus) near.add(row.to);
+      if (row.to === focus) near.add(row.from);
+    }
+  }
+  return rows.filter(row => (near.has(row.from) || near.has(row.to)) && (!layer || row.layer === layer)
+    && [row.from, row.to, row.relation, row.basis].some(value => value.toLowerCase().includes(query)));
+}
+
+function filterPersonRelations() {
+  if (state.mode !== "person" || !state.personRelations) return;
+  const rows = visiblePersonRelations();
+  fillTable("relation-edges", rows, (tr, row) => {
+    for (const value of [row.from, row.relation, row.to, row.basis]) cell(tr, value);
+  });
+  const graph = $("relation-graph");
+  graph.replaceChildren();
+  const branches = new Map();
+  function nodeButton(node) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = node;
+    button.setAttribute("aria-label", "查看 " + node + " 的关系");
+    button.onclick = () => { $("relation-focus").value = node; filterPersonRelations(); };
+    return button;
+  }
+  for (const row of rows) {
+    if (!branches.has(row.from)) {
+      const path = document.createElement("div");
+      path.className = "relation-path";
+      const ends = document.createElement("ul");
+      path.append(nodeButton(row.from), ends);
+      branches.set(row.from, ends);
+      graph.append(path);
+    }
+    const link = document.createElement("li");
+    link.append(document.createTextNode("→ " + row.relation + " → "), nodeButton(row.to));
+    branches.get(row.from).append(link);
+  }
+  $("relation-cut").textContent = "世界时点 " + state.personRelations.timeMillis + " 毫秒 · " + rows.length + " 条可见关系";
+  $("relation-export").disabled = rows.length === 0;
+}
+
+$("relation-search").addEventListener("input", filterPersonRelations);
+$("relation-layer").addEventListener("change", filterPersonRelations);
+$("relation-focus").addEventListener("change", filterPersonRelations);
+$("relation-depth").addEventListener("change", filterPersonRelations);
+$("relation-export").addEventListener("click", () => {
+  if (state.mode !== "person" || !state.personRelations) return;
+  const { person, timeMillis } = state.personRelations;
+  const payload = JSON.stringify({ person, timeMillis, focus: $("relation-focus").value,
+    depth: Number($("relation-depth").value), layer: $("relation-layer").value,
+    search: $("relation-search").value, relations: visiblePersonRelations() }, null, 2);
+  const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "relations-" + person + "-" + timeMillis + ".json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 
 function renderPersonalReports(reports) {
   const list = $("person-report-versions");
