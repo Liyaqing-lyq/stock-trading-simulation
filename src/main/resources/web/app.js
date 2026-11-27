@@ -5769,7 +5769,7 @@ function renderPeriodicBlock(container, periodic, options) {
     const score = row.score || {};
     const hiddenReview = score.resultVisible === false;
     const reviewText = hiddenReview
-      ? (score.reviewDocId ? "已定稿，可在本人资料目录阅读或重读 " + score.reviewDocId + " v" + score.reviewVersion
+      ? (score.reviewDocId ? "已定稿，阅读本期考核结果后可查看"
         : "已定稿，本人无权查看结论")
       : (score.closed ? periodicReasonText(score.reason)
         + (score.total != null ? " · 总分 " + score.total : " · 无总分") : "尚未关会汇总");
@@ -5801,6 +5801,16 @@ function renderPeriodicBlock(container, periodic, options) {
         ? ("已记录 MISSED · " + worldTimeText(publication.missedAt)) : "未记录"]
     ];
     periodicDl(section, summary);
+    if (personView && score.reviewDocId && score.reviewVersion) {
+      const label = "第" + row.period + "期考核结果";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "quiet";
+      button.textContent = (hiddenReview ? "阅读" : "重读") + label + "（v" + score.reviewVersion + "）";
+      button.addEventListener("click", () => guard(scheduleDocumentReading(periodic.companyPartyId,
+        score.reviewDocId, score.reviewVersion, label)));
+      section.appendChild(button);
+    }
 
     const unavailable = row.unavailableDimensions || [];
     const dimensionStates = row.dimensionStates || [];

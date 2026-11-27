@@ -603,6 +603,27 @@ function releaseRow(extra) {
   }, extra || {});
 }
 
+check("periodic-result-button-reads-the-authorized-version", () => {
+  person(2593000000);
+  api.state.personEngineering.observationToken = "891";
+  const card = periodicCard();
+  const score = { closed: true, resultVisible: false, reviewDocId: "periodic-board-result:eng-a:1:3", reviewVersion: 1 };
+  card.periods[0].score = score;
+  const container = document.createElement("div");
+  api.renderPeriodicBlock(container, card, { personView: true });
+  fetchCalls.length = 0;
+  fire(buttonByText(container, "阅读第1期考核结果"), "click");
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, "/api/me/read");
+  const body = JSON.parse(fetchCalls[0].options.body);
+  assert.equal(body.docId, score.reviewDocId);
+  assert.equal(body.version, "1");
+  assert.equal(body.expectedPosition, "891");
+  card.periods[0].score = { closed: true, resultVisible: false };
+  api.renderPeriodicBlock(container, card, { personView: true });
+  assert.equal(buttonByText(container, "考核结果"), null);
+});
+
 check("periodic-forgotten-body-needs-reread", () => {
   const card = periodicCard();
   const row = card.periods[0];
