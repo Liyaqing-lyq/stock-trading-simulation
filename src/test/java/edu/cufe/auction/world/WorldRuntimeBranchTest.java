@@ -229,9 +229,12 @@ class WorldRuntimeBranchTest {
                     .add(new BigDecimal("1.00")));
         }, null);
 
+        List<Long> verified = new ArrayList<>();
         BranchRejectedException rejection = assertThrows(BranchRejectedException.class,
-                () -> openChild(forged, receipt.sealedPrefix()).close());
+                () -> WorldRuntime.openBranch(forged, id -> receipt.sealedPrefix(), profile(),
+                        null, null, verified::add).close());
         assertEquals(WorldRuntime.BRANCH_DERIVATION_MISMATCH, rejection.code());
+        assertEquals(java.util.stream.LongStream.rangeClosed(1, cut).boxed().toList(), verified);
     }
 
     // ------------------------------------------------------------------
@@ -270,10 +273,13 @@ class WorldRuntimeBranchTest {
             origin.put("parentPrefixBytes", forgedBytes);
         });
 
+        List<Long> verified = new ArrayList<>();
         BranchRejectedException rejection = assertThrows(BranchRejectedException.class,
-                () -> openChild(forgedChild, forgedSeal).close());
+                () -> WorldRuntime.openBranch(forgedChild, id -> forgedSeal, profile(),
+                        null, null, verified::add).close());
         assertEquals(WorldRuntime.BRANCH_PARENT_PREFIX_MISMATCH, rejection.code(),
                 "摘要对上也不得接受语义不合法的封存父前缀");
+        assertEquals(java.util.stream.LongStream.range(1, cut).boxed().toList(), verified);
     }
 
     // ------------------------------------------------------------------
@@ -470,10 +476,19 @@ class WorldRuntimeBranchTest {
         assertEquals(receipt.sealedPrefix().toAbsolutePath().toString(),
                 repository.runs().get(0).sealedPrefix());
 
-        try (WorldRuntime child = repository.open("branch-repo-a", profile())) {
+        List<Long> verified = new ArrayList<>();
+        try (WorldRuntime child = repository.open("branch-repo-a", profile(), verified::add)) {
             assertEquals(cut + 1L, child.snapshot().position());
             assertEquals("branch-repo-a",
                     child.branchOrigin().orElseThrow().childRunId());
+            assertEquals(java.util.stream.LongStream.rangeClosed(1, cut + 1).boxed().toList(), verified);
+            child.advanceTo(PAY + 5_000L);
+        }
+        verified.clear();
+        try (WorldRuntime reopened = repository.open("branch-repo-a", profile(), verified::add)) {
+            long end = reopened.snapshot().position();
+            assertTrue(end > cut + 1);
+            assertEquals(java.util.stream.LongStream.rangeClosed(1, end).boxed().toList(), verified);
         }
         assertEquals(WorldRuntime.BRANCH_SEAL_MISSING, assertThrows(
                 BranchRejectedException.class,

@@ -61,6 +61,7 @@ import edu.cufe.auction.world.bank.Money;
 import edu.cufe.auction.world.composed.BankCompanyReport;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -191,7 +192,7 @@ public final class WorldWebHost implements AutoCloseable {
     private volatile WorldRuntime runtime;
 
     /** 场景路由；只有 live Host 组合才非空。 */
-    private final SceneRoutes routes;
+    private SceneRoutes routes;
     /** 提供方适配器；只有 live Host 组合才非空。 */
     private final DecisionProvider provider;
     /** 有界 worker 池；非 live 组合为 null，不创建任何线程。 */
@@ -725,10 +726,24 @@ public final class WorldWebHost implements AutoCloseable {
      * @param provider 提供方（可为脚本实现）
      */
     public WorldWebHost(IOSupplier supplier, SceneRoutes routes, DecisionProvider provider) {
+        this(supplier, routes, provider, null);
+    }
+
+    /** 在写入线程验证分支后，从已验证的来源建立该子档的独立路由。 */
+    static WorldWebHost forBranch(IOSupplier supplier, Path routeDirectory, LiveDecisionProvider provider) {
+        return new WorldWebHost(supplier, null, provider, java.util.Objects.requireNonNull(routeDirectory));
+    }
+
+    SceneRoutes openedRoutes() throws Exception {
+        awaitOpening();
+        return routes;
+    }
+
+    private WorldWebHost(IOSupplier supplier, SceneRoutes routes, DecisionProvider provider, Path branchRouteDirectory) {
         if (supplier == null) {
             throw new IllegalArgumentException("宿主参数不合法");
         }
-        if ((routes == null) != (provider == null)) {
+        if ((routes == null && branchRouteDirectory == null) != (provider == null)) {
             throw new IllegalArgumentException("场景路由与提供方必须同时提供");
         }
         this.supplier = supplier;
@@ -740,7 +755,7 @@ public final class WorldWebHost implements AutoCloseable {
             thread.setDaemon(true);
             return thread;
         }, new ThreadPoolExecutor.AbortPolicy());
-        this.writer = new Thread(this::loop, "world-web-writer");
+        this.writer = new Thread(() -> loop(branchRouteDirectory), "world-web-writer");
         this.writer.setDaemon(true);
         this.writer.start();
     }
@@ -4464,11 +4479,13 @@ public final class WorldWebHost implements AutoCloseable {
         return runtime == null ? ready.join() : runtime;
     }
 
-    private void loop() {
+    private void loop(Path branchRouteDirectory) {
         WorldRuntime created = null;
         try {
             Opened opened = supplier.open();
             created = opened.runtime();
+            if (branchRouteDirectory != null)
+                routes = SceneRoutes.openBranch(branchRouteDirectory, created.branchOrigin().orElseThrow());
             // 展示用 runId 一律取实际打开的 manifest，不额外接受第二份参数
             runId = opened.runId();
             runtime = created;

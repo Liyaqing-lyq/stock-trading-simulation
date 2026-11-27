@@ -45,6 +45,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.LongConsumer;
 
 /**
  * 可恢复的世界运行：单一日志、可序列化待办、现金子集。
@@ -1335,17 +1336,17 @@ public final class WorldRuntime implements AutoCloseable {
      * @param prefixCommits 已逐帧验证的父前缀批次；分支子档的只读事实源
      */
     private record OpenMode(CommitSource scannedPrefix, BranchOrigin origin,
-                            WorldState parentState, CommitSource prefixCommits) {
+                            WorldState parentState, CommitSource prefixCommits, LongConsumer verifiedPosition) {
 
         /** 父前缀校验模式。 */
-        static OpenMode verification(CommitSource scanned) {
-            return new OpenMode(scanned, null, null, null);
+        static OpenMode verification(CommitSource scanned, LongConsumer verifiedPosition) {
+            return new OpenMode(scanned, null, null, null, verifiedPosition);
         }
 
         /** 分支子档模式。 */
         static OpenMode branch(BranchOrigin origin, WorldState parentState,
-                               CommitSource prefixCommits) {
-            return new OpenMode(null, origin, parentState, prefixCommits);
+                               CommitSource prefixCommits, LongConsumer verifiedPosition) {
+            return new OpenMode(null, origin, parentState, prefixCommits, verifiedPosition);
         }
     }
 
@@ -1800,7 +1801,7 @@ public final class WorldRuntime implements AutoCloseable {
                                     BranchProfile profile, CommitSource prefix)
             throws IOException {
         try (WorldRuntime probe = finishBranchOpen(temp, profile, origin, childManifest,
-                prefix, null)) {
+                prefix, null, null)) {
             if (probe.state == null || probe.state.position() != origin.parentPosition() + 1L) {
                 throw new BranchRejectedException(BRANCH_DERIVATION_MISMATCH,
                         "子档首帧位置不是父位置加一");
@@ -1844,11 +1845,12 @@ public final class WorldRuntime implements AutoCloseable {
     public static WorldRuntime openBranch(Path childFile, ParentRunResolver resolver,
                                           BranchProfile profile, String expectedProfileDigest)
             throws IOException {
-        return openBranch(childFile, resolver, profile, expectedProfileDigest, null);
+        return openBranch(childFile, resolver, profile, expectedProfileDigest, null, null);
     }
 
     static WorldRuntime openBranch(Path childFile, ParentRunResolver resolver, BranchProfile profile,
-                                   String expectedProfileDigest, BranchRunIndex.Entry registered) throws IOException {
+                                   String expectedProfileDigest, BranchRunIndex.Entry registered,
+                                   LongConsumer verifiedPosition) throws IOException {
         Objects.requireNonNull(childFile, "childFile");
         Objects.requireNonNull(resolver, "resolver");
         Objects.requireNonNull(profile, "profile");
@@ -1912,7 +1914,8 @@ public final class WorldRuntime implements AutoCloseable {
         try {
             if (!OPEN_COMMAND.equals(reader.commitView().get(0).commandId()))
                 throw new BranchRejectedException(BRANCH_PARENT_IS_BRANCH, "封存父前缀首帧不是普通开局，分支深度固定为 1");
-            var childRun = finishBranchOpen(childFile, profile, origin, childManifest, new JournalCommitSource(reader), expectedProfileDigest);
+            var childRun = finishBranchOpen(childFile, profile, origin, childManifest, new JournalCommitSource(reader),
+                    expectedProfileDigest, verifiedPosition);
             childRun.heldSeal = reader;
             return childRun;
         } catch (IOException | RuntimeException invalid) { reader.close(); throw invalid; }
@@ -1936,7 +1939,7 @@ public final class WorldRuntime implements AutoCloseable {
     private static WorldRuntime finishBranchOpen(Path childFile, BranchProfile profile,
                                                  BranchOrigin origin, RunManifest childManifest,
                                                  CommitSource prefix,
-                                                 String expectedProfileDigest) throws IOException {
+                                                 String expectedProfileDigest, LongConsumer verifiedPosition) throws IOException {
         if (origin.takeoverRoutes() != null && !RunManifest.MARKED_TAKEOVER_BRANCH.equals(
                 childManifest.dataVersions().get(RunManifest.PERSON_TAKEOVER_POLICY))) {
             throw new BranchRejectedException(BRANCH_ORIGIN_INCOMPLETE, "该版父档没有人工接管路由政策");
@@ -1968,7 +1971,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         WorldState parentState;
         try {
-            parentState = verifyPrefix(profile, prefix);
+            parentState = verifyPrefix(profile, prefix, verifiedPosition);
         } catch (IOException invalid) {
             // 摘要对上也不代表语义合法：父前缀必须用同一校验链重放通过
             throw new BranchRejectedException(BRANCH_PARENT_PREFIX_MISMATCH,
@@ -1980,7 +1983,7 @@ public final class WorldRuntime implements AutoCloseable {
                             + origin.parentPosition());
         }
         // v2 传 null/空表（与原 20 参口径一致）；v3 才带银行申请与额外章程，摘要也已含这两项。
-        return new WorldRuntime(OpenMode.branch(origin, parentState, prefix), childFile,
+        return new WorldRuntime(OpenMode.branch(origin, parentState, prefix, verifiedPosition), childFile,
                 childManifest, profile.openings(), profile.registry(), profile.manufacturing(),
                 profile.charter(), profile.roles(), profile.information(), profile.decisions(),
                 null, profile.media(), profile.interview(), profile.dialogue(),
@@ -2004,7 +2007,12 @@ public final class WorldRuntime implements AutoCloseable {
      */
     static WorldState verifyPrefix(BranchProfile profile, CommitSource scanned)
             throws IOException {
-        WorldRuntime verifier = new WorldRuntime(OpenMode.verification(scanned), null,
+        return verifyPrefix(profile, scanned, null);
+    }
+
+    private static WorldState verifyPrefix(BranchProfile profile, CommitSource scanned, LongConsumer verifiedPosition)
+            throws IOException {
+        WorldRuntime verifier = new WorldRuntime(OpenMode.verification(scanned, verifiedPosition), null,
                 profile.manifest(), profile.openings(), profile.registry(),
                 profile.manufacturing(), profile.charter(), profile.roles(),
                 profile.information(), profile.decisions(), null, profile.media(),
@@ -11082,10 +11090,12 @@ public final class WorldRuntime implements AutoCloseable {
                 && (manifest.hasDefaultPeriodicGovernance() || compactState());
     }
 
-    /** 两道历史审计共用表示恢复；候选只能提示报告排列，所有行与其他字节来自重生成文本。 */
+    /** 两道历史审计共用表示恢复；历史只能提示指定字段或报告的排列，所有值都来自重生成文本。 */
     private String historicalDecisionInput(String regenerated, String historical, long cutoff) throws IOException {
-        if (!regenerated.equals(historical)
-                && legacyOperatingReportRepresentation())
+        if (regenerated.equals(historical)) return regenerated;
+        if (RunManifest.PERSONAL_NEWS_RUN_ID.equals(manifest.policyRunId()))
+            return ResearchLicenseInputOrder.reconstruct(regenerated, historical);
+        if (legacyOperatingReportRepresentation())
             return LegacyOperatingReportOrder.reconstruct(regenerated, historical, cutoff,
                     LegacyOperatingReportOrder.affectedPaths(manifest));
         return regenerated;
@@ -16911,7 +16921,7 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("银行档案缺少银行状态");
         }
         try {
-            bank.validate(candidate.accounts());
+            verifiedFinancialBank(bank, candidate.accounts());
         } catch (IllegalArgumentException invalid) {
             throw new IOException("银行三态不成立：" + invalid.getMessage(), invalid);
         }
@@ -23724,6 +23734,23 @@ public final class WorldRuntime implements AutoCloseable {
         return composedFinancialPositionOf(state, cashAccountId);
     }
 
+    private BankRun lastFinancialBank;
+    private Map<String, CashLedger.CashAccount> lastFinancialAccounts;
+    private BankRun.Decoded lastFinancialView;
+
+    /** 仅供本世界报表及逐帧校验。三份原始银行档和每个具名现金户完全相同时复用已校验的只读账簿。 */
+    synchronized BankRun.Decoded verifiedFinancialBank(BankRun bank,
+            Map<String, CashLedger.CashAccount> accounts) {
+        if (bank.equals(lastFinancialBank) && accounts.equals(lastFinancialAccounts)) {
+            return lastFinancialView;
+        }
+        BankRun.Decoded verified = bank.decode(accounts);
+        lastFinancialBank = bank;
+        lastFinancialAccounts = Map.copyOf(accounts);
+        lastFinancialView = verified;
+        return verified;
+    }
+
     private ComposedFinancialPosition composedFinancialPositionOf(WorldState base,
             String cashAccountId) {
         ComposedFinancialPosition zero = new ComposedFinancialPosition(ZERO, ZERO, ZERO, ZERO,
@@ -23739,7 +23766,7 @@ public final class WorldRuntime implements AutoCloseable {
         BigDecimal loanInterest = ZERO;
         BigDecimal paidInterest = ZERO;
         if (base.bank() != null) {
-            BankState bankState = base.bank().decode(base.accounts()).state();
+            BankState bankState = verifiedFinancialBank(base.bank(), base.accounts()).state();
             BankChart chart = bankState.chart();
             for (Map.Entry<String, edu.cufe.auction.world.bank.BankingProfile.PartyRef> entry
                     : new TreeMap<>(chart.profile().parties()).entrySet()) {
@@ -23801,7 +23828,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (manifest.hasCustodyFill() && base.bank() != null) {
             BankRun.Decoded decoded;
             try {
-                decoded = base.bank().decode(base.accounts());
+                decoded = verifiedFinancialBank(base.bank(), base.accounts());
             } catch (RuntimeException invalid) {
                 throw new IllegalStateException("托管三态无法解码："
                         + invalid.getMessage(), invalid);
@@ -25711,7 +25738,7 @@ public final class WorldRuntime implements AutoCloseable {
             }
             return restoreBranch(commits, mode);
         }
-        return verifyCommits(commits, expectedInitial);
+        return verifyCommits(commits, expectedInitial, null);
     }
 
     /**
@@ -25726,7 +25753,7 @@ public final class WorldRuntime implements AutoCloseable {
      * @return 最后一批的状态
      * @throws IOException 任一帧或开局绑定不一致
      */
-    private WorldState verifyCommits(List<WorldCommit> commits, WorldState expectedInitial)
+    private WorldState verifyCommits(List<WorldCommit> commits, WorldState expectedInitial, LongConsumer verifiedPosition)
             throws IOException {
         if (commits.isEmpty()) {
             throw new IOException("确认历史为空，无法校验");
@@ -25752,6 +25779,7 @@ public final class WorldRuntime implements AutoCloseable {
                             + initialDifference(expectedInitial, snapshot));
                 }
                 rememberVerifiedInformation(commit, snapshot);
+                if (verifiedPosition != null) verifiedPosition.accept(commit.position());
                 previous = snapshot;
             }
             return previous;
@@ -25808,6 +25836,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         requireBranchFirstEvents(first, content.required("branch"));
         validateCommon(actual, first);
+        if (mode.verifiedPosition() != null) mode.verifiedPosition().accept(first.position());
         WorldState previous = actual;
         for (int index = 1; index < commits.size(); index++) {
             WorldCommit commit = commits.get(index);
@@ -25815,6 +25844,7 @@ public final class WorldRuntime implements AutoCloseable {
             validate(snapshot, commit, previous);
             validateAudits(commit, snapshot, previous);
             rememberVerifiedInformation(commit, snapshot);
+            if (mode.verifiedPosition() != null) mode.verifiedPosition().accept(commit.position());
             previous = snapshot;
         }
         return previous;
@@ -37232,8 +37262,10 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("公司集合与档案冻结的公司标识不一致：档案 "
                     + declared + "，收到 " + sorted);
         }
+        // v11 新开局将集合及映射按现有规范顺序落盘；重演仍沿用该档已确认的原命令。
+        ObjectMapper openingWriter = RunManifest.PERSONAL_NEWS_RUN_ID.equals(manifest.policyRunId()) ? stateCanonical() : mapper;
         String content = recordedContent != null ? recordedContent
-                : mapper.writeValueAsString(new OperationsOpenPayload(List.copyOf(companies), resource, hydro, digital, aged));
+                : openingWriter.writeValueAsString(new OperationsOpenPayload(List.copyOf(companies), resource, hydro, digital, aged));
         String cid = "operations-open:" + commandId;
         if (state.commandContents().containsKey(cid)) {
             if (!content.equals(decodeRecordedBody(state.commandContents().get(cid)))) {
@@ -39419,14 +39451,14 @@ public final class WorldRuntime implements AutoCloseable {
             ResourceCompanyRun resource = run.resource();
             if (before != null && before.resource() != null && (!before.resource().companyPartyId().equals(resource.companyPartyId())
                     || !before.resource().symbol().equals(resource.symbol()) || !before.resource().ledger().config().equals(resource.ledger().config()) || !Objects.equals(before.resource().expansionOffer(), resource.expansionOffer()))) throw new IOException("资源冻结配置被改写");
-            var decoded = candidate.bank().decode(candidate.accounts());
+            var decoded = verifiedFinancialBank(candidate.bank(), candidate.accounts());
             var report = IntegratedResourcesModel.report(resource.ledger(), new edu.cufe.auction.world.bank.FundState(candidate.accounts(), decoded.state(), decoded.book()));
             var financial = composedFinancialPositionOf(candidate, resource.ledger().config().companyAccountId());
             if (report.assets().add(financial.assets()).compareTo(report.liabilities().add(financial.liabilities()).add(report.equity()).add(financial.equity())) != 0
                     || report.worldCash().compareTo(resource.ledger().initialWorldCash()) != 0) throw new IOException("资源与金融组合报表不平衡");
         } else if (before != null && before.resource() != null) throw new IOException("资源子账被删除");
         if(run.digital()!=null) {
-            var company=run.digital();var bank=candidate.bank().decode(candidate.accounts());
+            var company=run.digital();var bank=verifiedFinancialBank(candidate.bank(),candidate.accounts());
             if(!"v1".equals(manifest.dataVersions().get("digital-operations"))) throw new IOException("旧档不得带digital");
             if(before!=null && before.digital()!=null && !before.digital().config().equals(company.config())) throw new IOException("digital冻结配置被改写");
             var report=DigitalServiceModel.report(company.ledger(),new edu.cufe.auction.world.bank.FundState(candidate.accounts(),bank.state(),bank.book()));var financial=composedFinancialPositionOf(candidate,company.config().model().companyAccountId());
@@ -39434,7 +39466,7 @@ public final class WorldRuntime implements AutoCloseable {
                     || report.worldCash().compareTo(company.ledger().initialWorldCash())!=0) throw new IOException("digital完整账不平衡");
         } else if(before!=null && before.digital()!=null) throw new IOException("digital子账被删除");
         if(run.aged()!=null) {
-            var company=run.aged();var bank=candidate.bank().decode(candidate.accounts());
+            var company=run.aged();verifiedFinancialBank(candidate.bank(),candidate.accounts());
             if(!"v1".equals(manifest.dataVersions().get("aged-operations"))) throw new IOException("旧档不得带aged");
             if(before!=null && before.aged()!=null && !before.aged().config().equals(company.config())) throw new IOException("aged冻结配置被改写");
             var report=AgedInventoryModel.books(company.ledger(),candidate.accounts());var financial=composedFinancialPositionOf(candidate,company.config().model().companyAccountId());
@@ -40365,7 +40397,7 @@ public final class WorldRuntime implements AutoCloseable {
             this.branchOrigin = null;
             this.commitSource = mode.scannedPrefix();
             this.state = null;
-            this.verifiedPrefixState = verifyCommits(mode.scannedPrefix().commits(), initial);
+            this.verifiedPrefixState = verifyCommits(mode.scannedPrefix().commits(), initial, mode.verifiedPosition());
             return;
         }
         long base = mode == null ? 0L : mode.origin().parentPosition();

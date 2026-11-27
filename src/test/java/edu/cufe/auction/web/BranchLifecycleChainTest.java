@@ -186,6 +186,21 @@ class BranchLifecycleChainTest {
                 .filter(view -> view.runId().equals(CHILD)).findFirst().orElseThrow();
         assertEquals("STARTING", duringWindow.status(), "窗口内 start 还没提交 RUNNING");
         assertEquals(1, launcher.activeCount(), "清理完成前仍应占用并发额度");
+        // 子进程已真实监听也不能跳过父进程的来源与身份核验。
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        boolean listening = false;
+        while (System.nanoTime() < until && !listening) {
+            try {
+                listening = childGet(duringWindow.port(), "/", null).statusCode() == 200;
+            } catch (java.io.IOException starting) {
+                Thread.sleep(50L);
+            }
+        }
+        assertTrue(listening);
+        var earlyEntry = post("/api/admin/runs/" + CHILD + "/enter", "");
+        assertEquals(409, earlyEntry.statusCode());
+        assertEquals("RUN_NOT_RUNNING", JSON.readTree(earlyEntry.body()).path("code").asText());
+        assertTrue(earlyEntry.headers().allValues("Set-Cookie").isEmpty());
 
         RunLauncher.View stopped = launcher.stop(CHILD);
         assertEquals("STOPPED", stopped.status(), "用户 stop 必须得到 STOPPED");

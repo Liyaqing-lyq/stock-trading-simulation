@@ -82,13 +82,17 @@ function renderResearch(view) {
     heading.textContent = "成果使用许可";
     license.append(heading);
     researchLine(license, view.licensing.terms);
+    const approved = view.licensing.approvedProjects;
+    researchLine(license, approved.length ? "已获准办理许可的项目：" + approved.join("、") : "目前没有获准办理许可的项目。");
     const totals = view.licensing.totals;
     researchLine(license, "累计交付收入 " + totals.revenue + " 元，累计实收 " + totals.cashReceived +
       " 元，期末应收 " + totals.receivable + " 元。");
     for (const contract of Object.values(view.licensing.contracts || {})) {
       const state = contract.paidAt != null ? "已收款" : contract.deliveredAt != null ? "已交付，等待收款" : "已签，待交付";
       researchLine(license, contract.projectId + " · " + state + " · 签约时点 " + contract.signedAt
-        + (contract.dueAt == null ? "" : " · 款项到期 " + contract.dueAt));
+        + (contract.deliveredAt == null ? " · 最早交付 " + contract.deliverableAt : " · 实际交付 " + contract.deliveredAt)
+        + (contract.paidAt != null ? " · 实际收款 " + contract.paidAt
+          : contract.dueAt != null ? " · 款项到期 " + contract.dueAt : ""));
     }
     $("research-projects").appendChild(license);
   }

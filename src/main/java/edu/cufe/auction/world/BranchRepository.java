@@ -6,6 +6,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.LongConsumer;
 
 /**
  * 可信本机运行仓储：只按运行索引解析"某一条已登记运行"的子档与封存父前缀。
@@ -71,6 +72,19 @@ public final class BranchRepository {
      * @throws IOException 未登记、路径越界、封存件或画像不符、派生不等
      */
     public WorldRuntime open(String childRunId, BranchProfile profile) throws IOException {
+        return open(childRunId, profile, null);
+    }
+
+    /**
+     * 打开登记的子运行。每一帧通过严格校验才通知其位置，父前缀和子档沿用同一序号。
+     * @param childRunId 已登记的子运行标识
+     * @param profile 宿主的可信画像
+     * @param verifiedPosition 已通过校验的位置接收器；不需要进度可传 null
+     * @return 完整恢复的子运行
+     * @throws IOException 登记或档案校验失败
+     */
+    public WorldRuntime open(String childRunId, BranchProfile profile, LongConsumer verifiedPosition)
+            throws IOException {
         BranchRunIndex.Entry entry = entry(childRunId).orElseThrow(
                 () -> new BranchRejectedException(WorldRuntime.BRANCH_SEAL_MISSING,
                         "运行索引没有登记该子档：" + childRunId));
@@ -87,7 +101,7 @@ public final class BranchRepository {
         }
         return WorldRuntime.openBranch(childFile,
                 parentRunId -> parentRunId.equals(entry.parentRunId()) ? seal : null,
-                profile, entry.profileDigest(), entry);
+                profile, entry.profileDigest(), entry, verifiedPosition);
     }
 
     /**

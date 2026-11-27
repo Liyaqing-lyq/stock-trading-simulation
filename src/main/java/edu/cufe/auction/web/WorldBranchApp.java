@@ -28,7 +28,7 @@ import java.util.concurrent.CountDownLatch;
  *   <li>构造世界在监听之前完成，失败即退出，不留半活端口；不打印任何凭据。</li>
  * </ul>
  *
- * <p>stdout 只输出一行 {@code BRANCH_READY runId=... port=...} 供人核对；该行不含凭据。</p>
+ * <p>严格重放期间 stdout 仅报告已核验的位置。就绪后输出 {@code BRANCH_READY runId=... port=...}，均不含凭据。</p>
  */
 public final class WorldBranchApp {
 
@@ -38,6 +38,24 @@ public final class WorldBranchApp {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private WorldBranchApp() {
+    }
+
+    private static WorldWebHost.Opened openRegistered(BranchRepository repository, BranchRunIndex.Entry entry,
+                                                       BranchProfile profile) throws IOException {
+        WorldRuntime world = repository.open(entry.runId(), profile, RunLauncher.replayReporter(System.out));
+        try {
+            var origin = world.branchOrigin().orElseThrow();
+            if (!entry.runId().equals(origin.childRunId()) || !entry.parentRunId().equals(origin.parentRunId())
+                    || entry.parentPosition() != origin.parentPosition() || !entry.kind().equals(origin.kind().name())
+                    || !entry.note().equals(origin.note()))
+                throw new IOException("运行索引与子档首帧来源不一致");
+            if (world.snapshot().position() <= entry.parentPosition())
+                throw new IOException("子档位置早于首帧：" + world.snapshot().position());
+            return new WorldWebHost.Opened(world, entry.runId());
+        } catch (IOException | RuntimeException failure) {
+            world.close();
+            throw failure;
+        }
     }
 
     /**
@@ -112,29 +130,15 @@ public final class WorldBranchApp {
         }
 
         KeySlots keys = KeySlots.load(keyFile);
+        WorldWebHost host = WorldWebHost.forBranch(() -> openRegistered(repository, entry, profile),
+                workDir.resolve("run-state").resolve(runId), new LiveDecisionProvider(keys));
         SceneRoutes routes;
-        // 先只验一次：能开出可信子档、位置与来源正确；失败即退出，不留半活端口。
-        // 注意必须关掉这一份：真正对外服务的 Runtime 只能在宿主自己的写入线程里创建，
-        // 否则任何业务写入都会因“不是创建线程”被拒绝。
-        try (WorldRuntime probe = repository.open(runId, profile)) {
-            var origin = probe.branchOrigin().orElseThrow();
-            if (!entry.runId().equals(origin.childRunId()) || !entry.parentRunId().equals(origin.parentRunId())
-                    || entry.parentPosition() != origin.parentPosition() || !entry.kind().equals(origin.kind().name())
-                    || !entry.note().equals(origin.note())) {
-                throw new IOException("运行索引与子档首帧来源不一致");
-            }
-            long position = probe.snapshot().position();
-            if (position < entry.parentPosition() + 1L) {
-                throw new IllegalStateException("子档位置早于首帧：" + position);
-            }
-            routes = SceneRoutes.openBranch(workDir.resolve("run-state").resolve(runId), origin);
+        try {
+            routes = host.openedRoutes();
+        } catch (Exception invalid) {
+            host.close();
+            throw invalid;
         }
-        final BranchRepository repo = repository;
-        final BranchProfile trusted = profile;
-        final String targetRun = runId;
-        WorldWebHost host = new WorldWebHost(
-                () -> new WorldWebHost.Opened(repo.open(targetRun, trusted), targetRun),
-                routes, new LiveDecisionProvider(keys));
         WorldWebServer server = new WorldWebServer(host, keys, routes, port, bootstrap, null,
                 message -> { }, runId, handoffToken);
         try {

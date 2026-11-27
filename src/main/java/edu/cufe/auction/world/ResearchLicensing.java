@@ -71,11 +71,11 @@ public final class ResearchLicensing {
         }
         var approved = state.projects().values().stream().filter(p -> p.status() == ResearchModel.ProjectStatus.APPROVED)
                 .map(ResearchModel.Project::projectId).sorted().toList();
-        return Map.of("licensee", ExternalDemandOpening.OWNER_ID, "payerAccount", ExternalDemandOpening.ACCOUNT_ID,
+        return new TreeMap<>(Map.of("licensee", ExternalDemandOpening.OWNER_ID, "payerAccount", ExternalDemandOpening.ACCOUNT_ID,
                 "companyAccount", state.config().companyAccountId(), "fee", FEE.toPlainString(), "contracts", contracts,
                 "approvedProjects", approved, "actions", java.util.List.of("SIGN","DELIVER","COLLECT"),
                 "durationMillis", ResearchDecisionTools.ACTION_MILLIS,
-                "totals", totals(state.licenses()), "terms", "EXP 外部最终需求部门按公开固定要约仅为自己购买获批成果的非独占使用权。每个获批项目限一份，经理可 SIGN 或等待。签约不确认收入。满一个模拟日可 DELIVER，交付才确认一次性许可收入与客户应付。交付满30模拟日可 COLLECT，客户必须实际足额付款，不能付款时债权保留。没有销售分成。");
+                "totals", totals(state.licenses()), "terms", "EXP 外部最终需求部门按公开固定要约仅为自己购买获批成果的非独占使用权。每个获批项目限一份，经理可 SIGN 或等待。签约不确认收入。满一个模拟日可 DELIVER，交付才确认一次性许可收入与客户应付。交付满30模拟日可 COLLECT，客户必须实际足额付款，不能付款时债权保留。没有销售分成。"));
     }
 
     static ResearchRuntime.Applied apply(ResearchRun run, BoardRun board, Request request, long now,
