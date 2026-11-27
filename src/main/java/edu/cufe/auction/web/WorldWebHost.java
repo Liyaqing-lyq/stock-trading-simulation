@@ -7685,7 +7685,7 @@ public final class WorldWebHost implements AutoCloseable {
                     snapshotRow.capturedAt(), current.usesIssuerReportVersions());
             List<Map<String, Object>> evidence = new ArrayList<>();
             for (Map<String, Object> entry : evidenceByPeriod.getOrDefault(period, List.of())) {
-                Object refValue = entry.get("ref");
+                Object refValue = entry.getOrDefault("sourceRef", entry.get("ref"));
                 if (!(refValue instanceof String ref) || ref.isBlank()) {
                     continue;
                 }
@@ -7695,7 +7695,7 @@ public final class WorldWebHost implements AutoCloseable {
                     continue;
                 }
                 Map<String, Object> copy = new LinkedHashMap<>();
-                copy.put("ref", ref);
+                copy.put(entry.containsKey("sourceRef") ? "sourceRef" : "ref", ref);
                 copy.put("dimensions", entry.get("dimensions"));
                 copy.put("asOf", num(exact == null ? snapshotRow.capturedAt() : exact));
                 evidence.add(copy);
@@ -7906,7 +7906,20 @@ public final class WorldWebHost implements AutoCloseable {
                 ballotRows.add(ballotView);
             }
             scoreView.put("closed", aggregate != null);
-            if (aggregate != null) {
+            if (aggregate != null && !god && current.usesOperatingPeriodEvidence()) {
+                if (roleRow.get("reviewDocId") instanceof String resultId) {
+                    scoreView.put("reviewDocId", resultId);
+                    scoreView.put("reviewVersion", roleRow.get("reviewVersion"));
+                }
+                if (roleRow.get("reviewResult") instanceof Map<?, ?> result) {
+                    for (String key : List.of("status", "reason", "total")) {
+                        scoreView.put(key, result.get(key));
+                    }
+                    scoreView.put("seatCount", String.valueOf(result.get("seatCount")));
+                } else {
+                    scoreView.put("resultVisible", false);
+                }
+            } else if (aggregate != null) {
                 scoreView.put("status", aggregate.status().name());
                 scoreView.put("reason", aggregate.reason());
                 scoreView.put("seatCount", Integer.toString(aggregate.seatCount()));

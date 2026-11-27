@@ -552,12 +552,23 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID);
     }
 
+    /**
+     * 新建按各行业经营凭据考核的普通十公司世界，或按存档原有规则严格恢复。
+     * @param journal 确认日志文件
+     * @return 可继续运行的世界
+     * @throws Exception 开局或逐帧重演失败
+     */
+    public static WorldRuntime openCurrentTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
             var first = WorldJournalScanner.readPrefix(journal, 1, null).first();
             if (first == null || !java.util.Set.of(RunManifest.ORIGINAL_TEN_COMPANY_RUN_ID,
-                    RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID, RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID)
+                    RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID, RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
+                    RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID)
                     .contains(first.runId())) throw new java.io.IOException("存档不是普通十公司世界");
             runId = first.runId();
         }
@@ -900,9 +911,7 @@ public final class ComposedIndustryScenario {
             }
             if (RunManifest.UNPRICED_REFERENCE_RUN_ID.equals(thinkingRunId)) data.put("unpriced-opening-reference", "HY1-cost-only-v1");
             if (RunManifest.usesIssuerResolution(thinkingRunId)) data.put("issuer-failure", "bank-resolution-halt-v1");
-            if (RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(thinkingRunId)) {
-                data.put(RunManifest.DOCUMENT_READING_CLOCK, RunManifest.BODY_PACING_300);
-            }
+            data.putAll(RunManifest.tenCompanyStudyPolicies(thinkingRunId));
             if (RunManifest.usesPersonDecisionPause(thinkingRunId)) data.put("person-decision-pause", "confirmed-person-v1");
             if (ownerBankValuation) {
                 data.put("owner-bank-valuation", "owner-claims-v1");

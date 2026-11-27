@@ -139,12 +139,17 @@ public final class PeriodicWorldAccess implements PeriodicModel.Access, BoardAcc
 
     @Override
     public boolean recallEligible(String personPartyId, String docId, long version, long at) {
+        return recallEligible(information, recallPolicy, personPartyId, docId, version, at);
+    }
+
+    static boolean recallEligible(InformationModel.State information, CognitionRecall.Policy recallPolicy,
+                                  String personPartyId, String docId, long version, long at) {
         if (information == null) {
             return false;
         }
         if (recallPolicy == null) {
             // 没有冻结回忆机制时只承认真实完成经历；不虚构遗忘，也不声称机制外的能力。
-            return hasRead(personPartyId, docId, version, at);
+            return !PeriodicWorldEngine.lastCompletedReadId(information, personPartyId, docId, version, at).isBlank();
         }
         return CognitionRecall.eligible(information, personPartyId, docId, version, at,
                 recallPolicy);

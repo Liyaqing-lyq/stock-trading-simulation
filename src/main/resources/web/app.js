@@ -985,6 +985,7 @@ function renderPersonalReports(reports) {
     const source = document.createElement("p");
     source.textContent = report.title + " · " + report.docId + " · 签发人 " + report.publisherName
       + "（" + report.publisherPersonId + "） · 发布时间 " + worldTimeText(report.publishedAt);
+    if (report.readDurationMillis !== undefined) source.textContent += " · 阅读工时 " + report.readDurationMillis + " 毫秒";
     row.append(summary, source);
     if (read) {
       const receipt = document.createElement("p");
@@ -5766,6 +5767,12 @@ function renderPeriodicBlock(container, periodic, options) {
     const drafts = row.drafts || [];
     const latestDraft = row.latestDraft || null;
     const score = row.score || {};
+    const hiddenReview = score.resultVisible === false;
+    const reviewText = hiddenReview
+      ? (score.reviewDocId ? "已定稿，可在本人资料目录阅读或重读 " + score.reviewDocId + " v" + score.reviewVersion
+        : "已定稿，本人无权查看结论")
+      : (score.closed ? periodicReasonText(score.reason)
+        + (score.total != null ? " · 总分 " + score.total : " · 无总分") : "尚未关会汇总");
     const publication = row.publication || {};
     const approvals = latestDraft ? latestDraft.approvalCount + "/"
       + latestDraft.requiredApprovals : "—";
@@ -5783,8 +5790,7 @@ function renderPeriodicBlock(container, periodic, options) {
       ["草稿版本", latestDraft ? ("v" + latestDraft.version + " · 由 " + (latestDraft.preparedByName || latestDraft.preparedBy)
         + " 于 " + worldTimeText(latestDraft.preparedAt) + " 准备") : "尚未准备"],
       ["3席批准进度", approvals],
-      ["评分汇总", (score.closed ? periodicReasonText(score.reason) : "尚未关会汇总")
-        + (score.closed && score.total !== null && score.total !== undefined ? " · 总分 " + score.total : " · 无总分")],
+      ["评分汇总", reviewText],
       ["公开版本", publication.released
         ? (publication.latestVersion
           ? ("v" + publication.latestVersion + " · " + worldTimeText(publication.latestPublishedAt) + " 发布")
@@ -5841,14 +5847,14 @@ function renderPeriodicBlock(container, periodic, options) {
         (ballot.metrics || []).map(metric => (PERIODIC_DIMENSION_TEXT[metric.dimension] || metric.dimension)
           + " " + metric.score).join("；") || "—", ballot.rationale || "—"]),
       "尚无有效评分。");
-    if (score.closed) {
+    if (score.closed && !hiddenReview) {
       const aggregate = document.createElement("p");
       aggregate.className = "hint";
       aggregate.textContent = "汇总结果：" + periodicReasonText(score.reason)
         + " · 参与聚合完整席 " + score.seatCount + " 席"
         + (score.total === null || score.total === undefined ? " · 无总分（缺维不补）" : " · 总分 " + score.total);
       section.appendChild(aggregate);
-    } else {
+    } else if (!score.closed) {
       const open = document.createElement("p");
       open.className = "hint";
       open.textContent = personView
@@ -6722,7 +6728,7 @@ function renderPeriodicScoreFields(tool, spec, now) {
     const choices = [];
     for (const entry of (row && row.evidence) || []) {
       if ((entry.dimensions || []).includes(dimension)) {
-        choices.push({ ref: entry.ref, asOf: entry.asOf });
+        choices.push({ ref: entry.sourceRef ?? entry.ref, asOf: entry.asOf });
       }
     }
     appendOption(evidence, "", choices.length ? "请选择本期合格证据" : "本期无合格证据");

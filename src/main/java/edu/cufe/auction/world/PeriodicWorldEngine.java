@@ -82,9 +82,16 @@ final class PeriodicWorldEngine {
     }
 
     /** 某引用可作为哪些维度的证据；空表表示只是材料来源、不可用于评分。 */
-    static List<String> dimensionsFor(String ref) {
+    static List<String> dimensionsFor(String ref, boolean operatingFacts) {
         if (ref == null) {
             return List.of();
+        }
+        if (operatingFacts) {
+            String fact = IssuerPeriodEvidence.dimension(ref);
+            if (fact != null) return List.of(fact);
+            // 签约可评合同风险，派工和仅立项都还没有实际验收或花款。
+            if (ref.startsWith("contract:")) return List.of("RISK");
+            if (ref.startsWith("work:") || ref.startsWith("invoice:") || ref.startsWith("longterm:research:")) return List.of();
         }
         if (ref.startsWith("contract:")) {
             return List.of("OPERATING_COMMITMENT", "RISK");
@@ -279,14 +286,14 @@ final class PeriodicWorldEngine {
     static Applied action(EngineeringRun run, BoardRun governance, RoleRun roles,
                           InformationRun information, CognitionRecall.Policy recall,
                           PeriodicActionPayload payload, String statementBody, long now,
-                          long position, boolean issuerReports) {
+                          long position, boolean issuerReports, boolean operatingFacts) {
         return switch (payload.action()) {
             case "ATTEND" -> attend(run, governance, roles, information, recall, payload, now,
                     position);
             case "PREPARE" -> prepare(run, governance, roles, information, recall, payload,
                     statementBody, now, position, issuerReports);
             case "SCORE" -> score(run, governance, roles, information, recall, payload, now,
-                    position, issuerReports);
+                    position, issuerReports, operatingFacts);
             case "APPROVE" -> approve(run, governance, roles, information, recall, payload, now,
                     position);
             case "AUTHORIZE" -> authorize(run, governance, roles, information, recall, payload,
@@ -419,7 +426,8 @@ final class PeriodicWorldEngine {
 
     private static Applied score(EngineeringRun run, BoardRun governance, RoleRun roles,
                                  InformationRun information, CognitionRecall.Policy recall,
-                                 PeriodicActionPayload payload, long now, long position, boolean issuerReports) {
+                                 PeriodicActionPayload payload, long now, long position, boolean issuerReports,
+                                 boolean operatingFacts) {
         String company = payload.companyPartyId();
         Optional<PeriodicModel.CompanyPeriods> found = run.periodicOf(company);
         if (found.isEmpty() || information == null) {
@@ -452,7 +460,7 @@ final class PeriodicWorldEngine {
                 return Applied.rejected(run, governance, information, "UNKNOWN_DIMENSION");
             }
             String problem = dimensionProblem(dimension, metric.sourceRef(), metric.asOf(),
-                    snapshot, periods, issuerReports);
+                    snapshot, periods, issuerReports, operatingFacts);
             if (problem != null) {
                 return Applied.rejected(run, governance, information, problem);
             }
@@ -480,9 +488,15 @@ final class PeriodicWorldEngine {
      */
     static String dimensionProblem(BoardModel.Dimension dimension, String ref, long asOf,
                                            PeriodicModel.Snapshot snapshot,
-                                           PeriodicModel.CompanyPeriods periods, boolean issuerReports) {
+                                           PeriodicModel.CompanyPeriods periods, boolean issuerReports,
+                                           boolean operatingFacts) {
         if (!snapshot.evidenceRefs().contains(ref) || ref.startsWith("periodic-source:")) {
             return REASON_EVIDENCE_NOT_ELIGIBLE;
+        }
+        if (operatingFacts && dimension != BoardModel.Dimension.DISCLOSURE) {
+            if (!dimensionsFor(ref, true).contains(dimension.name())) return REASON_EVIDENCE_NOT_ELIGIBLE;
+            if (asOf != snapshot.capturedAt()) return REASON_EVIDENCE_NOT_ELIGIBLE;
+            return null;
         }
         return switch (dimension) {
             case OPERATING_COMMITMENT -> ref.startsWith("contract:") || ref.startsWith("work:")
@@ -502,9 +516,13 @@ final class PeriodicWorldEngine {
     private static boolean disclosureMatches(String ref, long asOf,
                                              PeriodicModel.CompanyPeriods periods,
                                              String company, boolean issuerReports) {
+        return disclosureTime(ref, periods, company, issuerReports) == asOf;
+    }
+
+    static long disclosureTime(String ref, PeriodicModel.CompanyPeriods periods, String company, boolean issuerReports) {
         String prefix = "disclosure:" + company + ":";
         if (!ref.startsWith(prefix)) {
-            return false;
+            return -1;
         }
         String rest = ref.substring(prefix.length());
         if (rest.endsWith(":missed")) {
@@ -512,18 +530,16 @@ final class PeriodicWorldEngine {
             try {
                 long period = Long.parseLong(periodText);
                 for (PeriodicModel.Missed marker : periods.missed()) {
-                    if (marker.period() == period && marker.missedAt() == asOf) {
-                        return true;
-                    }
+                    if (marker.period() == period) return marker.missedAt();
                 }
             } catch (NumberFormatException invalid) {
-                return false;
+                return -1;
             }
-            return false;
+            return -1;
         }
         int releaseIndex = rest.lastIndexOf(":release:");
         if (releaseIndex <= 0) {
-            return false;
+            return -1;
         }
         try {
             long period = Long.parseLong(rest.substring(0, releaseIndex));
@@ -533,15 +549,13 @@ final class PeriodicWorldEngine {
                 if (release.period() != period) {
                     continue;
                 }
-                if (order == version && release.publishedAt() == asOf) {
-                    return true;
-                }
+                if (order == version) return release.publishedAt();
                 order++;
             }
         } catch (NumberFormatException invalid) {
-            return false;
+            return -1;
         }
-        return false;
+        return -1;
     }
 
     private static Applied approve(EngineeringRun run, BoardRun governance, RoleRun roles,
@@ -810,7 +824,7 @@ final class PeriodicWorldEngine {
     }
 
     /** 披露维唯一合格引用：截止前真实的发布版本或错过事实。 */
-    private static List<String> disclosureRefs(PeriodicModel.CompanyPeriods periods,
+    static List<String> disclosureRefs(PeriodicModel.CompanyPeriods periods,
                                                String company, long period, long capturedAt, boolean issuerReports) {
         Set<String> refs = new TreeSet<>();
         Map<Long, Integer> counts = new java.util.HashMap<>();

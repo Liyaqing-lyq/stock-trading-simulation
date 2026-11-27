@@ -3,7 +3,10 @@ package edu.cufe.auction.world;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.node.*;
+import com.fasterxml.jackson.databind.util.TokenBuffer;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.security.DigestOutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
@@ -71,6 +74,23 @@ final class StateDeltaCodec {
         JsonNode before = previous == null ? NullNode.instance : canonical(JSON.readTree(previous));
         JsonNode after = canonical(JSON.readTree(next));
         return encodeCanonical(runId, position, before, after, digest(before));
+    }
+
+    /** 沿用该世界的规范写法，已归档的角色原文无需先拼入两个完整状态字符串。 */
+    static String encodeState(String runId, long position, ObjectMapper writer, Object previous, Object next)
+            throws IOException {
+        JsonNode before = stateTree(writer, previous);
+        return encodeCanonical(runId, position, before, stateTree(writer, next), digest(before));
+    }
+
+    private static JsonNode stateTree(ObjectMapper writer, Object state) throws IOException {
+        if (state == null) return NullNode.instance;
+        try (var tokens = new TokenBuffer(writer, false)) {
+            writer.writeValue(tokens, state);
+            try (var parser = tokens.asParser()) {
+                return canonical(JSON.readTree(parser));
+            }
+        }
     }
 
     private static String encodeCanonical(String runId, long position, JsonNode before,
@@ -192,7 +212,13 @@ final class StateDeltaCodec {
         return node;
     }
     private static String digest(JsonNode value) throws IOException {
-        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(JSON.writeValueAsBytes(value))); }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            try (var bytes = new DigestOutputStream(OutputStream.nullOutputStream(), digest)) {
+                JSON.writeValue(bytes, value);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        }
         catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
 }

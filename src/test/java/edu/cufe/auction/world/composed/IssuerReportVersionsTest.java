@@ -130,6 +130,8 @@ class IssuerReportVersionsTest {
         String doc = "company-statement:" + TECH + ":1";
         String firstBody;
         long firstReadAt;
+        long firstDuration;
+        long correctedDuration;
         try (var world = ComposedIndustryScenario.openIssuerReportOperating(journal)) {
             openReportingWindow(world);
             assertEquals("OK", act(world, TECH_MANAGER, "PREPARE", null, "", "", ""));
@@ -137,10 +139,12 @@ class IssuerReportVersionsTest {
             reviewAndPublish(world, draft, REVIEWERS.get(0));
             read(world, INVESTOR, doc, 1);
             firstReadAt = world.snapshot().timeMillis();
+            firstDuration = version(world, doc, 1).readDurationMillis();
             firstBody = version(world, doc, 1).body();
             assertEquals("OK", act(world, TECH_MANAGER, "PREPARE", null, "", "", NOTE));
             var correction = periods(world).drafts().get(1);
             reviewAndPublish(world, correction, REVIEWERS.get(1));
+            correctedDuration = version(world, doc, 2).readDurationMillis();
         }
         try (var host = new WorldWebHost(() -> {
             var world = ComposedIndustryScenario.openIssuerReportOperating(journal);
@@ -163,6 +167,8 @@ class IssuerReportVersionsTest {
             assertEquals(2, rows.size());
             assertEquals(doc, rows.get(0).get("docId"));
             assertEquals(2L, rows.get(0).get("version"));
+            assertEquals(Long.toString(correctedDuration), rows.get(0).get("readDurationMillis"));
+            assertEquals(Long.toString(firstDuration), rows.get(1).get("readDurationMillis"));
             assertEquals(REVIEWERS.get(1), rows.get(0).get("publisherPersonId"));
             assertFalse(rows.get(0).containsKey("body"));
             assertFalse(rows.get(0).containsKey("lastReadAt"));

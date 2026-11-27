@@ -7,6 +7,11 @@ import edu.cufe.auction.world.InformationModel;
 import edu.cufe.auction.world.PeriodicModel;
 import edu.cufe.auction.world.RoleAccess;
 import edu.cufe.auction.world.WorldRuntime;
+import edu.cufe.auction.world.composed.ComposedIndustryScenario;
+import edu.cufe.auction.world.composed.IssuerPeriodEvidenceTest;
+import static edu.cufe.auction.world.composed.ComposedManufacturingThreeScenario.STRUCT;
+import static edu.cufe.auction.world.composed.ComposedManufacturingThreeScenario.STRUCT_DIRECTORS;
+import static edu.cufe.auction.world.composed.ComposedManufacturingThreeScenario.STRUCT_MANAGER;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -103,12 +108,16 @@ class EngineeringPeriodicWebTest {
     }
 
     private void start(Path journal) throws Exception {
-        Path keys = workDir.resolve("keys-" + System.nanoTime() + ".txt");
-        Files.writeString(keys, String.join("\n", DUMMY_KEYS), StandardCharsets.UTF_8);
-        host = new WorldWebHost(() -> new WorldWebHost.Opened(
+        start(() -> new WorldWebHost.Opened(
                 WorldWebScenario.engineeringRuntimeWithAppointments(journal,
                         WorldWebScenario.engineeringConfig(), managers()),
                 WorldWebScenario.engineeringManifest().runId()));
+    }
+
+    private void start(WorldWebHost.IOSupplier opening) throws Exception {
+        Path keys = workDir.resolve("keys-" + System.nanoTime() + ".txt");
+        Files.writeString(keys, String.join("\n", DUMMY_KEYS), StandardCharsets.UTF_8);
+        host = new WorldWebHost(opening);
         server = new WorldWebServer(host, KeySlots.load(keys), SceneRoutes.open(workDir),
                 0, BOOTSTRAP, null, consoleLines::add);
         server.start();
@@ -117,6 +126,93 @@ class EngineeringPeriodicWebTest {
     }
 
     // ------------------------------------------------------------ 主链
+
+    @Test void currentDirectorGetsHttp400ForExcessiveScoreAndWorldKeepsAdvancing() throws Exception {
+        Path journal = workDir.resolve("study.journal");
+        start(() -> {
+            var world = ComposedIndustryScenario.openCurrentTenCompanyStudy(journal);
+            world.advanceTo(PeriodicModel.PERIOD_MILLIS);
+            return new WorldWebHost.Opened(world, world.profile().manifest().runId());
+        });
+        loginAdmin();
+        personAt("mfgstruct-d2");
+        var view = getJson("/api/me/engineering");
+        String token = view.required("observationToken").asText();
+        long now = Long.parseLong(view.required("timeMillis").asText());
+        String body = scoreBody(token, "mfg-struct", "account:MFG-STRUCT-CASH", now + 2000)
+                .replace("\"90\"", "\"100.001\"");
+        var response = post("/api/me/engineering/action", body);
+        assertEquals(400, response.statusCode(), response.body());
+        assertTrue(response.body().contains("评分须含"), response.body());
+        assertEquals(token, getJson("/api/me/engineering").required("observationToken").asText());
+        loginAdmin();
+        advanceTo(Long.toString(now + 3000));
+        personAt("mfgstruct-d2");
+        assertEquals(now + 3000, personTime());
+    }
+
+    @Test
+    void currentDirectorSeesClosedReviewOnWebOnlyAfterReadingIt() throws Exception {
+        Path journal = workDir.resolve("current-review.journal");
+        String company = STRUCT;
+        String director = STRUCT_DIRECTORS.get(0);
+        long duration;
+        try (WorldRuntime world = ComposedIndustryScenario.openCurrentTenCompanyStudy(journal)) {
+            IssuerPeriodEvidenceTest.govern(world);
+            world.advanceTo(30 * DAY);
+            var period = world.periodicOf(company).orElseThrow().snapshots().get(0);
+            var meeting = world.boardOfCompany(company).orElseThrow().board().meeting(period.meetingId());
+            long prepare = meeting.opensAt() + 2000;
+            world.schedulePeriodicAction("prepare", "prepare-t", prepare, company, STRUCT_MANAGER, "PREPARE",
+                    1, "", 0, "", 0, "", List.of(), "", 1000);
+            world.advanceTo(meeting.closesAt());
+            var info = world.snapshot().information().orElseThrow().information();
+            duration = info.documents().stream().filter(doc -> ("periodic-board-result:" + company + ":1").equals(doc.docId()))
+                    .findFirst().orElseThrow().at(1).readDurationMillis();
+        }
+        start(() -> {
+            WorldRuntime world = ComposedIndustryScenario.openCurrentTenCompanyStudy(journal);
+            return new WorldWebHost.Opened(world, world.profile().manifest().runId());
+        });
+        loginAdmin();
+        JsonNode audit = postJson("/api/admin/engineering", JSON.writeValueAsString(java.util.Map.of("companyId", company)))
+                .required("periodic").required("periods").get(0).required("score");
+        assertTrue(audit.required("closed").asBoolean());
+        personAt(STRUCT_MANAGER);
+        JsonNode management = cardOf(getJson("/api/me/engineering"), company).at("/periodic/periods/0/score");
+        assertTrue(management.required("closed").asBoolean());
+        assertFalse(management.has("reviewDocId") || management.has("reason") || management.has("seatCount"));
+        loginAdmin();
+        personAt(director);
+        JsonNode unread = cardOf(getJson("/api/me/engineering"), company).at("/periodic/periods/0/score");
+        assertFalse(unread.required("resultVisible").asBoolean());
+        assertFalse(unread.has("reason") || unread.has("seatCount") || unread.has("total") || unread.has("status"));
+        String docId = unread.required("reviewDocId").asText();
+        String version = unread.required("reviewVersion").asText();
+        long start = personTime() + 1000;
+        String observation = getJson("/api/me/engineering").required("observationToken").asText();
+        postJson("/api/me/read", readBody(observation, docId, version, Long.toString(start)));
+        loginAdmin();
+        advanceTo(Long.toString(start + duration - 1));
+        personAt(director);
+        assertFalse(cardOf(getJson("/api/me/engineering"), company).at("/periodic/periods/0/score").has("reason"));
+        loginAdmin();
+        advanceTo(Long.toString(start + duration));
+        personAt(director);
+        JsonNode read = cardOf(getJson("/api/me/engineering"), company).at("/periodic/periods/0/score");
+        for (String field : List.of("status", "reason", "seatCount", "total")) {
+            assertEquals(audit.required(field), read.required(field), field);
+        }
+        loginAdmin();
+        advanceTo(Long.toString(start + duration + 75 * DAY));
+        personAt(director);
+        JsonNode forgotten = cardOf(getJson("/api/me/engineering"), company).at("/periodic/periods/0/score");
+        assertEquals(docId, forgotten.required("reviewDocId").asText());
+        assertFalse(forgotten.has("reason") || forgotten.has("total") || forgotten.has("seatCount"));
+        loginAdmin();
+        personAt("omar");
+        assertTrue(getJson("/api/me/engineering").required("companies").isEmpty());
+    }
 
     @Test
     @DisplayName("HTTP 主链：SCHEDULED→BEGIN/FINISH、正文一致、更正链与迟报")

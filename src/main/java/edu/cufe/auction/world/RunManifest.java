@@ -137,10 +137,30 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** 普通十公司长程研究使用按正文计时的第三版开局。 */
     public static final String STUDY_TEN_COMPANY_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v3";
+    /** 第四版普通十公司开局，可按各行业凭据考核当期经理。 */
+    public static final String GOVERNANCE_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v4";
     /** 冻结资料阅读计时口径的数据版本键。 */
     public static final String DOCUMENT_READING_CLOCK = "document-reading-clock";
     /** 第三版普通十公司冻结的正文阅读速度版本。 */
     public static final String BODY_PACING_300 = "body-pacing-300-v1";
+    /** 编辑在本人岗位上看见的模板说明版本键。 */
+    public static final String EDITORIAL_TEMPLATE_GUIDE = "editorial-template-guide";
+    /** 根据本人编辑部的来源数映射列明可用模板。 */
+    public static final String OFFICE_TEMPLATE_KEYS = "office-source-map-keys-v1";
+    /** 发行人期末评分所采用的经营凭据版本键。 */
+    public static final String ISSUER_PERIOD_METRICS = "issuer-period-metrics";
+    /** 董事按本期经营和风险凭据评分的口径。 */
+    public static final String OPERATING_PERIOD_EVIDENCE = "operating-evidence-v1";
+
+    /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的阅读、采编与期末考核口径 */
+    public static Map<String, String> tenCompanyStudyPolicies(String id) {
+        if (GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id)) {
+            return Map.of(DOCUMENT_READING_CLOCK, BODY_PACING_300, EDITORIAL_TEMPLATE_GUIDE, OFFICE_TEMPLATE_KEYS,
+                    ISSUER_PERIOD_METRICS, OPERATING_PERIOD_EVIDENCE);
+        }
+        return STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
+                ? Map.of(DOCUMENT_READING_CLOCK, BODY_PACING_300) : Map.of();
+    }
 
     /** 旧十公司开局沿用最初的主体、采购与唤醒规则。 */
     public static final String ORIGINAL_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v1";
@@ -159,6 +179,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** @return 是否采用第二版十公司开局及其显式衍生实验 */
     public static boolean usesCurrentTenCompany(String id) {
         return TEN_COMPANY_AUTONOMY_RUN_ID.equals(id) || STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
+                || GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id)
                 || OPEN_FUND_RUN_ID.equals(id)
                 || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
     }
@@ -1386,7 +1407,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (usesMediaDesks(policyId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
             if (UNPRICED_REFERENCE_RUN_ID.equals(policyId)) expectedData.put("unpriced-opening-reference", "HY1-cost-only-v1");
             if (usesIssuerResolution(policyId)) expectedData.put("issuer-failure", "bank-resolution-halt-v1");
-            if (STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(policyId)) expectedData.put(DOCUMENT_READING_CLOCK, BODY_PACING_300);
+            expectedData.putAll(tenCompanyStudyPolicies(policyId));
             if (usesPersonDecisionPause(policyId)) expectedData.put("person-decision-pause", "confirmed-person-v1");
             if (usesOwnerBankValuation(policyId)) {
                 expectedData.put("owner-bank-valuation", "owner-claims-v1");

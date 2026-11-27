@@ -67,6 +67,7 @@ final class CompanyPublications {
             row.put("publisherPersonId", report.release().publisherPersonId());
             row.put("publisherName", WorldWebHost.displayName(registry, report.release().publisherPersonId()));
             row.put("publishedAt", Long.toString(version.publishedAt()));
+            row.put("readDurationMillis", Long.toString(version.readDurationMillis()));
             if (lastRead.containsKey(key)) row.put("lastReadAt", Long.toString(lastRead.get(key)));
             if (remembered.containsKey(key)) row.put("body", remembered.get(key));
             rows.add(row);

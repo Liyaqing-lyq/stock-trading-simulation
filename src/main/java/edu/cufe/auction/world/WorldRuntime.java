@@ -1366,14 +1366,19 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private void writeOpening(List<OpeningAccount> ordered, WorldState initial) throws IOException {
         String content = openingContent(ordered);
+        List<WorldEvent> events = openingDeclarations(content);
+        events.add(snapshotEvent(initial));
+        journal.commit(OPEN_COMMAND, content, "OPENED", events);
+    }
+
+    private List<WorldEvent> openingDeclarations(String content) throws IOException {
         List<WorldEvent> events = new ArrayList<>();
         events.add(new WorldEvent(OPEN_COMMAND + ":manifest", "RUN_MANIFEST_V1", content));
         if (registry != null) {
             events.add(new WorldEvent(OPEN_COMMAND + ":registry", "OPENING_REGISTRY_V1",
                     mapper.writeValueAsString(registry)));
         }
-        events.add(snapshotEvent(initial));
-        journal.commit(OPEN_COMMAND, content, "OPENED", events);
+        return events;
     }
 
     /**
@@ -1419,8 +1424,7 @@ public final class WorldRuntime implements AutoCloseable {
         events.add(new WorldEvent(BRANCH_EVENT + ":" + childManifest.runId(), BRANCH_EVENT,
                 jsonMapper.writeValueAsString(origin)));
         String payload = childManifest.supportsCompactBranch()
-                ? StateDeltaCodec.encode(childManifest.runId(), derived.position(), stateCanonical().writeValueAsString(parent),
-                        stateCanonical().writeValueAsString(derived))
+                ? StateDeltaCodec.encodeState(childManifest.runId(), derived.position(), stateCanonical(), parent, derived)
                 : jsonMapper.writeValueAsString(derived);
         events.add(new WorldEvent("state:" + derived.position(), childManifest.supportsCompactBranch() ? StateDeltaCodec.TYPE : SNAPSHOT_TYPE, payload));
         return new BranchBatch(jsonMapper.writeValueAsString(content), List.copyOf(events));
@@ -3744,6 +3748,9 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未知周期动作：" + action);
         }
         requirePositiveEngineeringDuration(durationMillis, action);
+        if ("SCORE".equals(action) && usesOperatingPeriodEvidence() && !PeriodicScoreInput.validMetrics(metrics)) {
+            throw new IllegalArgumentException("评分须含1至5个不同的合法维度，每项为0至100且最多两位小数");
+        }
         PeriodicActionPayload payload = new PeriodicActionPayload(commandId, companyPartyId,
                 personPartyId, action, period, draftId == null ? "" : draftId, draftVersion,
                 publisherPersonId == null ? "" : publisherPersonId, expiresAt,
@@ -5517,15 +5524,27 @@ public final class WorldRuntime implements AutoCloseable {
             row.put("materialDocId", snapshot.materialDocId());
             row.put("materialVersion", snapshot.materialVersion());
             java.util.List<java.util.Map<String, Object>> evidence = new java.util.ArrayList<>();
+            boolean operatingFacts = usesOperatingPeriodEvidence();
+            boolean mayReadMetrics = !operatingFacts || personPartyId.isEmpty()
+                    || (documentFrame != null && documentFrame.information() != null
+                    && PeriodicWorldAccess.recallEligible(documentFrame.information().information(),
+                            informationConfig == null ? null : informationConfig.recallPolicy(),
+                            personPartyId, snapshot.materialDocId(), snapshot.materialVersion(), now));
             for (String ref : snapshot.evidenceRefs()) {
-                java.util.List<String> dimensions = PeriodicWorldEngine.dimensionsFor(ref);
+                if (!mayReadMetrics) break;
+                java.util.List<String> dimensions = PeriodicWorldEngine.dimensionsFor(ref, operatingFacts);
                 if (dimensions.isEmpty()) {
                     // 私有材料来源与其它内部引用不作为评分证据输出。
                     continue;
                 }
                 java.util.Map<String, Object> entry = new java.util.LinkedHashMap<>();
-                entry.put("ref", ref);
+                entry.put(operatingFacts ? "sourceRef" : "ref", ref);
                 entry.put("dimensions", dimensions);
+                if (operatingFacts) {
+                    entry.put("asOf", ref.startsWith("disclosure:")
+                            ? PeriodicWorldEngine.disclosureTime(ref, periods, snapshot.companyPartyId(), usesIssuerReportVersions())
+                            : snapshot.capturedAt());
+                }
                 evidence.add(entry);
             }
             row.put("evidence", evidence);
@@ -5583,7 +5602,25 @@ public final class WorldRuntime implements AutoCloseable {
             row.put("missed", missed);
             boolean scored = false;
             for (PeriodicModel.Score score : periods.scores()) {
-                scored = scored || score.period() == snapshot.period();
+                if (score.period() != snapshot.period()) continue;
+                scored = true;
+                if (operatingFacts && seat && documentFrame != null && documentFrame.information() != null && meeting != null) {
+                    var info = documentFrame.information().information();
+                    String resultDoc = IssuerPeriodEvidence.reviewDocument(info, periods, score, meeting.closesAt());
+                    if (resultDoc != null) {
+                        row.put("reviewDocId", resultDoc);
+                        row.put("reviewVersion", 1L);
+                        if (PeriodicWorldAccess.recallEligible(info,
+                                informationConfig == null ? null : informationConfig.recallPolicy(), personPartyId, resultDoc, 1L, now)) {
+                            Map<String, Object> result = new LinkedHashMap<>();
+                            result.put("status", score.status().name());
+                            result.put("reason", score.reason());
+                            result.put("seatCount", score.seatCount());
+                            result.put("total", score.total() == null ? null : score.total().toPlainString());
+                            row.put("reviewResult", result);
+                        }
+                    }
+                }
             }
             row.put("reviewClosed", scored);
             java.util.Map<String, Object> draftView = null;
@@ -6278,6 +6315,11 @@ public final class WorldRuntime implements AutoCloseable {
     /** @return 本运行是否按实际发行人、签发时点和公开版本编号处理财报 */
     public boolean usesIssuerReportVersions() {
         return "versioned-v1".equals(manifest.dataVersions().get("issuer-period-reports"));
+    }
+
+    /** @return 本档是否按当期经营凭据评分，并按本人读权提供董事会定稿 */
+    public boolean usesOperatingPeriodEvidence() {
+        return RunManifest.OPERATING_PERIOD_EVIDENCE.equals(manifest.dataVersions().get(RunManifest.ISSUER_PERIOD_METRICS));
     }
 
     private Map<String, Long> visibleReadingDurations(WorldState snapshot, RoleTradingView view) {
@@ -9432,7 +9474,8 @@ public final class WorldRuntime implements AutoCloseable {
                 case RoleTradingView.TOOL_PERIODIC_PUBLISH -> "PUBLISH";
                 default -> throw new IOException("未知周期工具：" + tool);
             };
-            List<PeriodicActionPayload.PeriodicMetric> metrics = periodicMetrics(args);
+            List<PeriodicActionPayload.PeriodicMetric> metrics = "SCORE".equals(action) && usesOperatingPeriodEvidence()
+                    ? PeriodicScoreInput.parse(recorded, company, period) : periodicMetrics(args);
             if ("SCORE".equals(action) && metrics.isEmpty()) {
                 return EngineeringPlanned.rejected("INVALID_ARGUMENT");
             }
@@ -9697,7 +9740,7 @@ public final class WorldRuntime implements AutoCloseable {
         return new BigDecimal(node.asText());
     }
 
-    /** 解析周期评分五维输入：非法项整体拒绝，不静默补 0。 */
+    /** 旧合约的周期指标解码，按原版缺字段取值恢复已归档回执。 */
     private static List<PeriodicActionPayload.PeriodicMetric> periodicMetrics(JsonNode args) {
         JsonNode node = args.get("metrics");
         if (node == null || !node.isArray()) {
@@ -12724,6 +12767,11 @@ public final class WorldRuntime implements AutoCloseable {
             refs.add("account:" + BankChart.RESERVE);
             refs.addAll(bankPeriodicAccountRefs(company));
         }
+        if (usesOperatingPeriodEvidence()) {
+            refs.addAll(issuerPeriodFacts(state, company, payload.period(), capturedAt, amortized).keySet());
+            refs.addAll(PeriodicWorldEngine.disclosureRefs(periods, company, payload.period(), capturedAt,
+                    usesIssuerReportVersions()));
+        }
         PeriodicModel.Snapshot snapshot = new PeriodicModel.Snapshot(company, payload.period(),
                 meetingId, capturedAt, state.position() + 1, sha256Hex(basis),
                 sha256Hex(statement), materialDoc, 1L, materialSource, List.copyOf(refs));
@@ -12903,7 +12951,7 @@ public final class WorldRuntime implements AutoCloseable {
                     return;
                 }
                 String problem = PeriodicWorldEngine.dimensionProblem(dimension, metric.sourceRef(),
-                        metric.asOf(), snapshot, periods, usesIssuerReportVersions());
+                        metric.asOf(), snapshot, periods, usesIssuerReportVersions(), usesOperatingPeriodEvidence());
                 if (problem != null) {
                     finishCompanyPeriodic(task, container, information, false, problem, List.of());
                     return;
@@ -13213,6 +13261,27 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private String companyPeriodicStatement(WorldState frame, String company, long period,
             long capturedAt, ResearchRun research) throws IOException {
+        String body = baseCompanyPeriodicStatement(frame, company, period, capturedAt, research);
+        if (!usesOperatingPeriodEvidence()) return body;
+        var facts = issuerPeriodFacts(frame, company, period, capturedAt, research);
+        return IssuerPeriodEvidence.appendTo(body, facts);
+    }
+
+    private Map<String, String> issuerPeriodFacts(WorldState frame, String company, long period,
+            long capturedAt, ResearchRun research) throws IOException {
+        if (frame.timeMillis() > capturedAt) return Map.of();
+        var ops = frame.companyOperations();
+        WorldState prior = null;
+        if (period > 1 && ops != null && ((ops.hydro() != null && company.equals(ops.hydro().companyPartyId()))
+                || (ops.aged() != null && company.equals(ops.aged().companyPartyId())))) {
+            prior = priorPeriodicFrame(company, period);
+        }
+        return IssuerPeriodEvidence.collect(company, period, capturedAt, ops,
+                prior == null ? null : prior.companyOperations(), research, frame.bank(), frame.bankActions(), frame.accounts());
+    }
+
+    private String baseCompanyPeriodicStatement(WorldState frame, String company, long period, long capturedAt,
+            ResearchRun research) throws IOException {
         if (frame.research() != null && company.equals(frame.research().companyPartyId())
                 && researchIsExtraCompany(frame, company)) {
             return researchCompanyPeriodicStatement(frame, research, company, period, capturedAt);
@@ -13713,7 +13782,7 @@ public final class WorldRuntime implements AutoCloseable {
                 periodicBaseRefs(state.engineering(), state.governance(), company,
                         state.accounts(), manufacturingConfig == null ? ""
                                 : manufacturingConfig.accounting().companyAccountId(),
-                        amortized), now, state.position() + 1, usesIssuerReportVersions());
+                        amortized, payload.period()), now, state.position() + 1, usesIssuerReportVersions());
         finishPeriodCaptureWithResearch(task, payload.commandId(), company, applied.run(),
                 applied.governance(),
                 state.roles(), state.accounts(), state.information(),
@@ -13739,15 +13808,25 @@ public final class WorldRuntime implements AutoCloseable {
             BoardModel.Meeting meeting = board.board().meeting(snapshot.meetingId());
             PeriodicModel.Outcome closed = PeriodicModel.closeReview(extras.periods(),
                     payload.companyPartyId(), payload.period(), meeting, now);
-            finishCompanyPeriodic(task, extras.withPeriods(closed.state()), state.information(),
+            InformationRun info = closedReviewDocument(state.information(), periods,
+                    closed.state().company(payload.companyPartyId()), payload.period(), now);
+            finishCompanyPeriodic(task, extras.withPeriods(closed.state()), info,
                     closed.accepted(), closed.reason(), List.of());
             return;
         }
         PeriodicWorldEngine.Applied applied = PeriodicWorldEngine.close(state.engineering(),
                 state.governance(), payload, now);
+        var info = closedReviewDocument(state.information(), state.engineering().periodic().company(payload.companyPartyId()),
+                applied.run().periodic().company(payload.companyPartyId()), payload.period(), now);
         finishEngineeringTask(task, payload.commandId(), payload.companyPartyId(), applied.run(),
-                applied.governance(), state.roles(), state.accounts(), state.information(), now,
+                applied.governance(), state.roles(), state.accounts(), info, now,
                 applied.accepted(), applied.reason(), applied.children());
+    }
+
+    private InformationRun closedReviewDocument(InformationRun info, PeriodicModel.CompanyPeriods before,
+            PeriodicModel.CompanyPeriods after, long period, long now) {
+        if (!usesOperatingPeriodEvidence() || before == null || after == null || after.scores().size() == before.scores().size()) return info;
+        return IssuerPeriodEvidence.publishReview(info, after, period, now);
     }
 
     /** 披露截止：未发布才记 MISSED；评分缺失是另一件事。 */
@@ -13793,7 +13872,7 @@ public final class WorldRuntime implements AutoCloseable {
         PeriodicWorldEngine.Applied applied = PeriodicWorldEngine.action(state.engineering(),
                 state.governance(), state.roles(), state.information(),
                 informationConfig == null ? null : informationConfig.recallPolicy(), payload,
-                periodicStatementBody(state.engineering(), payload), now, state.position() + 1, usesIssuerReportVersions());
+                periodicStatementBody(state.engineering(), payload), now, state.position() + 1, usesIssuerReportVersions(), usesOperatingPeriodEvidence());
         finishEngineeringTask(task, payload.commandId(), payload.companyPartyId(), applied.run(),
                 applied.governance(), state.roles(), state.accounts(),
                 applied.information() == null ? state.information() : applied.information(), now,
@@ -13801,16 +13880,17 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 期末报表正文：章程公司取真实制造报表，工程公司取工程报表；只由该帧数据构成。 */
-    private static String periodicStatement(EngineeringRun run, BoardRun governance,
+    private String periodicStatement(EngineeringRun run, BoardRun governance,
             ManufacturingRun manufacturing, DividendModel.State dividends,
             Map<String, CashLedger.CashAccount> accounts, String company, long period,
-            long capturedAt, ResearchRun research) {
+            long capturedAt, ResearchRun research) throws IOException {
         String base;
         if (governance != null && governance.board().charter().companyPartyId().equals(company)) {
             base = PeriodicWorldEngine.manufacturingStatement(manufacturing, accounts, dividends,
                     company, period, capturedAt);
         } else {
             base = PeriodicWorldEngine.statementText(run, accounts, company, period, capturedAt);
+            if (usesOperatingPeriodEvidence()) base = IssuerPeriodEvidence.appendTo(base, engineeringPeriodFacts(run, company, period));
         }
         if (research != null && research.companyPartyId().equals(company)) {
             ResearchModel.Report rr = ResearchModel.report(research.state(), accounts);
@@ -13842,16 +13922,32 @@ public final class WorldRuntime implements AutoCloseable {
         return PeriodicWorldEngine.basisText(run, company, period, capturedAt);
     }
 
+    private Map<String, String> engineeringPeriodFacts(EngineeringRun run, String company, long period) throws IOException {
+        var current = run.stateOf(company);
+        if (current == null) return Map.of();
+        EngineeringModel.State previous = null;
+        if (period > 1) {
+            var prior = run.periodicOf(company).orElseThrow().snapshots().stream()
+                    .filter(s -> s.period() == period - 1).findFirst().orElseThrow();
+            previous = frameFromJournal(prior.position()).engineering().stateOf(company);
+        }
+        return IssuerPeriodEvidence.engineering(company, period, current, previous);
+    }
+
     /** 本期基础证据引用：工程公司用真实合同/工单/账户，章程公司用真实经营账户。 */
-    private static List<String> periodicBaseRefs(EngineeringRun run, BoardRun governance,
+    private List<String> periodicBaseRefs(EngineeringRun run, BoardRun governance,
             String company, Map<String, CashLedger.CashAccount> accounts, String charterAccountId,
-            ResearchRun research) {
+            ResearchRun research, long period) throws IOException {
         List<String> refs;
         if (governance != null && governance.board().charter().companyPartyId().equals(company)) {
             refs = charterAccountId == null || charterAccountId.isBlank() ? List.of()
                     : List.of("account:" + charterAccountId);
         } else {
             refs = PeriodicWorldEngine.evidenceRefs(run, accounts, company);
+            if (usesOperatingPeriodEvidence()) {
+                refs = new ArrayList<>(refs);
+                refs.addAll(engineeringPeriodFacts(run, company, period).keySet());
+            }
         }
         if (research != null && research.companyPartyId().equals(company)) {
             List<String> withResearch = new ArrayList<>(refs);
@@ -24582,7 +24678,7 @@ public final class WorldRuntime implements AutoCloseable {
                 PeriodicWorldEngine.Applied applied = PeriodicWorldEngine.action(run, governance,
                         roles, information, informationConfig == null ? null
                                 : informationConfig.recallPolicy(), payload,
-                        periodicStatementBody(run, payload), now, commit.position(), usesIssuerReportVersions());
+                        periodicStatementBody(run, payload), now, commit.position(), usesIssuerReportVersions(), usesOperatingPeriodEvidence());
                 run = applied.run();
                 governance = applied.governance() == null ? governance : applied.governance();
                 information = applied.information() == null ? information : applied.information();
@@ -24611,7 +24707,7 @@ public final class WorldRuntime implements AutoCloseable {
                                 payload.period(), capturedAt),
                         periodicBaseRefs(run, governance, captureCompany, accounts,
                                 manufacturingConfig == null ? "" : manufacturingConfig
-                                        .accounting().companyAccountId(), replayResearch),
+                                        .accounting().companyAccountId(), replayResearch, payload.period()),
                         now, commit.position(), usesIssuerReportVersions());
                 run = applied.run();
                 governance = applied.governance() == null ? governance : applied.governance();
@@ -24628,6 +24724,10 @@ public final class WorldRuntime implements AutoCloseable {
                         .equals(task.kind())
                         ? PeriodicWorldEngine.close(run, governance, payload, now)
                         : PeriodicWorldEngine.deadline(run, governance, payload, now);
+                if (PendingTask.PERIOD_CLOSE_V1.equals(task.kind())) {
+                    information = closedReviewDocument(information, run.periodic().company(payload.companyPartyId()),
+                            applied.run().periodic().company(payload.companyPartyId()), payload.period(), now);
+                }
                 run = applied.run();
                 governance = applied.governance() == null ? governance : applied.governance();
                 accepted = applied.accepted();
@@ -25246,6 +25346,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (!OPEN_COMMAND.equals(first.commandId()) || !expected.equals(first.commandContent())
                 || !"OPENED".equals(first.result())) {
             throw new IOException("运行清单或开局现金与持久记录不一致");
+        }
+        var declarations = first.events().stream().filter(event -> !stateEvent(event.type())).toList();
+        if (!openingDeclarations(expected).equals(declarations)) {
+            throw new IOException("开局事件中的运行清单或产权登记与确认命令不一致");
         }
         try (var inputs = new RoleDeliberation.ReplayInputs()) {
             WorldState previous = null;
@@ -26614,9 +26718,7 @@ public final class WorldRuntime implements AutoCloseable {
 
     private WorldEvent snapshotEvent(WorldState snapshot) throws IOException {
         if (compactState()) return new WorldEvent("state:" + snapshot.position(), StateDeltaCodec.TYPE,
-                StateDeltaCodec.encode(manifest.runId(), snapshot.position(),
-                        state == null ? null : stateCanonical().writeValueAsString(state),
-                        stateCanonical().writeValueAsString(snapshot)));
+                StateDeltaCodec.encodeState(manifest.runId(), snapshot.position(), stateCanonical(), state, snapshot));
         // 旧规则：保持原持久 writer（含其原有的集合/键序行为），不改旧档案序列化契约。
         // 新组合规则（composed-v2）：用显式规范 writer（map 键排序 + Set 排序数组），
         // 使同一份真实状态在不同 JVM 写出同一段字节，恢复期才能把真实篡改与表示差异分开。
@@ -30490,6 +30592,7 @@ public final class WorldRuntime implements AutoCloseable {
                 guide.put("decisionCadence", "本人可见信息、会议、任职或业务状态变化，以及本人专注动作完成时获得决定机会；无变化每天至多一次例行检查。每次一个动作。会议须给资料阅读、到会、提案和表决留下实际工时；不得假设一个意图已完成整条流程。");
                 guide.put("waitContract", "观望严格输出{\"tool\":\"role.wait\"}，不得带args字段。等待不会替你执行后继动作；阅读完成后应结合职责重新评估，允许继续等待或拒绝不合理议案。");
             }
+            if (usesOperatingPeriodEvidence() && !directorships.isEmpty()) root.put("periodicScoreContract", PeriodicScoreInput.GUIDE);
             var products = root.putArray("authorizedProducts");
             if (snap.roles() != null) {
                 var organizations = snap.roles().access().appointments().stream()
@@ -30546,7 +30649,10 @@ public final class WorldRuntime implements AutoCloseable {
                 policy.enabledTemplates().forEach((template, count) -> minimum.put(template.name(), count));
                 if (MediaModel.EIGHT_DESKS.equals(policy.templateCatalog())) MediaDesks.describe(goal, office.organizationPartyId());
                 if (hasConfirmedPublicationOrigins()) root.put("editorialEvidenceContract", "personal-read-index-v1");
-                root.put("editorialProcedure", "选题使用本岗位启用的模板名。后续使用media内的storyId与revisionNo。投稿的evidence使用本人已读且仍能引用的lastReadRef，同源转载共算一组。审阅须先读完当前draftDocId及其版本，批准后才可发布。");
+                String templateGuide = RunManifest.OFFICE_TEMPLATE_KEYS.equals(manifest.dataVersions().get(RunManifest.EDITORIAL_TEMPLATE_GUIDE))
+                        ? "提出选题时，media.story.propose 的 template 填本岗位目标 minimumIndependentSources 中的一个键。键是本岗位启用的模板名，数值是该模板所需的最低独立来源数。"
+                        : "选题使用本岗位启用的模板名。";
+                root.put("editorialProcedure", templateGuide + "后续使用media内的storyId与revisionNo。投稿的evidence使用本人已读且仍能引用的lastReadRef，同源转载共算一组。审阅须先读完当前draftDocId及其版本，批准后才可发布。");
             }
         }
         if (hasOpenFund()) {
@@ -35918,7 +36024,7 @@ public final class WorldRuntime implements AutoCloseable {
         return String.join(",", periodicBaseRefs(frame.engineering(), frame.governance(),
                 companyPartyId, frame.accounts(), manufacturingConfig == null ? ""
                         : manufacturingConfig.accounting().companyAccountId(),
-                frame.research()));
+                frame.research(), period));
     }
 
     /** 测试只读：取某公司当前董事会预算状态（承诺/已用/已释放），不写状态。 */

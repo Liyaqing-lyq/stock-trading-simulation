@@ -147,7 +147,11 @@ class TargetTransportProbeTest {
             var uri=URI.create("http://127.0.0.1:"+http.getAddress().getPort()+"/chat/completions");
             var provider=new LiveDecisionProvider(slot->new DeepSeekClient(()->"sk-fixture-aaaaaaaaaaaaaaaa",uri));
             var people=List.of("alice","bob");
-            String mode=variant.equals("EMPTY") ? "TEN_COMPANY_STUDY" : "TEN_COMPANY_AUTONOMY";
+            String mode=switch(variant) {
+                case "EMPTY" -> "TEN_COMPANY_GOVERNANCE_STUDY";
+                case "FILTERED" -> "TEN_COMPANY_STUDY";
+                default -> "TEN_COMPANY_AUTONOMY";
+            };
             var first=run(mode,"first",null,100,people,provider);
             if (!List.of("EMPTY","FILTERED","TOOL_CALLS").contains(variant)) {
                 assertTrue(first.path("probeStop").asText().startsWith("PROBE_PROVIDER_"));
@@ -160,11 +164,15 @@ class TargetTransportProbeTest {
             assertEquals(1,first.at("/providerProvenance/transport/failuresByCode/"+code).asInt());
             assertEquals(0,first.at("/providerProvenance/transport/consecutive").asInt());
             var seed=root.resolve("first");
-            assertThrows(IllegalArgumentException.class,()->run(mode.equals("TEN_COMPANY_STUDY") ? "TEN_COMPANY_AUTONOMY" : "TEN_COMPANY_STUDY",
+            assertThrows(IllegalArgumentException.class,()->run(mode.equals("TEN_COMPANY_GOVERNANCE_STUDY") ? "TEN_COMPANY_STUDY" : "TEN_COMPANY_GOVERNANCE_STUDY",
                     "wrong-mode",seed,200,people,provider));
             var second=run(mode,"second",seed,200,people,provider);
-            assertEquals(variant.equals("EMPTY") ? edu.cufe.auction.world.RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID
-                    : edu.cufe.auction.world.RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID,second.at("/live/runId").asText());
+            String runId=switch(variant) {
+                case "EMPTY" -> edu.cufe.auction.world.RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID;
+                case "FILTERED" -> edu.cufe.auction.world.RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID;
+                default -> edu.cufe.auction.world.RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID;
+            };
+            assertEquals(runId,second.at("/live/runId").asText());
             assertEquals("TARGET_REACHED",second.path("probeStop").asText());
             assertEquals(0,second.path("httpCalls").asInt());
             assertEquals(List.of("alice","bob"),actors);

@@ -26,6 +26,46 @@ class ComposedEditorialChainTest {
         return JSON.missingNode();
     }
 
+    @Test void studyRoleInputsNameOnlyTheAppointedDesksTemplatesAndRecoverWithTheirBranchPolicy() throws Exception {
+        var file = directory.resolve("study.journal");
+        try (var world = ComposedIndustryScenario.openCurrentTenCompanyStudy(file)) {
+            world.createBranch("editing-control", world.snapshot().position(),
+                    BranchOrigin.Kind.OPERATOR_BRANCH, "编辑部模板说明");
+            record Desk(String person, String template, int sources) { }
+            for (var desk : List.of(new Desk("rita", "WIRE", 1), new Desk("sam", "INVESTIGATIVE", 2))) {
+                var d = choose(world, desk.person(), TOOL_MEDIA_PROPOSE,
+                        Map.of("storyId", "test-" + desk.person(), "template", desk.template(), "topic", "受控模板核对"));
+                var input = JSON.readTree(d.inputText());
+                assertEquals(JSON.valueToTree(Map.of(desk.template(), desk.sources())), office(input).required("minimumIndependentSources"));
+                assertTrue(input.at("/engineering/editorialProcedure").asText()
+                        .contains("键是本岗位启用的模板名，数值是该模板所需的最低独立来源数"));
+                var ref = world.snapshot().decisions().orElseThrow().actionRef(d.actionId());
+                world.advanceTo(ref.dueMillis());
+                assertTrue(world.snapshot().media().orElseThrow().reports().get(ref.taskId()).accepted());
+            }
+        }
+        try (var parent = ComposedIndustryScenario.openTenCompanyAutonomy(file);
+             var child = new BranchRepository(directory.resolve("runs")).open("editing-control", parent.profile())) {
+            var input = child.autonomyRoleObservation("rita");
+            assertEquals(parent.autonomyRoleObservation("rita").at("/engineering/editorialProcedure"),
+                    input.at("/engineering/editorialProcedure"));
+            assertEquals(JSON.valueToTree(Map.of("WIRE", 1)), office(input).required("minimumIndependentSources"));
+            assertTrue(child.snapshot().media().orElseThrow().stateOf("wire").stories().isEmpty());
+        }
+        for (int version : List.of(1, 2, 3)) {
+            var historical = directory.resolve("v" + version + ".journal");
+            try (var world = switch (version) {
+                case 1 -> ComposedIndustryScenario.openOriginalTenCompanyAutonomy(historical);
+                case 2 -> ComposedIndustryScenario.openTenCompanyAutonomy(historical);
+                default -> ComposedIndustryScenario.openStudyTenCompanyAutonomy(historical);
+            }) {
+                var old = world.autonomyRoleObservation("rita").at("/engineering/editorialProcedure");
+                assertTrue(old.asText().startsWith("选题使用本岗位启用的模板名。"));
+                assertFalse(old.asText().contains("minimumIndependentSources"));
+            }
+        }
+    }
+
     private void act(WorldRuntime world, String person, String tool, Map<String, ?> args) throws Exception {
         var outcome = result(world, person, tool, args);
         assertTrue(outcome.accepted(), outcome.reason());
