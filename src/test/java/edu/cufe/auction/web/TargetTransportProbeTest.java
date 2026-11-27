@@ -118,9 +118,9 @@ class TargetTransportProbeTest {
         exchange.getResponseBody().write(bytes);
     }
 
-    @ParameterizedTest @ValueSource(strings={"EMPTY","V6_EMPTY","V7_EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
+    @ParameterizedTest @ValueSource(strings={"EMPTY","V6_EMPTY","V7_EMPTY","V8_EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
     void measuredNonBusinessReceiptNeedsAttributableIdentityUsageAndFinish(String sample) throws Exception {
-        String variant = (sample.equals("V6_EMPTY") || sample.equals("V7_EMPTY")) ? "EMPTY" : sample;
+        String variant = List.of("V6_EMPTY", "V7_EMPTY", "V8_EMPTY").contains(sample) ? "EMPTY" : sample;
         var http=HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
         var actors=new CopyOnWriteArrayList<String>();
         http.createContext("/chat/completions",exchange->{
@@ -149,6 +149,7 @@ class TargetTransportProbeTest {
             var provider=new LiveDecisionProvider(slot->new DeepSeekClient(()->"sk-fixture-aaaaaaaaaaaaaaaa",uri));
             var people=List.of("alice","bob");
             String mode=switch(sample) {
+                case "V8_EMPTY" -> "TEN_COMPANY_MEETING_STUDY";
                 case "V7_EMPTY" -> "TEN_COMPANY_INTERVIEW_STUDY";
                 case "V6_EMPTY" -> "TEN_COMPANY_PERSONAL_STUDY";
                 case "EMPTY" -> "TEN_COMPANY_GOVERNANCE_STUDY";
@@ -172,6 +173,7 @@ class TargetTransportProbeTest {
                     "wrong-mode",seed,200,people,provider));
             var second=run(mode,"second",seed,200,people,provider);
             String runId=switch(sample) {
+                case "V8_EMPTY" -> edu.cufe.auction.world.RunManifest.MEETING_TEN_COMPANY_RUN_ID;
                 case "V7_EMPTY" -> edu.cufe.auction.world.RunManifest.INTERVIEW_TEN_COMPANY_RUN_ID;
                 case "V6_EMPTY" -> edu.cufe.auction.world.RunManifest.PERSONAL_TEN_COMPANY_RUN_ID;
                 case "EMPTY" -> edu.cufe.auction.world.RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID;

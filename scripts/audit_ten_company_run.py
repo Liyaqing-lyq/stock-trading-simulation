@@ -24,14 +24,16 @@ PERSONAL_POLICIES = {**DRAFT_POLICIES, "crisis-office-objectives": "active-appoi
                      "decision-envelope-guide": "typed-review-fields-v1"}
 INTERVIEW_POLICIES = {**PERSONAL_POLICIES, "interview-action-feedback": "bound-coordination-v1",
                       "social-action-feedback": "bound-message-v1", "periodic-action-feedback": "bound-period-result-v1"}
+MEETING_POLICIES = {**INTERVIEW_POLICIES, "periodic-meeting-view": "readable-period-material-v1"}
 OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
                     "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES,
-                    "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES}
+                    "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES,
+                    "web-ten-company-autonomy-v8": MEETING_POLICIES}
 
 
 def check_policies(run_id, data_versions):
     expected = OPENING_POLICIES[run_id]
-    actual = {k: data_versions[k] for k in INTERVIEW_POLICIES if k in data_versions}
+    actual = {k: data_versions[k] for k in MEETING_POLICIES if k in data_versions}
     if data_versions.get("branch-profile-run") != run_id or actual != expected:
         raise ValueError("原生开局声明的政策与该版运行身份不符")
 
@@ -122,7 +124,7 @@ def audit(source, target_days=None):
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
         if run_id not in OPENING_POLICIES or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2 至 v7 紧凑日志")
+            raise ValueError("此脚本仅复算标准十公司 v2 至 v8 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")

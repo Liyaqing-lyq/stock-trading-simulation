@@ -1,6 +1,8 @@
 package edu.cufe.auction.app;
 
 import edu.cufe.auction.world.RunManifest;
+import edu.cufe.auction.world.BranchOrigin;
+import edu.cufe.auction.world.BranchRepository;
 import edu.cufe.auction.world.WorldEvent;
 import edu.cufe.auction.world.WorldJournal;
 import edu.cufe.auction.world.WorldJournalScanner;
@@ -87,10 +89,9 @@ class StudyTenCompanyOpeningTest {
         assertArrayEquals(previousBytes, Files.readAllBytes(old));
     }
 
-    @Test void standardEntryStartsSeventhVersionAndReopensEarlierFilesWithoutChangingThem() throws Exception {
+    @Test void seventhVersionReopensEarlierFilesWithoutChangingThem() throws Exception {
         Path latest = dir.resolve("world-ten-company-autonomy-v6.journal");
-        Path seventhFile = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v7.journal"), seventhFile);
+        Path seventhFile = dir.resolve("world-ten-company-autonomy-v7.journal");
         Path newWorld = dir.resolve("world-ten-company-autonomy-v5.journal");
         Path oldWorld = dir.resolve("world-ten-company-autonomy-v4.journal");
         try (var fourth = ComposedIndustryScenario.openCurrentTenCompanyStudy(oldWorld)) {
@@ -160,6 +161,50 @@ class StudyTenCompanyOpeningTest {
         }
         assertEquals(seventhFile, WorldWebApp.tenCompanyJournal(dir));
         assertArrayEquals(sixthBytes, Files.readAllBytes(latest));
+    }
+
+    @Test void eighthVersionAddsOnlyReadablePeriodMaterialsAndBranchesKeepTheirOpeningPolicy() throws Exception {
+        Path eighthFile = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v8.journal"), eighthFile);
+        Path seventhFile = dir.resolve("world-ten-company-autonomy-v7.journal");
+        try (var seventh = ComposedIndustryScenario.openInterviewTenCompanyStudy(seventhFile)) {
+            assertFalse(seventh.profile().manifest().dataVersions().containsKey(RunManifest.PERIODIC_MEETING_VIEW));
+        }
+        byte[] seventhBytes = Files.readAllBytes(seventhFile);
+        assertEquals(seventhFile, WorldWebApp.tenCompanyJournal(dir));
+        var branches = new BranchRepository(dir.resolve("runs"));
+        String childId = "meeting-material-child";
+        try (var prior = ComposedIndustryScenario.openMeetingTenCompanyStudy(seventhFile);
+             var eighth = ComposedIndustryScenario.openMeetingTenCompanyStudy(eighthFile)) {
+            var old = prior.profile().manifest();
+            var current = eighth.profile().manifest();
+            assertEquals(RunManifest.INTERVIEW_TEN_COMPANY_RUN_ID, old.runId());
+            assertEquals(RunManifest.MEETING_TEN_COMPANY_RUN_ID, current.runId());
+            var expected = new TreeMap<>(old.dataVersions());
+            expected.put("branch-profile-run", current.runId());
+            expected.put(RunManifest.PERIODIC_MEETING_VIEW, RunManifest.READABLE_PERIOD_MATERIAL);
+            assertEquals(expected, current.dataVersions());
+            assertEquals(prior.openingRegistry(), eighth.openingRegistry());
+            assertEquals(prior.snapshot().accounts(), eighth.snapshot().accounts());
+            expected.remove(RunManifest.PERIODIC_MEETING_VIEW);
+            assertThrows(IllegalArgumentException.class, () -> withPolicies(current, expected));
+            expected.put(RunManifest.PERIODIC_MEETING_VIEW, "invalid");
+            assertThrows(IllegalArgumentException.class, () -> withPolicies(current, expected));
+            var grafted = new TreeMap<>(old.dataVersions());
+            grafted.put(RunManifest.PERIODIC_MEETING_VIEW, RunManifest.READABLE_PERIOD_MATERIAL);
+            assertThrows(IllegalArgumentException.class, () -> withPolicies(old, grafted));
+            eighth.createBranch(childId, eighth.snapshot().position(), BranchOrigin.Kind.OPERATOR_BRANCH, "期末材料");
+        }
+        assertArrayEquals(seventhBytes, Files.readAllBytes(seventhFile));
+        assertEquals(eighthFile, WorldWebApp.tenCompanyJournal(dir));
+        byte[] eighthBytes = Files.readAllBytes(eighthFile);
+        try (var recovered = ComposedIndustryScenario.openMeetingTenCompanyStudy(eighthFile);
+             var child = branches.open(childId, recovered.profile())) {
+            assertEquals(childId, child.profile().manifest().runId());
+            assertEquals(RunManifest.MEETING_TEN_COMPANY_RUN_ID, child.profile().manifest().policyRunId());
+            assertEquals(recovered.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());
+        }
+        assertArrayEquals(eighthBytes, Files.readAllBytes(eighthFile));
     }
 
     @Test void historicalNamesUseNonemptyArchiveAndRejectSwappedOrIndependentWorlds() throws Exception {

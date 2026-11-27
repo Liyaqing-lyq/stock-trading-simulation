@@ -5531,6 +5531,9 @@ public final class WorldRuntime implements AutoCloseable {
             row.put("capturedAt", snapshot.capturedAt());
             row.put("materialDocId", snapshot.materialDocId());
             row.put("materialVersion", snapshot.materialVersion());
+            if (readablePeriodMaterials() && seat && !personPartyId.isEmpty() && documentFrame != null)
+                row.put("materialReadable", documentFrame.information() != null && visibleDocumentVersion(documentFrame,
+                        personPartyId, snapshot.materialDocId(), snapshot.materialVersion(), now));
             java.util.List<java.util.Map<String, Object>> evidence = new java.util.ArrayList<>();
             boolean operatingFacts = usesOperatingPeriodEvidence();
             boolean mayReadMetrics = !operatingFacts || personPartyId.isEmpty()
@@ -30313,6 +30316,10 @@ public final class WorldRuntime implements AutoCloseable {
         return mapper.readTree(payload).path("companyPartyId").asText("");
     }
 
+    private boolean readablePeriodMaterials() {
+        return RunManifest.READABLE_PERIOD_MATERIAL.equals(manifest.dataVersions().get(RunManifest.PERIODIC_MEETING_VIEW));
+    }
+
     private Optional<PeriodicModel.CompanyPeriods> decisionPeriods(WorldState snap, String company) {
         if (companyDecisionsEnabled() && snap.companyGovernance() != null
                 && snap.companyGovernance().has(company)) {
@@ -30409,6 +30416,11 @@ public final class WorldRuntime implements AutoCloseable {
                         budgets.addObject().put("category", budget.category().name()).put("cap", money(budget.cap()));
                     node.put("responsibility", "依据本人可读资料判断经理任免、预算和考核。经理空缺及预算缺失是待评估治理事项，不代表必须批准；已有议案先参与本人有权处理的会议，不能代替他人投票。");
                 }
+                var periodicState = decisionPeriods(snap, company);
+                Map<String, PeriodicModel.Snapshot> reviewMeetings = new java.util.HashMap<>();
+                if (readablePeriodMaterials())
+                    periodicState.ifPresent(periods -> periods.snapshots().forEach(period ->
+                            reviewMeetings.put(period.meetingId(), period)));
                 var meetings = node.putArray("meetings");
                 List<BoardModel.Meeting> ordered = new ArrayList<>(
                         boardRun.board().meetings().values());
@@ -30430,18 +30442,26 @@ public final class WorldRuntime implements AutoCloseable {
                     if ("v1".equals(manifest.dataVersions().get("role-decision-guide")) && meeting.appointmentProposal() != null) {
                         item.set("appointmentRequest", mapper.valueToTree(meeting.appointmentProposal().request()));
                     }
+                    var review = reviewMeetings.get(meeting.meetingId());
+                    if (review != null) item.put("periodReviewProcedure", "本期按 periodic.score 登记在会董事的独立考核；对经理准备的确切稿件可用 periodic.approve 单独登记批准。本人已评分与本稿批准情况见同一 meetingId 的 periodic 行。");
                     var materials = item.putArray("materials");
                     for (BoardModel.MaterialRef material : meeting.materials()) {
                         var entry = materials.addObject();
                         entry.put("materialId", material.materialId());
-                        entry.put("docId", material.sourceRef());
+                        // 期末会议冻结了真实文书和它的账务来源；阅读工具只接受文书标识。
+                        boolean frozenReport = review != null && review.materialDocId().equals(material.materialId())
+                                && review.materialSourceRef().equals(material.sourceRef()) && review.materialVersion() == material.version();
+                        String docId = frozenReport ? review.materialDocId() : material.sourceRef();
+                        entry.put("docId", docId);
                         entry.put("version", material.version());
-                        boolean read = snap.information() != null
-                                && InformationModel.canCite(snap.information().information(),
-                                person, material.sourceRef(), material.version(), now);
+                        boolean readable = !frozenReport || (snap.information() != null
+                                && visibleDocumentVersion(snap, person, docId, material.version(), now));
+                        if (frozenReport) entry.put("readable", readable);
+                        boolean read = readable && snap.information() != null
+                                && InformationModel.canCite(snap.information().information(), person, docId, material.version(), now);
                         entry.put("read", read);
                         entry.put("recalled", read && recalledFor(snap.information().information(),
-                                person, material.sourceRef(), material.version(), now));
+                                person, docId, material.version(), now));
                     }
                     if (!meeting.proposedLines().isEmpty()) {
                         var lines = item.putArray("proposedLines");
@@ -30455,8 +30475,6 @@ public final class WorldRuntime implements AutoCloseable {
                 }
                 // 本人可见的周期投影：期间、截至、材料引用、可评分真实证据与本人进度。
                 // 与 periodicRoleView 共用同一实现，确保模型不需要 God 真值也能填对参数。
-                java.util.Optional<PeriodicModel.CompanyPeriods> periodicState =
-                        decisionPeriods(snap, company);
                 if (periodicState.isPresent()) {
                     node.set("periodic", mapper.valueToTree(periodicPeriodRows(periodicState.get(),
                             boardRun, person, now, seat != null,

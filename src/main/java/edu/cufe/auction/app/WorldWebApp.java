@@ -180,7 +180,7 @@ public final class WorldWebApp {
                     var runtime=sessionsMode ? ComposedIndustryScenario.openMarketSessionsOperating(workDir.resolve("world-market-sessions-operating-v1.journal"))
                             : manufacturingUpgradeMode ? ComposedIndustryScenario.openManufacturingUpgradeOperating(workDir.resolve("world-manufacturing-upgrade-v1.journal"))
                             : openFundMode ? ComposedIndustryScenario.openOpenFundOperating(workDir.resolve("world-open-fund-v1.journal"))
-                            : tenCompanyMode ? ComposedIndustryScenario.openInterviewTenCompanyStudy(tenCompanyJournal(workDir))
+                            : tenCompanyMode ? ComposedIndustryScenario.openMeetingTenCompanyStudy(tenCompanyJournal(workDir))
                             : personPauseMode ? ComposedIndustryScenario.openPersonPauseOperating(workDir.resolve("world-person-pause-v1.journal"), workDir.resolve("opening-copies.json"))
                             : issuerResolutionMode ? ComposedIndustryScenario.openIssuerResolutionOperating(workDir.resolve("world-issuer-resolution-v1.journal"), workDir.resolve("opening-copies.json"))
                             : unpricedReferenceMode ? ComposedIndustryScenario.openUnpricedReferenceOperating(workDir.resolve("world-unpriced-reference-v1.journal"), workDir.resolve("opening-copies.json"))
@@ -465,7 +465,7 @@ public final class WorldWebApp {
     }
 
     static Path tenCompanyJournal(Path workDir) throws IOException {
-        Path current = workDir.resolve("world-ten-company-autonomy-v7.journal");
+        Path current = workDir.resolve("world-ten-company-autonomy-v8.journal");
         for (String id : RunManifest.standardTenCompanyRuns()) {
             Path file = workDir.resolve("world-" + id.substring("web-".length()) + ".journal");
             if (!Files.exists(file)) continue;

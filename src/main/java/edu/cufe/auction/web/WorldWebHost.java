@@ -7788,6 +7788,10 @@ public final class WorldWebHost implements AutoCloseable {
             }
 
             Map<String, Object> roleRow = roleRowByPeriod.getOrDefault(period, Map.of());
+            if (seatHolder && roleRow.get("materialReadable") instanceof Boolean readable) {
+                row.put("materialReadable", readable);
+                row.put("myBallotSubmitted", Boolean.TRUE.equals(roleRow.get("myBallotSubmitted")));
+            }
             List<Map<String, Object>> draftRows = new ArrayList<>();
             Map<String, Object> latestDraft = null;
             if (god) {
@@ -7845,6 +7849,11 @@ public final class WorldWebHost implements AutoCloseable {
                 draftView.put("requiredApprovals",
                         Integer.toString(PeriodicModel.MIN_COMPLETE_SEATS));
                 draftView.put("mine", !me.isBlank() && me.equals(preparedBy));
+                if (row.containsKey("materialReadable") && myDraft.get("docId") instanceof String doc
+                        && myDraft.get("version") instanceof Number version) {
+                    draftView.put("myRead", access.hasRead(me, doc, version.longValue(), snapshot.timeMillis()));
+                    draftView.put("myRecallEligible", access.recallEligible(me, doc, version.longValue(), snapshot.timeMillis()));
+                }
                 draftRows.add(draftView);
                 latestDraft = draftView;
             }

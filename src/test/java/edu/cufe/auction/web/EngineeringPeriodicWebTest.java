@@ -107,6 +107,44 @@ class EngineeringPeriodicWebTest {
         }
     }
 
+    @Test
+    void eighthVersionDirectorReadsPublishedPeriodMaterialUnderOwnSeat() throws Exception {
+        var file = workDir.resolve("period-material.journal");
+        String person = STRUCT_DIRECTORS.get(1);
+        long preparedAt;
+        String docId;
+        try (var w = ComposedIndustryScenario.openMeetingTenCompanyStudy(file)) {
+            IssuerPeriodEvidenceTest.govern(w);
+            w.advanceTo(30 * DAY);
+            var period = w.periodicOf(STRUCT).orElseThrow().snapshots().get(0);
+            docId = period.materialDocId();
+            preparedAt = w.boardOfCompany(STRUCT).orElseThrow().board().meeting(period.meetingId()).opensAt() + 2000;
+            w.schedulePeriodicAction("prepare", "prepare-t", preparedAt, STRUCT, STRUCT_MANAGER, "PREPARE",
+                    1, "", 0, "", 0, "", List.of(), "", 1000);
+        }
+        start(() -> {
+            var w = ComposedIndustryScenario.openMeetingTenCompanyStudy(file);
+            return new WorldWebHost.Opened(w, w.profile().manifest().runId());
+        });
+        loginAdmin();
+        personAt(person);
+        var unpublished = cardOf(getJson("/api/me/engineering"), STRUCT).at("/periodic/periods/0");
+        assertFalse(unpublished.required("materialReadable").asBoolean());
+        loginAdmin();
+        advanceTo(Long.toString(preparedAt));
+        personAt(person);
+        var published = cardOf(getJson("/api/me/engineering"), STRUCT).at("/periodic/periods/0");
+        assertEquals(docId, published.required("materialDocId").asText());
+        assertTrue(published.required("materialReadable").asBoolean());
+        assertFalse(published.required("myReadMaterial").asBoolean());
+        assertFalse(published.required("myBallotSubmitted").asBoolean());
+        assertEquals(docId, published.at("/latestDraft/docId").asText());
+        assertFalse(published.required("latestDraft").required("myRead").asBoolean());
+        loginAdmin();
+        personAt("bob");
+        assertFalse(getJson("/api/me/engineering").toString().contains(docId));
+    }
+
     private void start(Path journal) throws Exception {
         start(() -> new WorldWebHost.Opened(
                 WorldWebScenario.engineeringRuntimeWithAppointments(journal,

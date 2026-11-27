@@ -5801,7 +5801,7 @@ function renderPeriodicBlock(container, periodic, options) {
         + " · " + worldTimeText(meeting.opensAt) + " — " + worldTimeText(meeting.closesAt)) : "—"],
       ["真实出席", periodicPeople(meeting.attendees)],
       ["回避", periodicPeople(meeting.recused)],
-      ["本期材料", row.materialDocId + " v" + row.materialVersion
+      ["本期材料", row.materialReadable === false ? "尚无本人可读的版本" : row.materialDocId + " v" + row.materialVersion
         + (options && options.showReadState ? " · 本人已读完：" + (row.myReadMaterial ? "是" : "否")
           + (row.myReadMaterial === true && row.myRecallEligible === false
             ? " · 当前不可回忆（可重读）" : "") : "")],
@@ -6435,13 +6435,26 @@ function fillPersonalEngineeringCompanies(companies) {
     }
 
     if (company.seatId) {
-      card.appendChild(engineeringTable("本人与会或可出席的董事会会议",
+      const reviews = new Map((company.periodic?.periods || []).filter(period =>
+        typeof period.materialReadable === "boolean" && period.meeting).map(period => [period.meeting.meetingId, period]));
+      const meetings = company.meetings || [];
+      const ordinary = meetings.filter(row => !reviews.has(row.meetingId));
+      if (ordinary.length || reviews.size === 0) card.appendChild(engineeringTable("本人与会或可出席的董事会会议",
         ["会议", "议题", "状态", "我的角色", "我的票", "计数", "材料", "提案", "结果"],
-        (company.meetings || []).map(row => [row.meetingId,
+        ordinary.map(row => [row.meetingId,
           label("topic", row.topic), row.status,
           row.role === "CONVENER" ? "召集" : row.role === "RECUSED" ? "回避"
             : row.role === "ELIGIBLE" ? "可出席" : "到会",
           row.myVote || "未投", row.tally, row.materials, meetingProposalText(row), row.failureReason])));
+      const reviewRows = meetings.filter(row => reviews.has(row.meetingId)).map(row => {
+        const period = reviews.get(row.meetingId);
+        return [row.meetingId, period.period, period.materialReadable ? period.materialDocId + " v" + period.materialVersion : "待提供",
+          period.myRecallEligible ? "已读，可回忆" : period.myReadMaterial ? "已读，需重读" : "未读",
+          period.myBallotSubmitted ? "已提交" : "未提交",
+          period.latestDraft ? (period.myApproval ? "已批准" : "未批准") + " v" + period.latestDraft.version : "尚无稿件"];
+      });
+      if (reviewRows.length) card.appendChild(engineeringTable("本人参与的期末考核会议",
+        ["会议", "期间", "考核材料", "本人阅读", "本席评分", "本稿批准"], reviewRows));
     }
 
     const periodicHead = document.createElement("h4");
@@ -6452,6 +6465,24 @@ function fillPersonalEngineeringCompanies(companies) {
     let readButtons = 0;
     for (const row of (company.periodic && company.periodic.periods) || []) {
       if (!company.seatId) continue;
+      if (typeof row.materialReadable === "boolean") {
+        const choices = [];
+        if (row.materialReadable && !row.myRecallEligible)
+          choices.push([row.materialDocId, row.materialVersion, "考核材料", row.myReadMaterial]);
+        const draft = row.latestDraft;
+        if (draft && (draft.docId !== row.materialDocId || String(draft.version) !== String(row.materialVersion)) && !draft.myRecallEligible)
+          choices.push([draft.docId, draft.version, "待批准稿", draft.myRead]);
+        for (const [docId, version, name, read] of choices) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "quiet";
+          button.textContent = (read ? "重读" : "阅读") + "第" + row.period + "期" + name + "（v" + version + "）";
+          button.addEventListener("click", () => guard(scheduleDocumentReading(company.companyId, docId, version, name)));
+          readBox.appendChild(button);
+          readButtons += 1;
+        }
+        continue;
+      }
       // 历史已读（myReadMaterial）与当前可回忆（myRecallEligible）分开看：遗忘后仍给重读入口。
       const forgotten = row.myReadMaterial === true && row.myRecallEligible === false;
       if (row.myReadMaterial === true && !forgotten) continue;
@@ -6860,7 +6891,13 @@ function renderEngineeringFields(tool) {
   }
   if (spec.fields.includes("draftId")) syncDraftVersion();
   if (tool === "periodic.publish") applyPublishGrant();
-  if (note) note.textContent = spec.note || "";
+  if (note) {
+    const hasPeriodReview = (tool === "board.vote" || tool === "board.implement") && currentPeriodicCard()?.periods?.some(row =>
+      typeof row.materialReadable === "boolean");
+    note.textContent = hasPeriodReview
+      ? "预算、任免等议题使用普通表决与决议实施。期末考核会议通过提交本席评分与批准草稿分别登记。"
+      : spec.note || "";
+  }
   if (toolNote) {
     toolNote.textContent = "将发起：" + engineeringToolLabel(tool) + "（" + tool + "）";
   }
@@ -6906,6 +6943,10 @@ function engineeringValidate(tool, values) {
   }
   for (const key of spec.required) {
     if (!values[key]) errors.push("「" + fieldLabel(key) + "」必须填写");
+  }
+  if ((tool === "board.vote" || tool === "board.implement") && currentPeriodicCard()?.periods?.some(row =>
+      typeof row.materialReadable === "boolean" && row.meeting?.meetingId === values.meetingId)) {
+    errors.push("这场期末会议通过「提交本席评分」和「批准草稿」分别登记。");
   }
   for (const key of spec.fields) {
     const value = values[key];

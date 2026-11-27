@@ -146,10 +146,12 @@ public final class RoleDeliberation {
             for (var m : director.path("meetings")) {
                 var meeting = (ObjectNode) m;
                 long opens = meeting.path("opensAt").asLong(), closes = meeting.path("closesAt").asLong();
-                meeting.put("window", now < opens ? "BEFORE_OPEN" : now < closes ? "VOTING" : "AFTER_CLOSE");
+                String openWindow = meeting.has("periodReviewProcedure") ? "PERIOD_REVIEW" : "VOTING";
+                meeting.put("window", now < opens ? "BEFORE_OPEN" : now < closes ? openWindow : "AFTER_CLOSE");
                 meeting.put("attendanceDeadlineExclusive", opens);
                 meeting.put("proposalPresent", meeting.has("appointmentRequest") || !meeting.path("proposedLines").isEmpty());
-                meeting.put("procedure", "到会必须在opensAt之前完成；材料与提案须在materialDeadline之前完成。开会后不能补到会或补提案，只能由已到会且读完材料的合格席位独立表决。PASSED也须另行实施。召集/材料/提案/投票是不同动作。任命与预算必须分开议题；普通董事不能召集。安排动作须计入本次思考及工具耗时。");
+                if (meeting.has("periodReviewProcedure")) meeting.set("procedure", meeting.get("periodReviewProcedure"));
+                else meeting.put("procedure", "到会必须在opensAt之前完成；材料与提案须在materialDeadline之前完成。开会后不能补到会或补提案，只能由已到会且读完材料的合格席位独立表决。PASSED也须另行实施。召集/材料/提案/投票是不同动作。任命与预算必须分开议题；普通董事不能召集。安排动作须计入本次思考及工具耗时。");
             }
         }
         for (var manager : root.path("managerships")) {

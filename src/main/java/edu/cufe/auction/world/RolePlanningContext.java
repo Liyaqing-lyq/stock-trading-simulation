@@ -70,13 +70,20 @@ public final class RolePlanningContext {
                 correctProcedure(m);
                 var constraints = m.putObject("planningPrerequisites");
                 constraints.put("currentPhase", m.path("status").asText("UNKNOWN"));
-                constraints.put("completionWindow", "到会完成 < opensAt；材料/提案完成 <= materialDeadline；投票须当前VOTING且完成在[opensAt,closesAt)；任免实施须当前ADOPTED且完成在[closesAt,effectiveAt]。未来动作还须另花一轮思考和工具工时，不能把通过当作已实施。");
+                boolean periodReview = m.has("periodReviewProcedure");
+                if (periodReview) constraints.put("completionWindow", "董事须在 opensAt 前完成到会；periodic.score 的完成时间须在 [opensAt, closesAt) 内。");
+                else constraints.put("completionWindow", "到会完成 < opensAt；材料/提案完成 <= materialDeadline；投票须当前VOTING且完成在[opensAt,closesAt)；任免实施须当前ADOPTED且完成在[closesAt,effectiveAt]。未来动作还须另花一轮思考和工具工时，不能把通过当作已实施。");
                 for (String tool : List.of("board.attend", "board.addMaterial", "board.proposeAppointment", "board.proposeBudget", "board.vote", "board.implement")) {
                     // Actual public tool names are used below; tools absent from the offered set remain unoffered.
                     if (!actions.has(tool)) continue;
                     var row = constraints.putObject(tool);
                     row.set("timing", actions.path(tool).deepCopy());
                     ArrayNode blockers = row.putArray("blockers"), unknown = row.putArray("unknown");
+                    if (periodReview && ("board.vote".equals(tool) || "board.implement".equals(tool))) {
+                        blockers.add("WRONG_TOPIC");
+                        row.put("status", "BLOCKED").put("executorRevalidates", true);
+                        continue;
+                    }
                     JsonNode finish = actions.path(tool).path("earliestCompletionMillis");
                     if (!finish.isIntegralNumber()) unknown.add("UNKNOWN_COMPLETION_TIME");
                     boolean implement = tool.equals("board.implement"), vote = tool.equals("board.vote"), attend = tool.equals("board.attend");
