@@ -27,11 +27,7 @@ final class PersonalLibrarySearch {
                        java.util.function.Supplier<RoleView> currentView) {
         ObjectNode library = engineering.putObject("librarySearch");
         library.put("contract", "可用role.library.search，自选query关键词（1至120字，空格分词且须全部匹配）。检索当次可见标题与自己已读、仍记得的正文。完成后最多展示12条按资料标识排序的结果，可缩小问题再查。查到标题后仍须另行阅读才可引用。");
-        RoleTradingRun.Report last = null;
-        for (var report : trading.reports().values()) {
-            if (PendingTask.ROLE_LIBRARY_SEARCH_V1.equals(report.kind()) && person.equals(report.personPartyId())
-                    && report.accepted() && (last == null || last.position() < report.position())) last = report;
-        }
+        RoleTradingRun.Report last = latestCompleted(trading, person);
         if (last == null) return;
         var decision = DecisionModel.decision(decisions.state(), last.clientTaskId()).orElseThrow();
         try {
@@ -44,6 +40,16 @@ final class PersonalLibrarySearch {
         } catch (IOException invalid) {
             throw new IllegalStateException("检索的冻结观察损坏", invalid);
         }
+    }
+
+    static RoleTradingRun.Report latestCompleted(RoleTradingRun trading, String person) {
+        if (trading == null) return null;
+        RoleTradingRun.Report last = null;
+        for (var report : trading.reports().values()) {
+            if (PendingTask.ROLE_LIBRARY_SEARCH_V1.equals(report.kind()) && person.equals(report.personPartyId())
+                    && report.accepted() && (last == null || last.position() < report.position())) last = report;
+        }
+        return last;
     }
 
     private static void appendMatches(ObjectNode result, String query, JsonNode frozen, RoleView current) {

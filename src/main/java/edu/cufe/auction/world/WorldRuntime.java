@@ -852,6 +852,7 @@ public final class WorldRuntime implements AutoCloseable {
                     && !PendingTask.RESEARCH_REGISTER_V1.equals(targetKind)
                     && !PendingTask.RESEARCH_BEGIN_V1.equals(targetKind)
                     && !PendingTask.RESEARCH_APPROVE_V1.equals(targetKind)
+                    && !PendingTask.RESEARCH_LICENSE_V1.equals(targetKind)
                     && !PendingTask.COMPANY_OPERATIONS_V1.equals(targetKind)) {
                 throw new IllegalArgumentException("BEGIN 屏障种类非法：" + targetKind);
             }
@@ -4616,6 +4617,8 @@ public final class WorldRuntime implements AutoCloseable {
         requireSchedulable(dueTimeMillis, taskId);
         // 单人物焦点：本人还有未完成的群组动作时不能开始新阅读
         requireNoGroupAction(personPartyId, state.pending());
+        if (hasMediaSubscriptions())
+            requireSubscriptionFree(state, personPartyId, dueTimeMillis, dueTimeMillis + readDurationOf(docId,version));
         // 反向互斥：本人正有董事/经理正工时，不能同时开始阅读。
         // 判权必须用真实阅读区间 [due, due+readDuration)，不能把 now→未来到期整段当占用，
         // 否则“阅读在预约开始前结束”的合法日程会被误挡。
@@ -6078,6 +6081,7 @@ public final class WorldRuntime implements AutoCloseable {
             ResearchModel.Report report = ResearchModel.report(base.research().state(),
                     base.accounts());
             researchAssets = report.rndAsset();
+            if (report.licensing() != null) researchAssets = researchAssets.add(report.licensing().receivable());
             researchProfit = report.profit();
         }
         return new EngineeringModel.ReportContext(net, declared,
@@ -7592,7 +7596,7 @@ public final class WorldRuntime implements AutoCloseable {
             List<String> tools = allowedToolsOf(view);
             List<PublicationRun.FeedEntry> feed = publicationFeedEntries(state,
                     state.information() == null ? null : state.information().information(),
-                    cutoffTime);
+                    cutoffTime, view.profile());
             String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
                     pendingActionsAt(state, run, request.personPartyId()), tools, decisionConfig,
                     toolContractVersion(),
@@ -7600,9 +7604,7 @@ public final class WorldRuntime implements AutoCloseable {
                             ? interviewInput(state, request.personPartyId(), cutoffTime) : null,
                     engineeringInput(state, request.personPartyId(), cutoffTime),
                     manifest.hasGroups()
-                            ? groupsInput(state, state.information() == null ? null
-                                    : state.information().information(), view.profile(),
-                                    cutoffTime)
+                            ? groupsInput(state, view.profile(), cutoffTime, feed)
                             : null, ownVisibleReadTimes(state, view), visibleReadingDurations(state, view), roleInputFormat());
             if (decisionConfig.live()
                     && informationConfig != null && informationConfig.recallPolicy() != null) {
@@ -8868,7 +8870,18 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("观望不能排业务动作");
         }
         JsonNode args = replyArgs(recorded.lastAttempt().replyBody());
-        MediaTaskBody originalMedia = forcedTaskId != null && tool.startsWith("media.")
+        if (forcedTaskId == null && hasMediaSubscriptions() && !tool.startsWith("media.subscription.")
+                && base.pending().stream().anyMatch(t -> MediaSubscriptions.TASKS.contains(t.kind()))) {
+            long due = DecisionModel.actionDueMillis(model, recorded.actionId());
+            long begin = recorded.barrierAtMillis();
+            if (RoleTradingView.TOOL_READING_START.equals(tool)) {
+                begin = due;
+                due += readDurationOf(base,args.path("docId").asText(),args.path("version").asLong());
+            }
+            if (subscriptionOverlaps(base,binding.personPartyId(),begin,due))
+                return new PlacedAction(recorded.actionId(), tool, "", "", "", recorded.barrierAtMillis(), "", null, "BUSY");
+        }
+        MediaTaskBody originalMedia = forcedTaskId != null && tool.startsWith("media.") && !tool.startsWith("media.subscription.")
                 ? recordedMediaBody(base, recorded.actionId()) : null;
         InterviewTaskBody originalInterview = forcedTaskId != null && tool.startsWith("interview.")
                 ? recordedInterviewBody(base, recorded.actionId()) : null;
@@ -9018,23 +9031,31 @@ public final class WorldRuntime implements AutoCloseable {
                 return new PlacedAction(recorded.actionId(), tool, planned.kind(), taskId, commandId,
                         planned.dueTimeMillis(), planned.payload(), null, null);
             }
-            case ResearchDecisionTools.ACT -> {
+            case ResearchDecisionTools.ACT, ResearchLicensing.TOOL -> {
                 if (!researchDecisionEnabled() || base.research() == null) throw new IOException("当前档案未冻结研发决定工具");
-                ResearchDecisionTools.Draft draft = strict(ResearchDecisionTools.Draft.class, args);
                 String company = base.research().companyPartyId();
                 String appointment = binding.appointments().get(company);
                 if (appointment == null) throw new IOException("研发决定缺少观察任职");
                 String commandId = DecisionRun.actionCommandId(recorded.actionId());
                 Object payload;
                 String target;
-                if ("APPROVE".equals(draft.action())) {
-                    target = PendingTask.RESEARCH_APPROVE_V1;
-                    payload = new ResearchApprovePayload(commandId, company, binding.personPartyId(),
-                            draft.projectId(), draft.meetingId(), appointment, recorded.cutoffPosition());
+                if (ResearchLicensing.TOOL.equals(tool)) {
+                    if (!researchLicensingEnabled()) throw new IOException("本档无研发成果许可");
+                    var request = strict(ResearchLicensing.Request.class, args);
+                    target = PendingTask.RESEARCH_LICENSE_V1;
+                    payload = new ResearchActionPayload(commandId, company, binding.personPartyId(), request.action(),
+                            request.projectId(), "", appointment, recorded.cutoffPosition());
                 } else {
-                    target = "REGISTER".equals(draft.action()) ? PendingTask.RESEARCH_REGISTER_V1 : PendingTask.RESEARCH_BEGIN_V1;
-                    payload = new ResearchActionPayload(commandId, company, binding.personPartyId(), draft.action(),
-                            draft.projectId(), draft.stage(), appointment, recorded.cutoffPosition());
+                    ResearchDecisionTools.Draft draft = strict(ResearchDecisionTools.Draft.class, args);
+                    if ("APPROVE".equals(draft.action())) {
+                        target = PendingTask.RESEARCH_APPROVE_V1;
+                        payload = new ResearchApprovePayload(commandId, company, binding.personPartyId(),
+                                draft.projectId(), draft.meetingId(), appointment, recorded.cutoffPosition());
+                    } else {
+                        target = "REGISTER".equals(draft.action()) ? PendingTask.RESEARCH_REGISTER_V1 : PendingTask.RESEARCH_BEGIN_V1;
+                        payload = new ResearchActionPayload(commandId, company, binding.personPartyId(), draft.action(),
+                                draft.projectId(), draft.stage(), appointment, recorded.cutoffPosition());
+                    }
                 }
                 long due = DecisionModel.actionDueMillis(model, recorded.actionId());
                 long duration = Math.subtractExact(due, recorded.barrierAtMillis());
@@ -9103,6 +9124,20 @@ public final class WorldRuntime implements AutoCloseable {
                 kind = PendingTask.ROLE_LIBRARY_SEARCH_V1;
                 body = strict(PersonalLibrarySearch.Request.class, args);
             }
+            case MediaSubscriptions.JOIN, MediaSubscriptions.LEAVE, MediaSubscriptions.RELEASE -> {
+                if (!hasMediaSubscriptions()) throw new IOException("当前档案未启用媒体试刊");
+                kind = MediaSubscriptions.task(tool);
+                var target = strict(MediaSubscriptions.Target.class, args);
+                var menu = mapper.readTree(recorded.inputText()).at("/engineering/mediaSubscriptions");
+                boolean release = MediaSubscriptions.RELEASE.equals(tool);
+                boolean listed = false;
+                for (var row : menu.path(release ? "releasableTurns" : "offers"))
+                    if (target.target().equals(row.path(release ? "turnId" : "organization").asText())) listed = true;
+                if (!listed) throw new IllegalArgumentException("对象不在此次本人的试刊清单中");
+                body = target;
+                if (forcedTaskId == null && subscriptionBusy(base, binding.personPartyId(), recorded.barrierAtMillis()))
+                    return new PlacedAction(recorded.actionId(), tool, "", "", "", recorded.barrierAtMillis(), "", null, "BUSY");
+            }
             case RoleTradingView.TOOL_READING_START -> {
                 kind = PendingTask.ROLE_TRADING_READ_V1;
                 RoleReadBody read = strict(RoleReadBody.class, args);
@@ -9121,7 +9156,10 @@ public final class WorldRuntime implements AutoCloseable {
             }
             case RoleTradingView.TOOL_RESEARCH_SUBMIT -> {
                 kind = PendingTask.ROLE_TRADING_RESEARCH_V1;
-                body = strict(WorldRoleSession.ResearchDraft.class, args);
+                var draft = strict(WorldRoleSession.ResearchDraft.class, args);
+                if (hasMediaSubscriptions() && draft.docId().startsWith(MediaSubscriptions.PREFIX))
+                    throw new IllegalArgumentException("该标识由试刊投递保留");
+                body = draft;
             }
             case RoleTradingView.TOOL_TARGET_SET -> {
                 kind = PendingTask.ROLE_TRADING_TARGET_V1;
@@ -10600,7 +10638,7 @@ public final class WorldRuntime implements AutoCloseable {
             List<String> tools = allowedToolsOf(view);
             List<PublicationRun.FeedEntry> feed = publicationFeedEntries(previous,
                     previous.information() == null ? null : previous.information().information(),
-                    cutoffTime);
+                    cutoffTime, view.profile());
             String input = DecisionRun.inputText(view, request.wakeReason(), cutoffTime,
                     pendingActionsAt(previous, run, request.personPartyId()), tools,
                     decisionConfig, toolContractVersion(),
@@ -10608,9 +10646,7 @@ public final class WorldRuntime implements AutoCloseable {
                             ? interviewInput(previous, request.personPartyId(), cutoffTime) : null,
                     engineeringInput(previous, request.personPartyId(), cutoffTime),
                     manifest.hasGroups()
-                            ? groupsInput(previous, previous.information() == null ? null
-                                    : previous.information().information(), view.profile(),
-                                    cutoffTime)
+                            ? groupsInput(previous, view.profile(), cutoffTime, feed)
                             : null, ownVisibleReadTimes(previous, view), visibleReadingDurations(previous, view), roleInputFormat());
             DecisionModel.Decision historical = DecisionModel.decision(historicalDecisions.state(),
                     request.actionId()).orElseThrow(() -> new IOException("历史决定缺失：" + request.actionId()));
@@ -12214,7 +12250,7 @@ public final class WorldRuntime implements AutoCloseable {
             }
             return new EngineeringBeginDecision(p.companyPartyId(), p.commandId(), reason);
         }
-        if (PendingTask.RESEARCH_REGISTER_V1.equals(wrap.targetKind())
+        if (PendingTask.RESEARCH_REGISTER_V1.equals(wrap.targetKind()) || PendingTask.RESEARCH_LICENSE_V1.equals(wrap.targetKind())
                 || PendingTask.RESEARCH_BEGIN_V1.equals(wrap.targetKind())) {
             ResearchActionPayload research = mapper.readValue(wrap.payload(),
                     ResearchActionPayload.class);
@@ -13560,6 +13596,9 @@ public final class WorldRuntime implements AutoCloseable {
         BigDecimal priorExpense = ZERO;
         BigDecimal priorAmortized = ZERO;
         BigDecimal priorImpairment = ZERO;
+        var fees = ResearchLicensing.totals(research.state().licenses());
+        var priorFees = ResearchLicensing.totals(null);
+        boolean licensing = ResearchLicensing.enabled(manifest);
         String flowNote = "本期＝累计（无上一期冻结快照）";
         WorldState prior = priorPeriodicFrame(company, period);
         if (prior != null && prior.research() != null
@@ -13569,6 +13608,7 @@ public final class WorldRuntime implements AutoCloseable {
             priorExpense = before.expense();
             priorAmortized = before.accumulatedAmortization();
             priorImpairment = before.impairment();
+            priorFees = ResearchLicensing.totals(prior.research().state().licenses());
             flowNote = "本期＝本期累计 − 上一期冻结帧累计（区间 (" + (period - 1L) + ","
                     + period + "]）";
         }
@@ -13577,7 +13617,7 @@ public final class WorldRuntime implements AutoCloseable {
         BigDecimal periodImpairment = report.impairment().subtract(priorImpairment);
         BigDecimal periodCost = periodExpense.add(periodAmortized).add(periodImpairment);
         BigDecimal assets = CashLedger.money(report.companyCash().add(report.otherAssets())
-                .add(report.rndAsset()).add(position.assets()));
+                .add(report.rndAsset()).add(fees.receivable()).add(position.assets()));
         BigDecimal liabilities = CashLedger.money(position.liabilities());
         BigDecimal equity = CashLedger.money(report.equity().add(position.equity()));
         BigDecimal residual = assets.subtract(liabilities).subtract(equity);
@@ -13591,6 +13631,7 @@ public final class WorldRuntime implements AutoCloseable {
                 .append(" 采样时点=").append(capturedAt).append('\n');
         text.append("资产：\n");
         text.append("  经营现金=").append(report.companyCash()).append('\n');
+        if (licensing) text.append("  许可应收款=").append(fees.receivable()).append('\n');
         text.append("  研发在研=").append(report.workInProgress()).append('\n');
         text.append("  研发可用净额=").append(report.availableNet()).append('\n');
         text.append("  银行存款=").append(position.bankDeposits()).append('\n');
@@ -13612,11 +13653,19 @@ public final class WorldRuntime implements AutoCloseable {
         text.append("  本期减值=").append(CashLedger.money(periodImpairment)).append('\n');
         text.append("  本期成本合计=").append(CashLedger.money(periodCost)).append('\n');
         text.append("  口径=").append(flowNote).append('\n');
-        text.append("收入：本切片没有产品销售或许可，收入科目为空（不虚报）。\n");
+        if (licensing) {
+            text.append("  本期许可交付收入=").append(fees.revenue().subtract(priorFees.revenue())).append('\n');
+            text.append("  本期实收许可款=").append(fees.cashReceived().subtract(priorFees.cashReceived())).append('\n');
+            text.append("  累计许可交付收入=").append(fees.revenue()).append('\n');
+            text.append("  累计实收许可款=").append(fees.cashReceived()).append('\n');
+        } else {
+            text.append("收入：本切片没有产品销售或许可，收入科目为空（不虚报）。\n");
+        }
         text.append("A=").append(assets).append(" L=").append(liabilities).append(" E=")
                 .append(equity).append(" balanced=").append(residual.signum() == 0).append('\n');
         text.append("未支持维度（不填 0）：\n");
-        text.append("  - 研发公司尚无产品销售/许可收入与商业化履约\n");
+        text.append(licensing ? "  - 固定许可费之外的产品销售及销量分成尚未登记\n"
+                : "  - 研发公司尚无产品销售/许可收入与商业化履约\n");
         text.append("  - 未接递延税、租赁与金融资产公允价值变动\n");
         return text.toString();
     }
@@ -13630,7 +13679,9 @@ public final class WorldRuntime implements AutoCloseable {
         return "期间基准：company=" + company + " period=" + period
                 + " capturedAt=" + capturedAt + " policy=" + policy
                 + "\n口径：现金/研发资产/派生金融资产负债/资本/损益全部取该帧唯一现金权威与研发状态，"
-                + "\n已批准项目的摊销先于报表同帧推进；收入科目为空，不以余额差补利润。\n";
+                + (ResearchLicensing.enabled(manifest)
+                ? "\n研发资产按获准使用时点摊销，许可按交付确认收入、按实付结算应收。\n"
+                : "\n已批准项目的摊销先于报表同帧推进；收入科目为空，不以余额差补利润。\n");
     }
 
     /** 独立研发公司本期证据引用：真实经营账户 + 已立项/已批准项目，不含任何银行准备金。 */
@@ -13649,6 +13700,14 @@ public final class WorldRuntime implements AutoCloseable {
             ResearchModel.Project project = research.state().projects().get(projectId);
             if (project != null && project.approvalRef() != null) {
                 refs.add("approval:research:" + company + ":" + projectId);
+            }
+        }
+        if (research.state().licenses() != null) {
+            for (var contract : new java.util.TreeMap<>(research.state().licenses()).values()) {
+                String prefix = "license:research:" + company + ":" + contract.projectId();
+                refs.add(prefix + ":signed:" + contract.signedAt());
+                if (contract.deliveredAt() != null) refs.add(prefix + ":delivered:" + contract.deliveredAt());
+                if (contract.paidAt() != null) refs.add(prefix + ":paid:" + contract.paidAt());
             }
         }
         return List.copyOf(refs);
@@ -16730,6 +16789,8 @@ public final class WorldRuntime implements AutoCloseable {
                     throw new IOException("固定资本基金档包含无业务凭据的跨主体转账：" + task.taskId());
                 }
             }
+            if (MediaSubscriptions.TASKS.contains(task.kind()) && !hasMediaSubscriptions())
+                throw new IOException("旧档不得包含媒体试刊待办");
             if (!ids.add(task.taskId())) {
                 throw new IOException("状态待办重复：" + task.taskId());
             }
@@ -16808,6 +16869,7 @@ public final class WorldRuntime implements AutoCloseable {
         validateGovernance(candidate, previous, commit);
         validateRoleReading(candidate, previous, commit);
         validateTrading(candidate, previous);
+        validateMediaSubscription(candidate, previous, commit);
         validateDecisions(candidate, previous, commit);
         validateBeliefs(candidate, previous, commit);
         validateMedia(candidate, previous, commit);
@@ -17477,6 +17539,14 @@ public final class WorldRuntime implements AutoCloseable {
             }
             case PendingTask.RESEARCH_APPROVE_V1 -> readEngineeringBody(body,
                     ResearchApprovePayload.class, "研发商业化");
+            case PendingTask.RESEARCH_LICENSE_V1 -> {
+                var p = readEngineeringBody(body, ResearchActionPayload.class, "研发许可");
+                if (!researchLicensingEnabled() || !"".equals(p.stage()) || p.observedPosition() == null
+                        || p.commandId() == null || p.commandId().isBlank() || p.appointmentId() == null || p.appointmentId().isBlank())
+                    throw new IOException("本档或原观察未登记许可");
+                try { new ResearchLicensing.Request(p.action(), p.projectId()); }
+                catch (IllegalArgumentException invalid) { throw new IOException("研发许可原动作无效", invalid); }
+            }
             case PendingTask.COMPANY_OPERATIONS_V1 -> {
                 OperationsCommand payload = readEngineeringBody(body, OperationsCommand.class, "制造经营");
                 try {
@@ -19206,7 +19276,7 @@ public final class WorldRuntime implements AutoCloseable {
             case PendingTask.ENGINEERING_ACTION_V1 -> completeEngineeringAction(task);
             case PendingTask.ENGINEERING_FUND_V1 -> completeFundedEngineering(task);
             case PendingTask.ENGINEERING_PERIODIC_V1 -> completeEngineeringPeriodic(task);
-            case PendingTask.RESEARCH_REGISTER_V1 -> completeResearchRegister(task);
+            case PendingTask.RESEARCH_REGISTER_V1, PendingTask.RESEARCH_LICENSE_V1 -> completeResearchRegister(task);
             case PendingTask.RESEARCH_BEGIN_V1 -> completeResearchBegin(task);
             case PendingTask.RESEARCH_RESULT_V1 -> completeResearchResult(task);
             case PendingTask.RESEARCH_APPROVE_V1 -> completeResearchApprove(task);
@@ -19227,7 +19297,8 @@ public final class WorldRuntime implements AutoCloseable {
                  PendingTask.INFORMATION_COMPLETE_READ_V1 -> completeInformation(task);
             case PendingTask.ROLE_TRADING_READ_V1,
                  PendingTask.ROLE_TRADING_UNREAD_V1 -> completeRoleReading(task);
-            case PendingTask.ROLE_LIBRARY_SEARCH_V1,
+            case MediaSubscriptions.JOIN_TASK, MediaSubscriptions.LEAVE_TASK, MediaSubscriptions.RELEASE_TASK,
+                 PendingTask.ROLE_LIBRARY_SEARCH_V1,
                  PendingTask.ROLE_TRADING_RESEARCH_V1,
                  PendingTask.ROLE_TRADING_TARGET_V1,
                  PendingTask.ROLE_TRADING_REVIEW_V1,
@@ -21708,6 +21779,7 @@ public final class WorldRuntime implements AutoCloseable {
                             continue;
                         }
                         if (document.audience().kind() == InformationModel.AudienceKind.DIRECT
+                                && !(hasMediaSubscriptions() && document.docId().startsWith(MediaSubscriptions.PREFIX))
                                 && person.equals(document.audience().partyId())) {
                             targets.add(document.publisherPartyId());
                         }
@@ -21741,6 +21813,13 @@ public final class WorldRuntime implements AutoCloseable {
                                                       String excludeOrganization, long now,
                                                       String excludeTaskId) {
         List<InterviewModel.Interval> busy = new ArrayList<>();
+        if (hasMediaSubscriptions()) {
+            for (var task : base.pending()) {
+                if (MediaSubscriptions.TASKS.contains(task.kind()) && !task.taskId().equals(excludeTaskId)
+                        && person.equals(readRolePayload(task).personPartyId()))
+                    busy.add(new InterviewModel.Interval(task.dueTimeMillis() - MediaSubscriptions.DURATION, task.dueTimeMillis()));
+            }
+        }
         InterviewRun run = base.interviews();
         if (run != null) {
             busy.addAll(travelIntervals(base,person,excludeOrganization));
@@ -21822,18 +21901,13 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 资料固定版本的真实阅读耗时；资料未发布或版本未知返回 0（不预留窗口）。 */
     private long readDurationOf(String docId, long version) {
-        if (state.information() == null) {
-            return 0L;
-        }
-        InformationModel.Document document = documentOf(state.information().information(), docId);
-        if (document == null) {
-            return 0L;
-        }
-        try {
-            return document.at(version).readDurationMillis();
-        } catch (IllegalArgumentException unknownVersion) {
-            return 0L;
-        }
+        return readDurationOf(state, docId, version);
+    }
+
+    private long readDurationOf(WorldState base, String docId, long version) {
+        var doc = base.information() == null ? null : documentOf(base.information().information(), docId);
+        var fixed = doc == null ? null : doc.at(version);
+        return fixed == null ? 0L : fixed.readDurationMillis();
     }
 
     /** 已排阅读任务的真实阅读耗时；文档/版本查不到时退回 0（不误占未来窗口）。 */
@@ -21860,15 +21934,7 @@ public final class WorldRuntime implements AutoCloseable {
                 return 0L;
             }
         }
-        InformationModel.Document document = documentOf(base.information().information(), docId);
-        if (document == null) {
-            return 0L;
-        }
-        try {
-            return document.at(version).readDurationMillis();
-        } catch (IllegalArgumentException unknownVersion) {
-            return 0L;
-        }
+        return readDurationOf(base, docId, version);
     }
 
     /**
@@ -21917,7 +21983,7 @@ public final class WorldRuntime implements AutoCloseable {
                 continue;
             }
             // 新组合档的研发 FINISH 继续占原命令冻结的工时；旧22/23档没有工时信封，保持旧行为。
-            if (manifest.hasCommandIntent() && (PendingTask.RESEARCH_REGISTER_V1.equals(task.kind())
+            if (manifest.hasCommandIntent() && (PendingTask.RESEARCH_REGISTER_V1.equals(task.kind()) || PendingTask.RESEARCH_LICENSE_V1.equals(task.kind())
                     || PendingTask.RESEARCH_BEGIN_V1.equals(task.kind())
                     || PendingTask.RESEARCH_APPROVE_V1.equals(task.kind()))) {
                 try {
@@ -21936,7 +22002,7 @@ public final class WorldRuntime implements AutoCloseable {
                     long duration = intent == null ? 0 : intent.durationMillis();
                     if (intent == null && researchDecisionEnabled() && base.decisions() != null) {
                         for (DecisionRun.ActionRef ref : base.decisions().actionRefs().values()) {
-                            if (ResearchDecisionTools.ACT.equals(ref.tool())
+                            if ((ResearchDecisionTools.ACT.equals(ref.tool()) || ResearchLicensing.TOOL.equals(ref.tool()))
                                     && DecisionRun.actionCommandId(ref.actionId()).equals(command)) {
                                 duration = Math.subtractExact(task.dueTimeMillis(), ref.dueMillis());
                                 break;
@@ -21991,7 +22057,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (PendingTask.COMPANY_OPERATIONS_V1.equals(wrap.targetKind())) {
             return mapper.readValue(wrap.payload(), OperationsCommand.class).personPartyId();
         }
-        if (PendingTask.RESEARCH_REGISTER_V1.equals(wrap.targetKind())
+        if (PendingTask.RESEARCH_REGISTER_V1.equals(wrap.targetKind()) || PendingTask.RESEARCH_LICENSE_V1.equals(wrap.targetKind())
                 || PendingTask.RESEARCH_BEGIN_V1.equals(wrap.targetKind())) {
             if (!manifest.hasCommandIntent()) return null;
             return mapper.readValue(wrap.payload(), ResearchActionPayload.class).personPartyId();
@@ -22222,6 +22288,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (control || PendingTask.ONSITE_ACTION_V1.equals(kind)) {
             return;
         }
+        requireSubscriptionFree(base, person, base.timeMillis(), dueMillis);
         if (hasPendingReading(person, base.pending())
                 || (base.information() != null && hasActiveReading(person))) {
             throw new IllegalArgumentException("本人正在阅读资料，不能同时发起采访动作");
@@ -23471,6 +23538,9 @@ public final class WorldRuntime implements AutoCloseable {
                         || !now.audience().equals(doc.audience())) {
                     throw new IOException("旧资料的发布者或受众被改写：" + doc.docId());
                 }
+                if (doc.docId().startsWith(MediaSubscriptions.PREFIX) && hasMediaSubscriptions()
+                        && now.versions().size() != doc.versions().size())
+                    throw new IOException("已送达试刊资料不能增添版本");
                 if (now.versions().size() < doc.versions().size()
                         || !now.versions().subList(0, doc.versions().size()).equals(doc.versions())) {
                     throw new IOException("旧资料版本前缀被改写：" + doc.docId());
@@ -24655,6 +24725,7 @@ public final class WorldRuntime implements AutoCloseable {
                 || PendingTask.ENGINEERING_ACTION_V1.equals(kind)
                 || PendingTask.ENGINEERING_PERIODIC_V1.equals(kind)
                 || PendingTask.RESEARCH_REGISTER_V1.equals(kind)
+                || PendingTask.RESEARCH_LICENSE_V1.equals(kind)
                 || PendingTask.RESEARCH_BEGIN_V1.equals(kind)
                 || PendingTask.RESEARCH_RESULT_V1.equals(kind)
                 || PendingTask.RESEARCH_APPROVE_V1.equals(kind)
@@ -24797,6 +24868,7 @@ public final class WorldRuntime implements AutoCloseable {
                     && !ref.tool().startsWith("board.")
                     && !ref.tool().startsWith("periodic.")
                     && !ResearchDecisionTools.ACT.equals(ref.tool())
+                    && !ResearchLicensing.TOOL.equals(ref.tool())
                     && !CompanyOperationsDecisionTools.ACT.equals(ref.tool())
                     && !ResourceDecisionTools.ACT.equals(ref.tool()) && !ResourcePrimaryEquity.TOOL.equals(ref.tool()) && !DigitalDecisionTools.ACT.equals(ref.tool()) && !AgedDecisionTools.ACT.equals(ref.tool()) && !HydroDecisionTools.ACT.equals(ref.tool()))) {
                 continue;
@@ -27464,6 +27536,7 @@ public final class WorldRuntime implements AutoCloseable {
             PendingTask.ENGINEERING_ACTION_V1, PendingTask.ENGINEERING_FUND_V1,
             PendingTask.ENGINEERING_PERIODIC_V1, PendingTask.RESEARCH_REGISTER_V1,
             PendingTask.RESEARCH_BEGIN_V1, PendingTask.RESEARCH_APPROVE_V1,
+            PendingTask.RESEARCH_LICENSE_V1,
             PendingTask.COMPANY_OPERATIONS_V1);
 
     /**
@@ -30369,6 +30442,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (researchDecisionEnabled() && snap.research() != null
                 && activeManager(snap.roles(), person, snap.research().companyPartyId(), now)) {
             tools.add(ResearchDecisionTools.ACT);
+            if (researchLicensingEnabled()) tools.add(ResearchLicensing.TOOL);
         }
         if ("visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
             tools.add(PersonalLibrarySearch.TOOL);
@@ -30379,6 +30453,12 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (engineeringCustomerEnabled() && EngineeringCustomerPolicy.REPRESENTATIVE.equals(person))
             tools.retainAll(List.of(RoleTradingView.TOOL_READING_START, RoleTradingView.TOOL_READING_CANCEL, RoleTradingView.TOOL_CITE));
+        if (hasMediaSubscriptions()) {
+            tools.add(MediaSubscriptions.JOIN);
+            tools.add(MediaSubscriptions.LEAVE);
+            if (MediaSubscriptions.canRelease(snap.interviews(), snap.information().information(), snap.trading(), person))
+                tools.add(MediaSubscriptions.RELEASE);
+        }
         tools = new ArrayList<>(new java.util.LinkedHashSet<>(tools));
         SocialRun.SocialView socialView = manifest.hasSocial() && snap.social() != null
                 ? socialViewAt(snap, person, now) : null;
@@ -30920,6 +31000,8 @@ public final class WorldRuntime implements AutoCloseable {
                     researchBoard, now, "project-state-v1".equals(manifest.dataVersions().get("research-manager-view"))
                             ? docId -> recalledFor(snap.information().information(), person, docId, 1L, now) : null,
                     readerGatedResearchEvidence(), funds)));
+            if (researchLicensingEnabled()) root.withObject("/researchOperations")
+                    .set("licensing", mapper.valueToTree(ResearchLicensing.terms(snap.research().state())));
         }
         if (manufacturingDecisionEnabled() && snap.manufacturing() != null
                 && activeManager(snap.roles(), person, manufacturingCompanyParty(), now)) {
@@ -30962,6 +31044,7 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         String roleContext = manifest.dataVersions().get("role-context");
+        if (hasMediaSubscriptions()) root.set("mediaSubscriptions", canonicalMapper.valueToTree(mediaSubscriptionsAt(snap, person)));
         if ("declared-fields-v1".equals(manifest.dataVersions().get("tool-argument-guide")))
             root.put("toolArgumentGuide", "declared-fields-v1");
         if ("visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
@@ -30969,6 +31052,8 @@ public final class WorldRuntime implements AutoCloseable {
                     () -> roleView(snap, person, snap.roles().access()));
         if ("role-choice-v1".equals(manifest.dataVersions().get("public-post-wake")))
             root.put("publicPostWakePolicy", "role-choice-v1");
+        if (RunManifest.ROLE_EXPOSURE_CHOICE.equals(manifest.dataVersions().get(RunManifest.MARKET_SESSION_WAKE)))
+            root.put("marketSessionWakePolicy", RunManifest.ROLE_EXPOSURE_CHOICE);
         if ("authority-v1".equals(roleContext) || RoleDeliberation.hasEvidence(roleContext)) {
             root.put("roleContextVersion", roleContext);
             root.put("authorityBasis", "appointments和permissions仅列雇佣任职及其岗位权限，不是全部权限清单。directorships来自公司真实章程席位，董事资格独立于雇佣；chair=true才有主席召集权。tools是本次可发起工具合同，执行时仍复核权限、时间及材料。候选人没有经理经营权，董事也不能代经理经营。");
@@ -31008,6 +31093,11 @@ public final class WorldRuntime implements AutoCloseable {
                 var minimum = goal.putObject("minimumIndependentSources");
                 policy.enabledTemplates().forEach((template, count) -> minimum.put(template.name(), count));
                 if (MediaModel.EIGHT_DESKS.equals(policy.templateCatalog())) MediaDesks.describe(goal, office.organizationPartyId());
+                if (policy.draftComparisonMillis() != null) {
+                    root.put("crossBorderComparisonMillis", policy.draftComparisonMillis());
+                    goal.put("timeAndLanguage", "实验本地按 UTC+08、境外编辑台按 UTC+00 记时。已读原件列两地发表时刻；"
+                            + "保留原文的单位、语言和来源，两地时钟不证明来源来自两国。每版内稿的阅读另含编译核对工时。");
+                }
                 if (hasConfirmedPublicationOrigins()) root.put("editorialEvidenceContract", "personal-read-index-v1");
                 String templateGuide = RunManifest.OFFICE_TEMPLATE_KEYS.equals(manifest.dataVersions().get(RunManifest.EDITORIAL_TEMPLATE_GUIDE))
                         ? "提出选题时，media.story.propose 的 template 填本岗位目标 minimumIndependentSources 中的一个键。键是本岗位启用的模板名，数值是该模板所需的最低独立来源数。"
@@ -31068,6 +31158,13 @@ public final class WorldRuntime implements AutoCloseable {
             for (var row : history.path("recentDecisions")) creditFeedback((com.fasterxml.jackson.databind.node.ObjectNode) row, snap, person);
             if (history.path("lastActionResult") instanceof com.fasterxml.jackson.databind.node.ObjectNode row) creditFeedback(row, snap, person);
         }
+        if (researchLicensingEnabled()) {
+            var history = root.path("deliberation");
+            try {
+                for (var row : history.path("recentDecisions")) licenseFeedback((com.fasterxml.jackson.databind.node.ObjectNode) row, snap, person);
+                if (history.path("lastActionResult") instanceof com.fasterxml.jackson.databind.node.ObjectNode row) licenseFeedback(row, snap, person);
+            } catch (IOException invalid) { throw new java.io.UncheckedIOException(invalid); }
+        }
         if (PersonalMarket.VERSION.equals(manifest.dataVersions().get(PersonalMarket.POLICY)))
             PersonalMarket.append(root, PersonalMarket.accounts(snap.roles(), person), snap.exchange(), snap.decisions(), person, snap.position(),
                     PersonalMarket.LIMIT_RULES_VERSION.equals(manifest.dataVersions().get(PersonalMarket.LIMIT_RULES)));
@@ -31113,6 +31210,33 @@ public final class WorldRuntime implements AutoCloseable {
 
     private boolean readerGatedResearchEvidence() {
         return "reader-gated-v1".equals(manifest.dataVersions().get("research-evidence"));
+    }
+
+    private boolean researchLicensingEnabled() {
+        return ResearchLicensing.enabled(manifest);
+    }
+
+    private void licenseFeedback(com.fasterxml.jackson.databind.node.ObjectNode row, WorldState snap, String actor) throws IOException {
+        String id = row.path("actionId").asText();
+        var ref = snap.decisions().actionRef(id);
+        if (ref == null || !ResearchLicensing.TOOL.equals(ref.tool()) || !actor.equals(snap.decisions().binding(id).personPartyId())) return;
+        var begin = commitSource.nonSnapshotByCommand("task:" + ref.taskId()).orElse(null);
+        if (begin == null || begin.position() > snap.position()) return;
+        for (var event : begin.events()) if ("TASK_SCHEDULED_V1".equals(event.type())) {
+            var child = mapper.readValue(event.payload(), PendingTask.class);
+            if (!PendingTask.RESEARCH_LICENSE_V1.equals(child.kind())) continue;
+            var p = mapper.readValue(child.payload(), ResearchActionPayload.class);
+            if (!actor.equals(p.personPartyId()) || !DecisionRun.actionCommandId(id).equals(p.commandId())) return;
+            var finish = commitSource.nonSnapshotByCommand("task:" + child.taskId()).orElse(null);
+            if (finish == null || finish.position() > snap.position()) { row.put("execution", "IN_PROGRESS"); return; }
+            String reason = finish.result();
+            boolean ok = Set.of("LICENSE_SIGNED", "LICENSE_DELIVERED", "LICENSE_PAID").contains(reason);
+            row.put("execution", ok ? "APPLIED" : "REJECTED").put("accepted", ok).put("reason", reason)
+                    .put("resultTaskId", child.taskId()).put("resultAt", child.dueTimeMillis()).put("resultPosition", finish.position());
+            if (!ok) row.put("businessReject", reason);
+            return;
+        }
+        row.put("execution", "REJECTED").put("accepted", false).put("reason", begin.result()).put("businessReject", begin.result());
     }
 
     private boolean researchDecisionEnabled() {
@@ -31351,8 +31475,12 @@ public final class WorldRuntime implements AutoCloseable {
         requireText(clientCommandId, "命令标识");
         requireText(clientTaskId, "任务标识");
         Objects.requireNonNull(body, "动作参数");
+        if (hasMediaSubscriptions() && (body instanceof WorldRoleSession.ResearchDraft r && r.docId().startsWith(MediaSubscriptions.PREFIX)
+                || body instanceof WorldRoleSession.ForecastDraft f && f.docId().startsWith(MediaSubscriptions.PREFIX)))
+            throw new IllegalArgumentException("该标识由试刊投递保留");
         if (engineeringCustomerEnabled()) {
             if (EngineeringCustomerPolicy.REPRESENTATIVE.equals(session.personPartyId())
+                    && !(hasMediaSubscriptions() && MediaSubscriptions.TASKS.contains(kind))
                     && !PendingTask.ROLE_TRADING_READ_V1.equals(kind) && !PendingTask.ROLE_TRADING_UNREAD_V1.equals(kind))
                 throw new IllegalArgumentException("该工程委托没有授予代表个人交易或另行发布的权限");
             if (body instanceof WorldRoleSession.ForecastDraft draft && draft.docId().startsWith(EngineeringCustomerPolicy.PREFIX))
@@ -31388,6 +31516,10 @@ public final class WorldRuntime implements AutoCloseable {
         if (dueMillis <= state.timeMillis()) {
             throw new IllegalArgumentException("到期时间必须晚于当前时点：" + state.timeMillis());
         }
+        if (MediaRun.KINDS.contains(kind))
+            requireSubscriptionFree(state, session.personPartyId(), state.timeMillis(), dueMillis);
+        if (body instanceof RoleReadBody read && hasMediaSubscriptions())
+            requireSubscriptionFree(state, session.personPartyId(), dueMillis, dueMillis + readDurationOf(read.docId(),read.version()));
         if (state.usedTaskIds().contains(internalTask)
                 || state.pending().stream().anyMatch(task -> task.taskId().equals(internalTask))) {
             throw new IllegalArgumentException("任务标识运行内不复用：" + internalTask);
@@ -31749,6 +31881,7 @@ public final class WorldRuntime implements AutoCloseable {
                     + duration);
         }
         requireSocialFocusFree(person, state);
+        requireSubscriptionFree(state,person,now,dueMillis);
         SocialMessageModel.Context context = socialContext(state);
         SocialMessageModel.BeginOutcome begin = SocialMessageModel.beginSend(run.state(),
                 state.information().information(), context, person, internalCommand,
@@ -31826,6 +31959,7 @@ public final class WorldRuntime implements AutoCloseable {
                     + duration);
         }
         requireSocialFocusFree(person, state);
+        requireSubscriptionFree(state,person,now,dueMillis);
         SocialTaskPayload body = new SocialTaskPayload(person, internalCommand, null,
                 targetPartyId);
         PendingTask task = new PendingTask(internalTask, dueMillis,
@@ -32690,6 +32824,10 @@ public final class WorldRuntime implements AutoCloseable {
                 if (accepted) {
                     mediaAfter = result.state();
                     informationAfter = result.information();
+                    if (hasMediaSubscriptions()) {
+                        var issue = mediaAfter.stories().stream().filter(s -> s.storyId().equals(draft.storyId())).findFirst().orElseThrow();
+                        informationAfter = MediaSubscriptions.publicIssue(informationAfter, base.trading(), base.position(), organization, issue, completedAt);
+                    }
                 }
             }
             case PendingTask.MEDIA_STORY_CORRECTION_V1 -> {
@@ -33159,6 +33297,13 @@ public final class WorldRuntime implements AutoCloseable {
         BeliefRun beliefsAfter = state.beliefs();
 
         switch (task.kind()) {
+            case MediaSubscriptions.JOIN_TASK, MediaSubscriptions.LEAVE_TASK, MediaSubscriptions.RELEASE_TASK -> {
+                subject = mapper.readValue(payload.body(), MediaSubscriptions.Target.class).target();
+                var result = subscriptionResult(state, payload.personPartyId(), task.kind(), subject, now);
+                accepted = result.accepted();
+                reason = result.reason();
+                informationAfter = result.information();
+            }
             case PendingTask.ROLE_LIBRARY_SEARCH_V1 -> {
                 if (!"visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
                     throw new IOException("该档未启用资料检索");
@@ -34292,6 +34437,8 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("基金结算专户与预收、待付款不符或被挪用");
         validateRoleTimers(candidate, run.trading());
         for (RoleTradingRun.Report report : run.reports().values()) {
+            if (MediaSubscriptions.TASKS.contains(report.kind()) && !hasMediaSubscriptions())
+                throw new IOException("旧档不得包含媒体试刊回执");
             if (report.position() > candidate.position()) {
                 throw new IOException("交易回报出现在未来的提交位置：" + report.taskId());
             }
@@ -34728,6 +34875,7 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("人物回报与原请求不一致：" + report.taskId());
         }
         String field = switch (request.kind()) {
+            case MediaSubscriptions.JOIN_TASK, MediaSubscriptions.LEAVE_TASK, MediaSubscriptions.RELEASE_TASK -> "target";
             case PendingTask.ROLE_LIBRARY_SEARCH_V1 -> "query";
             case PendingTask.ROLE_TRADING_READ_V1, PendingTask.ROLE_TRADING_UNREAD_V1 -> "docId";
             case PendingTask.ROLE_TRADING_RESEARCH_V1 -> "researchId";
@@ -34857,11 +35005,6 @@ public final class WorldRuntime implements AutoCloseable {
     // ==================================================================
     // schema20 群组与平台发布：BEGIN/FINISH 帧、系统投递、恢复重算与读取门
     // ==================================================================
-
-    /** 平台目录中一条被包含的条目（只含真实标题与元数据）。 */
-    private record GroupFeedItem(int rank, String docId, long version, String title,
-                                String publisherPartyId, long publishedAt, String kind) {
-    }
 
     /** 群组/平台动作的业务参数；正文只在冻结任务负载里传给投递帧，不写进纯核。 */
     private record GroupTaskPayload(String person, String commandId, String action, String groupId,
@@ -35237,6 +35380,7 @@ public final class WorldRuntime implements AutoCloseable {
                     + duration);
         }
         requireGroupFocusFree(person, state);
+        requireSubscriptionFree(state,person,now,dueMillis);
         GroupBegun begun = groupBegin(action, run, state, person,
                 internalCommand, body, now);
         GroupsRun groupsAfter = begunRun(run, begun);
@@ -35847,6 +35991,133 @@ public final class WorldRuntime implements AutoCloseable {
         return 0L;
     }
 
+    private boolean hasMediaSubscriptions() {
+        return RunManifest.CONSENTED_INTERVIEW_DELIVERY.equals(manifest.dataVersions().get(RunManifest.MEDIA_SUBSCRIPTIONS));
+    }
+
+    private Map<String,Object> mediaSubscriptionsAt(WorldState base, String person) {
+        if (!hasMediaSubscriptions() || base.information() == null || base.media() == null || base.trading() == null
+                || !base.information().information().persons().contains(person)) return Map.of();
+        return MediaSubscriptions.view(base.media(), base.interviews(), base.trading(), base.information().information(), person, base.position());
+    }
+
+    /** 查询指定普通人物当时可见的免费试刊、本人到刊标题和自己的可授权话轮。 */
+    public synchronized Map<String,Object> mediaSubscriptionsOf(String person) {
+        requireOpen();
+        return mediaSubscriptionsAt(state, person);
+    }
+
+    private boolean subscriptionBusy(WorldState base, String person, long begin) {
+        var interval = new InterviewModel.Interval(begin, Math.addExact(begin, MediaSubscriptions.DURATION));
+        var group = groupPendingOf(person,base.pending());
+        if (group != null && group.dueTimeMillis() > begin) return true;
+        for (var task : base.pending()) {
+            if (!InterviewRun.COMMAND_KINDS.contains(task.kind())) continue;
+            var owner = readRolePayload(task);
+            var work = interviewBody(task);
+            if (owner != null && person.equals(owner.personPartyId()) && work != null
+                    && work.startedAtMillis() < interval.toMillis() && begin < task.dueTimeMillis()) return true;
+        }
+        return runtimeBusy(base, person, null, base.timeMillis()).stream().anyMatch(interval::overlaps);
+    }
+
+    private boolean subscriptionOverlaps(WorldState base,String person,long begin,long end) {
+        if (!hasMediaSubscriptions() || end <= begin) return false;
+        for (var t : base.pending()) {
+            if (MediaSubscriptions.TASKS.contains(t.kind()) && begin < t.dueTimeMillis()
+                    && t.dueTimeMillis()-MediaSubscriptions.DURATION < end && person.equals(readRolePayload(t).personPartyId())) return true;
+        }
+        return false;
+    }
+
+    private void requireSubscriptionFree(WorldState base,String person,long begin,long end) {
+        if (subscriptionOverlaps(base,person,begin,end)) throw new IllegalArgumentException("本人在该时段正办理试刊事务");
+    }
+
+    /** 以当前观察时间提交本人订阅、退订或本人采访原话的当期署名授权。 */
+    public synchronized String scheduleMediaSubscription(String person, String action, String target, String commandId)
+            throws IOException {
+        return scheduleMediaSubscription(person, action, target, commandId, state.timeMillis());
+    }
+
+    /** 按本人观察时间提交试刊动作；同一本人命令的重试保留首次办理结果。 */
+    public synchronized String scheduleMediaSubscription(String person, String action, String target, String commandId,
+                                                          long observedMillis) throws IOException {
+        requireOpen(); requireWriter(); requireNotPaused();
+        if (!hasMediaSubscriptions()) throw new IllegalArgumentException("本档没有媒体试刊");
+        String kind = MediaSubscriptions.task(action);
+        var draft = new MediaSubscriptions.Target(target);
+        String id = roleCommandId(person, commandId);
+        String stored = state.commandContents().get(id);
+        if (stored != null) {
+            var payload = mapper.readValue(stored, RoleActionPayload.class);
+            if (!kind.equals(payload.kind()) || !draft.equals(mapper.readValue(payload.body(), MediaSubscriptions.Target.class)))
+                throw new IllegalArgumentException("同一试刊请求编号不能更换动作或对象");
+            return state.commandOutcomes().get(id);
+        }
+        var session = openRoleSession(person);
+        if (observedMillis != state.timeMillis()) throw new IllegalStateException("试刊资料已更新，请刷新");
+        if (!MediaSubscriptions.listed(state.media(), state.interviews(), state.information().information(), state.trading(), person, kind, target))
+            throw new IllegalArgumentException("对象不在本人的试刊清单中");
+        if (subscriptionBusy(state, person, observedMillis)) throw new IllegalStateException("本人该时段已有工作");
+        return scheduleRoleAction(session, kind, commandId, commandId + "-task", observedMillis + MediaSubscriptions.DURATION, draft);
+    }
+
+    private MediaSubscriptions.Result subscriptionResult(WorldState base, String person, String kind, String target, long now) throws IOException {
+        if (!hasMediaSubscriptions()) throw new IOException("旧档不得执行媒体试刊工作");
+        return MediaSubscriptions.act(base.media(), base.interviews(), base.trading(), base.information().information(),
+                person, kind, target, base.position(), now);
+    }
+
+    /** 订退名单和采访附页只承认本帧真实任务完成；编辑正式发刊的逐项重算由 validateMedia 共用。 */
+    private void validateMediaSubscription(WorldState next, WorldState previous, WorldCommit commit) throws IOException {
+        if (!hasMediaSubscriptions() || next.trading() == null || previous == null || previous.trading() == null) return;
+        PendingTask completion = null;
+        if (commit.commandId().startsWith("task:")) {
+            String id = commit.commandId().substring(5);
+            for (var pending : previous.pending()) if (pending.taskId().equals(id)) { completion = pending; break; }
+        }
+        boolean subscription = completion != null && MediaSubscriptions.TASKS.contains(completion.kind());
+        if (subscription) {
+            var payload = mapper.readValue(completion.payload(), RoleActionPayload.class);
+            String target = mapper.readValue(payload.body(), MediaSubscriptions.Target.class).target();
+            var r = subscriptionResult(previous, payload.personPartyId(), completion.kind(), target, completion.dueTimeMillis());
+            var authoritative = new RoleTradingRun.Report(completion.taskId(), payload.personPartyId(), payload.clientCommandId(),
+                    payload.clientTaskId(), completion.kind(), r.accepted(), r.reason(), target, completion.dueTimeMillis(), next.position());
+            if (!authoritative.equals(next.trading().report(completion.taskId())) || !r.reason().equals(commit.result())
+                    || !r.information().equals(next.information().information()) || !next.accounts().equals(previous.accounts()))
+                throw new IOException("试刊回执、合同现金或收件资料与原任务不一致");
+        }
+        if (next.trading().reports().size() != previous.trading().reports().size()) {
+            for (var r : next.trading().reports().values())
+                if (r.position() == next.position() && MediaSubscriptions.TASKS.contains(r.kind())
+                        && (!subscription || !r.taskId().equals(completion.taskId())))
+                    throw new IOException("试刊回执没有对应的已确认实名任务");
+        }
+        for (var t : next.pending()) {
+            if (!MediaSubscriptions.TASKS.contains(t.kind()) || previous.usedTaskIds().contains(t.taskId())) continue;
+            var p = mapper.readValue(t.payload(), RoleActionPayload.class);
+            if (!t.kind().equals(p.kind()) || t.dueTimeMillis() != p.dueMillis()) throw new IOException("试刊任务类型或期限错误");
+            if (t.taskId().equals(roleTaskId(p.personPartyId(), p.clientTaskId()))) {
+                if (!commit.commandId().equals("cmd:" + roleCommandId(p.personPartyId(), p.clientCommandId()))
+                        || !MediaSubscriptions.listed(previous.media(), previous.interviews(), previous.information().information(),
+                                previous.trading(), p.personPartyId(), p.kind(), mapper.readValue(p.body(), MediaSubscriptions.Target.class).target())
+                        || p.dueMillis() != previous.timeMillis() + MediaSubscriptions.DURATION || subscriptionBusy(previous, p.personPartyId(), previous.timeMillis()))
+                    throw new IOException("人工试刊登记的来源或工时错误");
+            } else if (next.decisions() == null || next.decisions().actionRefs().values().stream().noneMatch(a -> t.taskId().equals(a.taskId()))) {
+                throw new IOException("试刊任务没有本人决定来源");
+            }
+        }
+        if (subscription || completion != null && MediaRun.KIND_PUBLISH.equals(completion.kind())) return;
+        var before = previous.information().information();
+        var after = next.information().information();
+        if (after.documents().size() != before.documents().size()) {
+            for (var d : after.documents())
+                if (d.docId().startsWith(MediaSubscriptions.PREFIX) && informationDocument(before, d.docId()) == null)
+                    throw new IOException("试刊送达资料没有正式发行或本人话轮授权来源");
+        }
+    }
+
     /** 普通发布不得伪造群帖/平台帖保留前缀。 */
     private void requireNotReservedDocId(String docId) {
         if (docId == null) {
@@ -35854,6 +36125,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (editorialReviewFeedback() && docId.startsWith(MediaModel.REVIEW_NOTE_PREFIX))
             throw new IllegalArgumentException("正式退稿意见由审稿流程生成，不能普通发表或改写");
+        if (hasMediaSubscriptions() && docId.startsWith(MediaSubscriptions.PREFIX))
+            throw new IllegalArgumentException("试刊送达资料只由正式发行或本人采访授权生成");
         if (docId.startsWith("GDOC-") || docId.startsWith(PlatformPostModel.DOC_PREFIX)) {
             throw new IllegalArgumentException("该资料标识为群组/平台保留前缀，不能普通发布："
                     + docId);
@@ -35868,6 +36141,11 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private com.fasterxml.jackson.databind.JsonNode groupsInput(WorldState base,
             InformationModel.State info, RoleView profile, long at) {
+        return groupsInput(base, profile, at, publicationFeedEntries(base, info, at, profile));
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode groupsInput(WorldState base, RoleView profile,
+            long at, List<PublicationRun.FeedEntry> entries) {
         GroupsRun run = base.groups();
         if (!manifest.hasGroups() || run == null) {
             return null;
@@ -35949,7 +36227,7 @@ public final class WorldRuntime implements AutoCloseable {
             node.put("publishedAt", post.publishedAt());
         }
         com.fasterxml.jackson.databind.node.ArrayNode feed = root.putArray("feed");
-        for (GroupFeedItem item : publicationFeed(base, info, at)) {
+        for (var item : entries) {
             com.fasterxml.jackson.databind.node.ObjectNode node = feed.addObject();
             node.put("rank", item.rank());
             node.put("docId", item.docId());
@@ -35957,34 +36235,41 @@ public final class WorldRuntime implements AutoCloseable {
             node.put("title", item.title());
             node.put("publisher", item.publisherPartyId());
             node.put("publishedAt", item.publishedAt());
-            node.put("kind", item.kind());
+            node.put("kind", item.kind().name());
+            if (item.rankingReason() != null) node.put("rankingReason", item.rankingReason());
         }
         return root;
     }
 
-    /** 真实平台目录：平台公开帖 + 媒体公开发布成稿，按冻结顺序排列并截到冻结上限。 */
-    private List<GroupFeedItem> publicationFeed(WorldState base, InformationModel.State info,
-                                                long at) {
-        List<PublicationRun.FeedEntry> entries = publicationFeedEntries(base, info, at);
-        List<GroupFeedItem> items = new ArrayList<>();
-        for (PublicationRun.FeedEntry entry : entries) {
-            items.add(new GroupFeedItem(entry.rank(), entry.docId(), entry.version(),
-                    entry.title(), entry.publisherPartyId(), entry.publishedAt(),
-                    entry.kind().name()));
-        }
-        return items;
+    /** 取本人在当前确认状态可见的公开平台目录及该档的排序依据。
+     * @param personPartyId 本人标识
+     * @return 按本人目录顺序排列的已发表标题
+     */
+    public synchronized List<PublicationRun.FeedEntry> personalNewsFeed(String personPartyId) {
+        return publicationFeedEntries(state, state.information() == null ? null : state.information().information(),
+                state.timeMillis(), roleView(personPartyId));
     }
 
     /** 本次决定输入实际包含的平台目录条目（与投影同一实现）。 */
     private List<PublicationRun.FeedEntry> publicationFeedEntries(WorldState base,
-            InformationModel.State info, long at) {
+            InformationModel.State info, long at, RoleView reader) {
         GroupsRun run = base.groups();
         if (!manifest.hasGroups() || run == null || info == null) {
             return List.of();
         }
-        return PublicationRun.feedForOutlets(run.publication().platform(),
-                base.media() == null ? List.of() : base.media().states(), info,
-                at, run.feedLimit());
+        var outlets = base.media() == null ? List.<MediaModel.State>of() : base.media().states();
+        if (!RunManifest.VISIBLE_INTEREST_RANKING.equals(manifest.dataVersions().get(RunManifest.PERSONAL_NEWS_RANKING)))
+            return PublicationRun.feedForOutlets(run.publication().platform(), outlets, info, at, run.feedLimit());
+        var seats = new java.util.HashSet<String>();
+        for (var security : registry.securities()) {
+            String issuer = security.issuerOrganizationId();
+            var board = PeriodicWorldEngine.boardOf(base.engineering(), base.governance(), issuer);
+            if (board == null && base.companyGovernance() != null) board = base.companyGovernance().boardOf(issuer);
+            if (board != null && board.board().charter().seatOf(reader.personPartyId()) != null) seats.add(issuer);
+        }
+        return PublicationRun.feedForOutlets(run.publication().platform(), outlets, info, at, run.feedLimit(),
+                new PersonalNewsFeed(reader, registry, base.trading(), outlets, base.position(), seats),
+                Integer.parseInt(manifest.dataVersions().get(RunManifest.NEWS_EXPLORATION_SLOT)));
     }
 
     // ------------------------------------------------------------------
@@ -38505,6 +38790,38 @@ public final class WorldRuntime implements AutoCloseable {
                 personPartyId, "REGISTER", projectId, "", durationMillis, null, null);
     }
 
+    /**
+     * 经理以观察时点的本人身份办理许可，冻结实际任职并占用正常工具工时。
+     * @param actor 本人 @param action 合同动作 @param projectId 获批项目
+     * @param commandId 本人请求编号 @param observedMillis 本人当前观察时点
+     * @return 原生排程回执 @throws IOException 持久化失败
+     */
+    public synchronized String scheduleResearchLicense(String actor, String action, String projectId, String commandId,
+                                                       long observedMillis) throws IOException {
+        requireOpen(); requireWriter(); requireNotPaused();
+        if (!researchLicensingEnabled()) throw new IllegalArgumentException("本档没有研发许可经营");
+        var request = new ResearchLicensing.Request(action, projectId);
+        requireText(actor, "经理"); requireText(commandId, "本人请求编号");
+        String id = roleCommandId(actor, commandId);
+        String taskId = roleTaskId(actor, commandId + "-task");
+        long duration = decisionConfig.actionMillisByTool().get(ResearchLicensing.TOOL);
+        // 外部排程与其他经理动作相同，BEGIN 必须位于已确认观察的下一个时点或之后。
+        long due = Math.addExact(Math.addExact(observedMillis, 1L), duration);
+        String stored = recordedBody(id);
+        if (stored != null) {
+            var prior = mapper.readValue(stored, ResearchActionPayload.class);
+            if (!action.equals(prior.action()) || !projectId.equals(prior.projectId()) || !actor.equals(prior.personPartyId()))
+                throw new IllegalArgumentException("同一许可请求编号不能更换办理内容");
+            var planned = engineeringPlannedTask(taskId, due, duration, PendingTask.RESEARCH_LICENSE_V1, stored);
+            requireSameSchedule(id, planned.taskId(), planned.dueTimeMillis(), planned.phase(), planned.kind(), planned.payload());
+            return state.commandOutcomes().get(id);
+        }
+        if (observedMillis != state.timeMillis()) throw new IllegalStateException("研发许可资料已更新，请刷新");
+        var session = openRoleSession(actor);
+        return scheduleResearchFromSession(session, id, taskId, due, state.research().companyPartyId(),
+                request.projectId(), null, duration, request.action());
+    }
+
     /** 排程一次研发阶段开工（可信运行夹具直接入口；仍解出并冻结当前任职）。 */
     public synchronized String scheduleResearchBegin(String commandId, String taskId,
             long dueTimeMillis, String companyPartyId, String personPartyId, String projectId,
@@ -38563,8 +38880,12 @@ public final class WorldRuntime implements AutoCloseable {
         ResearchActionPayload payload = new ResearchActionPayload(commandId, companyPartyId,
                 personPartyId, action, projectId, stage, bound, observedPosition);
         String content = mapper.writeValueAsString(payload);
-        String kind = "REGISTER".equals(action) ? PendingTask.RESEARCH_REGISTER_V1
-                : PendingTask.RESEARCH_BEGIN_V1;
+        String kind = switch (action) {
+            case "REGISTER" -> PendingTask.RESEARCH_REGISTER_V1;
+            case "BEGIN" -> PendingTask.RESEARCH_BEGIN_V1;
+            case "SIGN", "DELIVER", "COLLECT" -> PendingTask.RESEARCH_LICENSE_V1;
+            default -> throw new IllegalArgumentException("未知研发经营动作");
+        };
         PendingTask planned = engineeringPlannedTask(taskId, dueTimeMillis, durationMillis, kind,
                 content);
         // 现有工程/周期惯例：先查原回执与规范请求，再做新动作权限/时点；同 ID 改 due/duration 必须拒。
@@ -38834,6 +39155,8 @@ public final class WorldRuntime implements AutoCloseable {
             return ResearchRuntime.Applied.rejected(run, board, state.information(),
                     state.accounts(), "NOT_AUTHORIZED");
         }
+        if (PendingTask.RESEARCH_LICENSE_V1.equals(task.kind()))
+            return licenseResearchOn(run, board, p, now, state.exchange(), state.accounts());
         if (PendingTask.RESEARCH_REGISTER_V1.equals(task.kind())) {
             ResearchModel.ProjectSpec spec = run.project(p.projectId());
             if (spec == null) {
@@ -38844,6 +39167,14 @@ public final class WorldRuntime implements AutoCloseable {
                     state.accounts());
         }
         return beginResearchOn(run, board, p, now, state.exchange(), state.accounts());
+    }
+
+    private ResearchRuntime.Applied licenseResearchOn(ResearchRun run, BoardRun board, ResearchActionPayload p,
+            long now, WorldExchange.State exchange, Map<String,CashLedger.CashAccount> accounts) throws IOException {
+        if (!researchLicensingEnabled() || !run.companyPartyId().equals(p.companyPartyId()))
+            throw new IOException("许可任务与版本或所属公司不符");
+        return ResearchLicensing.apply(run, board, new ResearchLicensing.Request(p.action(), p.projectId()), now,
+                transferableCash(exchange, accounts, ExternalDemandOpening.ACCOUNT_ID, now), accounts);
     }
 
     private ResearchRuntime.Applied beginResearchOn(ResearchRun run, BoardRun board,
@@ -39024,6 +39355,9 @@ public final class WorldRuntime implements AutoCloseable {
         CompanyOperationsRun run = candidate.companyOperations();
         CompanyOperationsRun before = previous == null ? null : previous.companyOperations();
         if (run != null) {
+            if (before == null && RunManifest.FINITE_1080_DAYS.equals(manifest.dataVersions().get(RunManifest.HYDRO_INFLOW_PATH))
+                    && (run.hydro() == null || !edu.cufe.auction.world.composed.BaselineIndustryConfig.extendedHydro().equals(run.hydro().config())))
+                throw new IOException("水电开局与冻结的 1080 日来水及购电合同不符");
             var oldBatches = before == null ? Map.of() : before.upgradeBatches();
             if (!oldBatches.equals(run.upgradeBatches()) && (!ManufacturingUpgrade.VERSION.equals(manifest.dataVersions().get(ManufacturingUpgrade.KEY))
                     || !commit.commandId().startsWith("manufacturing-upgrade:"))) throw new IOException("采购模板批次只能由确认升级指令改变");
@@ -39135,6 +39469,8 @@ public final class WorldRuntime implements AutoCloseable {
     /** 研发开局/状态校验（原有实现）。 */
     private void validateResearch(WorldState candidate, WorldState previous, WorldCommit commit)
             throws IOException {
+        if (!researchLicensingEnabled() && candidate.research() != null && candidate.research().state().licenses() != null)
+            throw new IOException("原清单没有许可合同政策");
         if (!manifest.hasResearch()) {
             if (candidate.research() != null) {
                 throw new IOException("旧档案不得包含研发状态");
@@ -39389,6 +39725,8 @@ public final class WorldRuntime implements AutoCloseable {
                         p.personPartyId(), p.companyPartyId(), task.dueTimeMillis())) {
                     applied = ResearchRuntime.Applied.rejected(run, board, information, accounts,
                             "NOT_AUTHORIZED");
+                } else if (PendingTask.RESEARCH_LICENSE_V1.equals(task.kind())) {
+                    applied = licenseResearchOn(run, board, p, task.dueTimeMillis(), previous.exchange(), accounts);
                 } else if (PendingTask.RESEARCH_REGISTER_V1.equals(task.kind())) {
                     ResearchModel.ProjectSpec spec = run.project(p.projectId());
                     applied = spec == null
@@ -39400,6 +39738,8 @@ public final class WorldRuntime implements AutoCloseable {
                     applied = beginResearchOn(run, board, p, task.dueTimeMillis(),
                             previous.exchange(), accounts);
                 }
+                if (PendingTask.RESEARCH_LICENSE_V1.equals(task.kind()) && !applied.reason().equals(commit.result()))
+                    throw new IOException("许可回执与原始本人任务和合同状态不一致");
                 if (PendingTask.RESEARCH_BEGIN_V1.equals(task.kind()) && applied.accepted()) {
                     expected.add(researchResultChild(applied.run(), task, p));
                 }
@@ -39779,6 +40119,10 @@ public final class WorldRuntime implements AutoCloseable {
                         + " 必须提供媒体开局配置");
             }
             for (MediaModel.Policy policy : media.policies()) {
+                Long comparison = RunManifest.DUAL_CLOCK_EDITING.equals(manifest.dataVersions().get(RunManifest.CROSS_BORDER_EDITING))
+                        && policy.enabledTemplates().containsKey(MediaModel.TemplateKind.CROSS_BORDER) ? MediaDesks.COMPARISON_MILLIS : null;
+                if (!java.util.Objects.equals(comparison, policy.draftComparisonMillis()))
+                    throw new IllegalArgumentException("跨市场内稿编译工时与运行清单不符");
                 if (!java.util.Objects.equals(manifest.dataVersions().get("media-template-catalog"), policy.templateCatalog()))
                     throw new IllegalArgumentException("媒体模板目录与运行清单不一致");
                 OpeningRegistry.Party party = null;

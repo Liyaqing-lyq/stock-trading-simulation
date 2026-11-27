@@ -11,7 +11,7 @@ import java.util.*;
 
 /** 本人页面的乐观并发凭据。只比较获准观察的业务内容，世界审计序号留在服务端。 */
 final class PersonalObservations {
-    enum Page { GROUPS, ENGINEERING, MANUFACTURING, RESEARCH, OPERATIONS }
+    enum Page { GROUPS, ENGINEERING, MANUFACTURING, RESEARCH, OPERATIONS, NEWSLETTERS }
 
     private record Key(String person, Page page) {}
     private record Seen(JsonNode facts, long token) {}
@@ -29,7 +29,7 @@ final class PersonalObservations {
         scrub(view);
         var facts = JSON.createObjectNode();
         facts.set("page", view.deepCopy());
-        if (scope == Page.ENGINEERING || scope == Page.GROUPS) {
+        if (scope == Page.ENGINEERING || scope == Page.GROUPS || scope == Page.NEWSLETTERS) {
             var role = world.roleView(person);
             facts.set("catalog", JSON.valueToTree(role.catalog()));
             facts.set("readings", JSON.valueToTree(role.readings()));

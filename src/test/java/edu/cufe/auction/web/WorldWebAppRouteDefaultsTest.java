@@ -131,7 +131,8 @@ class WorldWebAppRouteDefaultsTest {
         String mode = "world-ten-company-autonomy";
         initialize(work, mode);
         try (var routes = SceneRoutes.open(work)) {
-            var probe = AutonomousLifecycleProbe.probeRoutes(routes.view(), "TEN_COMPANY_FEEDBACK_STUDY");
+            var probe = AutonomousLifecycleProbe.probeRoutes(routes.view(), "TEN_COMPANY_PERSONAL_NEWS_STUDY");
+            assertEquals(AutonomousLifecycleProbe.probeRoutes(routes.view(), "TEN_COMPANY_FEEDBACK_STUDY"), probe);
             assertEquals(probe.size(), routes.view().routes().size());
             for (int i = 0; i < probe.size(); i++) {
                 var web = routes.view().routes().get(i);

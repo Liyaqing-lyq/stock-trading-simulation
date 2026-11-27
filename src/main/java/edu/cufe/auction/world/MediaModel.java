@@ -173,13 +173,24 @@ public final class MediaModel {
      * @param publicReadMillis         公开成稿的固定阅读耗时，正毫秒
      * @param recallPolicy             回忆参数，决定证据是否仍可被记起
      * @param templateCatalog          明确启用的模板目录，旧档为 null
+     * @param draftComparisonMillis    编译稿读者核对两地时间与原文的额外工时，普通稿件为空
      */
     public record Policy(String mediaOrganizationPartyId, Map<TemplateKind, Integer> enabledTemplates,
                          long writeMillis, long reviewMillis, long publishMillis,
                          long draftReadMillis, long publicReadMillis,
                          CognitionRecall.Policy recallPolicy,
                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-                         String templateCatalog) {
+                         String templateCatalog,
+                         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                         Long draftComparisonMillis) {
+
+        /** 按原八类媒体合同创建策略，档案中不增加编译工时字段。 */
+        public Policy(String mediaOrganizationPartyId, Map<TemplateKind, Integer> enabledTemplates,
+                      long writeMillis, long reviewMillis, long publishMillis, long draftReadMillis,
+                      long publicReadMillis, CognitionRecall.Policy recallPolicy, String templateCatalog) {
+            this(mediaOrganizationPartyId, enabledTemplates, writeMillis, reviewMillis, publishMillis,
+                    draftReadMillis, publicReadMillis, recallPolicy, templateCatalog, null);
+        }
 
         /** 按原两类模板合同创建策略，保持原开局及历史序列化。 */
         public Policy(String mediaOrganizationPartyId, Map<TemplateKind, Integer> enabledTemplates,
@@ -197,6 +208,9 @@ public final class MediaModel {
             if (copy.isEmpty()) {
                 throw new IllegalArgumentException("至少启用一个媒体模板");
             }
+            if (draftComparisonMillis != null && (draftComparisonMillis <= 0
+                    || !copy.keySet().equals(Set.of(TemplateKind.CROSS_BORDER))))
+                throw new IllegalArgumentException("编译工时只适用于跨市场稿件且必须为正");
             if (templateCatalog != null && !EIGHT_DESKS.equals(templateCatalog))
                 throw new IllegalArgumentException("未知媒体模板目录：" + templateCatalog);
             for (Map.Entry<TemplateKind, Integer> entry : copy.entrySet()) {
@@ -949,7 +963,9 @@ public final class MediaModel {
         InformationModel.VersionDraft draft = new InformationModel.VersionDraft(
                 request.title(), request.body(),
                 "作者来源描述（自由文字，未经程序核验）：" + request.publicSourceDescription(),
-                request.completedAtMillis(), policy.draftReadMillis(),
+                request.completedAtMillis(), policy.draftComparisonMillis() == null ? policy.draftReadMillis()
+                        : Math.addExact(InformationModel.readingMillis(request.body(), policy.draftReadMillis(),
+                                information.readingClock()), policy.draftComparisonMillis()),
                 sourceIdsOf(allEvidence));
         InformationModel.State next;
         long version;

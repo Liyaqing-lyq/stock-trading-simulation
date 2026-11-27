@@ -155,6 +155,34 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String BOARD_DIGITAL_WIND_DOWN = "board-wind-down-v1";
     /** 十公司第十版，开启稿件审阅反馈和按执行时点计算的采访窗口。 */
     public static final String EDITORIAL_FEEDBACK_RUN_ID = "web-ten-company-autonomy-v10";
+    /** 第十一版普通十公司，按本人阅读、订阅和等候安排提供新闻。 */
+    public static final String PERSONAL_NEWS_RUN_ID = "web-ten-company-autonomy-v11";
+    /** 本人已获显示资格的新闻排序口径。 */
+    public static final String PERSONAL_NEWS_RANKING = "personal-news-ranking";
+    /** 已读、兴趣和来源探索共同决定新闻展示次序。 */
+    public static final String VISIBLE_INTEREST_RANKING = "visible-interest-v1";
+    /** 陌生来源的展示位次，从一开始计数。 */
+    public static final String NEWS_EXPLORATION_SLOT = "news-exploration-slot";
+    /** 常规交易时段能否打断个人休息。 */
+    public static final String MARKET_SESSION_WAKE = "market-session-wake";
+    /** 默认按实际证券业务决定，等待者可另选。 */
+    public static final String ROLE_EXPOSURE_CHOICE = "role-exposure-choice-v1";
+    /** 新闻订阅和授权补充采访资料的交付政策。 */
+    public static final String MEDIA_SUBSCRIPTIONS = "media-subscriptions";
+    /** 采访原话只按发言人许可交付订户。 */
+    public static final String CONSENTED_INTERVIEW_DELIVERY = "consented-interview-delivery-v1";
+    /** 有限水文试验的来水路径。 */
+    public static final String HYDRO_INFLOW_PATH = "hydro-inflow-path";
+    /** 首年、偏干次年和偏湿第三年合计 1080 模拟日。 */
+    public static final String FINITE_1080_DAYS = "finite-1080d-v1";
+    /** 已获商业化批准的研发成果许可合同政策。 */
+    public static final String PHARMA_LICENSING = "pharma-licensing";
+    /** 按实际交付确认有限客户自用许可的收入与应收，实际收款单独入账。 */
+    public static final String APPROVED_USE_CONTRACT = "approved-use-contract-v1";
+    /** 跨市场稿件的时点换算和编译工时口径。 */
+    public static final String CROSS_BORDER_EDITING = "cross-border-editing";
+    /** 两地固定实验时区和编译所占用的写作时间。 */
+    public static final String DUAL_CLOCK_EDITING = "dual-clock-editing-v1";
     /** 私有审阅意见的版本键。 */
     public static final String EDITORIAL_REVIEW_FEEDBACK = "editorial-review-feedback";
     /** 意见绑定被审原稿，获权人员读完后取得正文。 */
@@ -214,14 +242,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
     public static Map<String, String> tenCompanyStudyPolicies(String id) {
-        boolean editorialFeedback = EDITORIAL_FEEDBACK_RUN_ID.equals(id);
+        boolean personalNews = PERSONAL_NEWS_RUN_ID.equals(id);
+        boolean editorialFeedback = EDITORIAL_FEEDBACK_RUN_ID.equals(id) || personalNews;
         boolean digitalWindDown = DIGITAL_WIND_DOWN_RUN_ID.equals(id) || editorialFeedback;
         boolean periodMeetings = MEETING_TEN_COMPANY_RUN_ID.equals(id) || digitalWindDown;
         boolean interviewReceipts = INTERVIEW_TEN_COMPANY_RUN_ID.equals(id) || periodMeetings;
@@ -249,6 +278,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 policies.put(INTERVIEW_WINDOW_BASIS, EXECUTION_CLOCK_WINDOW);
                 policies.put(PERSON_TAKEOVER_POLICY, MARKED_TAKEOVER_BRANCH);
             }
+            if (personalNews) {
+                policies.put(PERSONAL_NEWS_RANKING, VISIBLE_INTEREST_RANKING);
+                policies.put(NEWS_EXPLORATION_SLOT, "4");
+                policies.put(MARKET_SESSION_WAKE, ROLE_EXPOSURE_CHOICE);
+                policies.put(MEDIA_SUBSCRIPTIONS, CONSENTED_INTERVIEW_DELIVERY);
+                policies.put(CROSS_BORDER_EDITING, DUAL_CLOCK_EDITING);
+                policies.put(PHARMA_LICENSING, APPROVED_USE_CONTRACT);
+                policies.put(HYDRO_INFLOW_PATH, FINITE_1080_DAYS);
+            }
             return Map.copyOf(policies);
         }
         return STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
@@ -275,7 +313,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 || GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
                 || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || INTERVIEW_TEN_COMPANY_RUN_ID.equals(id)
                 || MEETING_TEN_COMPANY_RUN_ID.equals(id) || DIGITAL_WIND_DOWN_RUN_ID.equals(id)
-                || EDITORIAL_FEEDBACK_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
+                || EDITORIAL_FEEDBACK_RUN_ID.equals(id) || PERSONAL_NEWS_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
                 || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
     }
 

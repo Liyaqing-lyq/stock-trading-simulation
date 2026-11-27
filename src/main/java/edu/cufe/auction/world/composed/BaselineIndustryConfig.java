@@ -30,6 +30,27 @@ public final class BaselineIndustryConfig {
         var series=new HydroModel.InflowSeries(List.of(new HydroModel.InflowSegment(0,90*day,600),new HydroModel.InflowSegment(90*day,180*day,180),new HydroModel.InflowSegment(180*day,270*day,900),new HydroModel.InflowSegment(270*day,360*day,400)));
         return new HydroCompanyRun.Config(c.companyPartyId(),c.symbol(),new HydroModel.Config(m.companyOwnerId(),m.companyAccountId(),m.buyerAccountId(),m.contractorAccountId(),m.physical(),series,new HydroModel.SalesContract(80,new BigDecimal("0.40"),360*day),m.terms()),c.maintenanceMillis(),c.maintenanceCost());
     }
+
+    /** 普通十公司长周期实验的有限来水。前 360 日沿用原路径，其后各有四段偏干、偏湿季节；
+     * 每段 90 日，单位为 m³/h。原购电方只对第一年的合同电量承担义务。
+     * @return 共 1080 日的 EXP 情景，物理参数、购电合同及费用沿用原开局
+     */
+    public static HydroCompanyRun.Config extendedHydro() {
+        var original = hydro();
+        var model = original.model();
+        var segments = new ArrayList<>(model.inflow().segments());
+        long start = model.inflow().endsAtMillis();
+        long season = 90L * 86_400_000L;
+        for (long flow : new long[]{480, 120, 760, 320, 720, 240, 1000, 500}) {
+            segments.add(new HydroModel.InflowSegment(start, start + season, flow));
+            start += season;
+        }
+        var extended = new HydroModel.Config(model.companyOwnerId(), model.companyAccountId(),
+                model.buyerAccountId(), model.contractorAccountId(), model.physical(),
+                new HydroModel.InflowSeries(segments), model.contract(), model.terms());
+        return new HydroCompanyRun.Config(original.companyPartyId(), original.symbol(), extended,
+                original.maintenanceMillis(), original.maintenanceCost());
+    }
     /** 从增量档删除原单制造和第二工程账户，再加入独立新公司与有限投资者现金。 */
     public static List<CashLedger.OpeningAccount> openings(List<CashLedger.OpeningAccount> base) {
         var result=new ArrayList<CashLedger.OpeningAccount>();

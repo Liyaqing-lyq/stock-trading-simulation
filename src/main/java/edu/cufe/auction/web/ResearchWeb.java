@@ -2,6 +2,7 @@ package edu.cufe.auction.web;
 
 import edu.cufe.auction.world.BoardModel;
 import edu.cufe.auction.world.ResearchModel;
+import edu.cufe.auction.world.ResearchLicensing;
 import edu.cufe.auction.world.RoleAccess;
 import edu.cufe.auction.world.WorldRuntime;
 import edu.cufe.auction.world.composed.ComposedCompanyReport;
@@ -79,6 +80,10 @@ final class ResearchWeb {
             projects.add(row);
         }
         result.put("projects", projects);
+        if (ResearchLicensing.enabled(world.profile().manifest()) && (person == null || actions.contains("LICENSE_SIGN"))) {
+            result.put("licensing", ResearchLicensing.terms(run.state()));
+            result.put("licenseEarliestFinishMillis", Long.toString(Math.addExact(snapshot.timeMillis(), 1L + licenseDuration(world))));
+        }
         if (person == null) {
             result.put("capacity", run.maxActiveStages());
             result.put("activeStages", run.activeStages());
@@ -102,6 +107,10 @@ final class ResearchWeb {
         return result;
     }
 
+    private static long licenseDuration(WorldRuntime world) {
+        return world.snapshot().decisions().orElseThrow().state().config().actionMillisByTool().get(ResearchLicensing.TOOL);
+    }
+
     static List<String> actions(WorldRuntime world, String person, String company) {
         var run = world.researchRun().orElse(null);
         if (run == null || !run.companyPartyId().equals(company)) return List.of();
@@ -112,7 +121,11 @@ final class ResearchWeb {
                         && appointment.organizationPartyId().equals(company)
                         && appointment.role() == RoleAccess.Role.COMPANY_MANAGER
                         && appointment.activeAt(snapshot.timeMillis()));
-        if (manager) actions.addAll(List.of("REGISTER", "BEGIN", "APPROVE"));
+        if (manager) {
+            actions.addAll(List.of("REGISTER", "BEGIN", "APPROVE"));
+            if (ResearchLicensing.enabled(world.profile().manifest()))
+                actions.addAll(List.of("LICENSE_SIGN", "LICENSE_DELIVER", "LICENSE_COLLECT"));
+        }
         var board = world.boardOfCompany(company).orElse(null);
         if (board != null) {
             String seat = board.board().charter().seatOf(person);
@@ -133,6 +146,9 @@ final class ResearchWeb {
         }
         var session = world.openRoleSession(person);
         return switch (request.action()) {
+            case "LICENSE_SIGN", "LICENSE_DELIVER", "LICENSE_COLLECT" ->
+                    world.scheduleResearchLicense(person, request.action().substring("LICENSE_".length()), request.projectId(),
+                            request.commandId(), request.dueTimeMillis() - licenseDuration(world) - 1L);
             case "REGISTER" -> session.registerResearch(request.commandId(), request.taskId(),
                     request.dueTimeMillis(), request.companyId(), request.projectId(), request.durationMillis());
             case "BEGIN" -> session.beginResearch(request.commandId(), request.taskId(),

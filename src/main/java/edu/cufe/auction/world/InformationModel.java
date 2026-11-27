@@ -212,24 +212,29 @@ public final class InformationModel {
         }
 
         private DocumentVersion asVersion(long version, String readingClock) {
-            long duration = readDurationMillis;
-            if (readingClock != null) {
-                // 汉字逐字计，连续的非汉字字母或数字作一单位。已有更长工时的材料保留原时长。
-                long units = 0;
-                boolean inWord = false;
-                for (int offset = 0; offset < body.length();) {
-                    int codePoint = body.codePointAt(offset);
-                    offset += Character.charCount(codePoint);
-                    boolean ideograph = Character.isIdeographic(codePoint);
-                    boolean word = !ideograph && Character.isLetterOrDigit(codePoint);
-                    if (ideograph || (word && !inWord)) units++;
-                    inWord = word;
-                }
-                duration = Math.max(duration, units * 200L); // 300 单位/分钟。
-            }
+            long duration = readingMillis(body, readDurationMillis, readingClock);
             return new DocumentVersion(version, title, body, publicSourceDescription, publishedAt,
                     duration, internalSourceIds);
         }
+    }
+
+    static long readingMillis(String body, long minimumMillis, String readingClock) {
+        long duration = minimumMillis;
+        if (readingClock != null) {
+            // 汉字逐字计，连续的非汉字字母或数字作一单位。已有更长工时的材料保留原时长。
+            long units = 0;
+            boolean inWord = false;
+            for (int offset = 0; offset < body.length();) {
+                int codePoint = body.codePointAt(offset);
+                offset += Character.charCount(codePoint);
+                boolean ideograph = Character.isIdeographic(codePoint);
+                boolean word = !ideograph && Character.isLetterOrDigit(codePoint);
+                if (ideograph || (word && !inWord)) units++;
+                inWord = word;
+            }
+            duration = Math.max(duration, units * 200L); // 300 单位/分钟。
+        }
+        return duration;
     }
 
     /**

@@ -213,6 +213,7 @@ function clearAdminDom() {
 
 function clearPersonDom() {
   globalThis.PersonOrders?.clear();
+  globalThis.Newsletters?.clear();
   state.personChart = null;
   $("person-chart-symbol").replaceChildren();
   $("person-chart-period").value = "day";
@@ -758,7 +759,8 @@ async function refreshPerson() {
     if (row.sessionStatus) cell(tr, sessionLabels[row.sessionStatus] || row.sessionStatus);
   });
   renderPersonChart(view);
-  await globalThis.PersonOrders?.load(result.headers?.get("X-Person-Action-Mode"), generation);
+  const personMode = result.headers?.get("X-Person-Action-Mode");
+  await Promise.all([globalThis.PersonOrders?.load(personMode, generation), globalThis.Newsletters?.load(personMode, generation)]);
   if (!current()) return;
   const depthVisible = (view.market || []).some(row => row.bestBidQuantity != null);
   $("person-best-bid-quantity").hidden = !depthVisible;

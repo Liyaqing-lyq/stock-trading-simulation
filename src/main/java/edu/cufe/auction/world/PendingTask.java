@@ -185,6 +185,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     public static final String RESEARCH_RESULT_V1 = "RESEARCH_RESULT_V1";
     /** schema23 商业化批准执行帧：经理在真实会话中把董事会授权落成可摊销事实。 */
     public static final String RESEARCH_APPROVE_V1 = "RESEARCH_APPROVE_V1";
+    /** 获批项目许可的签约、交付或实收，由已绑定的经理执行。 */
+    public static final String RESEARCH_LICENSE_V1 = "RESEARCH_LICENSE_V1";
 
     /** schema18b：公司经理经营动作（签约/开工/开票/终止/付款等）。 */
     public static final String ENGINEERING_ACTION_V1 = "ENGINEERING_ACTION_V1";
@@ -417,6 +419,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  INFORMATION_PUBLISH_V1, INFORMATION_PUBLISH_VERSION_V1,
                  INFORMATION_START_READ_V1, INFORMATION_CANCEL_READ_V1,
                  INFORMATION_COMPLETE_READ_V1,
+                 MediaSubscriptions.JOIN_TASK, MediaSubscriptions.LEAVE_TASK, MediaSubscriptions.RELEASE_TASK,
                  ROLE_LIBRARY_SEARCH_V1, ROLE_TRADING_READ_V1, ROLE_TRADING_UNREAD_V1,
                  ROLE_TRADING_RESEARCH_V1, ROLE_TRADING_TARGET_V1,
                  ROLE_TRADING_REVIEW_V1, ROLE_TRADING_CONFIRM_V1,
@@ -485,7 +488,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
             case ENGINEERING_BEGIN_V1, ENGINEERING_BOARD_V1, BOARD_ATTEND_V1,
                  ENGINEERING_ACTION_V1, ENGINEERING_FUND_V1, ENGINEERING_PERIODIC_V1,
                  RESEARCH_REGISTER_V1, RESEARCH_BEGIN_V1, RESEARCH_RESULT_V1,
-                 RESEARCH_APPROVE_V1,
+                 RESEARCH_APPROVE_V1, RESEARCH_LICENSE_V1,
                  COMPANY_OPERATIONS_V1,
                  PERIOD_CLOSE_V1,
                  PERIOD_DISCLOSURE_DEADLINE_V1, BANK_ACTION_BEGIN_V1 -> {

@@ -242,8 +242,7 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void newFeedbackRulesBelongOnlyToTheNewOpeningAndItsBranches() throws Exception {
-        Path newest = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v10.journal"), newest);
+        Path newest = dir.resolve("world-ten-company-autonomy-v10.journal");
         Path ninth = dir.resolve("world-ten-company-autonomy-v9.journal");
         try (var prior = ComposedIndustryScenario.openDigitalWindDownTenCompanyStudy(ninth)) {
             assertEquals(RunManifest.DIGITAL_WIND_DOWN_RUN_ID, prior.profile().manifest().runId());
@@ -278,6 +277,52 @@ class StudyTenCompanyOpeningTest {
         try (var restored = ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(newest);
              var child = new BranchRepository(dir.resolve("runs")).open("editorial-child", restored.profile())) {
             assertEquals(RunManifest.EDITORIAL_FEEDBACK_RUN_ID, child.profile().manifest().policyRunId());
+            assertEquals(restored.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());
+        }
+    }
+
+    @Test void personalNewsPoliciesAreFrozenForTheNewOpeningAndInheritedByBranches() throws Exception {
+        Path tenth = dir.resolve("world-ten-company-autonomy-v10.journal");
+        Path newest = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v11.journal"), newest);
+        try (var previous = ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(tenth)) {
+            assertEquals(RunManifest.EDITORIAL_FEEDBACK_RUN_ID, previous.profile().manifest().runId());
+        }
+        byte[] saved = Files.readAllBytes(tenth);
+        assertEquals(tenth, WorldWebApp.tenCompanyJournal(dir));
+        try (var previous = ComposedIndustryScenario.openPersonalNewsTenCompanyStudy(tenth);
+             var world = ComposedIndustryScenario.openPersonalNewsTenCompanyStudy(newest)) {
+            var old = previous.profile().manifest();
+            var current = world.profile().manifest();
+            var expected = new TreeMap<>(old.dataVersions());
+            expected.put("branch-profile-run", current.runId());
+            var additions = Map.of(RunManifest.PERSONAL_NEWS_RANKING, RunManifest.VISIBLE_INTEREST_RANKING,
+                    RunManifest.NEWS_EXPLORATION_SLOT, "4",
+                    RunManifest.MARKET_SESSION_WAKE, RunManifest.ROLE_EXPOSURE_CHOICE,
+                    RunManifest.MEDIA_SUBSCRIPTIONS, RunManifest.CONSENTED_INTERVIEW_DELIVERY,
+                    RunManifest.CROSS_BORDER_EDITING, RunManifest.DUAL_CLOCK_EDITING,
+                    RunManifest.PHARMA_LICENSING, RunManifest.APPROVED_USE_CONTRACT,
+                    RunManifest.HYDRO_INFLOW_PATH, RunManifest.FINITE_1080_DAYS);
+            expected.putAll(additions);
+            assertEquals(RunManifest.PERSONAL_NEWS_RUN_ID, current.runId());
+            assertEquals(expected, current.dataVersions());
+            assertEquals(previous.openingRegistry(), world.openingRegistry());
+            assertEquals(previous.snapshot().accounts(), world.snapshot().accounts());
+            for (var key : additions.keySet()) {
+                var missing = new TreeMap<>(expected);
+                missing.remove(key);
+                assertThrows(IllegalArgumentException.class, () -> withPolicies(current, missing));
+                var grafted = new TreeMap<>(old.dataVersions());
+                grafted.put(key, expected.get(key));
+                assertThrows(IllegalArgumentException.class, () -> withPolicies(old, grafted));
+            }
+            world.createBranch("news-child", world.snapshot().position(), BranchOrigin.Kind.OPERATOR_BRANCH, "个人新闻研究");
+        }
+        assertArrayEquals(saved, Files.readAllBytes(tenth));
+        assertEquals(newest, WorldWebApp.tenCompanyJournal(dir));
+        try (var restored = ComposedIndustryScenario.openPersonalNewsTenCompanyStudy(newest);
+             var child = new BranchRepository(dir.resolve("runs")).open("news-child", restored.profile())) {
+            assertEquals(RunManifest.PERSONAL_NEWS_RUN_ID, child.profile().manifest().policyRunId());
             assertEquals(restored.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());
         }
     }

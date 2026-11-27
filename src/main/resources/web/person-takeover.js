@@ -102,5 +102,5 @@ globalThis.PersonTakeover = (() => {
     });
     $("takeover-actor").addEventListener("click", () => guard(start(actor, token)));
   });
-  return {reset, admin, person, cut, blocks, start, enterMarkedChild};
+  return {reset, admin, person, cut, blocks, start, enterMarkedChild, canAct: () => mode === "TAKEOVER"};
 })();

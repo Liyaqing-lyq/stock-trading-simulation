@@ -2,6 +2,7 @@ package edu.cufe.auction.world.composed;
 
 import edu.cufe.auction.world.EngineeringModel;
 import edu.cufe.auction.world.ManufacturingModel;
+import edu.cufe.auction.world.ResearchLicensing;
 import edu.cufe.auction.world.WorldRuntime;
 import edu.cufe.auction.world.bank.BankRun;
 import edu.cufe.auction.world.bank.Money;
@@ -208,7 +209,7 @@ public record ComposedCompanyReport(String companyPartyId, String basis,
             /*
              * 独立研发公司：没有制造/工程子账本，只有唯一现金账户、研发资产与自己的 EXP 历史资本。
              * 这里不借用工程或制造的开局权益，也不把银行报表套过来；资本与损益全部由真实
-             * ResearchModel.Report 给出，收入侧为空（本切片没有产品销售/许可）。
+             * ResearchModel.Report 给出，已交付的许可单独计入收入。
              */
             var research = runtime.researchRun().orElseThrow();
             var report = edu.cufe.auction.world.ResearchModel.report(research.state(),
@@ -225,7 +226,15 @@ public record ComposedCompanyReport(String companyPartyId, String basis,
             equity.put("资本（EXP 历史资本）", research.state().initialEquity());
             sources.add("ResearchModel.Report（现金/在研/可用净额/费用/摊销/减值/权益）");
             sources.add("OpeningRegistry：PH1 发行与持股 + pharma-owner 历史资本（EXP）");
-            unsupported.add("研发公司尚无产品销售或许可收入：商业化批准不等于已取得收入");
+            if (ResearchLicensing.enabled(runtime.profile().manifest())) {
+                var fees = ResearchLicensing.totals(research.state().licenses());
+                assets.put("许可应收款", fees.receivable());
+                income.put("许可收入（累计）", fees.revenue());
+                sources.add("已交付许可与有限客户的实付逐合同登记；累计实收许可费 " + fees.cashReceived().toPlainString() + " 元");
+                unsupported.add("许可为一次性固定对价；产品销售和按销量分成尚未登记");
+            } else {
+                unsupported.add("研发公司尚无产品销售或许可收入：商业化批准不等于已取得收入");
+            }
             unsupported.add("研发公司未接分红、递延税、租赁与金融资产公允价值变动");
             researchCompanyBranch = true;
         } else {

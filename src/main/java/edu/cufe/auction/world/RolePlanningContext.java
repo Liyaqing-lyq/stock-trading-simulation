@@ -11,6 +11,21 @@ public final class RolePlanningContext {
     public static final long MAX_REVIEW_AFTER_MILLIS = 30L * MILLIS_PER_DAY;
     private RolePlanningContext() { }
 
+    private static boolean watchesMarketSessions(JsonNode input) {
+        for (var holding : input.at("/profile/holdings"))
+            if (holding.path("quantity").asLong() > 0) return true;
+        if (!input.at("/engineering/personalMarket/openOrders").isEmpty()) return true;
+        for (var target : input.path("targets"))
+            if (target.path("leaves").asLong() > 0) return true;
+        for (var child : input.path("children"))
+            if (child.path("leaves").asLong() > 0) return true;
+        for (var office : input.path("appointments"))
+            if (List.of("PORTFOLIO_MANAGER", "RISK_OFFICER", "EXECUTION_TRADER").contains(office.path("role").asText()))
+                for (var product : input.at("/engineering/authorizedProducts"))
+                    if (product.path("organizationPartyId").equals(office.path("organizationPartyId"))) return true;
+        return false;
+    }
+
     /** Append timing after the complete decision root is built; never infer rights from document text. */
     public static void append(ObjectNode input, String wake, DecisionModel.Config config) {
         if (!(input.path("engineering") instanceof ObjectNode eng)
@@ -48,12 +63,17 @@ public final class RolePlanningContext {
                     + "仅role.wait的decision可选publicPostWake。" + wakeEffect + " 可选顶层privateNote记录本人判断，结构见engineering.researchNotes.contract。";
             boolean typed = RunManifest.TYPED_REVIEW_FIELDS.equals(eng.path("decisionEnvelopeGuide").textValue());
             if (typed) {
+                boolean marketChoice = RunManifest.ROLE_EXPOSURE_CHOICE.equals(eng.path("marketSessionWakePolicy").textValue());
+                if (marketChoice) eng.put("marketSessionWakeDefault", watchesMarketSessions(input) ? "IMMEDIATE" : "ON_REVIEW");
                 contract = "整份回复是单个JSON对象，字段名不得重复，最多" + config.limits().maxReplyChars() + "个UTF-16单元。"
-                        + "顶层tool是本次tools中的名称字符串。顶层decision是对象，必填且仅有以下三项，等待另有一项可选字段。"
+                        + "顶层tool是本次tools中的名称字符串。顶层decision是对象，必填且仅有以下三项，"
+                        + (marketChoice ? "等待另有两项可选字段。" : "等待另有一项可选字段。")
                         + "objective是字符串，精确取本次engineering.deliberation.objectives中一行的id。"
                         + "basis是含非空白字符的字符串，长度1至" + RoleDeliberation.MAX_BASIS_UTF16_UNITS + "个UTF-16单元。写简短依据，等待时说明条件或缺项。"
                         + "reviewAfterMillis是JSON整数，从input.time起算，范围1至" + MAX_REVIEW_AFTER_MILLIS + "毫秒（含两端），相加须在有符号64位整数范围内。"
                         + "仅当tool为role.wait时，decision.publicPostWake可选，值是字符串IMMEDIATE或ON_REVIEW。" + wakeEffect
+                        + (marketChoice ? "仅在本次等待中，decision.marketSessionWake可另选IMMEDIATE（普通开市、午休、复市、收市即时提醒）或ON_REVIEW（留到复查）。"
+                        + "省略时沿用本人的engineering.marketSessionWakeDefault，由可见证券持仓、在簿委托或在岗产品投资、风控、执行职责确定。停复牌、行情、本人委托回报、来信和复查期限仍按原规则提醒。" : "")
                         + "等待通常省略顶层args，本档也接受空对象{}。其他工具必须有顶层args对象，按对应工具合同填写。"
                         + "可选的顶层笔记和联系人评语字段见engineering.researchNotes及engineering.contactHistory，其余字段不接收。";
             }

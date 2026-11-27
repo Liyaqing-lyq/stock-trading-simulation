@@ -623,6 +623,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requirePerson(exchange, session.get(), () -> interviewCoordination(exchange, session.get()));
                 return;
             }
+            if ("/api/me/newsletters".equals(path) && ("GET".equals(method) || "POST".equals(method))) {
+                requirePerson(exchange, session.get(), () -> newsletters(exchange, session.get()));
+                return;
+            }
             if ("/api/me/orders".equals(path) && ("GET".equals(method) || "POST".equals(method))) {
                 requirePerson(exchange, session.get(), () -> personalOrders(exchange, session.get()));
                 return;
@@ -716,6 +720,7 @@ public final class WorldWebServer implements AutoCloseable {
         }
         if ("/api/me/interview/site-visit".equals(path) && "POST".equals(method)) return true;
         if ("/api/me/interview/coordination".equals(path) && "POST".equals(method)) return true;
+        if ("/api/me/newsletters".equals(path) && ("GET".equals(method) || "POST".equals(method))) return true;
         if ("/api/me/orders".equals(path) && ("GET".equals(method) || "POST".equals(method))) return true;
         if ("/api/me/fund-units".equals(path) && "POST".equals(method)) return true;
         if ("/api/me/dialogue".equals(path) && "GET".equals(method)) {
@@ -2075,6 +2080,30 @@ public final class WorldWebServer implements AutoCloseable {
         }
     }
 
+    private void newsletters(HttpExchange exchange, WebSessions.Session session) throws IOException, WorldWebHost.BusyException {
+        try {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                send(exchange, 200, mapper.writeValueAsString(host.personalWebPage(session.personId(), PersonalObservations.Page.NEWSLETTERS)));
+                return;
+            }
+            var body = jsonBody(exchange, Set.of("action", "target", "observedMillis", "commandId"));
+            String action = requiredText(body, "action");
+            if (!Set.of("JOIN", "LEAVE", "RELEASE_TURN").contains(action)) throw new IllegalArgumentException("未知试刊动作");
+            String command = requiredText(body, "commandId");
+            var result = host.newsletterAction(session.personId(), researchInteger(body, "observedMillis"), command,
+                    action, requiredText(body, "target"));
+            send(exchange, 200, mapper.writeValueAsString(result));
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalStateException changed) {
+            send(exchange, 409, error("NEWSLETTER_CHANGED", "本人状态或时点已变化，请刷新后核对。"));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "请核对试刊、本人发言及命令编号。"));
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+    }
+
     private void personalOrders(HttpExchange exchange, WebSessions.Session session) throws IOException, WorldWebHost.BusyException {
         try {
             if ("GET".equals(exchange.getRequestMethod())) {
@@ -2794,7 +2823,7 @@ public final class WorldWebServer implements AutoCloseable {
         try {
             view = host.personalWebCommand(session.personId(), expected,
                     frame -> host.scheduleReading(session.personId(), readCommand(atFrame(body, frame))),
-                    PersonalObservations.Page.GROUPS, PersonalObservations.Page.ENGINEERING);
+                    PersonalObservations.Page.GROUPS, PersonalObservations.Page.ENGINEERING, PersonalObservations.Page.NEWSLETTERS);
         } catch (WorldWebHost.BusyException busy) {
             throw busy;
         } catch (WorldWebHost.PositionMismatch mismatch) {
@@ -3364,6 +3393,7 @@ public final class WorldWebServer implements AutoCloseable {
             case "/interview-coordination.js" -> "interview-coordination.js";
             case "/person-takeover.js" -> "person-takeover.js";
             case "/person-orders.js" -> "person-orders.js";
+            case "/newsletters.js" -> "newsletters.js";
             case "/groups.js" -> "groups.js";
             case "/research.js" -> "research.js";
             case "/operations.js" -> "operations.js";

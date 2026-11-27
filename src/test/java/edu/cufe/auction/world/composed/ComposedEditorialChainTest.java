@@ -208,6 +208,53 @@ class ComposedEditorialChainTest {
         }
     }
 
+    @Test void foreignDeskReadsItsDraftWithBothClocksBeforeTheEditorCanApprove() throws Exception {
+        Path file = directory.resolve("cross-border.journal");
+        String author = "digital-manager", editor = "aged-manager", body = "核对交付日期与原件的币种。".repeat(30);
+        String a = "engineering-opportunity:A1", b = "engineering-opportunity:A2";
+        String publicDocument;
+        try (var world = ComposedIndustryScenario.openPersonalNewsTenCompanyStudy(file)) {
+            assertTrue(world.autonomyRoleObservation(author).at("/profile/readExperiences").isEmpty());
+            var first = read(world, author, a);
+            var second = read(world, author, b);
+            for (var completed : world.autonomyRoleObservation(author).at("/profile/readExperiences")) {
+                assertTrue(completed.required("publishedAtLocalUTC8").asText().startsWith("D0 00:00:00."));
+                assertTrue(completed.required("publishedAtDeskUTC0").asText().startsWith("D-1 16:00:00."));
+            }
+            read(world, "rita", a);
+            assertFalse(world.autonomyRoleObservation("rita").at("/profile/readExperiences/0").has("publishedAtDeskUTC0"));
+            act(world, author, TOOL_MEDIA_PROPOSE, Map.of("storyId", "conversion", "template", "CROSS_BORDER", "topic", "比较两地截止时间"));
+            String id = story(world, author, "CROSS_BORDER").required("storyId").asText();
+            var samePublisher = Map.of("storyId", id, "expectedRevision", 0,
+                    "title", "两地截止时间", "body", body, "publicSourceDescription", "同一委托人的两项机会", "evidence", List.of(first, second));
+            assertEquals(MediaModel.REASON_INSUFFICIENT_SOURCES, result(world, author, TOOL_MEDIA_SUBMIT, samePublisher).reason());
+            var otherPublisher = read(world, author, CompanyOpeningDocuments.documentId("eng-a"));
+            act(world, author, TOOL_MEDIA_SUBMIT, Map.of("storyId", id, "expectedRevision", 0,
+                    "title", "两地截止时间", "body", body, "publicSourceDescription", "委托人与发行人原文", "evidence", List.of(first, otherPublisher)));
+            String draft = story(world, editor, "CROSS_BORDER").required("draftDocId").asText();
+            long start = world.snapshot().timeMillis() + 1;
+            world.openRoleSession(editor).startReading("compare", "compare-task", start, draft, 1L);
+            world.advanceTo(start);
+            long due = world.roleView(editor).readings().stream().filter(r -> r.ref().docId().equals(draft)).findFirst().orElseThrow().dueAt();
+            assertEquals(start + body.codePoints().filter(Character::isIdeographic).count() * 200L
+                    + MediaDesks.COMPARISON_MILLIS, due);
+            world.advanceTo(due - 1);
+            assertFalse(world.roleView(editor).observations().stream().anyMatch(o -> o.ref().docId().equals(draft)));
+            world.advanceTo(due);
+            assertTrue(world.roleView(editor).observations().stream().anyMatch(o -> o.ref().docId().equals(draft)));
+            act(world, editor, TOOL_MEDIA_REVIEW, Map.of("storyId", id, "expectedRevision", 1, "approve", true, "note", ""));
+            act(world, editor, TOOL_MEDIA_PUBLISH, Map.of("storyId", id, "expectedRevision", 1));
+            publicDocument = story(world, editor, "CROSS_BORDER").required("publicDocId").asText();
+            assertFalse(world.roleView("rita").observations().stream().anyMatch(o -> o.ref().docId().equals(publicDocument)));
+            read(world, "rita", publicDocument);
+        }
+        byte[] bytes = java.nio.file.Files.readAllBytes(file);
+        try (var restored = ComposedIndustryScenario.openPersonalNewsTenCompanyStudy(file)) {
+            assertTrue(restored.roleView("rita").observations().stream().anyMatch(o -> o.ref().docId().equals(publicDocument)));
+        }
+        assertArrayEquals(bytes, java.nio.file.Files.readAllBytes(file));
+    }
+
     private JsonNode read(WorldRuntime world, String person, String document) throws Exception {
         return read(world, person, document, 1);
     }

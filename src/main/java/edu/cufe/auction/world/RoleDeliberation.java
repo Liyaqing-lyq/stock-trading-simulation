@@ -69,8 +69,8 @@ public final class RoleDeliberation {
 
     static final String EMPTY_WAIT_ARGS = "allow-empty-object-v1";
     private record InputFacts(boolean deliberative, boolean planning, long time, Set<String> objectives,
-                              boolean publicPostChoice, boolean emptyWaitArgs) {
-        private static final InputFacts LEGACY = new InputFacts(false, false, 0L, Set.of(), false, false);
+                              boolean publicPostChoice, boolean marketSessionChoice, boolean emptyWaitArgs) {
+        private static final InputFacts LEGACY = new InputFacts(false, false, 0L, Set.of(), false, false, false);
     }
 
     private static InputFacts inputFacts(String text) {
@@ -86,6 +86,7 @@ public final class RoleDeliberation {
         }
         return new InputFacts(true, isPlanning(version), input.path("time").asLong(), Set.copyOf(objectives),
                 "role-choice-v1".equals(engineering.path("publicPostWakePolicy").asText()),
+                RunManifest.ROLE_EXPOSURE_CHOICE.equals(engineering.path("marketSessionWakePolicy").textValue()),
                 EMPTY_WAIT_ARGS.equals(engineering.path("waitArgsPolicy").asText()));
     }
 
@@ -273,6 +274,10 @@ public final class RoleDeliberation {
         if (facts.publicPostChoice() && "role.wait".equals(reply.path("tool").asText())
                 && fields.remove("publicPostWake")
                 && !Set.of("IMMEDIATE", "ON_REVIEW").contains(statement.path("publicPostWake").asText()))
+            throw new IllegalArgumentException("BAD_DELIBERATION");
+        if (facts.marketSessionChoice() && "role.wait".equals(reply.path("tool").asText())
+                && fields.remove("marketSessionWake")
+                && !Set.of("IMMEDIATE", "ON_REVIEW").contains(statement.path("marketSessionWake").asText()))
             throw new IllegalArgumentException("BAD_DELIBERATION");
         if (!statement.isObject() || !fields.equals(Set.of("objective", "basis", reviewField))
                 || !statement.path("objective").isTextual() || !statement.path("basis").isTextual()

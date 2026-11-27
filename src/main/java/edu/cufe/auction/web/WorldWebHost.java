@@ -484,6 +484,8 @@ public final class WorldWebHost implements AutoCloseable {
     boolean newFactsRequireWake(com.fasterxml.jackson.databind.JsonNode input, com.fasterxml.jackson.databind.JsonNode previous,
                                         long last, long review) {
         var facts = wakeFacts(input);
+        if (RunManifest.ROLE_EXPOSURE_CHOICE.equals(runtime.profile().manifest().dataVersions().get(RunManifest.MARKET_SESSION_WAKE)))
+            deferRoutineMarketSession(input, previous, facts, last, review);
         if (facts.equals(previous)) return false;
         if ("role-choice-v1".equals(runtime.profile().manifest().dataVersions().get("public-post-wake"))) {
             return !BoardWaitBroadcast.deferChosenPosts(previous, facts, input, last, review);
@@ -491,6 +493,21 @@ public final class WorldWebHost implements AutoCloseable {
         return !edu.cufe.auction.world.EngineeringCustomerPolicy.VERSION.equals(
                 runtime.profile().manifest().dataVersions().get(edu.cufe.auction.world.EngineeringCustomerPolicy.KEY))
                 || !BoardWaitBroadcast.defer(previous, facts, input, last, review);
+    }
+
+    // 只对本次有效等待合并普通交易时段开关；停复牌、报价及同刻其他消息仍按原事实比较。
+    private static void deferRoutineMarketSession(com.fasterxml.jackson.databind.JsonNode input,
+                com.fasterxml.jackson.databind.JsonNode previous, com.fasterxml.jackson.databind.JsonNode facts, long last, long review) {
+        long now = input.path("time").asLong();
+        if (previous == null || now < last || now >= review) return;
+        var earlier = previous.at("/engineering/exchangeSessions/sessionOpen");
+        if (!earlier.isBoolean() || !(facts.at("/engineering/exchangeSessions") instanceof com.fasterxml.jackson.databind.node.ObjectNode sessions)
+                || !sessions.path("sessionOpen").isBoolean() || earlier.equals(sessions.get("sessionOpen"))) return;
+        var saved = input.at("/engineering/deliberation/recentDecisions/0");
+        if (!"WAIT".equals(saved.path("outcome").asText()) || !"role.wait".equals(saved.path("tool").asText())
+                || saved.path("observedAt").asLong(-1) != last || saved.path("derivedReviewAt").asLong(-1) != review) return;
+        String choice = saved.at("/ownStatement/marketSessionWake").asText(input.at("/engineering/marketSessionWakeDefault").asText());
+        if ("ON_REVIEW".equals(choice)) sessions.set("sessionOpen", earlier);
     }
 
     private boolean failedOnSameFacts(String person, com.fasterxml.jackson.databind.JsonNode input) throws IOException {
@@ -4855,6 +4872,45 @@ public final class WorldWebHost implements AutoCloseable {
         return call(() -> edu.cufe.auction.world.PersonalOrderDesk.view(readyNow(), person));
     }
 
+    private com.fasterxml.jackson.databind.node.ObjectNode newsletterPage(WorldRuntime world, String person) throws Exception {
+        var subscriptions = world.mediaSubscriptionsOf(person);
+        com.fasterxml.jackson.databind.node.ObjectNode page = PAYLOAD_MAPPER.valueToTree(subscriptions);
+        page.put("enabled", !subscriptions.isEmpty()).put("person", person)
+                .put("observedMillis", num(world.snapshot().timeMillis()));
+        if (subscriptions.isEmpty()) return page;
+        var deskNames = new HashMap<String,String>();
+        world.openingRegistry().orElseThrow().parties().forEach(p -> deskNames.put(p.partyId(), p.name()));
+        for (var item : page.required("offers")) {
+            var desk = (com.fasterxml.jackson.databind.node.ObjectNode) item;
+            String org = desk.required("organization").asText();
+            desk.put("name", deskNames.getOrDefault(org, org));
+        }
+        if (page.path("deliveries").isEmpty()) return page;
+        var remembered = new HashMap<DocRef, RoleView.Experience>();
+        for (var experience : world.roleView(person).observations())
+            remembered.put(new DocRef(experience.ref().docId(), experience.ref().version()), experience);
+        for (var item : page.required("deliveries")) {
+            var receipt = (com.fasterxml.jackson.databind.node.ObjectNode) item;
+            if (receipt.has("speakerPartyId")) {
+                String speaker = receipt.get("speakerPartyId").asText();
+                receipt.put("speakerName", deskNames.getOrDefault(speaker, speaker));
+            }
+            var memory = remembered.get(new DocRef(receipt.required("docId").asText(), receipt.required("version").asLong()));
+            receipt.put("bodyAvailable", memory != null);
+            if (memory != null) receipt.put("body", memory.body());
+        }
+        return page;
+    }
+
+    Map<String, String> newsletterAction(String person, long observed, String command, String action, String target) throws Exception {
+        return call(() -> {
+            var world = readyNow();
+            String id = "web-news:" + person.length() + ":" + person + ":" + command;
+            String receipt = world.scheduleMediaSubscription(person, action, target, id, observed);
+            return Map.of("receipt", receipt);
+        });
+    }
+
     Map<String, String> personalOrder(String person, long observed, String command,
                                       edu.cufe.auction.world.PersonalOrderDesk.Instruction request) throws Exception {
         return call(() -> edu.cufe.auction.world.PersonalOrderDesk.schedule(readyNow(), person, observed, command, request));
@@ -5445,7 +5501,14 @@ public final class WorldWebHost implements AutoCloseable {
 
     /** 公开平台目录条目（不含群内帖）。 */
     public record GroupFeedView(String docId, String version, String title, String publisher,
-                                String publishedAt, String kind) {
+                                String publishedAt, String kind,
+                                @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                String rankingReason) {
+        /** 既有公开时间目录没有个人推荐依据。 */
+        public GroupFeedView(String docId, String version, String title, String publisher,
+                             String publishedAt, String kind) {
+            this(docId, version, title, publisher, publishedAt, kind, null);
+        }
     }
 
     /** 本人群组页：只含本人有权限的群、邀请、帖子与公开目录。 */
@@ -5503,6 +5566,7 @@ public final class WorldWebHost implements AutoCloseable {
             case RESEARCH -> ResearchWeb.view(world, person);
             case ENGINEERING -> personEngineeringOf(world, person);
             case GROUPS -> groupPageOf(world, person);
+            case NEWSLETTERS -> newsletterPage(world, person);
         };
         return PersonalObservations.enabled(world, person) ? PersonalObservations.page(world, person, scope,raw) : raw;
     }
@@ -5582,11 +5646,9 @@ public final class WorldWebHost implements AutoCloseable {
                     document.publisherPartyId().equals(personId), read, refs));
         }
         List<GroupFeedView> feed = new ArrayList<>();
-        for (PublicationRun.FeedEntry entry : PublicationRun.feedForOutlets(
-                run.publication().platform(), snapshot.media().map(MediaRun::states).orElse(List.of()), infoOf(snapshot), now,
-                run.feedLimit())) {
+        for (PublicationRun.FeedEntry entry : current.personalNewsFeed(personId)) {
             feed.add(new GroupFeedView(entry.docId(), num(entry.version()), entry.title(),
-                    entry.publisherPartyId(), num(entry.publishedAt()), entry.kind().name()));
+                    entry.publisherPartyId(), num(entry.publishedAt()), entry.kind().name(), entry.rankingReason()));
         }
         return new GroupPageView(runId, num(snapshot.position()), num(snapshot.timeMillis()), personId, true,
                 List.copyOf(groups), List.copyOf(invitations), List.copyOf(posts),

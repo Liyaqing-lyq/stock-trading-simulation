@@ -520,6 +520,10 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("body", experience.body());
             node.put("source", experience.publicSourceDescription());
             node.put("publishedAt", experience.publishedAt());
+            if (engineering != null && engineering.has("crossBorderComparisonMillis")) {
+                node.put("publishedAtLocalUTC8", MediaDesks.displayClock(experience.publishedAt()));
+                node.put("publishedAtDeskUTC0", MediaDesks.displayClock(experience.publishedAt() - 8 * 3_600_000L));
+            }
             node.put("completedAt", experience.completedAt());
             if (experience.recall() != null) {
                 ObjectNode origin = node.putObject("lastReadRef");
@@ -944,6 +948,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             return List.of();
         }
         if (TOOL_CONTRACT_VERSION_V6.equals(version)) {
+            if (MediaSubscriptions.JOIN.equals(tool) || MediaSubscriptions.LEAVE.equals(tool) || MediaSubscriptions.RELEASE.equals(tool))
+                return List.<String[]>of(new String[]{"target", "string"});
             if (PersonalLibrarySearch.TOOL.equals(tool)) return List.<String[]>of(new String[]{"query", "string"});
             // 只声明模型可选的业务对象；actor/seat 由运行层按本人真实任职派生，不能自授
             switch (tool) {
@@ -1077,6 +1083,9 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 case ResearchDecisionTools.ACT -> {
                     return List.of(new String[]{"action", "string"}, new String[]{"projectId", "string"},
                             new String[]{"stage", "string"}, new String[]{"meetingId", "string"});
+                }
+                case ResearchLicensing.TOOL -> {
+                    return List.of(new String[]{"action", "string"}, new String[]{"projectId", "string"});
                 }
                 case ResearchDecisionTools.BOARD -> {
                     return List.of(new String[]{"companyPartyId", "string"},

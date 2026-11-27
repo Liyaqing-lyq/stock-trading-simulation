@@ -172,7 +172,7 @@ class IssuerPeriodSectorFactsTest {
         assertFalse(w.periodicStatementForTest(company, period).contains(ref + " "), ref);
     }
 
-    private static void govern(WorldRuntime w, String company, List<String> directors, String manager) throws Exception {
+    static void govern(WorldRuntime w, String company, List<String> directors, String manager) throws Exception {
         String doc = CompanyOpeningDocuments.documentId(company), chair = directors.get(0);
         for (int i=0; i<4; i++) w.scheduleStartReading("charter-" + i, "charter-t-" + i, 100 + i, directors.get(i), doc, 1);
         w.advanceTo(DAY);

@@ -104,8 +104,16 @@ function renderGroupPerson(view) {
     tr.appendChild(td);
   });
   $("groups-posts-empty").hidden = posts.length > 0;
+  let rank = 0;
   fillTable("groups-feed", view.feed || [], (tr, row) => {
-    cell(tr, row.docId); cell(tr, row.version, "num"); cell(tr, row.title);
+    cell(tr, ++rank, "num"); cell(tr, row.docId); cell(tr, row.version, "num");
+    const title = cell(tr, row.rankingReason ? row.title + "（" + row.rankingReason + "）" : row.title);
+    if (row.rankingReason && globalThis.PersonTakeover?.canAct()) {
+      const read = document.createElement("button");
+      read.type = "button"; read.dataset.personWrite = "true"; read.textContent = "开始阅读";
+      read.addEventListener("click", () => startGroupRead(row.docId, row.version));
+      title.append(" ", read);
+    }
     cell(tr, row.publisher); cell(tr, row.publishedAt, "num"); cell(tr, row.kind);
   });
   $("groups-note").textContent = view.enabled

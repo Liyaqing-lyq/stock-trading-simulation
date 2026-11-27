@@ -622,6 +622,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.EDITORIAL_FEEDBACK_RUN_ID);
     }
 
+    /**
+     * 新建按个人兴趣、订阅及等待安排处理新闻的普通世界；已有档案沿用原有规则。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的普通十公司世界
+     * @throws Exception 初始化或逐帧重演失败
+     */
+    public static WorldRuntime openPersonalNewsTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.PERSONAL_NEWS_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
@@ -788,6 +798,11 @@ public final class ComposedIndustryScenario {
             if (currentTen) timings.put(ResourcePrimaryEquity.TOOL, ResourceDecisionTools.ACTION_MILLIS);
             if (crisis) timings.put("bank.crisis.act",60_000L);
             if (RunManifest.usesPersonalProfiles(thinkingRunId)) timings.put("role.library.search", 1000L);
+            if (RunManifest.PERSONAL_NEWS_RUN_ID.equals(thinkingRunId)) {
+                timings.put(edu.cufe.auction.world.ResearchLicensing.TOOL, ResearchDecisionTools.ACTION_MILLIS);
+                for (String tool : List.of("media.subscription.join", "media.subscription.leave", "media.subscription.releaseTurn"))
+                    timings.put(tool, 1000L);
+            }
             if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
                 timings.put(PersonalMarket.SUBMIT, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
                 timings.put(PersonalMarket.CANCEL, timings.get(RoleTradingView.TOOL_CHILD_CANCEL));
@@ -1012,7 +1027,10 @@ public final class ComposedIndustryScenario {
                 world.initializeResearch("bootstrap", ComposedPharmaScenario.PHARMA,
                         new ResearchModel.Config(ComposedPharmaScenario.PHARMA_OWNER, ComposedPharmaScenario.PHARMA_CASH, BigDecimal.ZERO),
                         prototype ? PrototypeCompanies.researchProjects() : WorldWebScenario.researchProjects(), 1);
-                world.initializeCompanyOperations("bootstrap", ComposedManufacturingThreeScenario.companies(), resourceConfig(expansion, currentTen), baseline ? BaselineIndustryConfig.hydro() : hydro ? HydroIndustryConfig.config() : null, baseline ? BaselineIndustryConfig.digital():null, baseline ? BaselineIndustryConfig.aged():null);
+                var hydroOpening = baseline ? BaselineIndustryConfig.hydro() : hydro ? HydroIndustryConfig.config() : null;
+                if (RunManifest.FINITE_1080_DAYS.equals(world.profile().manifest().dataVersions().get(RunManifest.HYDRO_INFLOW_PATH)))
+                    hydroOpening = BaselineIndustryConfig.extendedHydro();
+                world.initializeCompanyOperations("bootstrap", ComposedManufacturingThreeScenario.companies(), resourceConfig(expansion, currentTen), hydroOpening, baseline ? BaselineIndustryConfig.digital():null, baseline ? BaselineIndustryConfig.aged():null);
                 Map<String,List<String>> candidates = new TreeMap<>(Map.of(RESOURCE, List.of(MANAGER), ComposedManufacturingThreeScenario.TECH,
                         List.of(ComposedManufacturingThreeScenario.TECH_MANAGER), ComposedManufacturingThreeScenario.STRUCT,
                         List.of(ComposedManufacturingThreeScenario.STRUCT_MANAGER), ComposedManufacturingThreeScenario.VERSA,

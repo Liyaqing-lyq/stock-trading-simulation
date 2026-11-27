@@ -368,7 +368,8 @@ public final class ComposedWorldScenario {
                         WorldWebScenario.COMPANY, "fund-a", List.of("ACC-FUND"))), appointments),
                 info,
                 decisions, null,
-                eightDesks ? MediaDesks.media(WorldWebScenario.mediaConfig()) : WorldWebScenario.mediaConfig(),
+                eightDesks ? MediaDesks.media(WorldWebScenario.mediaConfig(), RunManifest.DUAL_CLOCK_EDITING.equals(
+                        manifest.dataVersions().get(RunManifest.CROSS_BORDER_EDITING))) : WorldWebScenario.mediaConfig(),
                 eightDesks ? MediaDesks.interviews(WorldWebScenario.interviewConfig()) : WorldWebScenario.interviewConfig(),
                 WorldWebScenario.dialogueConfig(), WorldWebScenario.evidenceConfig(),
                 WorldWebScenario.socialConfig(), WorldWebScenario.SOCIAL_BLOCK_MILLIS,

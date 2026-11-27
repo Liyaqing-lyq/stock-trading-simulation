@@ -102,7 +102,14 @@ function assert(flag, message) {
 (async () => {
   // 1) 人物页渲染：邀请按钮带真实 inviteId；点"接受"触发真实动作请求
   state.personGroups = pageView();
+  state.personGroups.feed.push({ docId: "EDITION", version: "2", title: "更正", publisher: "ed",
+    publishedAt: "1300", kind: "MEDIA_STORY", rankingReason: "本人读过旧版，已有新版" });
   context.renderGroupPerson(state.personGroups);
+  const feedRows = elements.get("groups-feed").children.map(tr => tr.children.map(td => td.text));
+  assert(JSON.stringify(feedRows) === JSON.stringify([
+    ["1", "PDOC-GPOST-2", "1", "公开转述", "bob", "1200", "PLATFORM_POST"],
+    ["2", "EDITION", "2", "更正（本人读过旧版，已有新版）", "ed", "1300", "MEDIA_STORY"]
+  ]), "目录序号、文号、版本、标题与个人推荐理由必须对应真实表头");
   const inviteRow = elements.get("groups-invites").children[0];
   const acceptButton = inviteRow.children[4].children[0];
   assert(acceptButton.textContent === "接受", "邀请行必须有接受按钮");

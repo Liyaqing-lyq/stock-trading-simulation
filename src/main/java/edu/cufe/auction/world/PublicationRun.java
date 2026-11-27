@@ -55,9 +55,18 @@ public final class PublicationRun {
      * @param publisherPartyId 发布者
      * @param publishedAt      发布时刻
      * @param kind             来源种类
+     * @param rankingReason    个人推荐的依据；旧目录无此字段
      */
     public record FeedEntry(int rank, String docId, long version, String title,
-                            String publisherPartyId, long publishedAt, FeedKind kind) {
+                            String publisherPartyId, long publishedAt, FeedKind kind,
+                            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                            String rankingReason) {
+
+        /** 原公开时间目录不携带个人推荐依据。 */
+        public FeedEntry(int rank, String docId, long version, String title,
+                         String publisherPartyId, long publishedAt, FeedKind kind) {
+            this(rank, docId, version, title, publisherPartyId, publishedAt, kind, null);
+        }
 
         /** 校验字段。 */
         public FeedEntry {
@@ -182,6 +191,12 @@ public final class PublicationRun {
     /** 按各家媒体自己的版本历史取得已发布稿件，与公开帖子一起排序并截取目录上限。 */
     public static List<FeedEntry> feedForOutlets(PlatformPostModel.State platform, List<MediaModel.State> outlets,
                                                 InformationModel.State info, long at, int limit) {
+        return feedForOutlets(platform, outlets, info, at, limit, null, 0);
+    }
+
+    static List<FeedEntry> feedForOutlets(PlatformPostModel.State platform, List<MediaModel.State> outlets,
+                                         InformationModel.State info, long at, int limit,
+                                         PersonalNewsFeed reader, int explorationSlot) {
         Objects.requireNonNull(platform, "平台状态");
         Objects.requireNonNull(info, "信息状态");
         if (at < 0) {
@@ -209,7 +224,8 @@ public final class PublicationRun {
                 }
             }
         }
-        return rank(selectCurrent(candidates, at), limit);
+        var current = selectCurrent(candidates, at);
+        return reader == null ? rank(current, limit) : reader.rank(rank(current, current.size()), limit, explorationSlot);
     }
 
     /**

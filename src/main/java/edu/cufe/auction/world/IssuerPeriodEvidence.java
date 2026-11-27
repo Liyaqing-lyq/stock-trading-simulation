@@ -16,6 +16,7 @@ final class IssuerPeriodEvidence {
         SELL_THROUGH("OPERATING_COMMITMENT", "本期渠道终售数量（件）"),
         DELIVERED_POWER("OPERATING_COMMITMENT", "本期实际交付电量（kWh）"),
         ORIGINATED_LOANS("OPERATING_COMMITMENT", "本期具名合同实际发放本金（元）"),
+        LICENSE_COLLECTED("CASH_SOLVENCY", "本期实际收到许可款（元）"),
         RECEIVABLES("RISK", "期末未收贸易款（元）"),
         LOAN_EXPOSURE("RISK", "期末贷款账面本金（元）"),
         STAGE_SPENDING("LONG_TERM_INVESTMENT", "本期实际支付研发阶段费用（元）"),
@@ -55,6 +56,14 @@ final class IssuerPeriodEvidence {
             BankRun bank, BankActions.Book loans, Map<String, CashLedger.CashAccount> accounts) {
         IssuerPeriodEvidence facts = new IssuerPeriodEvidence(company, period, cutoff);
         if (research != null && company.equals(research.companyPartyId())) {
+            var contracts = research.state().licenses();
+            if (contracts != null) {
+                for (var contract : contracts.values()) {
+                    if (contract.deliveredAt() != null) facts.flow(Kind.DELIVERED_REVENUE, contract.deliveredAt(), ResearchLicensing.FEE);
+                    if (contract.paidAt() != null) facts.flow(Kind.LICENSE_COLLECTED, contract.paidAt(), ResearchLicensing.FEE);
+                }
+                facts.add(Kind.RECEIVABLES, ResearchLicensing.totals(contracts).receivable());
+            }
             for (var project : research.state().projects().values()) {
                 for (var stage : project.stages()) {
                     facts.flow(Kind.STAGE_SPENDING, stage.beganAt(), stage.plan().cost());

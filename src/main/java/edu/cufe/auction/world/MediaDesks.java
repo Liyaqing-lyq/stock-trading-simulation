@@ -9,6 +9,9 @@ import java.util.TreeMap;
 /** 八类实验采编机构。实际任职、读者选择、来源谱系和工时均由世界核执行。 */
 public final class MediaDesks {
     private MediaDesks() { }
+
+    /** 双时区试验中每版跨市场初稿或修订稿的内部编译核对工时。 */
+    public static final long COMPARISON_MILLIS = 60_000L;
     private record Desk(String org, MediaModel.TemplateKind template, int sources, String author, String editor,
                         String name, String audience, String practice, long reading, long budget) { }
 
@@ -48,12 +51,18 @@ public final class MediaDesks {
 
     /** @param base 原编辑流与回忆规则 @return 按社冻结的门槛、阅读成本及工时预算 */
     public static MediaRun.Config media(MediaRun.Config base) {
+        return media(base, false);
+    }
+
+    /** @param base 原采编配置 @param compareClocks 是否对跨市场内稿另计编译核对工时 @return 各编辑部的冻结配置 */
+    public static MediaRun.Config media(MediaRun.Config base, boolean compareClocks) {
         var policies = new ArrayList<MediaModel.Policy>();
         var budgets = new TreeMap<String, Long>();
         var timing = base.policyOf("wire");
         for (var desk : DESKS) {
             policies.add(new MediaModel.Policy(desk.org(), Map.of(desk.template(), desk.sources()), timing.writeMillis(),
-                    timing.reviewMillis(), timing.publishMillis(), desk.reading(), desk.reading(), timing.recallPolicy(), MediaModel.EIGHT_DESKS));
+                    timing.reviewMillis(), timing.publishMillis(), desk.reading(), desk.reading(), timing.recallPolicy(), MediaModel.EIGHT_DESKS,
+                    compareClocks && desk.template() == MediaModel.TemplateKind.CROSS_BORDER ? COMPARISON_MILLIS : null));
             budgets.put(desk.org(), desk.budget());
         }
         return new MediaRun.Config(policies, budgets, base.proposeMillis(), base.correctionMillis(), base.cancelMillis());
@@ -65,6 +74,13 @@ public final class MediaDesks {
         var policies = DESKS.stream().map(d -> new InterviewModel.Policy(d.org(), timing.inviteTtlMillis(),
                 timing.minLeadMillis(), timing.maxDurationMillis())).toList();
         return new InterviewRun.Config(policies, base.inviteMillis(), base.respondMillis(), base.cancelMillis(), base.endMillis(), base.contacts());
+    }
+
+    static String displayClock(long millis) {
+        long day = Math.floorDiv(millis, RolePlanningContext.MILLIS_PER_DAY);
+        long inDay = Math.floorMod(millis, RolePlanningContext.MILLIS_PER_DAY);
+        return String.format(java.util.Locale.ROOT, "D%d %02d:%02d:%02d.%03d", day,
+                inDay / 3_600_000, inDay / 60_000 % 60, inDay / 1_000 % 60, inDay % 1_000);
     }
 
     static void describe(ObjectNode objective, String org) {
