@@ -20,7 +20,7 @@ function node(id) {
 }
 const panel = node("group-panel"); panel.dataset.panel = "groups"; panel.hidden = true;
 node("admin").appendChild(panel);
-const state = { mode: "admin", generation: 0, page: "overview", pageVersion: 0, personGroups: null };
+const state = { mode: "admin", generation: 0, page: "overview", pageVersion: 0, personRefresh: 0, personGroups: null };
 const calls = []; let pendingGroup = null, pendingAction = null;
 const context = { state, console, BigInt, Number, String, Date, $: node,
   document: { body: {dataset:{}}, querySelector: () => panel,
@@ -46,7 +46,8 @@ for(const name of ["clearAdminDom","clearPersonDom","clearPersonalMedia","clearP
  "clearOperationsDom","placeOperationsPanel","loadOperations",
  "clearManufacturingDom","placeManufacturingPanel","loadManufacturing"]) context[name]=()=>{};
 vm.createContext(context);
-for(const name of ["showMode","enterPerson","renderPersonalReports","renderPersonPortfolios","renderFundUnits","refreshPerson"]) vm.runInContext(sourceFunction(name),context);
+for(const name of ["setAccountContext","writeHistoryBookmark","showMode","enterPerson","renderPersonalReports",
+ "renderPersonPortfolios","renderFundUnits","clearPersonChart","renderPersonChart","refreshPerson"]) vm.runInContext(sourceFunction(name),context);
 vm.runInContext(fs.readFileSync(path.join(root,"groups.js"),"utf8"),context);
 (async()=>{
  await context.enterPerson("alice");
