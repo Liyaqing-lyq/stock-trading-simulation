@@ -642,6 +642,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.INTERVIEW_AUTONOMY_RUN_ID);
     }
 
+    /**
+     * 打开普通董事可依章程提出并实施工程公司分红的十公司世界，已有日志按原版本恢复。
+     * @param journal 世界日志路径
+     * @return 对应版本的世界
+     * @throws Exception 恢复或初始化失败
+     */
+    public static WorldRuntime openIssuerDecisionsTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.ISSUER_DECISIONS_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
@@ -812,6 +822,12 @@ public final class ComposedIndustryScenario {
                 timings.put(edu.cufe.auction.world.ResearchLicensing.TOOL, ResearchDecisionTools.ACTION_MILLIS);
                 for (String tool : List.of("media.subscription.join", "media.subscription.leave", "media.subscription.releaseTurn"))
                     timings.put(tool, 1000L);
+            }
+            if (RunManifest.ISSUER_DECISIONS_RUN_ID.equals(thinkingRunId)) {
+                timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_CONVENE, timings.get(RoleTradingView.TOOL_BOARD_CONVENE));
+                timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE, timings.get(RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET));
+                timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE, timings.get(RoleTradingView.TOOL_BOARD_IMPLEMENT));
+                timings.put(PersonalMarket.MARKET, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
             }
             if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
                 timings.put(PersonalMarket.SUBMIT, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));

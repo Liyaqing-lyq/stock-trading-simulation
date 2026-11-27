@@ -86,13 +86,16 @@ public final class RolePlanningContext {
             var d = (ObjectNode) director;
             correctProcedure(d);
             d.put("implementationInvocationRight", "本人真实董事席位可调用implement；不要求chair、此前到会或本人投票。调用权与ADOPTED、实施窗口及执行合法性分别复核。");
+            if (d.has("dividendProcedure")) d.put("implementationInvocationRight", "普通议题沿用各自的实施权限。分红授权议题由本发行人主席通过 issuer.dividend.authorize 实施。");
             for (var node : d.path("meetings")) {
                 var m = (ObjectNode) node;
                 correctProcedure(m);
                 var constraints = m.putObject("planningPrerequisites");
                 constraints.put("currentPhase", m.path("status").asText("UNKNOWN"));
                 boolean periodReview = m.has("periodReviewProcedure");
+                boolean dividend = d.has("dividendProcedure") && "DIVIDEND_AUTHORIZATION".equals(m.path("topic").asText());
                 if (periodReview) constraints.put("completionWindow", "董事须在 opensAt 前完成到会；periodic.score 的完成时间须在 [opensAt, closesAt) 内。");
+                else if (dividend) constraints.put("completionWindow", "本人到会完成 < opensAt。材料与分红提案完成 <= materialDeadline。合格席位须在 [opensAt, closesAt) 内完成表决。通过后主席实施时须已过 closesAt，且实施及公告须早于登记时点。");
                 else constraints.put("completionWindow", "到会完成 < opensAt；材料/提案完成 <= materialDeadline；投票须当前VOTING且完成在[opensAt,closesAt)；任免实施须当前ADOPTED且完成在[closesAt,effectiveAt]。未来动作还须另花一轮思考和工具工时，不能把通过当作已实施。");
                 for (String tool : List.of("board.attend", "board.addMaterial", "board.proposeAppointment", "board.proposeBudget", "board.vote", "board.implement")) {
                     // Actual public tool names are used below; tools absent from the offered set remain unoffered.
@@ -100,7 +103,8 @@ public final class RolePlanningContext {
                     var row = constraints.putObject(tool);
                     row.set("timing", actions.path(tool).deepCopy());
                     ArrayNode blockers = row.putArray("blockers"), unknown = row.putArray("unknown");
-                    if (periodReview && ("board.vote".equals(tool) || "board.implement".equals(tool))) {
+                    if ((periodReview && ("board.vote".equals(tool) || "board.implement".equals(tool)))
+                            || (dividend && "board.implement".equals(tool))) {
                         blockers.add("WRONG_TOPIC");
                         row.put("status", "BLOCKED").put("executorRevalidates", true);
                         continue;

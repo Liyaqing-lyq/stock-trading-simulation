@@ -2121,6 +2121,10 @@ public final class WorldWebServer implements AutoCloseable {
                 draft = new edu.cufe.auction.world.PersonalOrderDesk.Instruction(action, account, requiredText(body, "symbol"),
                         edu.cufe.auction.model.Side.valueOf(requiredText(body, "side")), new java.math.BigDecimal(price),
                         researchInteger(body, "quantity"), null);
+            } else if ("MARKET".equals(action) && body.size() == 7) {
+                draft = new edu.cufe.auction.world.PersonalOrderDesk.Instruction(action, account, requiredText(body, "symbol"),
+                        edu.cufe.auction.model.Side.valueOf(requiredText(body, "side")), null,
+                        researchInteger(body, "quantity"), null);
             } else if ("CANCEL".equals(action) && body.size() == 5) {
                 draft = new edu.cufe.auction.world.PersonalOrderDesk.Instruction(action, account, null, null, null, 0L,
                         requiredText(body, "orderRef"));

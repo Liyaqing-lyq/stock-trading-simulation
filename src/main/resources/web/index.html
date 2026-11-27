@@ -270,7 +270,8 @@
 <label>本人证券账户<select id="stock-order-account" required></select></label>
 <label>证券代码<select id="stock-order-symbol" required></select></label>
 <label>买卖方向<select id="stock-order-side"><option value="BUY">买入</option><option value="SELL">卖出</option></select></label>
-<label>限价（元）<input id="stock-order-price" type="text" inputmode="decimal" required autocomplete="off"></label>
+<label id="stock-order-type-field" hidden>委托类型<select id="stock-order-type"><option value="LIMIT">限价</option><option value="MARKET">市价（未成交部分撤销）</option></select></label>
+<label id="stock-order-price-field">限价（元）<input id="stock-order-price" type="text" inputmode="decimal" required autocomplete="off"></label>
 <label>数量（股）<input id="stock-order-quantity" type="text" inputmode="numeric" pattern="[1-9][0-9]*" required autocomplete="off"></label>
 <button id="stock-place-limit" type="submit">提交限价委托</button></form>
 <p id="stock-order-result" class="hint" role="status"></p>

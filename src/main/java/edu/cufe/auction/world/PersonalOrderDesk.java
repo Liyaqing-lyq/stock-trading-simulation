@@ -14,7 +14,7 @@ import java.util.Map;
 public final class PersonalOrderDesk {
     private PersonalOrderDesk() { }
 
-    /** 一次手工限价或撤单申请，账号和活动单引用均属于当前人物。 */
+    /** 一次本人手工委托或撤单申请，账号和活动单引用均属于当前人物。 */
     public record Instruction(String action, String accountId, String symbol, Side side,
                               BigDecimal limitPrice, long quantity, String orderRef) { }
 
@@ -42,6 +42,7 @@ public final class PersonalOrderDesk {
         var owned = profile.accounts().stream().filter(a -> a.kind() == RoleView.AccountKind.PERSONAL).toList();
         if (owned.isEmpty()) return out;
         out.put("enabled", true);
+        if (PersonalMarket.marketOrders(w.profile().manifest())) out.put("marketOrders", true);
         profile.market().forEach(q -> symbols.add(q.symbol()));
         var exchange = snap.exchange().orElseThrow();
         var refs = new LinkedHashMap<Long,String>();
@@ -59,10 +60,11 @@ public final class PersonalOrderDesk {
         var candidates = exchange.reports().values().stream().filter(r -> r.commandId().startsWith(idPrefix))
                 .sorted(Comparator.comparingLong(WorldExchange.OrderReport::position).reversed()).toList();
         for (var r : candidates) {
-            if (!w.isManualOrderReport(who, r)) continue;
+            String action = w.manualOrderAction(who, r);
+            if (action == null) continue;
             var row = receipts.addObject().put("commandId", r.commandId().substring(idPrefix.length()))
                     .put("timeMillis", Long.toString(r.timeMillis())).put("accepted", r.accepted()).put("reason", r.reason())
-                    .put("action", PendingTask.EXCHANGE_CANCEL_V1.equals(r.kind()) ? "CANCEL" : "LIMIT");
+                    .put("action", action);
             Long id = r.orderId() != null ? r.orderId()
                     : r.cancelledOrderIds().isEmpty() ? null : r.cancelledOrderIds().get(0);
             if (id != null && refs.containsKey(id)) {
@@ -70,6 +72,8 @@ public final class PersonalOrderDesk {
                 row.put("orderRef", refs.get(id)).put("status", order.status().name())
                         .put("filled", Long.toString(order.filled()))
                         .put("remaining", Long.toString(order.live() ? order.remaining() : 0));
+                if ("MARKET".equals(action) && order.status() == WorldExchange.OrderStatus.CANCELLED)
+                    row.put("cancelledQuantity", Long.toString(order.remaining()));
             }
             if (receipts.size() == 20) break;
         }
@@ -95,16 +99,20 @@ public final class PersonalOrderDesk {
         if (!retry && observed != snap.timeMillis()) throw new IllegalStateException("本人交易观察时点已变化");
         String tool = switch (draft.action()) {
             case "LIMIT" -> PersonalMarket.SUBMIT;
+            case "MARKET" -> {
+                if (!PersonalMarket.marketOrders(w.profile().manifest())) throw new IllegalArgumentException("当前档案未开放个人市价委托");
+                yield PersonalMarket.MARKET;
+            }
             case "CANCEL" -> PersonalMarket.CANCEL;
             default -> throw new IllegalArgumentException("未知交易动作");
         };
         long due = Math.addExact(observed, snap.decisions().orElseThrow().state().config().actionMillisByTool().get(tool));
         String receipt;
-        if (PersonalMarket.SUBMIT.equals(tool)) {
+        if (!PersonalMarket.CANCEL.equals(tool)) {
             if (view.market().stream().noneMatch(q -> q.symbol().equals(draft.symbol())))
                 throw new IllegalArgumentException("当前不可见的证券");
             receipt = w.scheduleOrder(command, task, due, account.ownerId(), account.accountId(), draft.symbol(),
-                    draft.side(), OrderType.LIMIT, draft.limitPrice(), draft.quantity(), null, who);
+                    draft.side(), OrderType.valueOf(draft.action()), draft.limitPrice(), draft.quantity(), null, who);
         } else {
             var order = PersonalMarket.ownOrders(exchange, account.accountId()).get(draft.orderRef());
             if (order == null || (!retry && !order.live())) throw new IllegalArgumentException("本人没有这笔活动委托");

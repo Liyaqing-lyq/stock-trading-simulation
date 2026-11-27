@@ -77,6 +77,14 @@ public final class CompanyOpeningDocuments {
             }
             if (ResourcePrimaryEquity.ISSUER.equals(company) && ResourcePrimaryEquity.VERSION.equals(data.get(ResourcePrimaryEquity.POLICY)))
                 body.append(ResourcePrimaryEquity.TERMS).append('\n');
+            if (RunManifest.ISSUER_DECISIONS_VERSION.equals(data.get(RunManifest.ISSUER_DECISIONS_POLICY))) {
+                if (world.engineeringDividendIssuer().filter(company::equals).isPresent()) {
+                    body.append("现金分红议题由本公司主席召集，董事可提交含每股金额、登记、除息和付款时点的方案。")
+                            .append("表决通过后由主席办理授权，付款取自公司自有账户。\n");
+                } else {
+                    body.append("本开局未启用本公司的现金分红议题。\n");
+                }
+            }
             TreeSet<String> candidates = new TreeSet<>(extraCandidates.getOrDefault(company, List.of()));
             body.append("章程席位：\n");
             for (BoardModel.Seat seat : charter.seats()) {

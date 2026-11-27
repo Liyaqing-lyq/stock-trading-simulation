@@ -62,6 +62,58 @@ class PersonalMarketTest {
         return w.autonomyRoleObservation(person).path("engineering").path("personalMarket").path("openOrders");
     }
 
+    @Test void personalMarketOrdersUseAvailableQuotesAndCancelUnfilledShares() throws Exception {
+        Path file = dir.resolve("market-orders.journal");
+        WorldRuntime.Snapshot settled;
+        try (var previous = ComposedIndustryScenario.openInterviewAutonomyTenCompanyStudy(dir.resolve("old.journal"));
+             var w = ComposedIndustryScenario.openIssuerDecisionsTenCompanyStudy(file)) {
+            assertFalse(tool(previous.autonomyRoleObservation("omar"), PersonalMarket.MARKET));
+            assertFalse(tool(w.autonomyRoleObservation("dave"), PersonalMarket.MARKET));
+            for (var person : List.of("omar", "nina", "investor"))
+                assertTrue(tool(w.autonomyRoleObservation(person), PersonalMarket.MARKET));
+            String stock = "CUFE-A";
+            var buy = JSON.createObjectNode().put("accountId", "HOUSE-OMAR").put("symbol", stock)
+                    .put("side", "BUY").put("quantity", 5);
+            var early = decide(w, "omar", "premarket", PersonalMarket.MARKET, buy);
+            w.advanceTo(early.dueMillis());
+            assertEquals("SESSION_CLOSED", feedback(w, "omar").path("reason").asText());
+            w.advanceTo(MarketSessions.OPEN);
+            var empty = decide(w, "omar", "empty", PersonalMarket.MARKET, buy);
+            w.advanceTo(empty.dueMillis());
+            assertEquals(WorldExchange.REASON_NO_LIQUIDITY, feedback(w, "omar").path("reason").asText());
+            assertNull(decide(w, "omar", "with-limit", PersonalMarket.MARKET, buy.deepCopy().put("limitPrice", "10.00")));
+            assertNull(decide(w, "omar", "other-owner", PersonalMarket.MARKET, buy.deepCopy().put("accountId", "HOUSE-NINA")));
+            assertTrue(exchange(w).orders().isEmpty());
+
+            BigDecimal buyer = cash(w, "HOUSE-OMAR");
+            BigDecimal nina = cash(w, "HOUSE-NINA");
+            BigDecimal investor = cash(w, "INV");
+            long beforeShares = shares(w, "HOUSE-OMAR", stock);
+            var first = decide(w, "nina", "ask-first", PersonalMarket.SUBMIT, limit("HOUSE-NINA", stock, "SELL", 1, "10.00"));
+            w.advanceTo(first.dueMillis());
+            var next = decide(w, "investor", "ask-second", PersonalMarket.SUBMIT, limit("INV", stock, "SELL", 2, "10.10"));
+            w.advanceTo(next.dueMillis());
+            var bid = decide(w, "omar", "immediate", PersonalMarket.MARKET, buy);
+            w.advanceTo(bid.dueMillis());
+            var result = feedback(w, "omar");
+            assertEquals("APPLIED", result.path("execution").asText());
+            assertEquals("CANCELLED", result.path("orderStatus").asText());
+            assertEquals(3, result.path("filled").asLong());
+            assertEquals(2, result.path("cancelledQuantity").asLong());
+            assertEquals(List.of(new BigDecimal("10.00"), new BigDecimal("10.10")),
+                    exchange(w).trades().stream().map(WorldExchange.Trade::price).toList());
+            assertEquals(buyer.subtract(new BigDecimal("30.20")), cash(w, "HOUSE-OMAR"));
+            assertEquals(nina.add(new BigDecimal("10.00")), cash(w, "HOUSE-NINA"));
+            assertEquals(investor.add(new BigDecimal("20.20")), cash(w, "INV"));
+            assertEquals(beforeShares + 3, shares(w, "HOUSE-OMAR", stock));
+            assertTrue(exchange(w).liveOrders().isEmpty());
+            settled = w.snapshot();
+        }
+        try (var w = ComposedIndustryScenario.openIssuerDecisionsTenCompanyStudy(file)) {
+            assertEquals(settled, w.snapshot());
+        }
+    }
+
     @Test void onlyExplicitNewArchiveGrantsTradingAndUsesFundedOpening() throws Exception {
         var oldFile=dir.resolve("v2.journal");
         try(var old=ComposedIndustryScenario.openFundedThinkingOperating(oldFile)) {

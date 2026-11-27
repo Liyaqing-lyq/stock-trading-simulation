@@ -160,6 +160,12 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     public static final String TOOL_INTERVIEW_SPEAK = "interview.speak";
     /** schema18b 董事工具。 */
     public static final String TOOL_BOARD_CONVENE = "board.convene";
+    /** 工程发行人主席召集现金分红议题。 */
+    public static final String TOOL_ISSUER_DIVIDEND_CONVENE = "issuer.dividend.convene";
+    /** 工程发行人董事提交现金分红方案。 */
+    public static final String TOOL_ISSUER_DIVIDEND_PROPOSE = "issuer.dividend.propose";
+    /** 工程发行人主席实施已通过的分红决议。 */
+    public static final String TOOL_ISSUER_DIVIDEND_AUTHORIZE = "issuer.dividend.authorize";
     public static final String TOOL_BOARD_ATTEND = "board.attend";
     public static final String TOOL_BOARD_MATERIAL = "board.addMaterial";
     public static final String TOOL_BOARD_VOTE = "board.vote";

@@ -962,6 +962,10 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                             new String[]{"side", "BUY|SELL"}, new String[]{"limitPrice", "decimal"},
                             new String[]{"quantity", "long"});
                 }
+                case PersonalMarket.MARKET -> {
+                    return List.of(new String[]{"accountId", "string"}, new String[]{"symbol", "string"},
+                            new String[]{"side", "BUY|SELL"}, new String[]{"quantity", "long"});
+                }
                 case PersonalMarket.CANCEL -> {
                     return List.of(new String[]{"accountId", "string"}, new String[]{"orderRef", "string"});
                 }
@@ -999,6 +1003,18 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                             new String[]{"basedOnVersion", "long"},
                             new String[]{"title", "string"}, new String[]{"body", "string"},
                             new String[]{"cites", "array"});
+                }
+                case RoleTradingView.TOOL_ISSUER_DIVIDEND_CONVENE -> {
+                    return List.of(new String[]{"companyPartyId","string"},new String[]{"meetingId","string"},
+                            new String[]{"materialDeadline","long"},new String[]{"opensAt","long"},new String[]{"closesAt","long"});
+                }
+                case RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE -> {
+                    return List.of(new String[]{"companyPartyId","string"},new String[]{"meetingId","string"},
+                            new String[]{"schemeId","string"},new String[]{"perShare","string"},
+                            new String[]{"recordAtMillis","long"},new String[]{"exAtMillis","long"},new String[]{"payAtMillis","long"});
+                }
+                case RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE -> {
+                    return List.of(new String[]{"companyPartyId","string"},new String[]{"meetingId","string"});
                 }
                 case RoleTradingView.TOOL_BOARD_CONVENE -> {
                     return List.of(new String[]{"companyPartyId", "string"},

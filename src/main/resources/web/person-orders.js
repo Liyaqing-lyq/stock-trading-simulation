@@ -63,11 +63,23 @@ globalThis.PersonOrders = (() => {
 
     const place = $("stock-place-limit");
     place.disabled = false;
+    const type = $("stock-order-type");
+    $("stock-order-type-field").hidden = !view.marketOrders;
+    if (!view.marketOrders) type.value = "LIMIT";
+    function showOrderType() {
+      const market = type.value === "MARKET";
+      $("stock-order-price-field").hidden = market;
+      $("stock-order-price").disabled = market;
+      place.textContent = market ? "提交市价委托" : "提交限价委托";
+    }
+    type.onchange = showOrderType;
+    showOrderType();
     form.onsubmit = event => {
       event.preventDefault();
-      void submit({action:"LIMIT", accountId:$("stock-order-account").value, symbol:$("stock-order-symbol").value,
-        side:$("stock-order-side").value, limitPrice:$("stock-order-price").value.trim(),
-        quantity:$("stock-order-quantity").value.trim()}, place);
+      const order = {action:type.value, accountId:$("stock-order-account").value, symbol:$("stock-order-symbol").value,
+        side:$("stock-order-side").value, quantity:$("stock-order-quantity").value.trim()};
+      if (order.action === "LIMIT") order.limitPrice = $("stock-order-price").value.trim();
+      void submit(order, place);
     };
     const open = $("stock-open-orders");
     open.replaceChildren();
@@ -89,8 +101,9 @@ globalThis.PersonOrders = (() => {
     receipts.replaceChildren();
     for (const row of view.receipts) {
       const tr = document.createElement("tr");
-      for (const value of [row.timeMillis, row.action === "LIMIT" ? "限价申报" : "撤销",
-        row.commandId, row.accepted ? "已受理" : "已拒绝", row.reason, row.orderRef, row.status,
+      const reason = row.cancelledQuantity ? row.reason + "（余 " + row.cancelledQuantity + " 股已撤销）" : row.reason;
+      for (const value of [row.timeMillis, {LIMIT:"限价申报", MARKET:"市价申报", CANCEL:"撤销"}[row.action],
+        row.commandId, row.accepted ? "已受理" : "已拒绝", reason, row.orderRef, row.status,
         row.filled, row.remaining]) cell(tr, value);
       receipts.appendChild(tr);
     }

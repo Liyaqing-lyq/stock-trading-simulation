@@ -163,6 +163,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String INTERVIEW_AUTONOMY_POLICY = "interview-autonomy";
     /** 在当前会话的读权、正工时与发言顺序内决定。 */
     public static final String INTERVIEW_AUTONOMY_VERSION = "active-session-turn-v1";
+    /** 在普通董事决定中提供章程允许的发行人现金分红。 */
+    public static final String ISSUER_DECISIONS_RUN_ID = "web-ten-company-autonomy-v13";
+    /** 董事自主办理发行人事项的政策键。 */
+    public static final String ISSUER_DECISIONS_POLICY = "issuer-decisions";
+    /** 工程发行人现金分红的角色决定政策。 */
+    public static final String ISSUER_DECISIONS_VERSION = "engineering-cash-dividend-v1";
     /** 本人已获显示资格的新闻排序口径。 */
     public static final String PERSONAL_NEWS_RANKING = "personal-news-ranking";
     /** 已读、兴趣和来源探索共同决定新闻展示次序。 */
@@ -248,14 +254,14 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 是否继承个人消息、有限水文与药企许可的开局规则 */
     public static boolean usesPersonalNewsOpening(String id) {
-        return PERSONAL_NEWS_RUN_ID.equals(id) || INTERVIEW_AUTONOMY_RUN_ID.equals(id);
+        return PERSONAL_NEWS_RUN_ID.equals(id) || INTERVIEW_AUTONOMY_RUN_ID.equals(id) || ISSUER_DECISIONS_RUN_ID.equals(id);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
@@ -298,8 +304,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 policies.put(PHARMA_LICENSING, APPROVED_USE_CONTRACT);
                 policies.put(HYDRO_INFLOW_PATH, FINITE_1080_DAYS);
             }
-            if (INTERVIEW_AUTONOMY_RUN_ID.equals(id))
+            if (INTERVIEW_AUTONOMY_RUN_ID.equals(id) || ISSUER_DECISIONS_RUN_ID.equals(id))
                 policies.put(INTERVIEW_AUTONOMY_POLICY, INTERVIEW_AUTONOMY_VERSION);
+            if (ISSUER_DECISIONS_RUN_ID.equals(id)) {
+                policies.put(ISSUER_DECISIONS_POLICY, ISSUER_DECISIONS_VERSION);
+                policies.put(PersonalMarket.MARKET_POLICY, PersonalMarket.MARKET_VERSION);
+            }
             return Map.copyOf(policies);
         }
         return STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)

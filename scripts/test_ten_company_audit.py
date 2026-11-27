@@ -3,7 +3,7 @@ import json
 import unittest
 from copy import deepcopy
 
-from audit_ten_company_run import OPENING_POLICIES, checked_opening, checked_reread
+from audit_ten_company_run import OPENING_POLICIES, checked_dividend, checked_opening, checked_reread
 
 
 class OpeningPolicyTest(unittest.TestCase):
@@ -52,6 +52,79 @@ class OpeningPolicyTest(unittest.TestCase):
                                   (run, {k: v for k, v in current.items() if k != "pharma-licensing"})):
             with self.subTest(run=version), self.assertRaises(ValueError):
                 checked_opening(self.frame(version, policies))
+
+    def test_v13_requires_both_issuer_decisions_and_personal_market_orders(self):
+        previous_run, run = "web-ten-company-autonomy-v12", "web-ten-company-autonomy-v13"
+        previous = OPENING_POLICIES[previous_run]
+        current = {**previous, "issuer-decisions": "engineering-cash-dividend-v1",
+                   "personal-market-orders": "immediate-unfilled-cancel-v1"}
+        self.assertEqual(OPENING_POLICIES[run], current)
+        checked_opening(self.frame(run, current))
+        for key in ("issuer-decisions", "personal-market-orders"):
+            for version, policies in ((previous_run, {**previous, key: current[key]}),
+                                      (run, {k: v for k, v in current.items() if k != key}),
+                                      (run, {**current, key: "unregistered"})):
+                with self.subTest(run=version, key=key), self.assertRaises(ValueError):
+                    checked_opening(self.frame(version, policies))
+        with self.assertRaises(ValueError):
+            checked_opening(self.frame(run, {k: v for k, v in current.items() if k != "interview-autonomy"}))
+
+
+class DividendEvidenceTest(unittest.TestCase):
+    def test_registration_booking_and_cash_legs_are_separate(self):
+        before = {"issuer": 10, "a": 2, "b": 0}
+        after = {"issuer": 4, "a": 6, "b": 2}
+        rights = [{"accountId": "a", "quantity": 2, "face": 4}, {"accountId": "b", "quantity": 1, "face": 2}]
+        terms = {"phase": "REGISTERED", "symbol": "ENG", "perShare": 2, "companyAccountId": "issuer",
+                 "recordAtMillis": 100, "exAtMillis": 200}
+        book = {"schemes": {"s": terms}, "claims": {}, "payments": [],
+                "snapshots": {"s": {"schemeId": "s", "recordAtMillis": 100, "entries": rights,
+                                     "totalQuantity": 3, "totalAmount": 6}}}
+
+        def frame(kind, now, *, accepted=True, proof=None):
+            task = json.dumps({"commandId": "cmd", "schemeId": "s", "meetingId": ""})
+            report = {"taskId": "t", "kind": kind, "commandId": "cmd", "meetingId": "", "position": 19,
+                      "atMillis": now, "schemeId": "s", "accepted": accepted, "reason": "OK" if accepted else "INSUFFICIENT_CASH"}
+            events = [{"eventId": "task-completed:t", "type": "TASK_COMPLETED_V1", "payload": task},
+                      {"eventId": "dividend-report:t", "type": "DIVIDEND_REPORT_V1", "payload": json.dumps(report)}]
+            if proof is not None:
+                events.append({"eventId": "dividend-cash:s", "type": "DIVIDEND_CASH_PAYMENT_V1", "payload": json.dumps(proof)})
+            return {"position": 19, "commandContent": task, "result": "ACCEPTED" if accepted else "REJECTED", "events": events}
+
+        registration = frame("DIVIDEND_REGISTER_V1",100)
+        registered = checked_dividend(registration,100,book,before,before,"ENG")
+        self.assertEqual(registered["registeredFace"],6)
+        self.assertNotIn("receivablesBooked",registered)
+        self.assertNotIn("cashPaid",registered)
+        book["claims"] = {r["accountId"]: {**r,"schemeId": "s", "paid": 0} for r in rights}
+        with self.assertRaises(ValueError):
+            checked_dividend(registration,100,book,before,before,"ENG")
+        terms["phase"] = "EX_BOOKED"
+        booked = checked_dividend(frame("DIVIDEND_BOOK_EX_V1",200),200,book,before,before,"ENG")
+        self.assertEqual(booked["receivablesBooked"],6)
+        self.assertNotIn("cashPaid",booked)
+        insufficient = frame("DIVIDEND_SETTLE_V1",300,accepted=False)
+        failed = checked_dividend(insufficient,300,book,before,before,"ENG")
+        self.assertEqual((failed["stage"],failed["attemptedStage"]),("REJECTED","SETTLED"))
+        self.assertEqual(failed["holderFaceStillUnpaid"],6)
+        self.assertNotIn("cashPaid",failed)
+        with self.assertRaises(ValueError):
+            checked_dividend(insufficient,300,book,before,after,"ENG")
+
+        terms["phase"] = "SETTLED"
+        for claim in book["claims"].values():
+            claim["paid"] = claim["face"]
+        book["payments"] = [{"schemeId": "s", "position": 19, "atMillis": 300, "cashEvidenceId": "dividend-cash:s",
+                             "perClaim": {"a": 4, "b": 2}, "amount": 6}]
+        proof = {"schemeId": "s", "companyAccountId": "issuer", "total": 6,
+                 "legs": [{"claimId": r["accountId"], "accountId": r["accountId"], "amount": r["face"]} for r in rights]}
+        paid = frame("DIVIDEND_SETTLE_V1",300,proof=proof)
+        self.assertEqual(checked_dividend(paid,300,book,before,after,"ENG")["cashPaid"],6)
+        with self.assertRaises(ValueError):
+            checked_dividend(paid,300,book,before,{"issuer":4,"a":4,"b":4},"ENG")
+        for wrong in (None, {**proof,"companyAccountId":"b"}, {**proof,"legs":proof["legs"][:1]}):
+            with self.subTest(proof=wrong), self.assertRaises(ValueError):
+                checked_dividend(frame("DIVIDEND_SETTLE_V1",300,proof=wrong),300,book,before,after,"ENG")
 
 
 class RepeatedReadingTest(unittest.TestCase):

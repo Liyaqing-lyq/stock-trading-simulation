@@ -33,18 +33,21 @@ PERSONAL_NEWS_POLICIES = {**FEEDBACK_POLICIES, "personal-news-ranking": "visible
                           "media-subscriptions": "consented-interview-delivery-v1", "cross-border-editing": "dual-clock-editing-v1",
                           "pharma-licensing": "approved-use-contract-v1", "hydro-inflow-path": "finite-1080d-v1"}
 INTERVIEW_AUTONOMY_POLICIES = {**PERSONAL_NEWS_POLICIES, "interview-autonomy": "active-session-turn-v1"}
+ISSUER_DECISIONS_POLICIES = {**INTERVIEW_AUTONOMY_POLICIES, "issuer-decisions": "engineering-cash-dividend-v1",
+                            "personal-market-orders": "immediate-unfilled-cancel-v1"}
 OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
                     "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES,
                     "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES,
                     "web-ten-company-autonomy-v8": MEETING_POLICIES, "web-ten-company-autonomy-v9": DIGITAL_POLICIES,
                     "web-ten-company-autonomy-v10": FEEDBACK_POLICIES,
                     "web-ten-company-autonomy-v11": PERSONAL_NEWS_POLICIES,
-                    "web-ten-company-autonomy-v12": INTERVIEW_AUTONOMY_POLICIES}
+                    "web-ten-company-autonomy-v12": INTERVIEW_AUTONOMY_POLICIES,
+                    "web-ten-company-autonomy-v13": ISSUER_DECISIONS_POLICIES}
 
 
 def check_policies(run_id, data_versions):
     expected = OPENING_POLICIES[run_id]
-    actual = {k: data_versions[k] for k in INTERVIEW_AUTONOMY_POLICIES if k in data_versions}
+    actual = {k: data_versions[k] for k in ISSUER_DECISIONS_POLICIES if k in data_versions}
     if data_versions.get("branch-profile-run") != run_id or actual != expected:
         raise ValueError("原生开局声明的政策与该版运行身份不符")
 
@@ -215,6 +218,124 @@ def checked_reread(frame, raw, observed, now, read_ids):
     return True
 
 
+DIVIDEND_STAGES = {
+    "GOVERNANCE_DIVIDEND_PROPOSAL_V1": "PROPOSED", "GOVERNANCE_DIVIDEND_IMPLEMENT_V1": "AUTHORIZED",
+    "DIVIDEND_REGISTER_V1": "REGISTERED", "DIVIDEND_BOOK_EX_V1": "EX_BOOKED",
+    "DIVIDEND_SETTLE_V1": "SETTLED", "DIVIDEND_IMPAIR_V1": "IMPAIRMENT"
+}
+
+
+def dividend_board_receipt(frame, now, meetings):
+    for event in frame["events"]:
+        if event["type"] != "ENGINEERING_REPORT_V1":
+            continue
+        report = decode(event["payload"])
+        if report["companyPartyId"] != "eng-a" or report["kind"] != "ENGINEERING_BOARD_V1":
+            continue
+        task = decode(frame["commandContent"])
+        meeting, action = task["meetingId"], task["action"]
+        if action == "CONVENE_DIVIDEND":
+            if report["accepted"]:
+                meetings.add(meeting)
+        elif meeting not in meetings or action not in ("VOTE", "CLOSE"):
+            continue
+        if ((report["commandId"], report["timeMillis"],report["position"]) != (task["commandId"],now,frame["position"])
+                or task["companyPartyId"] != "eng-a" or frame["result"] != ("ACCEPTED" if report["accepted"] else "REJECTED")
+                or [e["payload"] for e in frame["events"] if e["type"] == "TASK_COMPLETED_V1"
+                    and e["eventId"] == "task-completed:" + report["taskId"]] != [frame["commandContent"]]):
+            raise ValueError("分红会议、表决任务或时点与业务回执不符")
+        return {"issuer":"eng-a","stage":"BOARD_"+action,"meetingId":meeting,
+                "personPartyId":task["personPartyId"],"seatId":task["seatId"],"vote":task["vote"],**report}
+    return None
+
+
+def checked_dividend(frame, now, book, previous_cash, cash, issuer_symbol):
+    rows = [e for e in frame["events"] if e["type"] == "DIVIDEND_REPORT_V1"]
+    proofs = [e for e in frame["events"] if e["type"] == "DIVIDEND_CASH_PAYMENT_V1"]
+    if not rows and not proofs:
+        return None
+    if len(rows) != 1:
+        raise ValueError("分红实付或业务回执缺少唯一的分红任务")
+    report = decode(rows[0]["payload"])
+    stage = DIVIDEND_STAGES[report["kind"]]
+    scheme = report["schemeId"]
+    task_payloads = [e["payload"] for e in frame["events"] if e["type"] == "TASK_COMPLETED_V1"
+                     and e["eventId"] == "task-completed:" + report["taskId"]]
+    if (task_payloads != [frame["commandContent"]] or rows[0]["eventId"] != "dividend-report:" + report["taskId"]
+            or (report["position"], report["atMillis"]) != (frame["position"], now)):
+        raise ValueError("分红回执与已完成的任务、位置或时点不同")
+    task = decode(task_payloads[0])
+    if (task["commandId"] != report["commandId"] or task["meetingId"] != report["meetingId"]
+            or (stage not in ("AUTHORIZED","IMPAIRMENT") and task["schemeId"] != scheme)):
+        raise ValueError("分红决议、任务和方案标识不符")
+    accepted = report["accepted"]
+    if (frame["result"] != ("AUTHORIZED" if accepted and stage == "AUTHORIZED" else "ACCEPTED" if accepted else "REJECTED")
+            or len(proofs) != int(accepted and stage == "SETTLED")):
+        raise ValueError("分红结算标记与现金凭证数不符")
+    row = {"issuer": "eng-a", "stage": stage, **report}
+    if task.get("seatId") and stage in ("PROPOSED", "AUTHORIZED"):
+        row["seatId"] = task["seatId"]
+    if not proofs and cash != previous_cash:
+        raise ValueError("未付款的分红任务发生现金变动")
+    if not accepted:
+        row.update(stage="REJECTED", attemptedStage=stage)
+        if stage == "SETTLED" and scheme in book["schemes"]:
+            row["holderFaceStillUnpaid"] = sum(c["face"]-c["paid"] for c in book["claims"].values() if c["schemeId"]==scheme)
+        return row
+    terms = book["schemes"][scheme]
+    if (terms["symbol"] != issuer_symbol or terms["companyAccountId"] not in cash
+            or stage != "IMPAIRMENT" and terms["phase"] != stage):
+        raise ValueError("发行证券或确认后的分红方案阶段不同")
+    row.update(symbol=issuer_symbol, perShare=terms["perShare"], payerAccount=terms["companyAccountId"])
+    if stage == "AUTHORIZED":
+        row["authorizationRef"] = terms["authorizationRef"]
+        if not row["authorizationRef"]:
+            raise ValueError("已授权分红缺少实际决议引用")
+    if stage not in ("REGISTERED", "EX_BOOKED", "SETTLED"):
+        return row
+    rights = book["snapshots"][scheme]
+    entries = {r["accountId"]: r for r in rights["entries"]}
+    if (rights["schemeId"] != scheme or rights["recordAtMillis"] != terms["recordAtMillis"]
+            or len(entries) != len(rights["entries"]) or sum(r["quantity"] for r in entries.values()) != rights["totalQuantity"]
+            or sum(r["face"] for r in entries.values()) != rights["totalAmount"]
+            or any(r["quantity"] <= 0 or r["face"] != r["quantity"] * terms["perShare"] for r in entries.values())):
+        raise ValueError("登记股数、固定权利面额或登记时点不同")
+    claims = {k:c for k,c in book["claims"].items() if c["schemeId"] == scheme}
+    if stage == "REGISTERED":
+        if now != rights["recordAtMillis"] or claims:
+            raise ValueError("登记时点错误或登记已提前确认股利应收")
+        return {**row, "registeredShares": rights["totalQuantity"], "registeredFace": rights["totalAmount"],
+                "registeredAccounts": rights["entries"]}
+    if (len(claims) != len(entries)
+            or {c["accountId"]:(c["quantity"],c["face"]) for c in claims.values()}
+            != {k:(r["quantity"],r["face"]) for k,r in entries.items()}):
+        raise ValueError("逐户股利债权与登记权利不符")
+    if stage == "EX_BOOKED":
+        if now != terms["exAtMillis"] or any(c["paid"] for c in claims.values()):
+            raise ValueError("除息时点错误或应收已被提前付现")
+        return {**row, "receivablesBooked": rights["totalAmount"], "claims": list(claims.values())}
+    cash_event, = proofs
+    proof = decode(cash_event["payload"])
+    payments = [p for p in book["payments"] if p["schemeId"] == scheme and p["position"] == frame["position"]]
+    expected = {k:c["face"] for k,c in claims.items()}
+    legs = proof["legs"]
+    if (len(payments) != 1 or cash_event["eventId"] != "dividend-cash:" + scheme
+            or payments[0]["cashEvidenceId"] != cash_event["eventId"]
+            or payments[0]["atMillis"] != now or payments[0]["perClaim"] != expected
+            or proof["schemeId"] != scheme or proof["companyAccountId"] != terms["companyAccountId"]
+            or payments[0]["amount"] != rights["totalAmount"] or proof["total"] != payments[0]["amount"]
+            or len(legs) != len(claims) or {s["claimId"]:s["amount"] for s in legs} != expected
+            or any(s["accountId"] != claims[s["claimId"]]["accountId"] or s["accountId"] not in cash for s in legs)
+            or any(c["paid"] != c["face"] for c in claims.values())):
+        raise ValueError("分红实付凭证与债权、收款账户或结清记录不同")
+    changes = Counter({terms["companyAccountId"]: -proof["total"]})
+    for leg in legs:
+        changes[leg["accountId"]] += leg["amount"]
+    if set(cash) != set(previous_cash) or any(cash[k] - previous_cash[k] != changes[k] for k in cash):
+        raise ValueError("分红实付与发行人及逐户现金腿不同")
+    return {**row, "cashPaid": proof["total"], "recipients": legs}
+
+
 def audit(source, target_days=None):
     if target_days is not None and target_days < 0:
         raise ValueError("目标实验日不能为负")
@@ -227,6 +348,8 @@ def audit(source, target_days=None):
     read_ids = {}
     confirmed_trade_ids, filled_by_order = set(), Counter()
     orders, symbols = [], []
+    dividends, issuer_symbol = None, None
+    dividend_meetings = set()
     for frame in checked_frames(source, file_digest):
         position = frame["position"]
         events = frame["events"]
@@ -236,7 +359,7 @@ def audit(source, target_days=None):
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
         if run_id not in OPENING_POLICIES or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2 至 v12 紧凑日志")
+            raise ValueError("此脚本仅复算标准十公司 v2 至 v13 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")
@@ -250,10 +373,15 @@ def audit(source, target_days=None):
             if patch["value"]["runId"] != run_id:
                 raise ValueError("开局清单、状态与普通十公司运行身份不符")
             state = {name: patch["value"][name] for name in FIELDS}
+            if "issuer-decisions" in OPENING_POLICIES[run_id]:
+                dividends = patch["value"]["dividends"]
+                issuer_symbol, = [s["symbol"] for s in registries[0]["securities"] if s["issuerOrganizationId"] == "eng-a"]
         else:
             for name in FIELDS:
                 if name in patch["changes"]:
                     state[name] = patch_field(state[name], patch["changes"][name])
+            if dividends is not None and "dividends" in patch["changes"]:
+                dividends = patch_field(dividends, patch["changes"]["dividends"])
         now = state["timeMillis"]
         if now < prior_time:
             raise ValueError("世界时钟倒退")
@@ -341,6 +469,19 @@ def audit(source, target_days=None):
             if ledger_fills != filled_by_order:
                 raise ValueError("按买卖原单累计的成交数量与订单账不符")
         cash = {key: account["cash"] for key, account in state["accounts"].items()}
+        if dividends is not None:
+            entries = row.setdefault("issuerDividendReceipts", [])
+            board_receipt = dividend_board_receipt(frame, now, dividend_meetings)
+            if board_receipt is not None:
+                entries.append(board_receipt)
+            receipt = checked_dividend(frame, now, dividends, previous_cash, cash, issuer_symbol)
+            if position > 1 and "dividends" in patch["changes"] and (receipt is None or not receipt["accepted"]):
+                raise ValueError("分红账有变但缺少同帧已接受任务")
+            totals = row.setdefault("issuerDividendTotals", dict.fromkeys(("registeredFace","receivablesBooked","cashPaid"),0))
+            if receipt is not None:
+                entries.append(receipt)
+                for metric in totals:
+                    totals[metric] += receipt.get(metric,0)
         for account, net in capital_legs.items():
             if cash[account] - previous_cash[account] != net:
                 raise ValueError("资本实缴事件与同一帧的账户资金增减不符")

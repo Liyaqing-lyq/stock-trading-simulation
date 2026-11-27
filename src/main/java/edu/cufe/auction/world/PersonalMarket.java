@@ -20,9 +20,19 @@ public final class PersonalMarket {
     /** 本人限价报单与本人现存挂单撤销。 */
     public static final String SUBMIT = "personal.order.limit", CANCEL = "personal.order.cancel";
 
+    /** 普通个人在成交簿上使用实验市价单的工具。 */
+    public static final String MARKET = "personal.order.market";
+    /** 即时撮合、未成交余量撤销的版本。 */
+    public static final String MARKET_POLICY = "personal-market-orders", MARKET_VERSION = "immediate-unfilled-cancel-v1";
+
+    static boolean marketOrders(RunManifest manifest) {
+        return MARKET_VERSION.equals(manifest.dataVersions().get(MARKET_POLICY));
+    }
+
     private PersonalMarket() { }
 
     record Submit(String accountId, String symbol, Side side, BigDecimal limitPrice, long quantity) { }
+    record MarketSubmit(String accountId, String symbol, Side side, long quantity) { }
     record Cancel(String accountId, String orderRef) { }
 
     static List<String> accounts(RoleRun roles, String person) {
@@ -51,7 +61,7 @@ public final class PersonalMarket {
     }
 
     static boolean matches(DecisionRun.ActionRef ref, WorldExchange.OrderReport report, long position) {
-        String kind = SUBMIT.equals(ref.tool()) ? PendingTask.EXCHANGE_ORDER_V1
+        String kind = SUBMIT.equals(ref.tool()) || MARKET.equals(ref.tool()) ? PendingTask.EXCHANGE_ORDER_V1
                 : CANCEL.equals(ref.tool()) ? PendingTask.EXCHANGE_CANCEL_V1 : null;
         return kind != null && report != null && report.taskId().equals(ref.taskId())
                 && report.commandId().equals(DecisionRun.actionCommandId(ref.actionId())) && kind.equals(report.kind())

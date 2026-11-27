@@ -77,12 +77,15 @@ class PersonalOrderHttpTest {
         }
     }
 
-    @Test void twoOwnersTradeAtTheRestingPriceAndCancelOnlyTheRemainingOwnShares() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void twoOwnersTradeAtTheRestingPriceAndCancelOnlyTheRemainingOwnShares(boolean marketOrder) throws Exception {
         Path file=dir.resolve("parent.journal"), keyFile=dir.resolve("keys.txt");
         Files.writeString(keyFile,"sk-order-fixture-001\nsk-order-fixture-002\nsk-order-fixture-003\nsk-order-fixture-004\nsk-order-fixture-005");
         String childId="manual-personal-orders"; String symbol; BigDecimal price;
         BranchProfile profile; BigDecimal sellerCash,buyerCash;
-        try(var w=ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(file)) {
+        try(var w = marketOrder ? ComposedIndustryScenario.openIssuerDecisionsTenCompanyStudy(file)
+                : ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(file)) {
             w.advanceTo(34_200_000L);
             var seller=w.roleView("investor");
             symbol=seller.holdings().stream().filter(h->h.available()>=4).findFirst().orElseThrow().symbol();
@@ -113,14 +116,29 @@ class PersonalOrderHttpTest {
             assertEquals("4",standing.required("remaining").asText());
             as("nina"); assertTrue(page().required("openOrders").isEmpty());
             assertEquals(400,post(PATH,command("CANCEL","HOUSE-NINA","forged").put("orderRef",ref).toString()).statusCode());
-            apply(host,command("LIMIT","HOUSE-NINA","buyer-bid").put("symbol",symbol).put("side","BUY")
-                    .put("limitPrice",price.add(new BigDecimal("0.01")).toPlainString()).put("quantity","2"));
+            assertEquals(marketOrder, page().path("marketOrders").asBoolean());
+            var marketBid = command("MARKET", "HOUSE-NINA", "buyer-bid").put("symbol", symbol).put("side", "BUY").put("quantity", "2");
+            assertEquals(400, post(PATH, marketBid.deepCopy().put("limitPrice", price.toPlainString()).toString()).statusCode());
+            if (marketOrder) {
+                apply(host, marketBid);
+                assertEquals("MARKET", page().at("/receipts/0/action").asText());
+            } else {
+                assertEquals(400, post(PATH, marketBid.toString()).statusCode());
+                apply(host, command("LIMIT", "HOUSE-NINA", "buyer-bid").put("symbol", symbol).put("side", "BUY")
+                        .put("limitPrice", price.add(new BigDecimal("0.01")).toPlainString()).put("quantity", "2"));
+            }
             assertEquals("FILLED",page().at("/receipts/0/status").asText());
             assertFalse(page().toString().contains("seller-offer"));
             as("investor");
             assertEquals("2",page().at("/openOrders/0/remaining").asText());
             apply(host,command("CANCEL","INV","cancel-balance").put("orderRef",ref));
             assertTrue(page().required("openOrders").isEmpty());assertEquals("CANCELLED",page().at("/receipts/0/status").asText());
+            if (marketOrder) {
+                var noSeller = command("MARKET", "INV", "empty-book").put("symbol", symbol).put("side", "BUY").put("quantity", "1");
+                apply(host, noSeller);
+                assertEquals("MARKET", page().at("/receipts/0/action").asText());
+                assertEquals(WorldExchange.REASON_NO_LIQUIDITY, page().at("/receipts/0/reason").asText());
+            }
             var bad=command("LIMIT","INV","too-many").put("symbol",symbol).put("side","SELL")
                     .put("limitPrice",price.toPlainString()).put("quantity","1000000");
             apply(host,bad);
