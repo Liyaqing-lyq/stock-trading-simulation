@@ -84,8 +84,14 @@ final class HistoricalInformationCache {
     /** 释放全部可丢弃投影；不影响任何权威世界状态。 */
     void clear() { entries.clear(); bytes = 0; }
 
+    /** 同一确认源已核验的精确目标身份；未保留时调用方须从原历史取得依据。 */
+    byte[] confirmedFingerprint(Object sourceIdentity, String runId, long position) {
+        Entry entry = entries.get(new Key(sourceIdentity, runId, position));
+        return entry == null ? null : entry.commitDigest().clone();
+    }
+
     /** 完整批次身份：固定宽度数值与带长度的 UTF-16 原文，无分隔歧义，事件保持原顺序。 */
-    private static byte[] fingerprint(WorldCommit commit) throws IOException {
+    static byte[] fingerprint(WorldCommit commit) throws IOException {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             DataOutputStream out = new DataOutputStream(new DigestOutputStream(OutputStream.nullOutputStream(), digest));

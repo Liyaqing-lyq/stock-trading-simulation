@@ -33,6 +33,7 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -334,6 +335,13 @@ public final class WorldRuntime implements AutoCloseable {
      * 自有日志，父前缀由 {@link #verifyPrefix} 用同一校验链单独核对。</p>
      */
     private final CommitSource commitSource;
+    /** 已确认历史帧内的固定文档可见性，只保留查询事实，不持有整帧。 */
+    private final Map<MaterialObservation, MaterialFact> materialObservations = new HashMap<>();
+    private record MaterialObservation(long position, long time, String person, String document, long version) {}
+    private record MaterialFact(byte[] fingerprint, boolean visible) {}
+    /** 各董事最近一次已核对的目录只作明确版本的正证；旧版本仍可从当时的完整状态核验。 */
+    private final Map<String, MaterialCatalog> latestMaterialCatalogs = new HashMap<>();
+    private record MaterialCatalog(String actionId, long position, long time, byte[] fingerprint, Map<String, Long> versions) {}
     private WorldJournal heldSeal;
     /** 分支来源；普通运行为 null。 */
     private final BranchOrigin branchOrigin;
@@ -9599,11 +9607,9 @@ public final class WorldRuntime implements AutoCloseable {
                     if (materialId == null || sourceRef == null || version < 1) {
                         return EngineeringPlanned.rejected("INVALID_ARGUMENT");
                     }
-                    if (requiresPublishedBoardMaterial()) {
-                        WorldState cutoff = frameWithin(recorded.cutoffPosition(), base.position());
-                        if (cutoff == null || !visibleDocumentVersion(cutoff, person, sourceRef, version, recorded.cutoffTimeMillis())) {
-                            return EngineeringPlanned.rejected("MATERIAL_SOURCE_UNAVAILABLE");
-                        }
+                    if (requiresPublishedBoardMaterial() && !materialVisibleAt(recorded.cutoffPosition(),
+                            base.position(), person, sourceRef, version, recorded.cutoffTimeMillis(), recorded.actionId())) {
+                        return EngineeringPlanned.rejected("MATERIAL_SOURCE_UNAVAILABLE");
                     }
                 }
                 case RoleTradingView.TOOL_BOARD_VOTE -> {
@@ -10930,6 +10936,17 @@ public final class WorldRuntime implements AutoCloseable {
         regenerated = historicalDecisionInput(regenerated, decision.inputText(), decision.cutoffPosition());
         if (!regenerated.equals(decision.inputText())) {
             throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());
+        }
+        if (previous.position() == verifiedInformationPosition && requiresPublishedBoardMaterial()
+                && tools.contains(RoleTradingView.TOOL_BOARD_MATERIAL)) {
+            byte[] identity = historicalInformationCache.confirmedFingerprint(historicalInformationSource,
+                    previous.runId(), previous.position());
+            if (identity != null) {
+                Map<String, Long> versions = new HashMap<>();
+                for (var entry : view.profile().catalog()) versions.put(entry.docId(), entry.version());
+                latestMaterialCatalogs.put(decision.personPartyId(), new MaterialCatalog(decision.actionId(),
+                        previous.position(), previous.timeMillis(), identity, versions));
+            }
         }
     }
 
@@ -14447,6 +14464,52 @@ public final class WorldRuntime implements AutoCloseable {
     private boolean visibleDocumentVersion(WorldState source, String person, String docId, long version, long at) {
         return InformationModel.visibleVersion(source.information().information(), source.roles().access(),
                 person, docId, version, at, groupAccess(source), roleBoards(source)) != null;
+    }
+
+    private boolean materialVisibleAt(long position, long maxPosition, String person, String docId,
+                                      long version, long at, String actionId) throws IOException {
+        if (position <= 0 || position > maxPosition) return false;
+        // 仍向本实例的确认源核对目标帧；已读过的材料不再迫使差量游标回到开局。
+        WorldCommit target = commitSource.commitAt(position).orElse(null);
+        if (target == null || target.position() != position) return false;
+        var key = new MaterialObservation(position, at, person, docId, version);
+        boolean verified = position <= verifiedInformationPosition;
+        byte[] identity = verified ? HistoricalInformationCache.fingerprint(target) : null;
+        byte[] confirmed = null;
+        if (verified) {
+            MaterialFact known = materialObservations.get(key);
+            if (known != null) {
+                if (!MessageDigest.isEqual(identity, known.fingerprint())) throw new IOException("已确认的议案观察帧发生变化");
+                return known.visible();
+            }
+            MaterialCatalog catalog = latestMaterialCatalogs.get(person);
+            // 决定开局本身也必须已确认，尚待写入或失败的候选开局不能作正证。
+            if (catalog != null && position < verifiedInformationPosition && position == catalog.position()
+                    && at == catalog.time() && actionId.equals(catalog.actionId())) {
+                if (!MessageDigest.isEqual(identity, catalog.fingerprint())) throw new IOException("已确认的议案观察帧发生变化");
+                if (Objects.equals(catalog.versions().get(docId), version)) {
+                    materialObservations.put(key, new MaterialFact(identity, true));
+                    return true;
+                }
+                confirmed = catalog.fingerprint();
+            }
+            if (confirmed == null) confirmed = historicalInformationCache.confirmedFingerprint(
+                    historicalInformationSource, target.runId(), position);
+        }
+        if (confirmed == null || !MessageDigest.isEqual(confirmed, identity)) {
+            // 数字前沿不是目标身份。对未保留或已变的目标照常读原史，不留下权限证据或游标。
+            WorldState saved = deltaReadCursor;
+            try {
+                deltaReadCursor = null;
+                return visibleDocumentVersion(decodeSnapshot(target), person, docId, version, at);
+            } finally {
+                deltaReadCursor = saved;
+            }
+        }
+        if (deltaReadCursor != null && deltaReadCursor.position() == position) deltaReadCursor = null;
+        boolean visible = visibleDocumentVersion(decodeSnapshot(target), person, docId, version, at);
+        materialObservations.put(key, new MaterialFact(identity, visible));
+        return visible;
     }
 
     private static String personOfSeat(BoardModel.Charter charter, String seatId) {
@@ -29914,6 +29977,8 @@ public final class WorldRuntime implements AutoCloseable {
                         == RoleAccess.Decision.ALLOW;
                 for (MediaModel.StoryView view : MediaModel.view(mediaState, access, information,
                         person, now)) {
+                    boolean awaitingSubmission = view.draftVersion() == 0 && RunManifest.SUBMITTED_DOCUMENT.equals(
+                            manifest.dataVersions().get(RunManifest.EDITORIAL_DRAFT_VISIBILITY));
                     mediaStories.add(new RoleTradingView.MediaStory(view.storyId(),
                             view.template().name(), view.status().name(), view.revisionNo(),
                             view.topic(), view.authorPartyId(),
@@ -29921,7 +29986,7 @@ public final class WorldRuntime implements AutoCloseable {
                             canReview && view.status() == MediaModel.Status.SUBMITTED,
                             canPublish && view.status() == MediaModel.Status.APPROVED,
                             view.sourceGroups(), view.updatedAtMillis(),
-                            view.draftDocId(), view.draftVersion(), view.publicDocId(),
+                            awaitingSubmission ? null : view.draftDocId(), awaitingSubmission ? null : view.draftVersion(), view.publicDocId(),
                             view.publicVersion()));
                 }
             }
@@ -30652,7 +30717,10 @@ public final class WorldRuntime implements AutoCloseable {
                 String templateGuide = RunManifest.OFFICE_TEMPLATE_KEYS.equals(manifest.dataVersions().get(RunManifest.EDITORIAL_TEMPLATE_GUIDE))
                         ? "提出选题时，media.story.propose 的 template 填本岗位目标 minimumIndependentSources 中的一个键。键是本岗位启用的模板名，数值是该模板所需的最低独立来源数。"
                         : "选题使用本岗位启用的模板名。";
-                root.put("editorialProcedure", templateGuide + "后续使用media内的storyId与revisionNo。投稿的evidence使用本人已读且仍能引用的lastReadRef，同源转载共算一组。审阅须先读完当前draftDocId及其版本，批准后才可发布。");
+                String reviewGuide = RunManifest.SUBMITTED_DOCUMENT.equals(manifest.dataVersions().get(RunManifest.EDITORIAL_DRAFT_VISIBILITY))
+                        ? "待投稿（AWAITING_SUBMISSION）的选题尚无可读内稿。投稿完成后才出现draftDocId及draftVersion；审阅须先读完该版内稿，批准后才可发布。"
+                        : "审阅须先读完当前draftDocId及其版本，批准后才可发布。";
+                root.put("editorialProcedure", templateGuide + "后续使用media内的storyId与revisionNo。投稿的evidence使用本人已读且仍能引用的lastReadRef，同源转载共算一组。" + reviewGuide);
             }
         }
         if (hasOpenFund()) {

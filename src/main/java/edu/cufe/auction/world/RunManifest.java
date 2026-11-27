@@ -139,6 +139,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String STUDY_TEN_COMPANY_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v3";
     /** 第四版普通十公司开局，可按各行业凭据考核当期经理。 */
     public static final String GOVERNANCE_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v4";
+    /** 第五版普通档只在编辑部实际收到内稿后提供文档标识与版次。 */
+    public static final String READABLE_DRAFT_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v5";
+    /** 本人可见的编辑部内稿阅读入口口径。 */
+    public static final String EDITORIAL_DRAFT_VISIBILITY = "editorial-draft-visibility";
+    /** 只有实际生成的内稿版本才有阅读入口。 */
+    public static final String SUBMITTED_DOCUMENT = "submitted-document-v1";
     /** 冻结资料阅读计时口径的数据版本键。 */
     public static final String DOCUMENT_READING_CLOCK = "document-reading-clock";
     /** 第三版普通十公司冻结的正文阅读速度版本。 */
@@ -154,9 +160,13 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的阅读、采编与期末考核口径 */
     public static Map<String, String> tenCompanyStudyPolicies(String id) {
-        if (GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id)) {
-            return Map.of(DOCUMENT_READING_CLOCK, BODY_PACING_300, EDITORIAL_TEMPLATE_GUIDE, OFFICE_TEMPLATE_KEYS,
-                    ISSUER_PERIOD_METRICS, OPERATING_PERIOD_EVIDENCE);
+        if (GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)) {
+            var policies = new java.util.TreeMap<>(Map.of(DOCUMENT_READING_CLOCK, BODY_PACING_300,
+                    EDITORIAL_TEMPLATE_GUIDE, OFFICE_TEMPLATE_KEYS, ISSUER_PERIOD_METRICS, OPERATING_PERIOD_EVIDENCE));
+            if (READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)) {
+                policies.put(EDITORIAL_DRAFT_VISIBILITY, SUBMITTED_DOCUMENT);
+            }
+            return Map.copyOf(policies);
         }
         return STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
                 ? Map.of(DOCUMENT_READING_CLOCK, BODY_PACING_300) : Map.of();
@@ -179,7 +189,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** @return 是否采用第二版十公司开局及其显式衍生实验 */
     public static boolean usesCurrentTenCompany(String id) {
         return TEN_COMPANY_AUTONOMY_RUN_ID.equals(id) || STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
-                || GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id)
+                || GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
                 || OPEN_FUND_RUN_ID.equals(id)
                 || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
     }

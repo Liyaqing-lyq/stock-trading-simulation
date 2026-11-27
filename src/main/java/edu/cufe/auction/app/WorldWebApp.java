@@ -180,7 +180,7 @@ public final class WorldWebApp {
                     var runtime=sessionsMode ? ComposedIndustryScenario.openMarketSessionsOperating(workDir.resolve("world-market-sessions-operating-v1.journal"))
                             : manufacturingUpgradeMode ? ComposedIndustryScenario.openManufacturingUpgradeOperating(workDir.resolve("world-manufacturing-upgrade-v1.journal"))
                             : openFundMode ? ComposedIndustryScenario.openOpenFundOperating(workDir.resolve("world-open-fund-v1.journal"))
-                            : tenCompanyMode ? ComposedIndustryScenario.openCurrentTenCompanyStudy(tenCompanyJournal(workDir))
+                            : tenCompanyMode ? ComposedIndustryScenario.openEditorialTenCompanyStudy(tenCompanyJournal(workDir))
                             : personPauseMode ? ComposedIndustryScenario.openPersonPauseOperating(workDir.resolve("world-person-pause-v1.journal"), workDir.resolve("opening-copies.json"))
                             : issuerResolutionMode ? ComposedIndustryScenario.openIssuerResolutionOperating(workDir.resolve("world-issuer-resolution-v1.journal"), workDir.resolve("opening-copies.json"))
                             : unpricedReferenceMode ? ComposedIndustryScenario.openUnpricedReferenceOperating(workDir.resolve("world-unpriced-reference-v1.journal"), workDir.resolve("opening-copies.json"))
@@ -465,8 +465,9 @@ public final class WorldWebApp {
     }
 
     static Path tenCompanyJournal(Path workDir) throws IOException {
-        Path current = workDir.resolve("world-ten-company-autonomy-v4.journal");
-        for (String id : java.util.List.of(RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID, RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
+        Path current = workDir.resolve("world-ten-company-autonomy-v5.journal");
+        for (String id : java.util.List.of(RunManifest.READABLE_DRAFT_TEN_COMPANY_RUN_ID, RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID,
+                RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID, RunManifest.ORIGINAL_TEN_COMPANY_RUN_ID)) {
             Path file = workDir.resolve("world-" + id.substring("web-".length()) + ".journal");
             if (!Files.exists(file)) continue;

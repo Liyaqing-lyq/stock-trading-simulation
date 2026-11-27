@@ -223,11 +223,16 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
      * @param canPublish   本岗位此刻能否发布（仅编辑且稿件已批准）
      * @param sourceGroups 独立来源组数
      * @param updatedAtMillis 最近变化时刻
+     * @param draftDocId 本社可读的内稿文档，新口径下尚未投稿时为空
+     * @param draftVersion 对应内稿版次，新口径下尚未投稿时为空
      */
     public record MediaStory(String storyId, String template, String status, int revisionNo,
                              String topic, String authorPartyId, boolean own, boolean canReview,
                              boolean canPublish, int sourceGroups, long updatedAtMillis,
-                             String draftDocId, long draftVersion, String publicDocId,
+                             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                             String draftDocId,
+                             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                             Long draftVersion, String publicDocId,
                              long publicVersion) {
 
         /** 旧十参构造：没有实际可读标识（旧档案与新模型输入都不使用）。 */

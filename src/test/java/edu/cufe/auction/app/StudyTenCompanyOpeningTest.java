@@ -55,8 +55,7 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void fourthVersionFreezesBothNewPoliciesAndWebReopensTheOriginalArchives() throws Exception {
-        Path current = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals("world-ten-company-autonomy-v4.journal", current.getFileName().toString());
+        Path current = dir.resolve("world-ten-company-autonomy-v4.journal");
         Path old = dir.resolve("world-ten-company-autonomy-v3.journal");
         try (var third = ComposedIndustryScenario.openStudyTenCompanyAutonomy(old)) {
             var oldManifest = third.profile().manifest();
@@ -86,6 +85,29 @@ class StudyTenCompanyOpeningTest {
             assertEquals(RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID, reopened.profile().manifest().runId());
         }
         assertArrayEquals(previousBytes, Files.readAllBytes(old));
+    }
+
+    @Test void standardEntryStartsFifthVersionAndReopensExistingFourthVersionWithoutChangingIt() throws Exception {
+        Path newWorld = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v5.journal"), newWorld);
+        Path oldWorld = dir.resolve("world-ten-company-autonomy-v4.journal");
+        try (var fourth = ComposedIndustryScenario.openCurrentTenCompanyStudy(oldWorld)) {
+            assertEquals(RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID, fourth.profile().manifest().runId());
+        }
+        byte[] archive = Files.readAllBytes(oldWorld);
+        try (var fourth = ComposedIndustryScenario.openEditorialTenCompanyStudy(WorldWebApp.tenCompanyJournal(dir));
+             var fifth = ComposedIndustryScenario.openEditorialTenCompanyStudy(newWorld)) {
+            assertEquals(RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID, fourth.profile().manifest().runId());
+            var manifest = fifth.profile().manifest();
+            assertEquals(RunManifest.READABLE_DRAFT_TEN_COMPANY_RUN_ID, manifest.runId());
+            var expected = new TreeMap<>(fourth.profile().manifest().dataVersions());
+            expected.put("branch-profile-run", manifest.runId());
+            expected.put("editorial-draft-visibility", "submitted-document-v1");
+            assertEquals(expected, manifest.dataVersions());
+            assertEquals(fourth.openingRegistry(), fifth.openingRegistry());
+        }
+        assertArrayEquals(archive, Files.readAllBytes(oldWorld));
+        assertEquals(newWorld, WorldWebApp.tenCompanyJournal(dir));
     }
 
     @Test void historicalNamesUseNonemptyArchiveAndRejectSwappedOrIndependentWorlds() throws Exception {

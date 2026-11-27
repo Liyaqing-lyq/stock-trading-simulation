@@ -15,6 +15,21 @@ TRADE = "EXCHANGE_TRADE_V1"
 ORDER = "EXCHANGE_ORDER_REPORT_V1"
 
 
+READING_POLICY = {"document-reading-clock": "body-pacing-300-v1"}
+GOVERNANCE_POLICIES = {**READING_POLICY, "editorial-template-guide": "office-source-map-keys-v1",
+                       "issuer-period-metrics": "operating-evidence-v1"}
+DRAFT_POLICIES = {**GOVERNANCE_POLICIES, "editorial-draft-visibility": "submitted-document-v1"}
+OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
+                    "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES}
+
+
+def check_policies(run_id, data_versions):
+    expected = OPENING_POLICIES[run_id]
+    actual = {k: data_versions[k] for k in DRAFT_POLICIES if k in data_versions}
+    if data_versions.get("branch-profile-run") != run_id or actual != expected:
+        raise ValueError("原生开局的阅读、编辑或发行人政策与该版运行身份不符")
+
+
 def decode(raw):
     return json.loads(raw, parse_float=Decimal)
 
@@ -100,24 +115,23 @@ def audit(source, target_days=None):
             raise ValueError("需要 delta-v1 十公司日志，每个确认位置应有一份状态差量")
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
-        if run_id not in {"web-ten-company-autonomy-v2", "web-ten-company-autonomy-v3"} or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2、v3 紧凑日志")
+        if run_id not in OPENING_POLICIES or delta["version"] != "delta-v1":
+            raise ValueError("此脚本仅复算标准十公司 v2 至 v5 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")
         prior_digest = delta["resultDigest"]
         patch = delta["patch"]
         if position == 1:
-            manifests = [decode(e["payload"])["manifest"] for e in events if e["type"] == "RUN_MANIFEST_V1"]
-            if len(manifests) != 1 or manifests[0]["runId"] != run_id or patch["value"]["runId"] != run_id:
+            manifests = [e["payload"] for e in events if e["type"] == "RUN_MANIFEST_V1"]
+            registries = [decode(e["payload"]) for e in events if e["type"] == "OPENING_REGISTRY_V1"]
+            command = decode(frame["commandContent"])
+            if manifests != [frame["commandContent"]] or registries != [command["registry"]]:
+                raise ValueError("首帧清单或登记册与已确认开局命令不符")
+            manifest = command["manifest"]
+            if manifest["runId"] != run_id or patch["value"]["runId"] != run_id:
                 raise ValueError("开局清单、状态与普通十公司运行身份不符")
-            policies = manifests[0]["dataVersions"]
-            clock = "document-reading-clock"
-            third = run_id == "web-ten-company-autonomy-v3"
-            if (policies.get("branch-profile-run") != run_id
-                    or (third and policies.get(clock) != "body-pacing-300-v1")
-                    or (not third and clock in policies)):
-                raise ValueError("开局版本与十公司阅读时钟合同不符")
+            check_policies(run_id, manifest["dataVersions"])
             state = {name: patch["value"][name] for name in FIELDS}
         else:
             for name in FIELDS:
@@ -186,7 +200,7 @@ def audit(source, target_days=None):
         total = sum(cash.values(), Decimal(0))
         if opening_total is None:
             opening_total = total
-            registry = decode(next(e["payload"] for e in events if e["type"] == "OPENING_REGISTRY_V1"))
+            registry = registries[0]
             opening = {"position": position, "timeMillis": now, "stateDigest": prior_digest,
                        "cashByAccount": cash, **opening_people(registry, state["accounts"], patch["value"]["securities"]["lots"])}
         if position == row["firstPosition"]:

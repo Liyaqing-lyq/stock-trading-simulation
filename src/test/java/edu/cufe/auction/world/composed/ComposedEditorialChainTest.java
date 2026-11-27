@@ -26,6 +26,72 @@ class ComposedEditorialChainTest {
         return JSON.missingNode();
     }
 
+    @Test void selectedTopicOnlyGetsAReadableDocumentWhenSubmissionActuallyCompletes() throws Exception {
+        var file = directory.resolve("editorial-v5.journal");
+        String doc;
+        try (var world = ComposedIndustryScenario.openEditorialTenCompanyStudy(file)) {
+            assertEquals(RunManifest.READABLE_DRAFT_TEN_COMPANY_RUN_ID, world.profile().manifest().runId());
+            assertEquals(RunManifest.SUBMITTED_DOCUMENT,
+                    world.profile().manifest().dataVersions().get(RunManifest.EDITORIAL_DRAFT_VISIBILITY));
+            var ref = read(world, "investor", "engineering-opportunity:A1");
+            var proposed = result(world, "investor", TOOL_MEDIA_PROPOSE,
+                    Map.of("storyId", "one", "template", "MARKETS", "topic", "工程委托"));
+            assertTrue(proposed.accepted());
+            String topic = proposed.storyId();
+            world.createBranch("awaiting-copy", world.snapshot().position(), BranchOrigin.Kind.OPERATOR_BRANCH, "待投稿");
+            for (String person : List.of("investor", "kate")) {
+                var row = story(world, person, "MARKETS");
+                assertEquals(topic, row.required("storyId").asText());
+                assertEquals("AWAITING_SUBMISSION", row.required("draftStatus").asText());
+                assertFalse(row.has("draftDocId"));
+                assertFalse(row.has("draftVersion"));
+                assertFalse(row.required("canReview").asBoolean());
+                assertFalse(world.autonomyRoleObservation(person).toString().contains("media-draft:"));
+            }
+            var input = choose(world, "investor", TOOL_MEDIA_SUBMIT, Map.of("storyId", topic, "expectedRevision", 0,
+                    "title", "工程机会条件", "body", "冻结的报价尚未成交。", "publicSourceDescription", "已读的工程委托",
+                    "evidence", List.of(ref)));
+            assertEquals("AWAITING_SUBMISSION", JSON.readTree(input.inputText()).at("/media/0/draftStatus").asText());
+            var pending = world.snapshot().decisions().orElseThrow().actionRef(input.actionId());
+            world.advanceTo(pending.dueMillis() - 1);
+            assertFalse(story(world, "kate", "MARKETS").has("draftDocId"));
+            world.advanceTo(pending.dueMillis());
+            assertTrue(world.snapshot().media().orElseThrow().reports().get(pending.taskId()).accepted());
+            var submitted = story(world, "kate", "MARKETS");
+            assertTrue(submitted.required("canReview").asBoolean());
+            assertFalse(submitted.has("draftStatus"));
+            assertEquals(1, submitted.required("draftVersion").asLong());
+            doc = submitted.required("draftDocId").asText();
+            assertFalse(world.autonomyRoleObservation("ed").toString().contains(doc));
+            assertEquals(doc, read(world, "kate", doc).required("docId").asText());
+        }
+        var bytes = java.nio.file.Files.readAllBytes(file);
+        try (var world = ComposedIndustryScenario.openEditorialTenCompanyStudy(file);
+             var child = new BranchRepository(directory.resolve("runs")).open("awaiting-copy", world.profile())) {
+            assertEquals(doc, story(world, "kate", "MARKETS").required("draftDocId").asText());
+            assertEquals("AWAITING_SUBMISSION", story(child, "kate", "MARKETS").required("draftStatus").asText());
+            assertFalse(story(child, "kate", "MARKETS").has("draftVersion"));
+        }
+        assertArrayEquals(bytes, java.nio.file.Files.readAllBytes(file));
+
+        var old = directory.resolve("editorial-v4.journal");
+        String oldEditorInput;
+        try (var world = ComposedIndustryScenario.openCurrentTenCompanyStudy(old)) {
+            act(world, "investor", TOOL_MEDIA_PROPOSE, Map.of("storyId", "one", "template", "MARKETS", "topic", "工程委托"));
+            oldEditorInput = world.autonomyRoleObservation("kate").toString();
+            var row = story(world, "kate", "MARKETS");
+            assertTrue(row.required("draftDocId").asText().startsWith("media-draft:"));
+            assertEquals(0, row.required("draftVersion").asLong());
+            assertFalse(row.has("draftStatus"));
+        }
+        var oldBytes = java.nio.file.Files.readAllBytes(old);
+        try (var oldWorld = ComposedIndustryScenario.openEditorialTenCompanyStudy(old)) {
+            assertEquals(RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID, oldWorld.profile().manifest().runId());
+            assertEquals(oldEditorInput, oldWorld.autonomyRoleObservation("kate").toString());
+        }
+        assertArrayEquals(oldBytes, java.nio.file.Files.readAllBytes(old));
+    }
+
     @Test void studyRoleInputsNameOnlyTheAppointedDesksTemplatesAndRecoverWithTheirBranchPolicy() throws Exception {
         var file = directory.resolve("study.journal");
         try (var world = ComposedIndustryScenario.openCurrentTenCompanyStudy(file)) {

@@ -710,8 +710,12 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 node.put("own", story.own());
                 node.put("canReview", story.canReview());
                 node.put("canPublish", story.canPublish());
-                node.put("draftDocId", story.draftDocId());
-                node.put("draftVersion", story.draftVersion());
+                if (story.draftVersion() == null) {
+                    node.put("draftStatus", "AWAITING_SUBMISSION");
+                } else {
+                    node.put("draftDocId", story.draftDocId());
+                    node.put("draftVersion", story.draftVersion());
+                }
                 node.put("publicDocId", story.publicDocId());
                 node.put("publicVersion", story.publicVersion());
             }

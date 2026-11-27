@@ -150,6 +150,7 @@ class TargetTransportProbeTest {
             String mode=switch(variant) {
                 case "EMPTY" -> "TEN_COMPANY_GOVERNANCE_STUDY";
                 case "FILTERED" -> "TEN_COMPANY_STUDY";
+                case "TOOL_CALLS" -> "TEN_COMPANY_EDITORIAL_STUDY";
                 default -> "TEN_COMPANY_AUTONOMY";
             };
             var first=run(mode,"first",null,100,people,provider);
@@ -170,6 +171,7 @@ class TargetTransportProbeTest {
             String runId=switch(variant) {
                 case "EMPTY" -> edu.cufe.auction.world.RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID;
                 case "FILTERED" -> edu.cufe.auction.world.RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID;
+                case "TOOL_CALLS" -> edu.cufe.auction.world.RunManifest.READABLE_DRAFT_TEN_COMPANY_RUN_ID;
                 default -> edu.cufe.auction.world.RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID;
             };
             assertEquals(runId,second.at("/live/runId").asText());
