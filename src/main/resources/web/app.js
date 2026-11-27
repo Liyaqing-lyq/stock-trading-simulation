@@ -164,7 +164,7 @@ async function request(method, url, body) {
   } catch (ignored) {
     payload = null;
   }
-  return { status: response.status, payload };
+  return { status: response.status, payload, headers: response.headers };
 }
 
 function clearSecrets() {
@@ -655,7 +655,8 @@ async function refreshPerson() {
   }
   setMessage("person-error", "");
   const view = result.payload;
-  $("context-time").textContent = (view.runId ? view.runId + " · " : "") + view.timeMillis + " 毫秒";
+  const runId = result.headers?.get("X-World-Run-Id");
+  $("context-time").textContent = (runId ? decodeURIComponent(runId) + " · " : "") + view.timeMillis + " 毫秒";
   const person = view.displayName && !view.displayName.includes(view.personPartyId)
     ? view.displayName + "（" + view.personPartyId + "）" : view.displayName || view.personPartyId;
   $("context-identity").textContent = "实时 · " + person;

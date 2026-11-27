@@ -2978,7 +2978,6 @@ public final class WorldWebServer implements AutoCloseable {
             }
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("personPartyId", view.personPartyId());
-            response.put("runId", host.runId());
             response.put("displayName", page.displayName());
             if (page.decisionPaused()!=null) response.put("decisionPaused",page.decisionPaused());
             if (!page.fundUnits().isEmpty()) response.put("fundUnits",page.fundUnits());
@@ -3002,6 +3001,8 @@ public final class WorldWebServer implements AutoCloseable {
             if (!page.personalResearch().isEmpty()) response.put("personalResearch", page.personalResearch());
             if (!page.businessRelations().isEmpty()) response.put("businessRelations", page.businessRelations());
             if (page.media() != null) response.put("media", page.media());
+            exchange.getResponseHeaders().set("X-World-Run-Id",
+                    java.net.URLEncoder.encode(host.runId(), StandardCharsets.UTF_8).replace("+", "%20"));
             send(exchange, 200, mapper.writeValueAsString(response));
         } catch (WorldWebHost.BusyException busy) {
             throw busy;

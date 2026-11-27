@@ -1,6 +1,7 @@
 package edu.cufe.auction.web;
 
 import edu.cufe.auction.world.*;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.*;
 
@@ -18,7 +19,7 @@ final class WorldExposureMatrix {
     record Group(String kind,List<OwnerRow> owners,Map<String,Cell> cells,String valueDelta) { }
     record View(boolean available,String position,String timeMillis,String shock,List<Issuer> issuers,List<Group> groups) { }
 
-    static View of(WorldRuntime world) {
+    static View of(WorldRuntime world) throws IOException {
         var state=world.snapshot();
         if (world.openingRegistry().isEmpty() || state.securities().isEmpty() || state.exchange().isEmpty())
             return new View(false,Long.toString(state.position()),Long.toString(state.timeMillis()),SHOCK.toPlainString(),List.of(),List.of());
@@ -38,7 +39,7 @@ final class WorldExposureMatrix {
                     : RunManifest.usesMarketSessions(world.profile().manifest().policyRunId())
                     ? MarketSessions.status(security.symbol(),state.timeMillis(),exchange.closed()) : exchange.closed() ? "CLOSED" : "OPEN";
             issuers.add(new Issuer(security.symbol(),security.issuerOrganizationId(),names.get(security.issuerOrganizationId()),
-                    Long.toString(security.issuedShares()),decimal(mark.price()),mark.source().name(),
+                    Long.toString(world.issuedSharesAt(security.symbol(),state.position())),decimal(mark.price()),mark.source().name(),
                     mark.price()==null?null:Long.toString(mark.asOfMillis()),mark.price()==null?null:Long.toString(mark.ageMillis()),status));
         }
         Map<String,WorldExchange.Trade> trades=new HashMap<>();

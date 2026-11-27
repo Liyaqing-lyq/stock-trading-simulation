@@ -73,7 +73,7 @@ function makeWorld(router, name) {
     const method = (options && options.method) || "GET";
     calls.push(method + " " + url);
     const answer = await router(method, url, options || {}, context);
-    return { status: answer.status, json: async () => answer.payload };
+    return { status: answer.status, headers: answer.headers, json: async () => answer.payload };
   };
   vm.runInContext(operationsSource, context);
   if (researchSource) vm.runInContext(researchSource, context);
@@ -306,15 +306,16 @@ defineCase("admin-interview-cleared-on-leave-page", async () => {
 defineCase("personal-interview-cleared-on-identity-switch", async () => {
   const pending = [];
   let sessionPerson = null;
-  const views = { rita: personView("rita", { runId: "scope-test", accounts: [
-    {accountId: "R-1"}, {accountId: "R-2"}] }), bob: personView("bob", { runId: "scope-test" }) };
+  const views = { rita: personView("rita", { accounts: [
+    {accountId: "R-1"}, {accountId: "R-2"}] }), bob: personView("bob") };
   const world = makeWorld(async (method, url, options) => {
     if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
     if (url === "/api/session/person") {
       sessionPerson = JSON.parse(options.body).personId;
       return { status: 200, payload: { personId: sessionPerson } };
     }
-    if (url === "/api/me/view") return { status: 200, payload: views[sessionPerson] };
+    if (url === "/api/me/view") return { status: 200, payload: views[sessionPerson],
+      headers: { get: name => name === "X-World-Run-Id" ? "scope-test" : null } };
     if (url === "/api/me/interview") {
       if (sessionPerson === "rita") {
         return { status: 200, payload: { personPartyId: "rita",

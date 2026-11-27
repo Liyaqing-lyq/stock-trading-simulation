@@ -298,6 +298,25 @@ class WorldWebDetailsTest {
     // ------------------------------------------------------------ 3 信息发布与阅读经历
 
     @Test
+    void runHeaderBelongsOnlyToSuccessfulPersonalView() throws Exception {
+        start(() -> WorldWebScenario.open(workDir.resolve("person-context.journal")));
+        String path = "/api/me/view";
+        String header = "X-World-Run-Id";
+        assertTrue(get(path).headers().firstValue(header).isEmpty());
+        loginAdmin();
+        assertTrue(get(path).headers().firstValue(header).isEmpty());
+        cookie = cookieOf(post("/api/session/person", "{\"personId\":\"carol\"}"));
+        for (var response : List.of(get(path), post(path, "{\"symbol\":\"CUFE1\",\"period\":\"day\"}"))) {
+            assertEquals(200, response.statusCode());
+            assertEquals(WorldWebScenario.RUN_ID, response.headers().firstValue(header).orElseThrow());
+            assertFalse(JSON.readTree(response.body()).has("runId"));
+        }
+        var invalid = post(path, "{\"symbol\":\"UNKNOWN\",\"period\":\"day\"}");
+        assertEquals(400, invalid.statusCode());
+        assertTrue(invalid.headers().firstValue(header).isEmpty());
+    }
+
+    @Test
     @DisplayName("信息页：真实发表与阅读完成后，版本、进行中、经历都来自 Runtime")
     void informationLifecycleFromRealRuntime() throws Exception {
         Path journal = workDir.resolve("info.journal");

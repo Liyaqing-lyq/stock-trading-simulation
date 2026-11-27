@@ -139,8 +139,10 @@ class ResourceOperationsWebHttpTest {
             assertFalse(JSON.readTree(result.body()).has("position"));
             assertEquals(409,request("POST","/api/me/resources/action",body).statusCode());
             admin();var current=JSON.readTree(request("GET","/api/admin/operations",null).body());
+            assertResourceExposure(1000, current.required("position").asText());
             var settled=request("POST","/api/admin/advance",JSON.writeValueAsString(Map.of("expectedPosition",current.path("position").asText(),"targetMillis",Long.toString(due))));
             assertEquals(200,settled.statusCode(),settled.body());
+            assertResourceExposure(1007, JSON.readTree(settled.body()).required("position").asText());
             var audited = JSON.readTree(request("GET","/api/admin/operations",null).body()).findValues("reports").stream()
                     .flatMap(rows -> java.util.stream.StreamSupport.stream(rows.spliterator(),false))
                     .filter(r -> "SUBSCRIBE_SHARES".equals(r.path("action").asText()) && r.path("amount").asDouble()>0)
@@ -159,6 +161,24 @@ class ResourceOperationsWebHttpTest {
             assertEquals("67",owned.path("quantity").asText()); assertEquals("6.6534",owned.path("issuedSharePercent").asText());
         }
         try(var w=ComposedIndustryScenario.openTenCompanyAutonomy(journal)) { assertEquals(1007,w.issuedSharesAt("RESOURCE",w.snapshot().position())); }
+    }
+
+    private void assertResourceExposure(long expectedShares, String position) throws Exception {
+        var response = request("GET", "/api/admin/world-exposure", null);
+        assertEquals(200, response.statusCode(), response.body());
+        var matrix = JSON.readTree(response.body());
+        assertEquals(position, matrix.required("position").asText());
+        var issuers = matrix.required("issuers").findParents("issuedShares").stream()
+                .filter(issuer -> "RESOURCE".equals(issuer.required("symbol").asText())).toList();
+        assertEquals(1, issuers.size());
+        long held = 0;
+        for (var group : matrix.required("groups"))
+            for (var owner : group.required("owners")) {
+                var cell = owner.required("cells").get("RESOURCE");
+                if (cell != null) held = Math.addExact(held, Long.parseLong(cell.required("quantity").asText()));
+            }
+        assertEquals(expectedShares, held);
+        assertEquals(Long.toString(held), issuers.get(0).required("issuedShares").asText());
     }
 
     private void admin() throws Exception {
