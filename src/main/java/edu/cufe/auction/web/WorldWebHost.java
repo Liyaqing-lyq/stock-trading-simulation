@@ -383,6 +383,9 @@ public final class WorldWebHost implements AutoCloseable {
                 if (quote instanceof com.fasterxml.jackson.databind.node.ObjectNode row) row.remove("referenceAgeMillis");
             if (facts.at("/engineering/openFund") instanceof com.fasterxml.jackson.databind.node.ObjectNode fund)
                 fund.remove("timeMillis");
+            // 预约下界随观察时钟平移；记者任职、提前期和已发邀请仍是可触发复查的事实。
+            if (facts.at("/interview/inviteWindow") instanceof com.fasterxml.jackson.databind.node.ObjectNode window)
+                window.remove(List.of("executionMillis", "earliestWindowStartMillis"));
         }
         if (facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
             delib.remove(List.of("reviewBounds", "recentDecisions"));
@@ -851,6 +854,68 @@ public final class WorldWebHost implements AutoCloseable {
         return call(() -> readyNow().profile());
     }
 
+    /** 当前档案的人工操作范围；旧制为空，受保护档只在真实上帝接管分支允许写入。 */
+    String personActionMode() throws Exception {
+        return call(() -> personActionMode(readyNow()));
+    }
+
+    private static String personActionMode(WorldRuntime world) {
+        if (!RunManifest.MARKED_TAKEOVER_BRANCH.equals(
+                world.profile().manifest().dataVersions().get(RunManifest.PERSON_TAKEOVER_POLICY))) return null;
+        return world.branchOrigin().filter(o -> o.kind() == BranchOrigin.Kind.GOD_TAKEOVER).isPresent()
+                ? "TAKEOVER" : "READ_ONLY";
+    }
+
+    record TakeoverCut(String runId, long parentPosition) {}
+    private record PersonTakeoverRequest(long observationToken, long position) {}
+    private final Map<String, PersonTakeoverRequest> lastPersonTakeover = new HashMap<>();
+
+    /** 本人凭据或管理员确认位置、合法身份和新子档在同一个 writer 任务中复核。 */
+    TakeoverCut takeoverCut(String person, long expected, boolean personal,
+                            edu.cufe.auction.world.BranchRepository repository) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            if (!"READ_ONLY".equals(personActionMode(world)) || world.branchOrigin().isPresent())
+                throw new edu.cufe.auction.world.BranchRejectedException("TAKEOVER_UNAVAILABLE", "当前运行不支持再次接管");
+            if (world.systemPublisherOnly(person)) throw new IllegalArgumentException("不是可接管的人物");
+            world.roleView(person);
+            long current = world.snapshot().position();
+            long position = expected;
+            if (personal) {
+                var previous = lastPersonTakeover.get(person);
+                if (previous != null && previous.observationToken() == expected) {
+                    position = previous.position();
+                } else {
+                    var scope = PersonalObservations.Page.ENGINEERING;
+                    if (PersonalObservations.issuedPage(world, person, expected, scope) == null
+                            || !(personalWebPageOf(world, person, scope) instanceof com.fasterxml.jackson.databind.JsonNode page)
+                            || !Long.toString(expected).equals(page.path("observationToken").asText()))
+                        throw new PositionMismatch(-1);
+                    position = current;
+                }
+            }
+            String note = "人工接管人物 " + person;
+            String child = null;
+            for (var entry : repository.runs()) {
+                if (entry.runId().startsWith("take-") && runId.equals(entry.parentRunId())
+                        && position == entry.parentPosition() && note.equals(entry.note())
+                        && BranchOrigin.Kind.GOD_TAKEOVER.name().equals(entry.kind())) {
+                    if (child != null) throw new edu.cufe.auction.world.BranchRejectedException(
+                            "TAKEOVER_ID_CONFLICT", "同一人物切点对应多个接管档");
+                    child = entry.runId();
+                }
+            }
+            if (child == null) {
+                if (position != current) throw new PositionMismatch(personal ? -1 : current);
+                // 子运行标识可见于个人页，不从可枚举的父审计序号计算。
+                child = "take-" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+                createWebBranch(world, child, position, BranchOrigin.Kind.GOD_TAKEOVER, note);
+            }
+            if (personal) lastPersonTakeover.put(person, new PersonTakeoverRequest(expected, position));
+            return new TakeoverCut(child, position);
+        });
+    }
+
     /**
      * 在父运行已确认边界创建一条独立分支子档（与其它 writer 任务串行，共用引擎同一把锁）。
      *
@@ -868,7 +933,22 @@ public final class WorldWebHost implements AutoCloseable {
     public WorldRuntime.BranchReceipt createBranch(String childRunId, long position,
                                                    BranchOrigin.Kind kind, String note)
             throws BusyException, Exception {
-        return call(() -> readyNow().createBranch(childRunId, position, kind, note));
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            if (childRunId != null && childRunId.startsWith("take-") && personActionMode(world) != null)
+                throw new edu.cufe.auction.world.BranchRejectedException("TAKEOVER_ID_RESERVED", "此名称前缀用于自动接管分支");
+            return createWebBranch(world, childRunId, position, kind, note);
+        });
+    }
+
+    private WorldRuntime.BranchReceipt createWebBranch(WorldRuntime world, String child, long position,
+                                                       BranchOrigin.Kind kind, String note) throws IOException {
+        if (kind != BranchOrigin.Kind.GOD_TAKEOVER || personActionMode(world) == null)
+            return world.createBranch(child, position, kind, note);
+        if (routes == null) throw new IllegalStateException("人工接管缺少父运行的场景配置");
+        var source = routes.view();
+        var frozen = source.routes().stream().map(r -> decisionRoute(r, source.revision())).toList();
+        return world.createBranch(child, position, kind, note, frozen);
     }
 
     /**
@@ -1041,6 +1121,19 @@ public final class WorldWebHost implements AutoCloseable {
                 row.put("topic", story.topic()); row.put("authorPartyId", story.authorPartyId());
                 row.put("own", story.own()); row.put("canReview", story.canReview());
                 row.put("canPublish", story.canPublish()); row.put("sourceGroups", num(story.sourceGroups()));
+                if (story.reviewNotes() != null) {
+                    List<Map<String, Object>> notes = new ArrayList<>();
+                    for (var note : story.reviewNotes()) {
+                        Map<String, Object> item = new LinkedHashMap<>();
+                        item.put("revisionNo", num(note.revisionNo())); item.put("docId", note.docId());
+                        item.put("version", num(note.version())); item.put("read", note.read());
+                        if (note.read()) view.observations().stream()
+                                .filter(e -> note.docId().equals(e.ref().docId()) && note.version() == e.ref().version())
+                                .findFirst().ifPresent(e -> item.put("body", e.body()));
+                        notes.add(item);
+                    }
+                    row.put("reviewNotes", notes);
+                }
                 row.put("updatedAtMillis", num(story.updatedAtMillis())); stories.add(row);
                 visibleStories.add(story.storyId());
             }
@@ -4715,12 +4808,56 @@ public final class WorldWebHost implements AutoCloseable {
             var world = readyNow();
             var interviews = world.interviewView(person);
             var visits = world.siteVisitsFor(person);
-            if (!visits.enabled()) return interviews;
+            var controls = world.personalInterviewControls(person);
+            if (!visits.enabled() && controls == null) return interviews;
             com.fasterxml.jackson.databind.node.ObjectNode page = PAYLOAD_MAPPER.valueToTree(interviews);
             page.put("timeMillis", num(world.snapshot().timeMillis()));
-            page.set("siteVisits", PAYLOAD_MAPPER.valueToTree(visits));
+            if (visits.enabled()) page.set("siteVisits", PAYLOAD_MAPPER.valueToTree(visits));
+            if (controls != null) page.set("coordination", PAYLOAD_MAPPER.valueToTree(controls));
             return page;
         });
+    }
+
+    Map<String, String> scheduleInterviewCoordination(String person, long observed, String cmd,
+            edu.cufe.auction.world.WorldRoleSession.InterviewInviteDraft invite,
+            edu.cufe.auction.world.WorldRoleSession.InterviewRespondDraft respond) throws Exception {
+        return call(() -> {
+            var world=readyNow();
+            var controls=world.personalInterviewControls(person);
+            if (controls==null) throw new IllegalArgumentException("未启用本人预约操作");
+            var previous=world.previousInterviewSchedule(person,cmd,observed,invite!=null?invite:respond);
+            if (previous.isPresent()) {
+                var old=previous.orElseThrow();
+                return Map.of("receipt",old.receipt(),"dueTimeMillis",num(old.dueTimeMillis()));
+            }
+            if (controls.observedMillis()!=observed) throw new IllegalStateException("时点已变化");
+            var page=world.interviewView(person);
+            var session=world.openRoleSession(person);
+            long due;
+            String receipt;
+            if (invite!=null) {
+                if (controls.inviteOffice()==null || page.contacts().stream().noneMatch(c -> c.targetPartyId().equals(invite.toPartyId())))
+                    throw new IllegalArgumentException("本人缺少可用的记者任职或已读联系入口");
+                due=controls.inviteDueMillis();
+                receipt=session.inviteInterview(cmd,cmd+"-task",due,invite);
+            } else {
+                if (page.invites().stream().noneMatch(i -> i.requestId().equals(respond.requestId())
+                        && i.toPartyId().equals(person) && "PROPOSED".equals(i.status())))
+                    throw new IllegalArgumentException("本人没有该待回应邀请");
+                due=controls.respondDueMillis();
+                receipt=session.respondInterview(cmd,cmd+"-task",due,respond);
+            }
+            return Map.of("receipt",receipt,"dueTimeMillis",num(due));
+        });
+    }
+
+    com.fasterxml.jackson.databind.node.ObjectNode personalOrders(String person) throws Exception {
+        return call(() -> edu.cufe.auction.world.PersonalOrderDesk.view(readyNow(), person));
+    }
+
+    Map<String, String> personalOrder(String person, long observed, String command,
+                                      edu.cufe.auction.world.PersonalOrderDesk.Instruction request) throws Exception {
+        return call(() -> edu.cufe.auction.world.PersonalOrderDesk.schedule(readyNow(), person, observed, command, request));
     }
 
     Map<String, String> scheduleSiteVisit(String person, long observedMillis, String expectedStage,

@@ -112,3 +112,19 @@ td.preview{white-space:normal;min-width:240px;max-width:380px;color:#5c6a80}
   .relation-path { align-items: flex-start; flex-direction: column; }
   .relation-path ul { margin-left: .5rem; }
 }
+
+#context-intervention { font-weight: 700; }
+.world-person-takeover { display: none; }
+.admin-can-takeover .world-person-takeover { display: inline-flex; }
+.person-observing [data-person-write],
+.person-observing #person-bank-ops,
+.person-observing #person #engineering-action-form,
+.person-observing #groups-form,
+.person-observing #groups-invites button,
+.person-observing #groups-posts button,
+.person-observing #research-form,
+.person-observing #manufacturing-form,
+.person-observing #operations-form,
+.person-observing #fund-units-controls,
+.person-observing #person-interview-coordination [data-invite],
+.person-observing #person-interview-coordination [data-respond] { display: none !important; }

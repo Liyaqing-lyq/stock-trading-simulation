@@ -142,6 +142,9 @@ function isCurrent(generation) {
 }
 
 async function request(method, url, body) {
+  if (globalThis.PersonTakeover?.blocks(method, url)) {
+    return {status: 403, payload: {code: "PERSON_TAKEOVER_REQUIRED", message: "当前为父档只读观察，请先接管此人。"}};
+  }
   const headers = {};
   if (method !== "GET") {
     headers["Content-Type"] = "application/json";
@@ -209,6 +212,7 @@ function clearAdminDom() {
 }
 
 function clearPersonDom() {
+  globalThis.PersonOrders?.clear();
   state.personChart = null;
   $("person-chart-symbol").replaceChildren();
   $("person-chart-period").value = "day";
@@ -253,6 +257,7 @@ function showMode(mode, forgetBookmark = true) {
   clearOperationsDom();
   clearManufacturingDom();
   state.mode = mode;
+  globalThis.PersonTakeover?.reset();
   document.body.dataset.mode = mode;
   $("context-identity").textContent = mode === "admin" ? "实时 · 管理员" : mode === "person" ? "实时 · 正在确认人物" : "";
   setAccountContext(null);
@@ -309,6 +314,7 @@ async function enterAdmin(resume = false) {
   selectPage("overview", false);
   setStatus("管理员视角");
   await refreshAdmin(resume);
+  await globalThis.PersonTakeover?.admin();
 }
 
 async function refreshAdmin(resume = false) {
@@ -656,6 +662,8 @@ async function refreshPerson() {
   setMessage("person-error", "");
   const view = result.payload;
   const runId = result.headers?.get("X-World-Run-Id");
+  globalThis.PersonTakeover?.person(result.headers?.get("X-Person-Action-Mode"), view.personPartyId,
+    result.headers?.get("X-Person-Takeover-Available"));
   $("context-time").textContent = (runId ? decodeURIComponent(runId) + " · " : "") + view.timeMillis + " 毫秒";
   const person = view.displayName && !view.displayName.includes(view.personPartyId)
     ? view.displayName + "（" + view.personPartyId + "）" : view.displayName || view.personPartyId;
@@ -750,6 +758,8 @@ async function refreshPerson() {
     if (row.sessionStatus) cell(tr, sessionLabels[row.sessionStatus] || row.sessionStatus);
   });
   renderPersonChart(view);
+  await globalThis.PersonOrders?.load(result.headers?.get("X-Person-Action-Mode"), generation);
+  if (!current()) return;
   const depthVisible = (view.market || []).some(row => row.bestBidQuantity != null);
   $("person-best-bid-quantity").hidden = !depthVisible;
   $("person-best-ask-quantity").hidden = !depthVisible;
@@ -893,6 +903,7 @@ function renderFundUnits(book, generation) {
     if (/[1-9]/.test(String(order.remaining))) {
       const cancel = document.createElement("button"); cancel.type="button"; cancel.textContent="撤回申请";
       cancel.setAttribute("aria-label","撤回申请 " + order.id);
+      cancel.dataset.personWrite = "true";
       cancel.addEventListener("click", () => guard(submitFundUnits(book,"CANCEL",order.id,null,cancel,generation)));
       line.appendChild(cancel);
     }
@@ -1107,6 +1118,7 @@ function renderPersonalReports(reports) {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = read ? "重新阅读此版本" : "阅读此版本";
+      button.dataset.personWrite = "true";
       button.addEventListener("click", () => guard(scheduleDocumentReading(report.companyId,
         report.docId, report.version, report.title, "person-report-feedback")));
       row.appendChild(button);
@@ -1169,6 +1181,7 @@ async function boot() {
     const session = await request("GET", "/api/session");
     if (session.status === 200 && session.payload && session.payload.role === "ADMIN") {
       state.localAccess = session.payload.localAccess === true;
+      if (await globalThis.PersonTakeover?.enterMarkedChild()) return;
       await enterAdmin(true);
       return;
     }
@@ -4173,6 +4186,9 @@ async function loadMediaStory() {
 }
 function clearPersonalMedia() {
   $("person-media").hidden = true;
+  $("person-media-reviews").hidden = true;
+  $("person-media-review-list").replaceChildren();
+  setMessage("person-media-review-feedback", "");
   for (const id of ["person-media-stories", "person-media-reports"]) mediaTable(id, null, []);
   $("person-media-documents").replaceChildren(); $("person-media-tools").textContent = "";
 }
@@ -4183,6 +4199,28 @@ function renderPersonalMedia(media) {
   mediaTable("person-media-stories", media.stories, ["storyId", "template", "topic", "authorPartyId", "status", "revisionNo", "sourceGroups"]);
   mediaTable("person-media-reports", media.reports, ["kind", "storyId", "accepted", "reason", "timeMillis"]);
   renderMediaDocuments("person-media-documents", media.documents);
+  const list = $("person-media-review-list");
+  for (const story of media.stories?.rows || []) {
+    for (const note of story.reviewNotes || []) {
+      const row = document.createElement("div"), title = document.createElement("p");
+      const label = story.topic + "（" + story.storyId + "）第" + note.revisionNo + "稿审阅意见";
+      title.textContent = label + " · 意见 v" + note.version + (note.read ? " · 本人已读" : " · 本人未读");
+      row.appendChild(title);
+      if (note.read && note.body !== undefined) {
+        const body = document.createElement("pre");
+        body.className = "media-body"; body.textContent = note.body; row.appendChild(body);
+      } else {
+        const button = document.createElement("button");
+        button.type = "button"; button.textContent = note.read ? "重读审阅意见" : "阅读审阅意见";
+        button.dataset.personWrite = "true";
+        button.addEventListener("click", () => guard(scheduleDocumentReading(null,
+          note.docId, note.version, label, "person-media-review-feedback")));
+        row.appendChild(button);
+      }
+      list.appendChild(row);
+    }
+  }
+  $("person-media-reviews").hidden = !list.childElementCount;
 }
 async function refreshCapabilities(generation, current) {
   const result = await request("GET", "/api/admin/capabilities");
@@ -4244,6 +4282,7 @@ if (globalThis.WorldHome) {
     return result.payload;
   };
   globalThis.WorldHome.onPerson = personId => guard(switchPerson(personId));
+  globalThis.WorldHome.onTakeover = (personId, position) => guard(globalThis.PersonTakeover?.start(personId, position));
   globalThis.WorldHome.onPersonPause = async (person, paused, expectedPosition) => {
     if (state.mode !== "admin") throw new Error("需要管理员身份");
     const result = await request("POST","/api/admin/person-decision-pause",{person,paused,expectedPosition});
@@ -4995,6 +5034,7 @@ function renderInterviewAudit(view) {
 }
 
 function clearPersonalInterview() {
+  clearInterviewCoordination();
   const panel = $("person-interview");
   if (panel) panel.hidden = true;
   renderOfficeWorkBudgets(null);
@@ -5073,6 +5113,7 @@ async function renderPersonalInterview(tools, generation) {
   const view = result.payload;
   const invites = view.invites || [];
   const contacts = view.contacts || [];
+  renderInterviewCoordination(view, generation, tools);
   panel.hidden = !(invites.length || contacts.length || actions.length || view.siteVisits?.appointments?.length
     || view.officeWorkBudgets?.offices?.length);
   renderOfficeWorkBudgets(view.officeWorkBudgets);
@@ -5135,6 +5176,7 @@ function renderSiteVisits(view, generation) {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = labels[action] || action;
+      button.dataset.personWrite = "true";
       button.addEventListener("click", () => guard(submitSiteVisit(view, row, action, button, generation)));
       controls.appendChild(button);
     }
@@ -6003,6 +6045,7 @@ function renderPeriodicBlock(container, periodic, options) {
       button.type = "button";
       button.className = "quiet";
       button.textContent = (hiddenReview ? "阅读" : "重读") + label + "（v" + score.reviewVersion + "）";
+      button.dataset.personWrite = "true";
       button.addEventListener("click", () => guard(scheduleDocumentReading(periodic.companyPartyId,
         score.reviewDocId, score.reviewVersion, label)));
       section.appendChild(button);
@@ -6140,6 +6183,7 @@ function renderPeriodicBlock(container, periodic, options) {
         button.className = "quiet";
         button.textContent = (latest.forgotten ? "重新阅读公开财报 " : "阅读公开财报 ")
           + releaseVersionText(latest);
+        button.dataset.personWrite = "true";
         button.addEventListener("click", () => guard(schedulePeriodicReading(
           periodic.companyPartyId, row.period, latest.publicDocId, latest.publicVersion)));
         section.appendChild(button);
@@ -6529,6 +6573,7 @@ function fillPersonalEngineeringCompanies(companies) {
         readButton.className = "quiet";
         readButton.textContent = (noteRead ? "重新阅读治理说明 v" : "开始阅读治理说明 v")
           + company.governanceDocVersion;
+        readButton.dataset.personWrite = "true";
         readButton.addEventListener("click", () => guard(scheduleDocumentReading(
           company.companyId, company.governanceDocId, company.governanceDocVersion,
           company.governanceDocTitle || "本公司治理说明")));
@@ -6655,6 +6700,7 @@ function fillPersonalEngineeringCompanies(companies) {
           button.type = "button";
           button.className = "quiet";
           button.textContent = (read ? "重读" : "阅读") + "第" + row.period + "期" + name + "（v" + version + "）";
+          button.dataset.personWrite = "true";
           button.addEventListener("click", () => guard(scheduleDocumentReading(company.companyId, docId, version, name)));
           readBox.appendChild(button);
           readButtons += 1;
@@ -6671,6 +6717,7 @@ function fillPersonalEngineeringCompanies(companies) {
       button.className = "quiet";
       button.textContent = (forgotten ? "重新阅读第" : "阅读第") + row.period + "期材料（v"
         + draft.version + "）";
+      button.dataset.personWrite = "true";
       button.addEventListener("click", () => guard(schedulePeriodicReading(
         company.companyId, row.period, draft.docId, draft.version)));
       readBox.appendChild(button);
@@ -7259,6 +7306,7 @@ async function renderPersonalEngineering(generation) {
   if (result.status !== 200 || !result.payload) return;
   const view = result.payload;
   state.personEngineering = view;
+  globalThis.PersonTakeover?.cut(view.observationToken);
   const card = $("person-engineering-card");
   if (!card) return;
   card.hidden = false;
@@ -7305,6 +7353,7 @@ function engineeringActionBody(tool, values) {
  * 传入的文档与版本必须来自本人卡片/本人投影，页面不代造标识。
  */
 async function scheduleDocumentReading(companyId, docId, version, label, feedbackId) {
+  const generation = state.generation;
   const view = state.personEngineering || {};
   if (!(view.observationToken ?? view.position)) {
     setMessage(feedbackId || "engineering-action-error", "请刷新本人资料后重试。");
@@ -7323,9 +7372,10 @@ async function scheduleDocumentReading(companyId, docId, version, label, feedbac
       version: String(version)
     });
   } catch (failure) {
-    setMessage(feedbackId || "engineering-action-error", failure.message);
+    if (isCurrent(generation)) setMessage(feedbackId || "engineering-action-error", failure.message);
     return;
   }
+  if (!isCurrent(generation)) return;
   if (result.status === 401) { sessionLost(); return; }
   if (result.status === 409) {
     setMessage(feedbackId || "engineering-action-error", "世界已推进到新的确认位置，请刷新后再排程阅读。");
@@ -7337,7 +7387,7 @@ async function scheduleDocumentReading(companyId, docId, version, label, feedbac
     setMessage(feedbackId || "engineering-action-error", "阅读排程被拒绝：" + reason);
     return;
   }
-  setMessage(feedbackId || "engineering-action-result", "已排程阅读：公司 " + companyId + " · " + label
+  setMessage(feedbackId || "engineering-action-result", "已排程阅读：" + (companyId ? "公司 " + companyId + " · " : "") + label
     + " v" + version + " · 命令 " + result.payload.receipt
     + "。世界推进到阅读完成后再刷新，才会显示“本人已读完”。");
   await renderPersonalEngineering(state.generation);

@@ -7,6 +7,7 @@ import edu.cufe.auction.web.SceneRoutes;
 import edu.cufe.auction.web.WorldWebHost;
 import edu.cufe.auction.web.WorldWebScenario;
 import edu.cufe.auction.web.WorldWebServer;
+import edu.cufe.auction.world.DecisionModel;
 import edu.cufe.auction.world.WorldRuntime;
 import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.WorldJournalScanner;
@@ -164,11 +165,16 @@ public final class WorldWebApp {
             throw new IOException("Web 启动失败：无法加载本机凭据");
         }
 
+        Path ordinaryJournal = mode.equals("world-ten-company-autonomy") ? tenCompanyJournal(workDir) : null;
         boolean routesAbsent = !Files.exists(workDir.resolve(SceneRoutes.FILE_NAME));
         SceneRoutes routes = SceneRoutes.open(workDir);
         if (thinkingInformedOperatingMode && routesAbsent) {
+            boolean longStudy = tenCompanyPath(workDir, RunManifest.EDITORIAL_FEEDBACK_RUN_ID).equals(ordinaryJournal);
+            String budget = longStudy ? DecisionModel.Route.LONG_HORIZON : "lifecycle-v1";
+            int calls = longStudy ? DecisionModel.Route.callCeiling(budget) : 2500;
+            long tokens = longStudy ? DecisionModel.Route.tokenCeiling(budget) : 35_000_000L;
             routes.replace(0, routes.view().routes().stream().map(r -> new SceneRoutes.Route(
-                    r.scene(), r.slotId(), r.model(), false, 2500, 35_000_000, 8192, 4, "lifecycle-v1",
+                    r.scene(), r.slotId(), r.model(), false, calls, tokens, 8192, 4, budget,
                     "deepseek-thinking-high-v1")).toList());
         }
         if ((operatingMode || accountableMode || planningMode || planningOperatingMode || informedOperatingMode || contextualInformedOperatingMode) && routesAbsent) {
@@ -180,7 +186,7 @@ public final class WorldWebApp {
                     var runtime=sessionsMode ? ComposedIndustryScenario.openMarketSessionsOperating(workDir.resolve("world-market-sessions-operating-v1.journal"))
                             : manufacturingUpgradeMode ? ComposedIndustryScenario.openManufacturingUpgradeOperating(workDir.resolve("world-manufacturing-upgrade-v1.journal"))
                             : openFundMode ? ComposedIndustryScenario.openOpenFundOperating(workDir.resolve("world-open-fund-v1.journal"))
-                            : tenCompanyMode ? ComposedIndustryScenario.openDigitalWindDownTenCompanyStudy(tenCompanyJournal(workDir))
+                            : ordinaryJournal != null ? ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(ordinaryJournal)
                             : personPauseMode ? ComposedIndustryScenario.openPersonPauseOperating(workDir.resolve("world-person-pause-v1.journal"), workDir.resolve("opening-copies.json"))
                             : issuerResolutionMode ? ComposedIndustryScenario.openIssuerResolutionOperating(workDir.resolve("world-issuer-resolution-v1.journal"), workDir.resolve("opening-copies.json"))
                             : unpricedReferenceMode ? ComposedIndustryScenario.openUnpricedReferenceOperating(workDir.resolve("world-unpriced-reference-v1.journal"), workDir.resolve("opening-copies.json"))
@@ -465,9 +471,8 @@ public final class WorldWebApp {
     }
 
     static Path tenCompanyJournal(Path workDir) throws IOException {
-        Path current = workDir.resolve("world-ten-company-autonomy-v9.journal");
         for (String id : RunManifest.standardTenCompanyRuns()) {
-            Path file = workDir.resolve("world-" + id.substring("web-".length()) + ".journal");
+            Path file = tenCompanyPath(workDir, id);
             if (!Files.exists(file)) continue;
             if (!Files.isRegularFile(file)) throw new IOException("十公司日志路径不是文件：" + file);
             if (Files.size(file) == 0) continue;
@@ -476,7 +481,11 @@ public final class WorldWebApp {
                 throw new IOException("十公司日志文件名和存档版本不符：" + file);
             return file;
         }
-        return current;
+        return tenCompanyPath(workDir, RunManifest.EDITORIAL_FEEDBACK_RUN_ID);
+    }
+
+    private static Path tenCompanyPath(Path workDir, String runId) {
+        return workDir.resolve("world-" + runId.substring("web-".length()) + ".journal");
     }
 
     private static WorldRuntime openThinkingOperating(Path workDir) throws Exception {

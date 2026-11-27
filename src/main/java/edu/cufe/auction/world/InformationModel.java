@@ -83,7 +83,9 @@ public final class InformationModel {
         /** 仅由注入的 {@link BoardAccess} 判定为该公司当时真实章程席位的读取者可见。 */
         BOARD,
         /** 本公司真实董事或当前获准读取本公司经营账的经理；不赋予董事资格。 */
-        COMPANY_OPERATING
+        COMPANY_OPERATING,
+        /** 本稿在任作者与本编辑部有审发权的在任编辑。 */
+        EDITORIAL_REVIEW
     }
 
     /**
@@ -93,19 +95,32 @@ public final class InformationModel {
      *
      * @param kind    受众种类
      * @param partyId 组织、人物、群组或公司标识；公开受众必须为空
+     * @param authorPartyId 仅编辑部审阅意见携带的稿件作者标识
      */
-    public record Audience(AudienceKind kind, String partyId) {
+    public record Audience(AudienceKind kind, String partyId,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+            String authorPartyId) {
+
+        /** 未指定稿件作者的原有受众。 */
+        public Audience(AudienceKind kind, String partyId) {
+            this(kind, partyId, null);
+        }
 
         /** 校验种类与对象的一致性。 */
         public Audience {
             Objects.requireNonNull(kind, "受众种类");
+            if (kind == AudienceKind.EDITORIAL_REVIEW) {
+                requireText(authorPartyId, "稿件作者");
+            } else if (authorPartyId != null) {
+                throw new IllegalArgumentException("该受众不携带稿件作者");
+            }
             if (kind == AudienceKind.PUBLIC) {
                 if (partyId != null) {
                     throw new IllegalArgumentException("公开资料不携带受众对象");
                 }
             } else {
                 String label = switch (kind) {
-                    case ORGANIZATION -> "受众组织";
+                    case ORGANIZATION, EDITORIAL_REVIEW -> "受众组织";
                     case DIRECT -> "受众人物";
                     case GROUP -> "受众群";
                     case BOARD, COMPANY_OPERATING -> "受众公司";
@@ -529,6 +544,10 @@ public final class InformationModel {
                         && !persons.contains(document.audience().partyId())) {
                     throw new IllegalArgumentException("直投对象未登记：" + document.audience().partyId());
                 }
+                if (document.audience().kind() == AudienceKind.EDITORIAL_REVIEW
+                        && !persons.contains(document.audience().authorPartyId())) {
+                    throw new IllegalArgumentException("稿件作者未登记：" + document.audience().authorPartyId());
+                }
             }
 
             List<Reading> activeList = sorted(active, Comparator.comparing(Reading::readId));
@@ -717,6 +736,9 @@ public final class InformationModel {
         Document document = findDocument(state.documents(), docId);
         if (document == null) {
             throw new IllegalArgumentException("资料不存在，不能追加版本：" + docId);
+        }
+        if (document.audience().kind() == AudienceKind.EDITORIAL_REVIEW) {
+            throw new IllegalArgumentException("稿件某一版的正式退稿意见不可改写");
         }
         DocumentVersion last = document.versions().get(document.versions().size() - 1);
         if (next.publishedAt() <= last.publishedAt()) {
@@ -1174,6 +1196,9 @@ public final class InformationModel {
                 return boards.canRead(audience.partyId(), personPartyId, now)
                         || RoleAccess.authorize(access, personPartyId, Action.READ_COMPANY_LEDGER,
                         Target.organization(audience.partyId()), now) == Decision.ALLOW;
+            case EDITORIAL_REVIEW:
+                return MediaModel.storyAccess(access, personPartyId, audience.partyId(), now)
+                        .canSee(personPartyId, audience.authorPartyId());
             default:
                 throw new IllegalStateException("未知受众种类：" + audience.kind());
         }

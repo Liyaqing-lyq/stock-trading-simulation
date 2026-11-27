@@ -87,7 +87,7 @@ public final class BranchRepository {
         }
         return WorldRuntime.openBranch(childFile,
                 parentRunId -> parentRunId.equals(entry.parentRunId()) ? seal : null,
-                profile, entry.profileDigest());
+                profile, entry.profileDigest(), entry);
     }
 
     /**

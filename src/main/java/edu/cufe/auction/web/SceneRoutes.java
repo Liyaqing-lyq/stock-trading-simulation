@@ -31,7 +31,7 @@ import java.util.UUID;
  * <ul>
  *   <li>只保存场景、槽位 ID、模型名、启用状态与预算整数；不保存凭据、key 文件路径、
  *       提示词或输出正文，也不保存任意地址（provider 与 baseUrl 是固定常量）。</li>
- *   <li>配置不是世界经济状态；它属于运行目录，重启后仍可见，但不进入 WorldJournal。</li>
+ *   <li>当前配置属于运行目录；人工接管可在子档来源中冻结父配置的非机密参数，子档此后独立设置。</li>
  *   <li>这里的预算只是配置值；本类不发起请求，也不声称已经约束任何真实调用；
  *       未来每次 attempt 必须自行冻结当时的配置，改 route 不影响已启动的请求。</li>
  *   <li>写入采用同目录唯一临时文件 + 原子替换；失败不发布半配置，只清理自己的临时文件。</li>
@@ -241,12 +241,25 @@ public final class SceneRoutes implements AutoCloseable {
      * @throws IOException 目录/文件不可用或内容不合法
      */
     public static SceneRoutes open(Path directory) throws IOException {
+        return open(directory, defaultSnapshot());
+    }
+
+    /** 从已核验的分支来源初始化子配置；已有文件总以其持久设置为准。调用方持有子档锁。 */
+    static SceneRoutes openBranch(Path directory, edu.cufe.auction.world.BranchOrigin origin) throws IOException {
+        if (origin.takeoverRoutes() == null) return open(directory);
+        var disabled = origin.takeoverRoutes().stream().map(r -> new Route(
+                Scene.fromId(r.sceneId()), r.slotId(), r.model(), false, r.maxCalls(), r.maxTotalTokens(),
+                r.maxOutputTokens(), r.maxConcurrency(), r.budgetPolicy(), r.providerPolicy())).toList();
+        return open(directory, new Snapshot(0, disabled));
+    }
+
+    private static SceneRoutes open(Path directory, Snapshot initial) throws IOException {
         Objects.requireNonNull(directory, "运行目录");
         Path root = directory.toAbsolutePath().normalize();
         Files.createDirectories(root);
         ObjectMapper mapper = strictMapper();
         Path file = root.resolve(FILE_NAME);
-        SceneRoutes routes = new SceneRoutes(root, mapper, defaultSnapshot());
+        SceneRoutes routes = new SceneRoutes(root, mapper, initial);
         if (!Files.exists(file)) {
             routes.persist(routes.snapshot);
             return routes;

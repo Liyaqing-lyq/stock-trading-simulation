@@ -225,6 +225,7 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
      * @param updatedAtMillis 最近变化时刻
      * @param draftDocId 本社可读的内稿文档，新口径下尚未投稿时为空
      * @param draftVersion 对应内稿版次，新口径下尚未投稿时为空
+     * @param reviewNotes  本人有权读取的历次退稿意见索引，旧档为空
      */
     public record MediaStory(String storyId, String template, String status, int revisionNo,
                              String topic, String authorPartyId, boolean own, boolean canReview,
@@ -233,7 +234,24 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
                              String draftDocId,
                              @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
                              Long draftVersion, String publicDocId,
-                             long publicVersion) {
+                             long publicVersion,
+                             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                             List<ReviewNote> reviewNotes) {
+
+        /** 固定本次观察中本人仍有阅读权的退稿目录。 */
+        public MediaStory {
+            if (reviewNotes != null) reviewNotes = List.copyOf(reviewNotes);
+        }
+
+        /** 兼容没有审阅意见资料的旧观察。 */
+        public MediaStory(String storyId, String template, String status, int revisionNo,
+                          String topic, String authorPartyId, boolean own, boolean canReview,
+                          boolean canPublish, int sourceGroups, long updatedAtMillis,
+                          String draftDocId, Long draftVersion, String publicDocId, long publicVersion) {
+            this(storyId, template, status, revisionNo, topic, authorPartyId, own, canReview,
+                    canPublish, sourceGroups, updatedAtMillis, draftDocId, draftVersion,
+                    publicDocId, publicVersion, null);
+        }
 
         /** 旧十参构造：没有实际可读标识（旧档案与新模型输入都不使用）。 */
         public MediaStory(String storyId, String template, String status, int revisionNo,
@@ -243,6 +261,9 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
                     canPublish, sourceGroups, updatedAtMillis, null, 0L, null, 0L);
         }
     }
+
+    /** 指向某次正式退稿意见的确切资料版本；read 表示本人确曾完成阅读。 */
+    public record ReviewNote(int revisionNo, String docId, long version, boolean read) { }
 
     /**
      * 本次观察固定的任职。

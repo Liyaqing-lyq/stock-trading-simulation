@@ -126,6 +126,55 @@ class WorldWebAppRouteDefaultsTest {
         }
     }
 
+    @Test void standardFeedbackOpeningMatchesLongStudyRoutesAndKeepsOperatorSettings() throws Exception {
+        Path work = Files.createDirectory(root.resolve("feedback"));
+        String mode = "world-ten-company-autonomy";
+        initialize(work, mode);
+        try (var routes = SceneRoutes.open(work)) {
+            var probe = AutonomousLifecycleProbe.probeRoutes(routes.view(), "TEN_COMPANY_FEEDBACK_STUDY");
+            assertEquals(probe.size(), routes.view().routes().size());
+            for (int i = 0; i < probe.size(); i++) {
+                var web = routes.view().routes().get(i);
+                var expected = probe.get(i);
+                assertFalse(web.enabled());
+                assertTrue(expected.enabled());
+                assertEquals(new SceneRoutes.Route(expected.scene(), expected.slotId(), expected.model(),
+                        false, expected.maxCalls(), expected.maxTotalTokens(), expected.maxOutputTokens(),
+                        expected.maxConcurrency(), expected.budgetPolicy(), expected.providerPolicy()), web);
+            }
+            var changed = new java.util.ArrayList<>(routes.view().routes());
+            var first = changed.get(0);
+            changed.set(0, new SceneRoutes.Route(first.scene(), first.slotId(), SceneRoutes.MODEL_PRO,
+                    false, 7, 20_000L, 512, 1));
+            routes.replace(routes.view().revision(), changed);
+        }
+        byte[] configured = Files.readAllBytes(work.resolve(SceneRoutes.FILE_NAME));
+        initialize(work, mode);
+        assertArrayEquals(configured, Files.readAllBytes(work.resolve(SceneRoutes.FILE_NAME)));
+    }
+
+    @Test void oldStandardJournalAndSeparateProductsKeepTheirOwnRouteDefaults() throws Exception {
+        Path prior = Files.createDirectory(root.resolve("legacy-ordinary"));
+        Path journal = prior.resolve("world-ten-company-autonomy-v9.journal");
+        try (var ignored = edu.cufe.auction.world.composed.ComposedIndustryScenario.openDigitalWindDownTenCompanyStudy(journal)) {
+            assertEquals("web-ten-company-autonomy-v9", ignored.profile().manifest().runId());
+        }
+        byte[] original = Files.readAllBytes(journal);
+        for (String mode : java.util.List.of("world-ten-company-autonomy", "world-open-fund", "world-manufacturing-upgrade")) {
+            Path work = mode.equals("world-ten-company-autonomy") ? prior : Files.createDirectory(root.resolve(mode));
+            initialize(work, mode);
+            try (var routes = SceneRoutes.open(work)) {
+                for (var route : routes.view().routes()) {
+                    assertFalse(route.enabled());
+                    assertEquals("lifecycle-v1", route.budgetPolicy());
+                    assertEquals(2500, route.maxCalls());
+                    assertEquals(35_000_000L, route.maxTotalTokens());
+                }
+            }
+        }
+        assertArrayEquals(original, Files.readAllBytes(journal));
+    }
+
     private void initialize(Path work, String mode) throws Exception {
         Path fakeKeys = work.resolve("test-only-fake-keys.txt");
         Files.writeString(fakeKeys, String.join("\n", "sk-fake-aaaaaaaaaaaaaaaa", "sk-fake-bbbbbbbbbbbbbbbb", "sk-fake-cccccccccccccccc", "sk-fake-dddddddddddddddd", "sk-fake-eeeeeeeeeeeeeeee"));

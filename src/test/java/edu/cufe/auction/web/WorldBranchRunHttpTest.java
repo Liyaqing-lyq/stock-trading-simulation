@@ -73,6 +73,99 @@ class WorldBranchRunHttpTest {
     // ------------------------------------------------------------------ 主链
 
     @Test
+    void protectedParentKeepsManualActionsInMarkedChildren() throws Exception {
+        startParentWorkOnly();
+        try (var world = edu.cufe.auction.world.composed.ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(journal)) {
+            assertTrue(world.snapshot().position() > 0);
+        }
+        byte[] original = Files.readAllBytes(journal);
+        startProtectedParent();
+        assertEquals(401,post("/api/admin/person-takeover","{}").statusCode());
+        login();
+        JsonNode runs=json(get("/api/admin/runs"));
+        assertEquals("READ_ONLY",runs.path("personActionMode").asText());
+        long position=runs.at("/current/position").asLong();
+        String ask=JSON.writeValueAsString(Map.of("personId","rita","expectedPosition",Long.toString(position)));
+        assertEquals(409,post("/api/admin/person-takeover",ask.replace(Long.toString(position), Long.toString(position-1))).statusCode());
+        assertEquals(400,post("/api/admin/person-takeover",ask.replace("rita","research-system")).statusCode());
+        String reserved=JSON.writeValueAsString(Map.of("childRunId","take-test","position",position,"kind","god","note","预留名称"));
+        assertEquals("TAKEOVER_ID_RESERVED",JSON.readTree(post("/api/admin/branches",reserved).body()).path("code").asText());
+        var requestPool=java.util.concurrent.Executors.newFixedThreadPool(2);
+        HttpResponse<String> first;
+        try {
+            var futures=requestPool.invokeAll(List.<java.util.concurrent.Callable<HttpResponse<String>>>of(
+                    () -> post("/api/admin/person-takeover",ask), () -> post("/api/admin/person-takeover",ask)));
+            first=futures.get(0).get();
+            assertEquals(json(first).path("runId"),json(futures.get(1).get()).path("runId"));
+        } finally { requestPool.shutdownNow(); }
+        String child=json(first).path("runId").asText();
+        int port=URI.create(json(first).path("location").asText()).getPort();
+        String childAdmin=cookieOf(first);
+        assertEquals("ADMIN",childJson(port,"/api/session",childAdmin).path("role").asText());
+        assertEquals("TAKEOVER",childJson(port,"/api/admin/runs",childAdmin).path("personActionMode").asText());
+        assertEquals(1,json(get("/api/admin/runs")).path("runs").size());
+        assertEquals("GOD_TAKEOVER",json(get("/api/admin/runs")).at("/runs/0/kind").asText());
+        assertEquals(position,json(get("/api/admin/runs")).at("/current/position").asLong());
+        json(post("/api/admin/runs/"+child+"/stop",""));
+        var restarted=post("/api/admin/person-takeover",ask);
+        assertEquals(child,json(restarted).path("runId").asText());
+        assertEquals(1,json(get("/api/admin/runs")).path("runs").size());
+        String personCookie=cookieOf(post("/api/session/person","{\"personId\":\"rita\"}"));
+        assertEquals(403,request(base,"POST","/api/admin/person-takeover",personCookie,ask).statusCode());
+        var parentView=request(base,"GET","/api/me/view",personCookie,null);
+        assertEquals("READ_ONLY",parentView.headers().firstValue("X-Person-Action-Mode").orElseThrow());
+        assertEquals("true",parentView.headers().firstValue("X-Person-Takeover-Available").orElseThrow());
+        String symbol = json(parentView).required("market").required(0).required("symbol").asText();
+        String chart = JSON.writeValueAsString(Map.of("symbol", symbol, "period", "day"));
+        assertEquals(200, request(base, "POST", "/api/me/view", personCookie, chart).statusCode());
+        for (String path:List.of("/api/me/read","/api/me/bank/action","/api/me/groups/action","/api/me/interview/coordination",
+                "/api/me/manufacturing/action","/api/me/engineering/action","/api/me/digital/action","/api/me/fund-units")) {
+            var rejected=request(base,"POST",path,personCookie,"{}");
+            assertEquals(403,rejected.statusCode(),path); assertTrue(rejected.body().contains("PERSON_TAKEOVER_REQUIRED"));
+        }
+        var own=json(request(base,"GET","/api/me/engineering",personCookie,null));
+        String ownAsk=JSON.writeValueAsString(Map.of("expectedPosition",own.required("observationToken").asText()));
+        assertEquals(400,request(base,"POST","/api/me/takeover",personCookie,ask).statusCode());
+        assertEquals(409,request(base,"POST","/api/me/takeover",personCookie,"{\"expectedPosition\":1}").statusCode());
+        var entered=request(base,"POST","/api/me/takeover",personCookie,ownAsk);
+        var target=json(entered); assertFalse(target.has("parentPosition"));
+        assertEquals(child,target.path("runId").asText());
+        int ownPort=URI.create(target.path("location").asText()).getPort();
+        String bound=cookieOf(entered);
+        assertEquals("rita",childJson(ownPort,"/api/session",bound).path("personId").asText());
+        assertEquals(403,childGet(ownPort,"/api/admin/runs",bound).statusCode());
+        assertEquals(403,childPost(ownPort,"/api/session/person",bound,"{\"personId\":\"ed\"}").statusCode());
+        JsonNode ownChild=childJson(ownPort,"/api/me/engineering",bound);
+        String read=JSON.writeValueAsString(Map.of("expectedPosition",ownChild.required("observationToken").asText(),
+                "commandId","manual-read","taskId","manual-read-task","dueTimeMillis",ownChild.path("timeMillis").asLong()+1,
+                "docId","engineering-opportunity:A1","version",1));
+        assertTrue(childJson(ownPort,"/api/me/read",bound,read).has("receipt"));
+        assertEquals(target.path("runId"),json(request(base,"POST","/api/me/takeover",personCookie,ownAsk)).path("runId"));
+        assertEquals(position,host.runIdentity().position());
+        close(); launcher=null;server=null;host=null;routes=null;
+        org.junit.jupiter.api.Assertions.assertArrayEquals(original,Files.readAllBytes(journal));
+        startProtectedParent();login();
+        var reopened=post("/api/admin/person-takeover",ask);
+        assertEquals(child,json(reopened).path("runId").asText());
+        int reopenedPort=URI.create(json(reopened).path("location").asText()).getPort();
+        assertTrue(childJson(reopenedPort,"/api/admin/runs",cookieOf(reopened)).at("/current/position").asLong()>position+1);
+        assertEquals(1,json(get("/api/admin/runs")).path("runs").size());
+        assertEquals(position,host.runIdentity().position());
+        JsonNode operator = json(post("/api/admin/branches", JSON.writeValueAsString(Map.of(
+                "childRunId", "operator-control", "position", position, "kind", "operator", "note", "操作员分支"))));
+        assertEquals("CREATED", operator.path("status").asText());
+        int operatorPort = json(post("/api/admin/runs/operator-control/start", "")).required("port").asInt();
+        String operatorAdmin = cookieOf(post("/api/admin/runs/operator-control/enter", ""));
+        assertEquals("READ_ONLY", childJson(operatorPort, "/api/admin/runs", operatorAdmin).path("personActionMode").asText());
+        String operatorPerson = cookieOf(childPost(operatorPort, "/api/session/person", operatorAdmin, "{\"personId\":\"rita\"}"));
+        var operatorView = childGet(operatorPort, "/api/me/view", operatorPerson);
+        assertEquals("false", operatorView.headers().firstValue("X-Person-Takeover-Available").orElseThrow());
+        assertEquals(403, childPost(operatorPort, "/api/me/read", operatorPerson, read).statusCode());
+        close(); launcher=null;server=null;host=null;routes=null;
+        org.junit.jupiter.api.Assertions.assertArrayEquals(original, Files.readAllBytes(journal));
+    }
+
+    @Test
     void createStartEnterTwiceStopAndRestart() throws Exception {
         startParent();
         login();
@@ -647,6 +740,19 @@ class WorldBranchRunHttpTest {
 
     private void startParent() throws Exception {
         startParent(18100, 18109);
+    }
+
+    private void startProtectedParent() throws Exception {
+        routes=SceneRoutes.open(work);
+        host=new WorldWebHost(() -> {
+            var world=edu.cufe.auction.world.composed.ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(journal);
+            return new WorldWebHost.Opened(world,world.profile().manifest().runId());
+        }, routes, (call, timeout) -> { throw new AssertionError("接管验收不应派发模型"); });
+        server=new WorldWebServer(host,KeySlots.load(keyFile),routes,0,BOOTSTRAP,null,ignored -> {});
+        launcher=new RunLauncher(new RunLauncher.Config(work.toAbsolutePath(),work.resolve("runs").toAbsolutePath(),
+                keyFile.toAbsolutePath(),18240,18249,2,30000L,
+                System.getProperty("surefire.test.class.path",System.getProperty("java.class.path"))),host::branchProfile);
+        server.attachLauncher(launcher);server.start();base=server.baseUrl();
     }
 
     private void startParent(int portFrom, int portTo) throws Exception {

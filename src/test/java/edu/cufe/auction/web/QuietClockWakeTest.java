@@ -118,10 +118,14 @@ class QuietClockWakeTest {
         assertTrue(calls.get(1).at("/profile/readExperiences").toString().contains("receipt"));
     }
 
-    @Test void quietMillisecondDoesNotWakeAnyoneButPrivateDeliveryAndMarketOpeningDo() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void quietMillisecondDoesNotWakeAnyoneButPrivateDeliveryAndMarketOpeningDo(boolean feedbackStudy) throws Exception {
         var ref = new AtomicReference<WorldRuntime>();
         try (var host = new WorldWebHost(() -> {
-            var world = ComposedIndustryScenario.openOpenFundOperating(dir.resolve("world.journal"));
+            var journal = dir.resolve("world.journal");
+            var world = feedbackStudy ? ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(journal)
+                    : ComposedIndustryScenario.openOpenFundOperating(journal);
             ref.set(world);
             return new WorldWebHost.Opened(world,world.profile().manifest().runId());
         })) {
@@ -136,7 +140,12 @@ class QuietClockWakeTest {
                             && !WorldWebScenario.RESEARCH_SYSTEM_PUBLISHER.equals(person.partyId()))
                         previous.put(person.partyId(), host.wakeFacts(world.autonomyRoleObservation(person.partyId())));
                 assertEquals(61,previous.size());
+                String earliest = "/interview/inviteWindow/earliestWindowStartMillis";
+                var reporterBefore = world.autonomyRoleObservation("digital-manager").at(earliest);
+                assertEquals(feedbackStudy, reporterBefore.isIntegralNumber());
                 world.advanceTo(start + 1);
+                if (feedbackStudy) assertEquals(reporterBefore.longValue() + 1,
+                        world.autonomyRoleObservation("digital-manager").at(earliest).longValue());
                 for (var entry : previous.entrySet()) {
                     var input = world.autonomyRoleObservation(entry.getKey());
                     assertEquals(start+1,input.at("/engineering/exchangeSessions/nowMillis").longValue());

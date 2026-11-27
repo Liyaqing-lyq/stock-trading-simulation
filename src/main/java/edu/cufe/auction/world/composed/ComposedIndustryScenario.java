@@ -612,6 +612,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.DIGITAL_WIND_DOWN_RUN_ID);
     }
 
+    /**
+     * 新建支持私有审稿意见和采访执行时限的普通世界，已有存档按其原清单恢复。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的普通十公司世界
+     * @throws Exception 初始化或逐帧重演失败
+     */
+    public static WorldRuntime openEditorialFeedbackTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.EDITORIAL_FEEDBACK_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {

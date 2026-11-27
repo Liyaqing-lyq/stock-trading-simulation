@@ -16,6 +16,7 @@ function makeElement(tag = "div", registry) {
     tag, attrs: {}, children: [], _text: "", hidden: false, value: "", required: false,
     dataset: {}, htmlFor: "", type: "text", autocomplete: "", _id: "", listeners: {},
     get textContent() { return this._text; },
+    get childElementCount() { return this.children.length; },
     set textContent(v) { this._text = v === null || v === undefined ? "" : String(v); },
     setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) { return this.attrs[k] === undefined ? null : this.attrs[k]; },
@@ -76,7 +77,7 @@ vm.runInContext("globalThis.__api = { state, renderEngineeringFields, engineerin
   + " engineeringValidate, engineeringActionBody, clearPersonalEngineering,"
   + " fillEngineeringSelectors, refreshEngineeringTools, engineeringToolsOf,"
   + " renderPeriodicBlock, currentPeriodicCard, fillPersonalEngineeringCompanies,"
-  + " scheduleDocumentReading, currentPersonCompany,"
+  + " scheduleDocumentReading, currentPersonCompany, renderPersonalMedia,"
   + " ENGINEERING_TOOL_FIELDS, ENGINEERING_FIELD_SPECS } ;", context);
 const api = context.__api;
 
@@ -818,6 +819,36 @@ check("convene-appointment-meeting-hint-is-new-meeting", () => {
   const text = allText(document.getElementById("eng-fields"));
   assert.ok(text.includes("本次要新召集的会议标识"), text);
   assert.ok(!text.includes("必须是自己召集或参与的会议"), text);
+});
+
+check("media-review-reading-keeps-revisions-and-person-separate", () => {
+  person(1000);
+  const notes = [
+    {revisionNo: "1", docId: "held-note-a", version: "1", read: true, body: "已读的一稿原意见"},
+    {revisionNo: "2", docId: "held-note-b", version: "1", read: false}
+  ];
+  const story = {topic:"工程机会", storyId:"story-1", reviewNotes:notes};
+  const documents = {rows:[]};
+  api.renderPersonalMedia({stories:{rows:[story]}, documents});
+  const list = document.getElementById("person-media-review-list");
+  assert.equal(list.childElementCount, 2);
+  assert.equal(document.getElementById("person-media-reviews").hidden, false);
+  assert.match(allText(list.children[0]), /第1稿审阅意见.*本人已读/);
+  assert.match(allText(list.children[0]), /已读的一稿原意见/);
+  assert.match(allText(list.children[1]), /第2稿审阅意见.*本人未读/);
+  assert.doesNotMatch(allText(list.children[1]), /一稿原意见/);
+  fetchCalls.length = 0;
+  fire(buttonByText(list.children[1], "阅读审阅意见"), "click");
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, "/api/me/read");
+  const sent = JSON.parse(fetchCalls[0].options.body);
+  assert.equal(sent.docId, "held-note-b");
+  assert.equal(sent.version, "1");
+  api.renderPersonalMedia({stories:{rows:[]}, documents:{rows:[]}});
+  assert.equal(document.getElementById("person-media-reviews").hidden, true);
+  assert.equal(list.childElementCount, 0);
+  api.renderPersonalMedia({stories:{rows:[{storyId:"old-story"}]}, documents:{rows:[]}});
+  assert.equal(document.getElementById("person-media-reviews").hidden, true);
 });
 
 let failed = 0;

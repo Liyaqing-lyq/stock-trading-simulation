@@ -90,7 +90,7 @@ public final class WorldWebServer implements AutoCloseable {
     private static final Set<String> BRANCH_QUERY = Set.of("position");
     private static final Set<String> BRANCH_CREATE_FIELDS = Set.of("position", "childRunId", "kind",
             "note");
-    private static final Set<String> HANDOFF_FIELDS = Set.of("token", "probe");
+    private static final Set<String> HANDOFF_FIELDS = Set.of("token", "probe", "personId");
     private static final Set<String> ROUTE_FIELDS = Set.of("scene", "slotId", "model", "enabled",
             "maxCalls", "maxTotalTokens", "maxOutputTokens", "maxConcurrency", "budgetPolicy", "providerPolicy");
     /** 工程页公司选择：只接受一个公司标识。 */
@@ -354,6 +354,14 @@ public final class WorldWebServer implements AutoCloseable {
                 send(exchange, 401, error("UNAUTHENTICATED", "会话不存在或已失效，请重新登录"));
                 return;
             }
+            if ("/api/admin/person-takeover".equals(path) && "POST".equals(method)) {
+                requireAdmin(exchange, session.get(), () -> personTakeover(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/takeover".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> personTakeover(exchange, session.get()));
+                return;
+            }
             if ("/api/session".equals(path) && "GET".equals(method)) {
                 currentSession(exchange, session.get());
                 return;
@@ -611,6 +619,14 @@ public final class WorldWebServer implements AutoCloseable {
                 requirePerson(exchange, session.get(), () -> siteVisitAction(exchange, session.get()));
                 return;
             }
+            if ("/api/me/interview/coordination".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> interviewCoordination(exchange, session.get()));
+                return;
+            }
+            if ("/api/me/orders".equals(path) && ("GET".equals(method) || "POST".equals(method))) {
+                requirePerson(exchange, session.get(), () -> personalOrders(exchange, session.get()));
+                return;
+            }
             if ("/api/me/fund-units".equals(path) && "POST".equals(method)) {
                 requirePerson(exchange, session.get(), () -> fundUnitsAction(exchange, session.get()));
                 return;
@@ -680,6 +696,7 @@ public final class WorldWebServer implements AutoCloseable {
     }
 
     private boolean knownRoute(String path, String method) {
+        if (("/api/admin/person-takeover".equals(path) || "/api/me/takeover".equals(path)) && "POST".equals(method)) return true;
         if ("/api/admin/period-statement".equals(path) && "POST".equals(method)) return true;
         if (("/api/admin/world".equals(path) || "/api/admin/world-exposure".equals(path)) && "GET".equals(method)) return true;
         if (("/api/admin/media".equals(path) || "/api/admin/capabilities".equals(path))
@@ -698,6 +715,8 @@ public final class WorldWebServer implements AutoCloseable {
             return true;
         }
         if ("/api/me/interview/site-visit".equals(path) && "POST".equals(method)) return true;
+        if ("/api/me/interview/coordination".equals(path) && "POST".equals(method)) return true;
+        if ("/api/me/orders".equals(path) && ("GET".equals(method) || "POST".equals(method))) return true;
         if ("/api/me/fund-units".equals(path) && "POST".equals(method)) return true;
         if ("/api/me/dialogue".equals(path) && "GET".equals(method)) {
             return true;
@@ -858,7 +877,19 @@ public final class WorldWebServer implements AutoCloseable {
             send(exchange, 403, error("FORBIDDEN", "当前身份无权访问个人接口"));
             return;
         }
+        String path = exchange.getRequestURI().getPath();
+        if ("POST".equals(exchange.getRequestMethod()) && path.startsWith("/api/me/")
+                && !path.equals("/api/me/view") && !path.equals("/api/me/takeover")
+                && "READ_ONLY".equals(personActionMode())) {
+            send(exchange, 403, error("PERSON_TAKEOVER_REQUIRED", "请先进入有记录的人工接管分支"));
+            return;
+        }
         runAction(exchange, action);
+    }
+
+    private String personActionMode() throws IOException {
+        try { return host.personActionMode(); }
+        catch (Exception unavailable) { throw new IOException("当前运行的接管规则不可用", unavailable); }
     }
 
     private void runAction(HttpExchange exchange, BlockingAction action) throws IOException {
@@ -1365,6 +1396,8 @@ public final class WorldWebServer implements AutoCloseable {
         current.put("firstPosition", Long.toString(identity.firstPosition()));
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("current", current);
+        String personMode = personActionMode();
+        if (personMode != null) body.put("personActionMode", personMode);
         body.put("launcher", launcher != null);
         body.put("maxRuns", launcher == null ? 0 : launcher.config().maxRuns());
         body.put("active", launcher == null ? 0 : launcher.activeCount());
@@ -1391,6 +1424,55 @@ public final class WorldWebServer implements AutoCloseable {
         }
         String id = rest.substring(0, rest.length() - action.length() - 1);
         return id.isEmpty() || id.contains("/") ? null : action;
+    }
+
+    /** 先封存当前父档切点，再复用本机运行管理器启动子档并换取相应身份的会话。 */
+    private synchronized void personTakeover(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException, WorldWebHost.PositionMismatch {
+        boolean personal = session.role() == WebSessions.Role.PERSON;
+        JsonNode args = jsonBody(exchange, personal ? Set.of("expectedPosition") : Set.of("personId", "expectedPosition"));
+        String person = personal ? session.personId() : requiredText(args, "personId");
+        Long expected = strictLong(args.get("expectedPosition"));
+        if (expected == null || expected <= 0) throw new IllegalArgumentException("接管位置或本人观察凭据无效");
+        if (launcher == null) {
+            send(exchange, 409, error("LAUNCHER_UNAVAILABLE", "当前进程没有子运行启动器"));
+            return;
+        }
+        try {
+            var cut = host.takeoverCut(person, expected, personal,
+                    new edu.cufe.auction.world.BranchRepository(launcher.config().runsDir()));
+            try {
+                launcher.start(cut.runId());
+            } catch (RunLauncher.Rejected e) {
+                if (!"ALREADY_RUNNING".equals(e.code())) throw e;
+            }
+            var entry = launcher.enter(cut.runId(), personal ? person : null);
+            Map<String,Object> result = new LinkedHashMap<>();
+            result.put("location", entry.location()); result.put("runId", cut.runId()); result.put("personId", person);
+            if (!personal) {
+                result.put("parentRunId", host.runId()); result.put("parentPosition", Long.toString(cut.parentPosition()));
+            }
+            synchronized (sessions) {
+                if (resolveSession(exchange).filter(session::equals).isEmpty()) {
+                    send(exchange, 401, error("UNAUTHENTICATED", "初始会话已失效，请重新进入"));
+                    return;
+                }
+                exchange.getResponseHeaders().add("Set-Cookie", entry.setCookie());
+                send(exchange, 200, mapper.writeValueAsString(result));
+            }
+        } catch (WorldWebHost.PositionMismatch | WorldWebHost.BusyException e) {
+            throw e;
+        } catch (BranchRejectedException e) {
+            send(exchange, 409, rejection(personal ? "TAKEOVER_UNAVAILABLE" : e.code(),
+                    personal ? "当前无法建立接管分支" : e.getMessage()));
+        } catch (RunLauncher.Rejected e) {
+            send(exchange, 409, rejection(personal ? "TAKEOVER_UNAVAILABLE" : e.code(),
+                    personal ? "当前无法进入接管分支" : e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception unavailable) {
+            throw new IOException("无法打开接管分支", unavailable);
+        }
     }
 
     /**
@@ -1475,7 +1557,17 @@ public final class WorldWebServer implements AutoCloseable {
         }
         if (!probe) {
             // 每次进入都换一个新会话；不清空既有会话，父/子在各自端口退出互不影响。
-            setCookie(exchange, sessions.create(WebSessions.Role.ADMIN, null));
+            if (body.has("personId")) {
+                String person = requiredText(body, "personId");
+                if (!"TAKEOVER".equals(personActionMode())) {
+                    send(exchange, 403, error("FORBIDDEN", "此分支不是人工接管分支")); return;
+                }
+                try { host.roleView(person); }
+                catch (Exception unavailable) { send(exchange, 403, error("FORBIDDEN", "人物无效")); return; }
+                setCookie(exchange, sessions.create(WebSessions.Role.PERSON, person));
+            } else {
+                setCookie(exchange, sessions.create(WebSessions.Role.ADMIN, null));
+            }
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("runId", identity.runId());
@@ -1981,6 +2073,74 @@ public final class WorldWebServer implements AutoCloseable {
         } catch (Exception failure) {
             throw new WorldIoFailure();
         }
+    }
+
+    private void personalOrders(HttpExchange exchange, WebSessions.Session session) throws IOException, WorldWebHost.BusyException {
+        try {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                send(exchange, 200, mapper.writeValueAsString(host.personalOrders(session.personId())));
+                return;
+            }
+            var body = jsonBody(exchange, Set.of("action", "commandId", "observedMillis", "accountId",
+                    "symbol", "side", "limitPrice", "quantity", "orderRef"));
+            String action = requiredText(body, "action");
+            String account = requiredText(body, "accountId");
+            edu.cufe.auction.world.PersonalOrderDesk.Instruction draft;
+            if ("LIMIT".equals(action) && body.size() == 8) {
+                String price = requiredText(body, "limitPrice");
+                if (!price.matches("(0|[1-9][0-9]*)([.][0-9]{1,2})?")) throw new IllegalArgumentException("限价");
+                draft = new edu.cufe.auction.world.PersonalOrderDesk.Instruction(action, account, requiredText(body, "symbol"),
+                        edu.cufe.auction.model.Side.valueOf(requiredText(body, "side")), new java.math.BigDecimal(price),
+                        researchInteger(body, "quantity"), null);
+            } else if ("CANCEL".equals(action) && body.size() == 5) {
+                draft = new edu.cufe.auction.world.PersonalOrderDesk.Instruction(action, account, null, null, null, 0L,
+                        requiredText(body, "orderRef"));
+            } else {
+                throw new IllegalArgumentException("未知订单或字段");
+            }
+            var result = host.personalOrder(session.personId(), researchInteger(body, "observedMillis"),
+                    requiredText(body, "commandId"), draft);
+            send(exchange, 200, mapper.writeValueAsString(result));
+        } catch (WorldWebHost.BusyException busy) {
+            throw busy;
+        } catch (IllegalStateException stale) {
+            send(exchange, 409, error("ORDER_CHANGED", "请刷新本人可用账户和活动委托。"));
+        } catch (ArithmeticException | IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "该个人委托无法排程，请核对本人账户、证券及委托参数。"));
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+    }
+
+    private void interviewCoordination(HttpExchange exchange, WebSessions.Session session) throws IOException, WorldWebHost.BusyException {
+        try {
+            var body=jsonBody(exchange, Set.of("observedMillis","commandId","action","toPartyId","topic",
+                    "windowStartMillis","windowEndMillis","durationMillis","requestId","startMillis"));
+            long observed=researchInteger(body,"observedMillis");
+            String command=requiredText(body,"commandId");
+            edu.cufe.auction.world.WorldRoleSession.InterviewInviteDraft invite=null;
+            edu.cufe.auction.world.WorldRoleSession.InterviewRespondDraft respond=null;
+            switch(requiredText(body,"action")) {
+                case "INVITE" -> {
+                    if (body.size()!=8) throw new IllegalArgumentException("邀请字段");
+                    invite=new edu.cufe.auction.world.WorldRoleSession.InterviewInviteDraft(command,requiredText(body,"toPartyId"),
+                            requiredText(body,"topic"),researchInteger(body,"windowStartMillis"),researchInteger(body,"windowEndMillis"),researchInteger(body,"durationMillis"));
+                }
+                case "ACCEPT" -> {
+                    if (body.size()!=5) throw new IllegalArgumentException("接受字段");
+                    respond=new edu.cufe.auction.world.WorldRoleSession.InterviewRespondDraft(requiredText(body,"requestId"),true,researchInteger(body,"startMillis"));
+                }
+                case "DECLINE" -> {
+                    if (body.size()!=4) throw new IllegalArgumentException("拒绝字段");
+                    respond=new edu.cufe.auction.world.WorldRoleSession.InterviewRespondDraft(requiredText(body,"requestId"),false,-1L);
+                }
+                default -> throw new IllegalArgumentException("未知预约动作");
+            }
+            send(exchange,200,mapper.writeValueAsString(host.scheduleInterviewCoordination(session.personId(),observed,command,invite,respond)));
+        } catch (WorldWebHost.BusyException busy) { throw busy;
+        } catch (IllegalStateException stale) { send(exchange,409,error("INTERVIEW_CHANGED","时点或本人状态已变化，请刷新后核对"));
+        } catch (IllegalArgumentException invalid) { send(exchange,400,error("INVALID","当前无法排程此预约动作"));
+        } catch (Exception failure) { throw new WorldIoFailure(); }
     }
 
     private void fundUnitsAction(HttpExchange exchange, WebSessions.Session session)
@@ -3003,6 +3163,13 @@ public final class WorldWebServer implements AutoCloseable {
             if (page.media() != null) response.put("media", page.media());
             exchange.getResponseHeaders().set("X-World-Run-Id",
                     java.net.URLEncoder.encode(host.runId(), StandardCharsets.UTF_8).replace("+", "%20"));
+            String personMode = personActionMode();
+            if (personMode != null) {
+                exchange.getResponseHeaders().set("X-Person-Action-Mode", personMode);
+                boolean available = "READ_ONLY".equals(personMode) && launcher != null
+                        && host.runIdentity().parentRunId().isEmpty();
+                exchange.getResponseHeaders().set("X-Person-Takeover-Available", Boolean.toString(available));
+            }
             send(exchange, 200, mapper.writeValueAsString(response));
         } catch (WorldWebHost.BusyException busy) {
             throw busy;
@@ -3194,6 +3361,9 @@ public final class WorldWebServer implements AutoCloseable {
         String name = switch (path) {
             case "/", "/index.html" -> "index.html";
             case "/app.js" -> "app.js";
+            case "/interview-coordination.js" -> "interview-coordination.js";
+            case "/person-takeover.js" -> "person-takeover.js";
+            case "/person-orders.js" -> "person-orders.js";
             case "/groups.js" -> "groups.js";
             case "/research.js" -> "research.js";
             case "/operations.js" -> "operations.js";

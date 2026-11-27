@@ -463,6 +463,11 @@ public final class RunLauncher implements AutoCloseable {
      * @throws Rejected 未运行、凭据失效或子进程拒绝
      */
     public Entry enter(String runId) throws Rejected {
+        return enter(runId, null);
+    }
+
+    /** 向已启动的子档交换指定人物的会话；角色和人名来自已认证的父档。 */
+    Entry enter(String runId, String person) throws Rejected {
         Managed own;
         synchronized (lock) {
             own = managed.get(runId);
@@ -475,7 +480,7 @@ public final class RunLauncher implements AutoCloseable {
         }
         HttpResponse<String> response;
         try {
-            response = handoff(own, false);
+            response = handoff(own, false, person);
         } catch (IOException interrupted) {
             throw new Rejected("HANDOFF_UNAVAILABLE", "子进程没有响应：" + interrupted.getMessage());
         }
@@ -716,7 +721,7 @@ public final class RunLauncher implements AutoCloseable {
                         + own.process.exitValue() + "）" + (tail.isEmpty() ? "" : "：" + tail));
             }
             try {
-                HttpResponse<String> response = handoff(own, true);
+                HttpResponse<String> response = handoff(own, true, null);
                 if (response.statusCode() == 200) {
                     JsonNode body = MAPPER.readTree(response.body());
                     String identity = checkIdentity(own, body);
@@ -758,10 +763,11 @@ public final class RunLauncher implements AutoCloseable {
         return null;
     }
 
-    private HttpResponse<String> handoff(Managed own, boolean probe) throws IOException {
+    private HttpResponse<String> handoff(Managed own, boolean probe, String person) throws IOException {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("token", own.handoff);
         body.put("probe", probe);
+        if (person != null) body.put("personId", person);
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("http://127.0.0.1:" + own.port + HANDOFF_PATH))
                 .timeout(Duration.ofMillis(probe ? 1_500L : 4_000L))

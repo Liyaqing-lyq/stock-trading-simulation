@@ -15,6 +15,7 @@ const operationsSource = fs.readFileSync(path.join(webDir, "operations.js"), "ut
 const researchFile = path.join(webDir, "research.js");
 const researchSource = fs.existsSync(researchFile) ? fs.readFileSync(researchFile, "utf8") : "";
 const manufacturingSource = fs.readFileSync(path.join(webDir, "manufacturing.js"), "utf8");
+const interviewCoordinationSource = fs.readFileSync(path.join(webDir, "interview-coordination.js"), "utf8");
 
 // ---------------------------------------------------------------- DOM 原语
 function makeElement(tag = "div") {
@@ -78,6 +79,7 @@ function makeWorld(router, name) {
   vm.runInContext(operationsSource, context);
   if (researchSource) vm.runInContext(researchSource, context);
   vm.runInContext(manufacturingSource, context);
+  vm.runInContext(interviewCoordinationSource, context);
   vm.runInContext(source, context);
   if (groupsSource) vm.runInContext(groupsSource, context);
   // `state` 是脚本级 const，不在全局对象上；显式取同一对象。

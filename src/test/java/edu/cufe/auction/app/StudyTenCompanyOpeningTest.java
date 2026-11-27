@@ -207,8 +207,7 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void digitalCessationIsFrozenOnlyForNewWorldsAndTheirBranches() throws Exception {
-        Path ninth = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v9.journal"), ninth);
+        Path ninth = dir.resolve("world-ten-company-autonomy-v9.journal");
         Path eighth = dir.resolve("world-ten-company-autonomy-v8.journal");
         try (var prior = ComposedIndustryScenario.openMeetingTenCompanyStudy(eighth)) {
             assertEquals(RunManifest.MEETING_TEN_COMPANY_RUN_ID, prior.profile().manifest().runId());
@@ -239,6 +238,47 @@ class StudyTenCompanyOpeningTest {
              var child = branches.open("digital-cessation-child", reopened.profile())) {
             assertEquals(RunManifest.DIGITAL_WIND_DOWN_RUN_ID, child.profile().manifest().policyRunId());
             assertEquals(reopened.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());
+        }
+    }
+
+    @Test void newFeedbackRulesBelongOnlyToTheNewOpeningAndItsBranches() throws Exception {
+        Path newest = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v10.journal"), newest);
+        Path ninth = dir.resolve("world-ten-company-autonomy-v9.journal");
+        try (var prior = ComposedIndustryScenario.openDigitalWindDownTenCompanyStudy(ninth)) {
+            assertEquals(RunManifest.DIGITAL_WIND_DOWN_RUN_ID, prior.profile().manifest().runId());
+        }
+        byte[] archived = Files.readAllBytes(ninth);
+        try (var prior = ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(WorldWebApp.tenCompanyJournal(dir));
+             var next = ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(newest)) {
+            var old = prior.profile().manifest();
+            var current = next.profile().manifest();
+            assertEquals(RunManifest.EDITORIAL_FEEDBACK_RUN_ID, current.runId());
+            var expected = new TreeMap<>(old.dataVersions());
+            expected.put("branch-profile-run", current.runId());
+            expected.put(RunManifest.EDITORIAL_REVIEW_FEEDBACK, RunManifest.PRIVATE_REVISION_READING);
+            expected.put(RunManifest.INTERVIEW_WINDOW_BASIS, RunManifest.EXECUTION_CLOCK_WINDOW);
+            expected.put(RunManifest.PERSON_TAKEOVER_POLICY, RunManifest.MARKED_TAKEOVER_BRANCH);
+            assertEquals(expected, current.dataVersions());
+            assertEquals(prior.openingRegistry(), next.openingRegistry());
+            assertEquals(prior.snapshot().accounts(), next.snapshot().accounts());
+            for (String key : java.util.List.of(RunManifest.EDITORIAL_REVIEW_FEEDBACK, RunManifest.INTERVIEW_WINDOW_BASIS,
+                    RunManifest.PERSON_TAKEOVER_POLICY)) {
+                var missing = new TreeMap<>(expected);
+                missing.remove(key);
+                assertThrows(IllegalArgumentException.class, () -> withPolicies(current, missing));
+                var grafted = new TreeMap<>(old.dataVersions());
+                grafted.put(key, expected.get(key));
+                assertThrows(IllegalArgumentException.class, () -> withPolicies(old, grafted));
+            }
+            next.createBranch("editorial-child", next.snapshot().position(), BranchOrigin.Kind.OPERATOR_BRANCH, "采编反馈");
+        }
+        assertArrayEquals(archived, Files.readAllBytes(ninth));
+        assertEquals(newest, WorldWebApp.tenCompanyJournal(dir));
+        try (var restored = ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(newest);
+             var child = new BranchRepository(dir.resolve("runs")).open("editorial-child", restored.profile())) {
+            assertEquals(RunManifest.EDITORIAL_FEEDBACK_RUN_ID, child.profile().manifest().policyRunId());
+            assertEquals(restored.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());
         }
     }
 

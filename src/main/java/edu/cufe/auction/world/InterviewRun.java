@@ -179,7 +179,8 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
      * @param position      提交位置
      */
     public record Coordination(String taskId, String personPartyId, String kind, boolean accepted,
-                               String reason, String requestId, long timeMillis, long position) {
+                               String reason, String requestId, long timeMillis, long position,
+                               @JsonInclude(JsonInclude.Include.NON_NULL) WindowFailure windowTiming) {
 
         /** 校验字段与种类。 */
         public Coordination {
@@ -195,8 +196,14 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
             if (timeMillis < 0 || position < 1) {
                 throw new IllegalArgumentException("协调结果时点或位置非法：" + taskId);
             }
+            if (windowTiming != null && (accepted || !InterviewModel.REASON_WINDOW.equals(reason)
+                    || windowTiming.executionMillis() != timeMillis)) throw new IllegalArgumentException("窗口回执与完成动作不符");
         }
     }
+
+    /** 窗口拒绝时按当时执行时钟与原生邀请条件计算的双方可核对数据；仅向本次执行人投影。 */
+    public record WindowFailure(long executionMillis, long requestedStartMillis, long earliestStartMillis,
+                                long latestStartMillis, long outsideByMillis, String reasonDetail) { }
 
     /** 深拷贝、排序并校验配置与状态的一一对应、结果索引一致性。 */
     public InterviewRun {

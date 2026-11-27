@@ -112,15 +112,22 @@ public final class WorldBranchApp {
         }
 
         KeySlots keys = KeySlots.load(keyFile);
-        SceneRoutes routes = SceneRoutes.open(workDir.resolve("run-state").resolve(runId));
+        SceneRoutes routes;
         // 先只验一次：能开出可信子档、位置与来源正确；失败即退出，不留半活端口。
         // 注意必须关掉这一份：真正对外服务的 Runtime 只能在宿主自己的写入线程里创建，
         // 否则任何业务写入都会因“不是创建线程”被拒绝。
         try (WorldRuntime probe = repository.open(runId, profile)) {
+            var origin = probe.branchOrigin().orElseThrow();
+            if (!entry.runId().equals(origin.childRunId()) || !entry.parentRunId().equals(origin.parentRunId())
+                    || entry.parentPosition() != origin.parentPosition() || !entry.kind().equals(origin.kind().name())
+                    || !entry.note().equals(origin.note())) {
+                throw new IOException("运行索引与子档首帧来源不一致");
+            }
             long position = probe.snapshot().position();
             if (position < entry.parentPosition() + 1L) {
                 throw new IllegalStateException("子档位置早于首帧：" + position);
             }
+            routes = SceneRoutes.openBranch(workDir.resolve("run-state").resolve(runId), origin);
         }
         final BranchRepository repo = repository;
         final BranchProfile trusted = profile;

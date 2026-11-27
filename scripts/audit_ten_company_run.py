@@ -26,15 +26,18 @@ INTERVIEW_POLICIES = {**PERSONAL_POLICIES, "interview-action-feedback": "bound-c
                       "social-action-feedback": "bound-message-v1", "periodic-action-feedback": "bound-period-result-v1"}
 MEETING_POLICIES = {**INTERVIEW_POLICIES, "periodic-meeting-view": "readable-period-material-v1"}
 DIGITAL_POLICIES = {**MEETING_POLICIES, "digital-cessation": "board-wind-down-v1"}
+FEEDBACK_POLICIES = {**DIGITAL_POLICIES, "editorial-review-feedback": "private-revision-reading-v1",
+                     "interview-window-basis": "execution-clock-v1", "web-person-takeover": "marked-branch-v1"}
 OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
                     "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES,
                     "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES,
-                    "web-ten-company-autonomy-v8": MEETING_POLICIES, "web-ten-company-autonomy-v9": DIGITAL_POLICIES}
+                    "web-ten-company-autonomy-v8": MEETING_POLICIES, "web-ten-company-autonomy-v9": DIGITAL_POLICIES,
+                    "web-ten-company-autonomy-v10": FEEDBACK_POLICIES}
 
 
 def check_policies(run_id, data_versions):
     expected = OPENING_POLICIES[run_id]
-    actual = {k: data_versions[k] for k in DIGITAL_POLICIES if k in data_versions}
+    actual = {k: data_versions[k] for k in FEEDBACK_POLICIES if k in data_versions}
     if data_versions.get("branch-profile-run") != run_id or actual != expected:
         raise ValueError("原生开局声明的政策与该版运行身份不符")
 
@@ -61,6 +64,11 @@ def checked_frames(source, file_digest):
             file_digest.update(payload)
             file_digest.update(checksum)
             frame = decode(gzip.decompress(payload) if length < 0 else payload)
+            if previous == 0 and frame.get("commandId") == "__branch__":
+                origin = decode(frame["commandContent"])["branch"]
+                if origin["kind"] == "GOD_TAKEOVER":
+                    raise ValueError("人工接管分支应单列，不计入普通全员自然样本")
+                raise ValueError("该档从父运行的确认点派生，需使用其封存父前缀复核分支")
             if frame["position"] != previous + 1:
                 raise ValueError("需要从开局起连续的完整日志")
             previous += 1
@@ -180,7 +188,7 @@ def audit(source, target_days=None):
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
         if run_id not in OPENING_POLICIES or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2 至 v9 紧凑日志")
+            raise ValueError("此脚本仅复算标准十公司 v2 至 v10 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")

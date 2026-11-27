@@ -31,6 +31,7 @@ public final class RolePlanningContext {
             try { row.put("earliestCompletionMillis", Math.addExact(Math.addExact(now, think), action)); }
             catch (ArithmeticException overflow) { row.put("timingStatus", "UNKNOWN_OVERFLOW"); }
         }
+        InterviewWindowTiming.completePlanning(input, actions);
         var delib = (ObjectNode) eng.path("deliberation");
         delib.put("replyContract", "只输出一个对象：{tool,decision:{objective:上述id,basis:一句话依据或缺项,reviewAfterMillis:正整数毫秒时长}}；非role.wait再含args。decision仅有这三个字段，不得输出绝对复查时点。basis只写可审计结论摘要，不写完整推理；等待说明条件或缺项。复查由本次冻结input.time加时长精确推导，事件可提前唤醒。");
         delib.putObject("reviewBounds").put("durationAfterExclusive", 0L)

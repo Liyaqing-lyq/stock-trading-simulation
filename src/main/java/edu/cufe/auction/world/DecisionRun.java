@@ -718,6 +718,12 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 }
                 node.put("publicDocId", story.publicDocId());
                 node.put("publicVersion", story.publicVersion());
+                if (story.reviewNotes() != null) {
+                    ArrayNode notes = node.putArray("reviewNotes");
+                    for (var note : story.reviewNotes())
+                        notes.addObject().put("revisionNo", note.revisionNo()).put("docId", note.docId())
+                                .put("version", note.version()).put("read", note.read());
+                }
             }
         }
 

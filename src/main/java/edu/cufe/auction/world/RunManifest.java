@@ -153,6 +153,20 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String DIGITAL_CESSATION = "digital-cessation";
     /** 依据董事会决议停接，并保留原合同及资金义务。 */
     public static final String BOARD_DIGITAL_WIND_DOWN = "board-wind-down-v1";
+    /** 十公司第十版，开启稿件审阅反馈和按执行时点计算的采访窗口。 */
+    public static final String EDITORIAL_FEEDBACK_RUN_ID = "web-ten-company-autonomy-v10";
+    /** 私有审阅意见的版本键。 */
+    public static final String EDITORIAL_REVIEW_FEEDBACK = "editorial-review-feedback";
+    /** 意见绑定被审原稿，获权人员读完后取得正文。 */
+    public static final String PRIVATE_REVISION_READING = "private-revision-reading-v1";
+    /** 采访窗口起算依据的版本键。 */
+    public static final String INTERVIEW_WINDOW_BASIS = "interview-window-basis";
+    /** 邀约在执行时检查本社要求的最短提前期。 */
+    public static final String EXECUTION_CLOCK_WINDOW = "execution-clock-v1";
+    /** 上帝视角切换后人工操作的隔离政策键。 */
+    public static final String PERSON_TAKEOVER_POLICY = "web-person-takeover";
+    /** 人工接管写入有来源记录的个人操作分支。 */
+    public static final String MARKED_TAKEOVER_BRANCH = "marked-branch-v1";
     /** 董事期末会议材料的可读投影口径。 */
     public static final String PERIODIC_MEETING_VIEW = "periodic-meeting-view";
     /** 按董事的实际读权提供期末材料。 */
@@ -200,14 +214,16 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
     public static Map<String, String> tenCompanyStudyPolicies(String id) {
-        boolean periodMeetings = MEETING_TEN_COMPANY_RUN_ID.equals(id) || DIGITAL_WIND_DOWN_RUN_ID.equals(id);
+        boolean editorialFeedback = EDITORIAL_FEEDBACK_RUN_ID.equals(id);
+        boolean digitalWindDown = DIGITAL_WIND_DOWN_RUN_ID.equals(id) || editorialFeedback;
+        boolean periodMeetings = MEETING_TEN_COMPANY_RUN_ID.equals(id) || digitalWindDown;
         boolean interviewReceipts = INTERVIEW_TEN_COMPANY_RUN_ID.equals(id) || periodMeetings;
         if (GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
                 || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || interviewReceipts) {
@@ -227,7 +243,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 policies.put(PERIODIC_RECEIPTS, ATTRIBUTED_PERIOD_RESULTS);
             }
             if (periodMeetings) policies.put(PERIODIC_MEETING_VIEW, READABLE_PERIOD_MATERIAL);
-            if (DIGITAL_WIND_DOWN_RUN_ID.equals(id)) policies.put(DIGITAL_CESSATION, BOARD_DIGITAL_WIND_DOWN);
+            if (digitalWindDown) policies.put(DIGITAL_CESSATION, BOARD_DIGITAL_WIND_DOWN);
+            if (editorialFeedback) {
+                policies.put(EDITORIAL_REVIEW_FEEDBACK, PRIVATE_REVISION_READING);
+                policies.put(INTERVIEW_WINDOW_BASIS, EXECUTION_CLOCK_WINDOW);
+                policies.put(PERSON_TAKEOVER_POLICY, MARKED_TAKEOVER_BRANCH);
+            }
             return Map.copyOf(policies);
         }
         return STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
@@ -253,7 +274,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return TEN_COMPANY_AUTONOMY_RUN_ID.equals(id) || STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
                 || GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
                 || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || INTERVIEW_TEN_COMPANY_RUN_ID.equals(id)
-                || MEETING_TEN_COMPANY_RUN_ID.equals(id) || DIGITAL_WIND_DOWN_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
+                || MEETING_TEN_COMPANY_RUN_ID.equals(id) || DIGITAL_WIND_DOWN_RUN_ID.equals(id)
+                || EDITORIAL_FEEDBACK_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
                 || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
     }
 

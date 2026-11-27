@@ -66,6 +66,7 @@ import java.util.TreeSet;
  * 组织工时的预留与消费属于 M4h.2 运行桥，本类不声称已执行资源限制。</p>
  */
 public final class MediaModel {
+    static final String REVIEW_NOTE_PREFIX = "media-review:";
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
@@ -343,15 +344,28 @@ public final class MediaModel {
      * @param docId        关联资料；无关联为空串
      * @param docVersion   关联版本；无关联为 0
      * @param note         结果代码或退回理由
+     * @param reviewNoteDocId 新制正式退稿对应的内部资料，旧档为空
      */
     public record Revision(String storyId, int revisionNo, Status status, String actorPartyId,
-                           long atMillis, String docId, long docVersion, String note) {
+                           long atMillis, String docId, long docVersion, String note,
+                           @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                           String reviewNoteDocId) {
+
+        /** 旧流程的稿件记录没有单独的意见资料。 */
+        public Revision(String storyId, int revisionNo, Status status, String actorPartyId,
+                        long atMillis, String docId, long docVersion, String note) {
+            this(storyId, revisionNo, status, actorPartyId, atMillis, docId, docVersion, note, null);
+        }
 
         /** 校验字段。 */
         public Revision {
             requireText(storyId, "记录稿件");
             requireText(actorPartyId, "记录执行人");
             Objects.requireNonNull(status, "记录状态");
+            if (reviewNoteDocId != null) {
+                requireText(reviewNoteDocId, "审阅意见资料");
+                if (status != Status.RETURNED) throw new IllegalArgumentException("审阅意见资料须对应退稿");
+            }
             if (revisionNo < 0 || atMillis < 0 || docVersion < 0) {
                 throw new IllegalArgumentException("记录计数不能为负：" + storyId);
             }
@@ -989,6 +1003,33 @@ public final class MediaModel {
     public static Outcome review(State state, Policy policy, RoleAccess.State access,
                                  InformationModel.State information, String editor,
                                  ReviewRequest request) {
+        return review(state, policy, access, information, editor, request, null);
+    }
+
+    /** 新制正式退稿在同一批产生不可追加的内部意见资料，绑定这次投稿版本。 */
+    static BridgeOutcome reviewWithFeedback(State state, Policy policy, RoleAccess.State access,
+                                           InformationModel.State information, String editor, ReviewRequest request) {
+        String id = null;
+        if (!request.approve()) {
+            String prefix = REVIEW_NOTE_PREFIX + request.expectedRevision() + ":" + draftDocId(policy, request.storyId());
+            id = prefix;
+            for (int n = 1; documentOf(information, id) != null; n++) id = prefix + ":" + n;
+        }
+        Outcome outcome = review(state, policy, access, information, editor, request, id);
+        if (!outcome.accepted() || id == null)
+            return new BridgeOutcome(outcome.accepted(), outcome.reason(), outcome.state(), information);
+        Story story = findStory(state, request.storyId());
+        var audience = new InformationModel.Audience(AudienceKind.EDITORIAL_REVIEW,
+                policy.mediaOrganizationPartyId(), story.authorPartyId());
+        var note = new InformationModel.VersionDraft(story.topic() + "（第" + story.revisionNo() + "稿退稿意见）",
+                request.note(), "本编辑部内部审阅意见", request.completedAtMillis(), policy.draftReadMillis(), List.of());
+        return new BridgeOutcome(true, outcome.reason(), outcome.state(),
+                InformationModel.publish(information, id, editor, audience, note));
+    }
+
+    private static Outcome review(State state, Policy policy, RoleAccess.State access,
+                                  InformationModel.State information, String editor,
+                                  ReviewRequest request, String reviewNoteDocId) {
         requireState(state);
         requirePolicy(policy);
         requireAccess(access);
@@ -1044,7 +1085,7 @@ public final class MediaModel {
         return new Outcome(true, REASON_OK, append(state, updated, new Revision(story.storyId(),
                 story.revisionNo(), next, editor, request.completedAtMillis(), story.draftDocId(),
                 story.draftVersion(), request.note().isBlank()
-                ? (request.approve() ? "APPROVED" : "RETURNED") : request.note())));
+                ? (request.approve() ? "APPROVED" : "RETURNED") : request.note(), reviewNoteDocId)));
     }
 
     /**
@@ -1203,18 +1244,14 @@ public final class MediaModel {
         }
         Policy policy = state.policy();
         String organization = policy.mediaOrganizationPartyId();
-        boolean editor = authorizedAt(access, person, Action.REVIEW_STORY, organization, nowMillis)
-                || authorizedAt(access, person, Action.PUBLISH_STORY, organization, nowMillis);
-        boolean journalist = authorizedAt(access, person, Action.WRITE_STORY, organization,
-                nowMillis);
+        StoryAccess rights = storyAccess(access, person, organization, nowMillis);
         List<StoryView> views = new ArrayList<>();
         for (Story story : state.stories()) {
             if (story.createdAtMillis() > nowMillis || story.updatedAtMillis() > nowMillis) {
                 // 未来才存在的稿件不在当前时点投影，避免提前泄露未发生的工作流
                 continue;
             }
-            boolean visible = (journalist && story.authorPartyId().equals(person)) || editor;
-            if (!visible) {
+            if (!rights.canSee(person, story.authorPartyId())) {
                 continue;
             }
             boolean read = story.draftVersion() > 0
@@ -1234,6 +1271,33 @@ public final class MediaModel {
                     story.publicVersion(), story.approvedBy(), story.updatedAtMillis()));
         }
         return List.copyOf(views);
+    }
+
+    /** 内稿工作台与退稿资料共用同一时点的真实任职权。 */
+    static StoryAccess storyAccess(RoleAccess.State access, String person, String organization, long now) {
+        return new StoryAccess(authorizedAt(access, person, Action.WRITE_STORY, organization, now),
+                authorizedAt(access, person, Action.REVIEW_STORY, organization, now)
+                        || authorizedAt(access, person, Action.PUBLISH_STORY, organization, now));
+    }
+
+    record StoryAccess(boolean writes, boolean edits) {
+        boolean canSee(String person, String author) { return edits || writes && person.equals(author); }
+    }
+
+    /** 仅在新制本人有权的稿件行上给出退稿意见阅读入口。 */
+    static Map<String,List<RoleTradingView.ReviewNote>> reviewNotes(State state, InformationModel.State information,
+            List<StoryView> visibleStories, String person, long now) {
+        Map<String,List<RoleTradingView.ReviewNote>> notes = new HashMap<>();
+        for (StoryView story : visibleStories) notes.put(story.storyId(), new ArrayList<>());
+        for (Revision revision : state.revisions()) {
+            String id = revision.reviewNoteDocId();
+            var rows = notes.get(revision.storyId());
+            if (id != null && rows != null && revision.atMillis() <= now) {
+                rows.add(new RoleTradingView.ReviewNote(revision.revisionNo(), id, 1L,
+                        InformationModel.canCite(information, person, id, 1L, now)));
+            }
+        }
+        return notes;
     }
 
     /**
