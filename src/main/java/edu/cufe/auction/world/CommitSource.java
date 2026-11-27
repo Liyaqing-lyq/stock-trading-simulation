@@ -157,6 +157,11 @@ final class BranchCommitSource implements CommitSource {
         this(new ListCommitSource(prefix), journal);
     }
 
+    /** 核对重放所得的月末帧确属本封存前缀与当前子档。 */
+    boolean readsFrom(CommitSource verifiedPrefix, WorldJournal child) {
+        return parent == verifiedPrefix && journal == child;
+    }
+
     BranchCommitSource(CommitSource parent, WorldJournal journal) {
         this.parent = parent;
         this.prefix = parent.commits();

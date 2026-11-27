@@ -7,7 +7,7 @@ from pathlib import Path
 import argparse
 
 from audit_ten_company_run import (
-    DAY, OPENING_POLICIES, ORDER, TRADE, check_policies, check_trade_orders, checked_frames, decode, patch_field
+    DAY, ORDER, TRADE, checked_opening, check_trade_orders, checked_frames, decode, patch_field
 )
 
 
@@ -61,10 +61,7 @@ def audit(path):
         patch = delta["patch"]
         keys = ("accounts", "exchange", "securities", "bank")
         if position == 1:
-            manifest = decode(frame["commandContent"])["manifest"]
-            if frame["runId"] not in OPENING_POLICIES or manifest["runId"] != frame["runId"]:
-                raise ValueError("仅支持有版本记录的标准十公司日志")
-            check_policies(frame["runId"], manifest["dataVersions"])
+            checked_opening(frame)
             state = {k: patch["value"][k] for k in keys}
             out["runId"] = frame["runId"]
             now = patch["value"]["timeMillis"]

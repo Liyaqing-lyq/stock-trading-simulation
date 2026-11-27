@@ -28,22 +28,40 @@ MEETING_POLICIES = {**INTERVIEW_POLICIES, "periodic-meeting-view": "readable-per
 DIGITAL_POLICIES = {**MEETING_POLICIES, "digital-cessation": "board-wind-down-v1"}
 FEEDBACK_POLICIES = {**DIGITAL_POLICIES, "editorial-review-feedback": "private-revision-reading-v1",
                      "interview-window-basis": "execution-clock-v1", "web-person-takeover": "marked-branch-v1"}
+PERSONAL_NEWS_POLICIES = {**FEEDBACK_POLICIES, "personal-news-ranking": "visible-interest-v1",
+                          "news-exploration-slot": "4", "market-session-wake": "role-exposure-choice-v1",
+                          "media-subscriptions": "consented-interview-delivery-v1", "cross-border-editing": "dual-clock-editing-v1",
+                          "pharma-licensing": "approved-use-contract-v1", "hydro-inflow-path": "finite-1080d-v1"}
 OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
                     "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES,
                     "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES,
                     "web-ten-company-autonomy-v8": MEETING_POLICIES, "web-ten-company-autonomy-v9": DIGITAL_POLICIES,
-                    "web-ten-company-autonomy-v10": FEEDBACK_POLICIES}
+                    "web-ten-company-autonomy-v10": FEEDBACK_POLICIES,
+                    "web-ten-company-autonomy-v11": PERSONAL_NEWS_POLICIES}
 
 
 def check_policies(run_id, data_versions):
     expected = OPENING_POLICIES[run_id]
-    actual = {k: data_versions[k] for k in FEEDBACK_POLICIES if k in data_versions}
+    actual = {k: data_versions[k] for k in PERSONAL_NEWS_POLICIES if k in data_versions}
     if data_versions.get("branch-profile-run") != run_id or actual != expected:
         raise ValueError("原生开局声明的政策与该版运行身份不符")
 
 
 def decode(raw):
     return json.loads(raw, parse_float=Decimal)
+
+
+def checked_opening(frame):
+    """三种审计均依据已确认开局命令、唯一清单事件及该版冻结策略。"""
+    run_id = frame["runId"]
+    records = [e["payload"] for e in frame["events"] if e["type"] == "RUN_MANIFEST_V1"]
+    if run_id not in OPENING_POLICIES or frame["position"] != 1 or records != [frame["commandContent"]]:
+        raise ValueError("标准十公司首帧清单与已确认开局命令不符")
+    command = decode(records[0])
+    if command["manifest"]["runId"] != run_id:
+        raise ValueError("首帧运行与清单身份不符")
+    check_policies(run_id, command["manifest"]["dataVersions"])
+    return command
 
 
 def checked_frames(source, file_digest):
@@ -188,22 +206,19 @@ def audit(source, target_days=None):
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
         if run_id not in OPENING_POLICIES or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2 至 v10 紧凑日志")
+            raise ValueError("此脚本仅复算标准十公司 v2 至 v11 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")
         prior_digest = delta["resultDigest"]
         patch = delta["patch"]
         if position == 1:
-            manifests = [e["payload"] for e in events if e["type"] == "RUN_MANIFEST_V1"]
             registries = [decode(e["payload"]) for e in events if e["type"] == "OPENING_REGISTRY_V1"]
-            command = decode(frame["commandContent"])
-            if manifests != [frame["commandContent"]] or registries != [command["registry"]]:
-                raise ValueError("首帧清单或登记册与已确认开局命令不符")
-            manifest = command["manifest"]
-            if manifest["runId"] != run_id or patch["value"]["runId"] != run_id:
+            command = checked_opening(frame)
+            if registries != [command["registry"]]:
+                raise ValueError("首帧登记册与已确认开局命令不符")
+            if patch["value"]["runId"] != run_id:
                 raise ValueError("开局清单、状态与普通十公司运行身份不符")
-            check_policies(run_id, manifest["dataVersions"])
             state = {name: patch["value"][name] for name in FIELDS}
         else:
             for name in FIELDS:

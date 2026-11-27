@@ -366,6 +366,12 @@ public final class WorldRuntime implements AutoCloseable {
     /** 最近两次已完整核验的期末边界，各保留该边界第一帧供同实例的历史差量读取。 */
     private WorldState currentPeriodAnchor;
     private WorldState priorPeriodAnchor;
+    /** 分支月份基准只属于这份已重演的封存件及当前子档。 */
+    private CommitSource verifiedPeriodPrefix;
+
+    /** 只从已完整重放的同一封存前缀取月末基准，子档只保留最近两个真实期间。 */
+    private record VerifiedPrefix(CommitSource source, WorldState end, WorldState latestMonth, WorldState priorMonth) {}
+
     /** 每个固定 CommitSource 生命周期独占的轻量身份，不保留源对象图。 */
     private final Object historicalInformationSource = new Object();
     private final HistoricalInformationCache historicalInformationCache =
@@ -1332,21 +1338,19 @@ public final class WorldRuntime implements AutoCloseable {
      *
      * @param scannedPrefix 只用于父前缀校验；非空表示"不要打开日志"
      * @param origin        分支来源；非空表示分支子档
-     * @param parentState   已逐帧验证的父边界状态；分支子档派生基准
-     * @param prefixCommits 已逐帧验证的父前缀批次；分支子档的只读事实源
+     * @param verified      已逐帧验证的父前缀、父边界状态与月末基准
      */
     private record OpenMode(CommitSource scannedPrefix, BranchOrigin origin,
-                            WorldState parentState, CommitSource prefixCommits, LongConsumer verifiedPosition) {
+                            VerifiedPrefix verified, LongConsumer verifiedPosition) {
 
         /** 父前缀校验模式。 */
         static OpenMode verification(CommitSource scanned, LongConsumer verifiedPosition) {
-            return new OpenMode(scanned, null, null, null, verifiedPosition);
+            return new OpenMode(scanned, null, null, verifiedPosition);
         }
 
         /** 分支子档模式。 */
-        static OpenMode branch(BranchOrigin origin, WorldState parentState,
-                               CommitSource prefixCommits, LongConsumer verifiedPosition) {
-            return new OpenMode(null, origin, parentState, prefixCommits, verifiedPosition);
+        static OpenMode branch(BranchOrigin origin, VerifiedPrefix verified, LongConsumer verifiedPosition) {
+            return new OpenMode(null, origin, verified, verifiedPosition);
         }
     }
 
@@ -1412,7 +1416,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private void writeBranchOpen(OpenMode mode) throws IOException {
         BranchBatch batch = branchBatch(mapper, manifest, mode.origin(),
-                openingContentMap(orderedOpenings), mode.parentState(), derive(mode.parentState(), manifest, mode.origin()));
+                openingContentMap(orderedOpenings), mode.verified().end(), derive(mode.verified().end(), manifest, mode.origin()));
         journal.commit(BRANCH_COMMAND, batch.content(), "BRANCHED", batch.events());
     }
 
@@ -1969,21 +1973,21 @@ public final class WorldRuntime implements AutoCloseable {
             throw new BranchRejectedException(BRANCH_PROFILE_MISMATCH,
                     "宿主画像摘要与运行索引登记不一致");
         }
-        WorldState parentState;
+        VerifiedPrefix verified;
         try {
-            parentState = verifyPrefix(profile, prefix, verifiedPosition);
+            verified = verifyPrefix(profile, prefix, verifiedPosition);
         } catch (IOException invalid) {
             // 摘要对上也不代表语义合法：父前缀必须用同一校验链重放通过
             throw new BranchRejectedException(BRANCH_PARENT_PREFIX_MISMATCH,
                     "父前缀语义校验失败：" + invalid.getMessage(), invalid);
         }
-        if (parentState.position() != origin.parentPosition()) {
+        if (verified.end().position() != origin.parentPosition()) {
             throw new BranchRejectedException(BRANCH_PARENT_PREFIX_MISMATCH,
-                    "父前缀末位与切点不一致：" + parentState.position() + "/"
+                    "父前缀末位与切点不一致：" + verified.end().position() + "/"
                             + origin.parentPosition());
         }
         // v2 传 null/空表（与原 20 参口径一致）；v3 才带银行申请与额外章程，摘要也已含这两项。
-        return new WorldRuntime(OpenMode.branch(origin, parentState, prefix, verifiedPosition), childFile,
+        return new WorldRuntime(OpenMode.branch(origin, verified, verifiedPosition), childFile,
                 childManifest, profile.openings(), profile.registry(), profile.manufacturing(),
                 profile.charter(), profile.roles(), profile.information(), profile.decisions(),
                 null, profile.media(), profile.interview(), profile.dialogue(),
@@ -2007,10 +2011,10 @@ public final class WorldRuntime implements AutoCloseable {
      */
     static WorldState verifyPrefix(BranchProfile profile, CommitSource scanned)
             throws IOException {
-        return verifyPrefix(profile, scanned, null);
+        return verifyPrefix(profile, scanned, null).end();
     }
 
-    private static WorldState verifyPrefix(BranchProfile profile, CommitSource scanned, LongConsumer verifiedPosition)
+    private static VerifiedPrefix verifyPrefix(BranchProfile profile, CommitSource scanned, LongConsumer verifiedPosition)
             throws IOException {
         WorldRuntime verifier = new WorldRuntime(OpenMode.verification(scanned, verifiedPosition), null,
                 profile.manifest(), profile.openings(), profile.registry(),
@@ -2024,7 +2028,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (verifier.verifiedPrefixState == null) {
             throw new IOException("父前缀校验没有产生终态");
         }
-        return verifier.verifiedPrefixState;
+        return new VerifiedPrefix(scanned, verifier.verifiedPrefixState, verifier.currentPeriodAnchor, verifier.priorPeriodAnchor);
     }
 
     /**
@@ -14259,6 +14263,9 @@ public final class WorldRuntime implements AutoCloseable {
         if (position <= 0) {
             throw new IllegalArgumentException("观察位置不存在：" + position);
         }
+        if (verifiedPeriodPrefix != null && !(commitSource instanceof BranchCommitSource branch
+                && branch.readsFrom(verifiedPeriodPrefix, journal)))
+            throw new IOException("月末历史读取的来源与已验证子运行不一致");
         var confirmed = commitSource.commitAt(position);
         if (confirmed.isPresent()) {
             WorldCommit target = confirmed.orElseThrow();
@@ -16735,6 +16742,7 @@ public final class WorldRuntime implements AutoCloseable {
         state = candidate;
         if (compactState()) deltaReadCursor = candidate;
         rememberVerifiedInformation(committed, candidate);
+        if (verifiedPeriodPrefix != null) rememberPeriodAnchor(candidate);
     }
 
     private PendingTask peek(long inclusiveMillis) {
@@ -25798,7 +25806,7 @@ public final class WorldRuntime implements AutoCloseable {
      */
     private WorldState restoreBranch(List<WorldCommit> commits, OpenMode mode) throws IOException {
         BranchOrigin origin = mode.origin();
-        WorldState parentState = mode.parentState();
+        WorldState parentState = mode.verified().end();
         WorldCommit first = commits.get(0);
         if (!"BRANCHED".equals(first.result())) {
             throw new IOException("分支首帧回报必须是 BRANCHED：" + first.result());
@@ -25844,6 +25852,7 @@ public final class WorldRuntime implements AutoCloseable {
             validate(snapshot, commit, previous);
             validateAudits(commit, snapshot, previous);
             rememberVerifiedInformation(commit, snapshot);
+            if (verifiedPeriodPrefix != null) rememberPeriodAnchor(snapshot);
             if (mode.verifiedPosition() != null) mode.verifiedPosition().accept(commit.position());
             previous = snapshot;
         }
@@ -32939,14 +32948,18 @@ public final class WorldRuntime implements AutoCloseable {
         if (!compactState() || capturing || commit.position() != verifiedInformationPosition + 1
                 || frame.position() != commit.position() || !frame.runId().equals(commit.runId())) return;
         verifiedInformationPosition = commit.position();
+        rememberPeriodAnchor(frame);
+        historicalInformationCache.remember(historicalInformationSource, commit,
+                frame.information() == null ? null : frame.information().information(), frame.timeMillis());
+        if (frame.media() != null && frame.information() != null) retainMediaObservations(commit, frame);
+    }
+
+    private void rememberPeriodAnchor(WorldState frame) {
         if (WorldScheduler.Phase.PERIOD_BOUNDARY_CAPTURE.name().equals(frame.lastPhase())
                 && (currentPeriodAnchor == null || currentPeriodAnchor.timeMillis() != frame.timeMillis())) {
             priorPeriodAnchor = currentPeriodAnchor;
             currentPeriodAnchor = frame;
         }
-        historicalInformationCache.remember(historicalInformationSource, commit,
-                frame.information() == null ? null : frame.information().information(), frame.timeMillis());
-        if (frame.media() != null && frame.information() != null) retainMediaObservations(commit, frame);
     }
 
     private void retainMediaObservations(WorldCommit commit, WorldState frame) {
@@ -40409,8 +40422,16 @@ public final class WorldRuntime implements AutoCloseable {
                 mode == null ? openingContent(ordered) : null);
         this.journal = opened;
         this.branchOrigin = mode == null ? null : mode.origin();
-        this.commitSource = base == 0L ? new JournalCommitSource(opened)
-                : new BranchCommitSource(mode.prefixCommits(), opened);
+        if (base == 0L) {
+            this.commitSource = new JournalCommitSource(opened);
+        } else {
+            this.commitSource = new BranchCommitSource(mode.verified().source(), opened);
+            if (compactState()) {
+                verifiedPeriodPrefix = mode.verified().source();
+                currentPeriodAnchor = mode.verified().latestMonth();
+                priorPeriodAnchor = mode.verified().priorMonth();
+            }
+        }
         try {
             if (opened.commitView().isEmpty()) {
                 if (mode == null) {
