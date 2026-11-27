@@ -203,7 +203,9 @@ public final class BoardModel {
         /** 固定资源发行人停止生产并继续清偿债权债务，须四席同意。 */
         RESOURCE_CESSATION,
         /** 向已具名投资者发出有价认购要约，须四席同意。 */
-        RESOURCE_PRIMARY_OFFER
+        RESOURCE_PRIMARY_OFFER,
+        /** 数字服务发行人停止新试点和新签约，已签合同继续结算，须四席同意。 */
+        DIGITAL_CESSATION
     }
 
     /** 预算类别，对应未来制造新承诺。 */
@@ -1922,7 +1924,7 @@ public final class BoardModel {
                                 : meeting.topic() == Topic.COMMERCIALIZATION_APPROVAL
                                         ? meeting.commercializationProposal() != null
                                         : meeting.appointmentProposal() != null;
-        if (!hasProposal && meeting.topic() != Topic.RESOURCE_CESSATION && meeting.topic() != Topic.RESOURCE_PRIMARY_OFFER) {
+        if (!hasProposal && !fixedSpecialTopic(meeting.topic())) {
             return rejected(state, REASON_EMPTY_PROPOSAL);
         }
         Draft draft = new Draft(state);
@@ -2818,6 +2820,10 @@ public final class BoardModel {
         return true;
     }
 
+    private static boolean fixedSpecialTopic(Topic topic) {
+        return topic == Topic.RESOURCE_CESSATION || topic == Topic.RESOURCE_PRIMARY_OFFER || topic == Topic.DIGITAL_CESSATION;
+    }
+
     // ------------------------------------------------------------------ 具体债权豁免授权
 
     /**
@@ -2829,7 +2835,7 @@ public final class BoardModel {
      */
     public static int requiredYesVotes(List<DebtWaiver> waivers, Meeting meeting) {
         Objects.requireNonNull(meeting, "会议");
-        if (meeting.topic() == Topic.RESOURCE_CESSATION || meeting.topic() == Topic.RESOURCE_PRIMARY_OFFER) return SPECIAL_YES_VOTES;
+        if (fixedSpecialTopic(meeting.topic())) return SPECIAL_YES_VOTES;
         if (meeting.topic() == Topic.BUDGET
                 && meeting.requestedTotal().compareTo(SPECIAL_BUDGET_THRESHOLD) > 0) {
             return SPECIAL_YES_VOTES;

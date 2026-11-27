@@ -239,9 +239,18 @@ function renderOperationsCompany() {
     operationsLine(financial,"本期生产预算 " + (plan.remainingBudget == null ? "未批准" : plan.remainingBudget+" 元") + "；现金、应收与负债见完整报表。");
     operationsLine(records,company.kind === "DIGITAL" ? "试点计入费用，客户验证投入先记在研。商用准入不产生收入；实际交付才确认收入，未赚预收仍需退款。" : "采购到货才付款，生产后须等待成熟。发货只是寄售；终端购买才产生收入，渠道回款另行记录。到货期末仍未付款的采购会失效并保留记录。");
     if(company.kind === "DIGITAL") {
+      if (plan.cessationTerms) operationsLine(records, plan.cessationTerms);
+      if (plan.cessation) operationsLine(records, "已停止新增业务，执行决议 " + plan.cessation.meetingId + "，世界时点 " + plan.cessation.timeMillis + " 毫秒。");
+      else if (plan.cessationDecisions?.length) operationsLine(records, "已通过的停业决议 " + plan.cessationDecisions.join("、"));
       operationsLine(records,"客户商用准入 " + (plan.commercialApproved ? "已确认":"未确认") + "；准入编号 " + (plan.commercialPermit || "—") + "；服务容量 " + plan.serviceCapacityUnitsPerPeriod + " /期。");
       operationsTable(records,"实际试验阶段",entries(plan.stages),[["id","阶段"],["status","状态"],["beganAt","开始时点"],["completesAt","完成时点"]]);
-      operationsTable(records,"服务合同",entries(plan.contracts),[["id","合同"],["status","状态"],["quantity","数量"],["delivered","已交付"]]);
+      const contracts = entries(plan.contracts);
+      const columns = [["id","合同"],["status","状态"],["quantity","数量"],["delivered","已交付"]];
+      if (plan.unearnedByContract) {
+        for (const contract of contracts) contract.unearned = plan.unearnedByContract[contract.id];
+        columns.push(["unearned", "未赚预收（元）"]);
+      }
+      operationsTable(records, "服务合同", contracts, columns);
       operationsTable(records,"应收服务款",entries(plan.receivables),[["id","编号"],["amount","金额"],["dueAt","到期时点"],["status","状态"]]);
     } else {
       operationsLine(records,"原料 " + plan.rawUnitCost + " 元/单位；转产 " + plan.conversionPerUnit + " 元/单位；成熟需 " + plan.agingPeriods + " 期。发货只是寄售，终端售出才确认收入。");
@@ -298,7 +307,7 @@ function renderOperationsCompany() {
   else reports.sort((a,b) => b.position-a.position || b.timeMillis-a.timeMillis);
   operationsTable(records, "实际执行回报", reports, [...(privateReceipts ? [] : [["position", "确认记录"]]), ["timeMillis", "执行时点"], ["action", "动作"], ["businessId", "业务单号"], ["accepted", "是否受理"], ["reason", "结果"], ["amount", "实际划款额（元）"]]);
   const actions = company.actions || [], selected = $("operations-action").value;
-  $("operations-action").replaceChildren(...actions.filter(a => OPERATIONS_ACTIONS[a]).map(a => operationsOption(OPERATIONS_ACTIONS[a][0], a)));
+  $("operations-action").replaceChildren(...actions.filter(a => OPERATIONS_ACTIONS[a]).map(a => operationsOption(company.kind === "DIGITAL" && a === "EXIT_BUSINESS" ? "按董事会决议停止新增数字业务" : OPERATIONS_ACTIONS[a][0], a)));
   if (actions.includes(selected)) $("operations-action").value = selected;
   $("operations-form").hidden = state.mode !== "person" || actions.length === 0;
   $("operations-duration").value = company.kind === "HYDRO" ? "900000" : "1000";

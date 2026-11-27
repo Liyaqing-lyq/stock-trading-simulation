@@ -484,7 +484,7 @@ public final class ComposedIndustryScenario {
     }
 
     /**
-     * 由首建草稿创建同世界内的零资产配置副本，重开使用首帧冻结的草稿。
+     * 首建 JSON 可只提供 investor、只提供 company 或同时提供两者。各副本零资产开局，重开采用首帧冻结的配置。
      * @param journal 世界存档
      * @param draft 首次创建的声明式 JSON
      * @return 已初始化或严格恢复的世界
@@ -602,6 +602,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.MEETING_TEN_COMPANY_RUN_ID);
     }
 
+    /**
+     * 新建可由数字公司按决议停接新业务的普通世界，或按原版规则恢复已有世界。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的普通十公司世界
+     * @throws Exception 初始化或逐帧重演失败
+     */
+    public static WorldRuntime openDigitalWindDownTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.DIGITAL_WIND_DOWN_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
@@ -711,8 +721,10 @@ public final class ComposedIndustryScenario {
             parties.put(BankCrisis.AUTHORITY, new BankingProfile.PartyRef(BankCrisis.AUTHORITY,BankCrisis.AUTHORITY,BankCrisisOpening.AUTHORITY_CASH,null));
         }
         if (copies != null) {
-            for (var ref:List.of(new BankingProfile.PartyRef(copies.investor().id(),copies.investor().id(),copies.investorAccount(),null),
-                    new BankingProfile.PartyRef(copies.company().id(),copies.company().id(),copies.companyAccount(),null)))
+            var refs = new ArrayList<BankingProfile.PartyRef>();
+            if (copies.investor() != null) refs.add(new BankingProfile.PartyRef(copies.investor().id(),copies.investor().id(),copies.investorAccount(),null));
+            if (copies.company() != null) refs.add(new BankingProfile.PartyRef(copies.company().id(),copies.company().id(),copies.companyAccount(),null));
+            for (var ref : refs)
                 if (parties.putIfAbsent(ref.partyId(),ref)!=null) throw new IllegalArgumentException("配置副本占用原主体账户："+ref.partyId());
         }
         if (currentTen) parties.put("visit-carrier", new BankingProfile.PartyRef("visit-carrier", "visit-carrier", "VISIT-CARRIER", null));
@@ -726,7 +738,7 @@ public final class ComposedIndustryScenario {
             endowment = BankLoanPromotionOpening.endowment(endowment);
         }
         boolean ownerBankValuation = RunManifest.usesOwnerBankValuation(thinkingRunId);
-        if (ownerBankValuation) profile = OwnerBankValuationOpening.profile(profile, copies == null ? null : copies.investor().id());
+        if (ownerBankValuation) profile = OwnerBankValuationOpening.profile(profile, copies == null || copies.investor() == null ? null : copies.investor().id());
         var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.usesIssuerCredit(thinkingRunId)),
                 endowment, Map.of(), Map.of());
         var charters = new TreeMap<>(ComposedManufacturingThreeScenario.charters());
@@ -746,7 +758,7 @@ public final class ComposedIndustryScenario {
             charters.put(company,new BoardModel.Charter(company,companySeats,company+"-seat-0",BoardModel.QUORUM));
             readers.addAll(people);readers.add(company.equals(DigitalIndustryConfig.COMPANY)?DigitalIndustryConfig.MANAGER_PERSON:AgedIndustryConfig.MANAGER_PERSON);
         }
-        if (copies != null) readers.add(copies.investor().id());
+        if (copies != null && copies.investor() != null) readers.add(copies.investor().id());
         var decisionPeople = new ArrayList<>(readers);
         if (tenCompany) decisionPeople.add(EngineeringCustomerPolicy.REPRESENTATIVE);
         var decisions = ResourceDecisionTools.config(CompanyOperationsDecisionTools.config(ComposedPharmaScenario.debugDecisions(), decisionPeople));

@@ -3406,6 +3406,7 @@ public final class WorldRuntime implements AutoCloseable {
             case BUDGET -> "CONVENE";
             case MANAGER_APPOINTMENT -> "CONVENE_APPOINTMENT";
             case RESOURCE_CESSATION -> "CONVENE_RESOURCE_CESSATION";
+            case DIGITAL_CESSATION -> "CONVENE_DIGITAL_CESSATION";
             case RESOURCE_PRIMARY_OFFER -> "CONVENE_RESOURCE_OFFER";
             default -> throw new IllegalArgumentException("本入口不支持议题：" + topic);
         };
@@ -3919,7 +3920,7 @@ public final class WorldRuntime implements AutoCloseable {
         requireEngineeringDuration(durationMillis, payload.action());
         if ("CONVENE_RESOURCE_OFFER".equals(payload.action()) && !resourceEquity(payload.companyPartyId()))
             throw new IllegalArgumentException("当前发行人未启用认购要约");
-        if ("CONVENE_RESOURCE_CESSATION".equals(payload.action()) && !resourceCessation(payload.companyPartyId()))
+        if (unsupportedCessationTopic(payload.action(), payload.companyPartyId()))
             throw new IllegalArgumentException("当前发行人未启用停业决议");
         if ("CONVENE_DIVIDEND".equals(payload.action())
                 && engineeringDividendIssuer().filter(payload.companyPartyId()::equals).isEmpty()) {
@@ -4301,7 +4302,7 @@ public final class WorldRuntime implements AutoCloseable {
 
     private boolean authorizedEngineeringCustomer(String company) {
         if (EngineeringCustomerPolicy.MANDATE.contractorPartyId().equals(company)) return true;
-        if (!OpeningEntityCopies.VERSION.equals(manifest.dataVersions().get(OpeningEntityCopies.KEY))) return false;
+        if (!OpeningEntityCopies.enabled(manifest.dataVersions())) return false;
         var spec = engineeringConfig.specOf(company);
         return spec != null && !spec.contracts().isEmpty();
     }
@@ -8885,6 +8886,8 @@ public final class WorldRuntime implements AutoCloseable {
                 if (!digitalDecisionEnabled() || base.companyOperations() == null || base.companyOperations().digital() == null) throw new IOException("当前档案未启用数字服务决定");
                 var request = DigitalDecisionTools.request(strict(DigitalDecisionTools.Draft.class, args));
                 String company = base.companyOperations().digital().companyPartyId();
+                if (request.action() == DigitalOperations.Action.EXIT_BUSINESS && !digitalCessation(company))
+                    throw new IOException("当前发行人未启用数字业务停业");
                 String appointment = binding.appointments().get(company);
                 if (appointment == null) throw new IOException("观察时没有数字服务经理任职");
                 long due = DecisionModel.actionDueMillis(model, recorded.actionId());
@@ -9576,6 +9579,10 @@ public final class WorldRuntime implements AutoCloseable {
                     if ("RESOURCE_PRIMARY_OFFER".equals(topic)) {
                         if (!resourceEquity(company)) return EngineeringPlanned.rejected("UNSUPPORTED_COMPANY_ACTION");
                         action = "CONVENE_RESOURCE_OFFER";
+                    }
+                    if ("DIGITAL_CESSATION".equals(topic)) {
+                        if (!digitalCessation(company)) return EngineeringPlanned.rejected("UNSUPPORTED_COMPANY_ACTION");
+                        action = "CONVENE_DIGITAL_CESSATION";
                     }
                     if ("RESOURCE_CESSATION".equals(topic)) {
                         if (!resourceCessation(company)) return EngineeringPlanned.rejected("UNSUPPORTED_COMPANY_ACTION");
@@ -12286,7 +12293,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         boolean convene = "CONVENE".equals(p.action()) || "CONVENE_APPOINTMENT".equals(p.action())
                 || "CONVENE_COMMERCIALIZATION".equals(p.action()) || "CONVENE_RESOURCE_CESSATION".equals(p.action())
-                || "CONVENE_RESOURCE_OFFER".equals(p.action());
+                || "CONVENE_RESOURCE_OFFER".equals(p.action()) || "CONVENE_DIGITAL_CESSATION".equals(p.action());
         if (convene && !actual.equals(charter.chairSeatId())) {
             return REASON_NOT_AUTHORIZED;
         }
@@ -15418,12 +15425,13 @@ public final class WorldRuntime implements AutoCloseable {
         List<PendingTask> children = new ArrayList<>();
         RoleRun nextRoles = roles;
         switch (p.action()) {
-            case "CONVENE", "CONVENE_APPOINTMENT", "CONVENE_COMMERCIALIZATION", "CONVENE_RESOURCE_CESSATION", "CONVENE_RESOURCE_OFFER" -> {
+            case "CONVENE", "CONVENE_APPOINTMENT", "CONVENE_COMMERCIALIZATION", "CONVENE_RESOURCE_CESSATION", "CONVENE_RESOURCE_OFFER", "CONVENE_DIGITAL_CESSATION" -> {
                 if ("CONVENE_RESOURCE_OFFER".equals(p.action()) && !resourceEquity(p.companyPartyId()))
                     throw new IllegalArgumentException("该发行人无认购要约议题");
-                if ("CONVENE_RESOURCE_CESSATION".equals(p.action()) && !resourceCessation(p.companyPartyId()))
+                if (unsupportedCessationTopic(p.action(), p.companyPartyId()))
                     throw new IllegalArgumentException("该发行人无停业议题");
                 BoardModel.Topic topic = "CONVENE_RESOURCE_OFFER".equals(p.action()) ? BoardModel.Topic.RESOURCE_PRIMARY_OFFER
+                        : "CONVENE_DIGITAL_CESSATION".equals(p.action()) ? BoardModel.Topic.DIGITAL_CESSATION
                         : "CONVENE_RESOURCE_CESSATION".equals(p.action()) ? BoardModel.Topic.RESOURCE_CESSATION
                         : "CONVENE_COMMERCIALIZATION".equals(p.action())
                         || p.commercialization() != null
@@ -15554,6 +15562,7 @@ public final class WorldRuntime implements AutoCloseable {
                         case COMMERCIALIZATION_APPROVAL ->
                                 opened.commercializationProposal() != null;
                         case RESOURCE_CESSATION -> resourceCessation(p.companyPartyId());
+                        case DIGITAL_CESSATION -> digitalCessation(p.companyPartyId());
                         case RESOURCE_PRIMARY_OFFER -> resourceEquity(p.companyPartyId());
                         default -> false;
                     };
@@ -17283,7 +17292,7 @@ public final class WorldRuntime implements AutoCloseable {
      * 到会计划，集合也仍然是到会两种。</p>
      */
     private static final Set<String> ENGINEERING_BOARD_ACTIONS = Set.of(
-            "CONVENE", "CONVENE_APPOINTMENT", "CONVENE_WAIVER", "CONVENE_COMMERCIALIZATION", "CONVENE_DIVIDEND", "CONVENE_RESOURCE_CESSATION", "CONVENE_RESOURCE_OFFER", "MATERIAL",
+            "CONVENE", "CONVENE_APPOINTMENT", "CONVENE_WAIVER", "CONVENE_COMMERCIALIZATION", "CONVENE_DIVIDEND", "CONVENE_RESOURCE_CESSATION", "CONVENE_RESOURCE_OFFER", "CONVENE_DIGITAL_CESSATION", "MATERIAL",
             "PROPOSE_APPOINTMENT", "PROPOSE_BUDGET", "PROPOSE_WAIVER", "PROPOSE_COMMERCIALIZATION", "IMPLEMENT_COMMERCIALIZATION", "VOTE", "IMPLEMENT",
             "ATTEND", "ATTEND_RECUSED");
 
@@ -17326,7 +17335,7 @@ public final class WorldRuntime implements AutoCloseable {
                         EngineeringBoardPayload.class, "董事");
                 if ("CONVENE_RESOURCE_OFFER".equals(payload.action()) && !resourceEquity(payload.companyPartyId()))
                     throw new IOException("认购要约待办与发行人不符");
-                if ("CONVENE_RESOURCE_CESSATION".equals(payload.action()) && !resourceCessation(payload.companyPartyId()))
+                if (unsupportedCessationTopic(payload.action(), payload.companyPartyId()))
                     throw new IOException("停业待办与登记的发行人版本不符");
                 if (!ENGINEERING_BOARD_ACTIONS.contains(payload.action())) {
                     throw new IOException("工程 BEGIN 目标种类与董事动作不一致：" + payload.action());
@@ -17388,6 +17397,7 @@ public final class WorldRuntime implements AutoCloseable {
                     if (payload.digital() != null) {
                         if (!"v1".equals(manifest.dataVersions().get("digital-operations")) || payload.fields() != null || payload.resource() != null || payload.hydro() != null || payload.aged() != null
                                 || !payload.digital().action().name().equals(payload.action()) || !DigitalOperations.personExecutable(payload.digital().action())
+                                || (payload.digital().action() == DigitalOperations.Action.EXIT_BUSINESS && !digitalCessation(payload.companyPartyId()))
                                 || payload.durationMillis() != DigitalDecisionTools.ACTION_MILLIS) throw new IllegalArgumentException("数字服务动作无效");
                         break;
                     }
@@ -27149,13 +27159,13 @@ public final class WorldRuntime implements AutoCloseable {
         }
         // 先按纯核同一入口校验公司、账户、owner、章程、金额与冻结合同
         EngineeringRun.open(engineeringConfig, accounts, registry);
-        if (!OpeningEntityCopies.VERSION.equals(manifest.dataVersions().get(OpeningEntityCopies.KEY))
+        if (!OpeningEntityCopies.enabled(manifest.dataVersions())
                 && engineeringConfig.companies().stream().anyMatch(c -> c.templateSource()!=null))
             throw new IllegalArgumentException("此档未登记配置副本");
         if (engineeringCustomerEnabled()) {
-            var copied = OpeningEntityCopies.VERSION.equals(manifest.dataVersions().get(OpeningEntityCopies.KEY))
-                    ? OpeningEntityCopies.fromManifest(manifest.dataVersions()).company().id() : null;
-            EngineeringCustomerPolicy.validate(registry, engineeringConfig, accounts, informationConfig.readers(),copied);
+            var copied = OpeningEntityCopies.enabled(manifest.dataVersions())
+                    ? OpeningEntityCopies.fromManifest(manifest.dataVersions()).company() : null;
+            EngineeringCustomerPolicy.validate(registry, engineeringConfig, accounts, informationConfig.readers(),copied == null ? null : copied.id());
         }
         else if (engineeringConfig.customerMandate() != null) throw new IllegalArgumentException("本经营档未启用工程客户委托");
         String manufacturingCompany = charter == null ? "" : charter.companyPartyId();
@@ -30391,6 +30401,7 @@ public final class WorldRuntime implements AutoCloseable {
                 var node = directorships.addObject();
                 node.put("companyPartyId", company);
                 if (resourceEquity(company)) node.put("primaryOfferTopic", ResourcePrimaryEquity.TERMS);
+                if (digitalCessation(company)) node.put("cessationTopic", DigitalDecisionTools.CESSATION_TERMS);
                 if (resourceCessation(company)) node.put("cessationTopic", "RESOURCE_CESSATION：主席可提请永久停止生产。五席中至少四席同意，经理执行；原应收、应付、库存和股东持股保留。");
                 addBudgetWindow(node, boardRun.board(), now);
                 node.put("seatId", seat);
@@ -30633,7 +30644,7 @@ public final class WorldRuntime implements AutoCloseable {
                 var reports=CompanyOperationsDecisionTools.reports(snap.companyOperations(), company.companyPartyId(), positionOrderedOperationsReports());
                 String account = company.config().model().companyAccountId();
                 var operating = (com.fasterxml.jackson.databind.node.ObjectNode) DigitalDecisionTools.observation(
-                        company, now, snap.accounts().get(account).cash(), reports, budget);
+                        company, now, snap.accounts().get(account).cash(), reports, budget, board, digitalCessation(company.companyPartyId()));
                 if (engineeringCustomerEnabled()) {
                     var availableCash = transferableCash(snap.exchange(),snap.accounts(),account,now);
                     operating.set("deliveryRoom", DigitalDecisionTools.deliveryRoom(company.ledger(), now, availableCash, budget));
@@ -37027,6 +37038,8 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("经营子集没有该公司：" + companyPartyId);
         }
         DigitalOperations.Action parsed = request.action();
+        if (parsed == DigitalOperations.Action.EXIT_BUSINESS && !digitalCessation(companyPartyId))
+            throw new IllegalArgumentException("当前发行人未启用数字业务停业");
         if (!DigitalOperations.personExecutable(parsed)) {
             throw new IllegalArgumentException("到期完工只能由系统子任务触发：" + parsed);
         }
@@ -37153,6 +37166,18 @@ public final class WorldRuntime implements AutoCloseable {
     private OperationsApplied applyDigitalOperations(WorldState base, DigitalOperations.Request request, String commandId, long now) throws IOException {
         var run=base.companyOperations(); var digital=run.digital(); var config=digital.config().model();
         var bank=base.bank().decode(base.accounts()); var funds=new edu.cufe.auction.world.bank.FundState(base.accounts(),bank.state(),bank.book());
+        if (request.action() == DigitalOperations.Action.EXIT_BUSINESS) {
+            String meetingId = request.field("meetingId");
+            var meeting = base.companyGovernance().boardOf(digital.companyPartyId()).board().meeting(meetingId);
+            boolean authorized = digitalCessation(digital.companyPartyId()) && meeting != null
+                    && meeting.topic() == BoardModel.Topic.DIGITAL_CESSATION
+                    && meeting.status() == BoardModel.MeetingStatus.ADOPTED && meeting.closesAt() <= now;
+            boolean accepted = authorized && digital.cessation() == null;
+            String reason = !authorized ? "DIGITAL_CESSATION_NOT_AUTHORIZED" : accepted ? "DIGITAL_CESSATION_IMPLEMENTED" : "DIGITAL_INTAKE_CLOSED";
+            var next = accepted ? run.withDigital(new DigitalCompanyRun(digital.companyPartyId(), digital.symbol(), digital.config(),
+                    digital.ledger(), new ResourceCompanyRun.Cessation(meetingId, now))) : run;
+            return new OperationsApplied(next, base.companyGovernance(), base.accounts(), base.bank(), accepted, reason, meetingId, ZERO, List.of());
+        }
         if(DigitalOperations.governanceOnly(request.action())) return new OperationsApplied(run,base.companyGovernance(),base.accounts(),base.bank(),false,"NO_WORLD_CAPITAL_RESOLUTION","",ZERO,List.of());
         String source=switch(request.action()) {case SIGN_CONTRACT,COLLECT -> config.customerAccountId(); default -> config.companyAccountId();};
         String target=switch(request.action()) {case BEGIN_PILOT,BEGIN_VALIDATION -> config.contractorAccountId(); case REFUND -> config.customerAccountId(); case SIGN_CONTRACT,COLLECT -> config.companyAccountId(); default -> config.opsAccountId();};
@@ -37765,6 +37790,17 @@ public final class WorldRuntime implements AutoCloseable {
         var bank = BankRun.of(base.bank().decode(base.accounts()).config(),outcome.funds().bank(),outcome.funds().book());
         return new OperationsApplied(companies.withResource(company),base.companyGovernance(),outcome.funds().accounts(),bank,true,
                 "PRIMARY_SHARES_DELIVERED",meeting,amount,List.of(),securities);
+    }
+
+    /** 对给定发行人，当前版本是否登记数字服务停业条款。 */
+    public boolean digitalCessation(String company) {
+        return DigitalIndustryConfig.COMPANY.equals(company)
+                && RunManifest.BOARD_DIGITAL_WIND_DOWN.equals(manifest.dataVersions().get(RunManifest.DIGITAL_CESSATION));
+    }
+
+    private boolean unsupportedCessationTopic(String action, String company) {
+        return ("CONVENE_DIGITAL_CESSATION".equals(action) && !digitalCessation(company))
+                || ("CONVENE_RESOURCE_CESSATION".equals(action) && !resourceCessation(company));
     }
 
     private boolean resourceCessation(String company) {

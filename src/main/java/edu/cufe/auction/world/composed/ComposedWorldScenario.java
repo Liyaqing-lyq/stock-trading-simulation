@@ -335,7 +335,7 @@ public final class ComposedWorldScenario {
                 manifest.dataVersions().get("profile")) ? PrototypeCompanies.engineering()
                 : baseline ? baselineEngineering() : engineeringConfigWithAcceptance();
         if (RunManifest.usesEngineeringCustomerRules(manifest.policyRunId())) engineering = new EngineeringRun.Config(engineering.paramSource(), engineering.companies(), Map.of(), EngineeringCustomerPolicy.MANDATE);
-        if (OpeningEntityCopies.VERSION.equals(manifest.dataVersions().get(OpeningEntityCopies.KEY)))
+        if (OpeningEntityCopies.enabled(manifest.dataVersions()))
             engineering = OpeningEntityCopies.fromManifest(manifest.dataVersions()).engineering(engineering);
         Map<String, edu.cufe.auction.world.BoardModel.Charter> governed =
                 extras.charters().isEmpty() ? charters()

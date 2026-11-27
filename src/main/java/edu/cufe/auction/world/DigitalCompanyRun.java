@@ -24,9 +24,17 @@ import java.util.Objects;
  * @param symbol         该公司证券代码
  * @param config         冻结运行配置（含纯核配置、阶段观察引用、治理决议）
  * @param ledger         唯一纯核台账
+ * @param cessation      董事会决议经经理执行的时点及依据，未执行时为空
  */
 public record DigitalCompanyRun(String companyPartyId, String symbol, Config config,
-                                DigitalServiceModel.State ledger) {
+                                DigitalServiceModel.State ledger,
+                                @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                ResourceCompanyRun.Cessation cessation) {
+
+    /** 开业中的数字公司，兼容此前的无停业字段档案。 */
+    public DigitalCompanyRun(String companyPartyId, String symbol, Config config, DigitalServiceModel.State ledger) {
+        this(companyPartyId, symbol, config, ledger, null);
+    }
 
     /** 校验身份、配置与台账三者绑定。 */
     public DigitalCompanyRun {
@@ -61,7 +69,7 @@ public record DigitalCompanyRun(String companyPartyId, String symbol, Config con
      */
     public DigitalCompanyRun withLedger(DigitalServiceModel.State next) {
         return new DigitalCompanyRun(companyPartyId, symbol, config,
-                Objects.requireNonNull(next, "候选台账"));
+                Objects.requireNonNull(next, "候选台账"), cessation);
     }
 
     /**

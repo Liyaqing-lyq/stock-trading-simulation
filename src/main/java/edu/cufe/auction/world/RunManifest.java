@@ -147,6 +147,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String INTERVIEW_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v7";
     /** 第八版提供董事本人可读取的期末会议材料。 */
     public static final String MEETING_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v8";
+    /** 第九版允许数字服务公司依有效决议停止新增业务。 */
+    public static final String DIGITAL_WIND_DOWN_RUN_ID = "web-ten-company-autonomy-v9";
+    /** 数字服务公司停接新业务及继续清偿原合同的程序版本键。 */
+    public static final String DIGITAL_CESSATION = "digital-cessation";
+    /** 依据董事会决议停接，并保留原合同及资金义务。 */
+    public static final String BOARD_DIGITAL_WIND_DOWN = "board-wind-down-v1";
     /** 董事期末会议材料的可读投影口径。 */
     public static final String PERIODIC_MEETING_VIEW = "periodic-meeting-view";
     /** 按董事的实际读权提供期末材料。 */
@@ -194,14 +200,15 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
     public static Map<String, String> tenCompanyStudyPolicies(String id) {
-        boolean interviewReceipts = INTERVIEW_TEN_COMPANY_RUN_ID.equals(id) || MEETING_TEN_COMPANY_RUN_ID.equals(id);
+        boolean periodMeetings = MEETING_TEN_COMPANY_RUN_ID.equals(id) || DIGITAL_WIND_DOWN_RUN_ID.equals(id);
+        boolean interviewReceipts = INTERVIEW_TEN_COMPANY_RUN_ID.equals(id) || periodMeetings;
         if (GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
                 || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || interviewReceipts) {
             var policies = new java.util.TreeMap<>(Map.of(DOCUMENT_READING_CLOCK, BODY_PACING_300,
@@ -219,7 +226,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 policies.put(SOCIAL_RECEIPTS, ATTRIBUTED_SOCIAL_RESULTS);
                 policies.put(PERIODIC_RECEIPTS, ATTRIBUTED_PERIOD_RESULTS);
             }
-            if (MEETING_TEN_COMPANY_RUN_ID.equals(id)) policies.put(PERIODIC_MEETING_VIEW, READABLE_PERIOD_MATERIAL);
+            if (periodMeetings) policies.put(PERIODIC_MEETING_VIEW, READABLE_PERIOD_MATERIAL);
+            if (DIGITAL_WIND_DOWN_RUN_ID.equals(id)) policies.put(DIGITAL_CESSATION, BOARD_DIGITAL_WIND_DOWN);
             return Map.copyOf(policies);
         }
         return STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
@@ -245,7 +253,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return TEN_COMPANY_AUTONOMY_RUN_ID.equals(id) || STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
                 || GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
                 || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || INTERVIEW_TEN_COMPANY_RUN_ID.equals(id)
-                || MEETING_TEN_COMPANY_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
+                || MEETING_TEN_COMPANY_RUN_ID.equals(id) || DIGITAL_WIND_DOWN_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
                 || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
     }
 
@@ -1483,7 +1491,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                     expectedData.put("opening-population", "ten-issuers-v1");
                     expectedData.put("model-budget", "long-horizon-v1");
                     expectedData.put("board-material-source", "published-visible-v1");
-                } else OpeningEntityCopies.fromManifest(data).freeze(expectedData);
+                } else OpeningEntityCopies.fromManifest(data, policyId).freeze(expectedData);
                 if (usesCurrentTenCompany(policyId)) {
                     expectedData.put(BestQuoteDepth.KEY, BestQuoteDepth.VERSION);
                     expectedData.put("role-input-limit", DecisionModel.EXTENDED_ROLE_INPUT);

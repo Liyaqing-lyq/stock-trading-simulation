@@ -366,6 +366,15 @@ public final class WorldWebServer implements AutoCloseable {
                 switchPerson(exchange, session.get());
                 return;
             }
+            if ("/api/admin/world-exposure".equals(path) && "GET".equals(method)) {
+                requireAdmin(exchange,session.get(),()-> {
+                    JsonNode view;
+                    try { view=mapper.valueToTree(host.worldExposure()); }
+                    catch (WorldWebHost.BusyException busy) { throw busy; }
+                    catch (Exception failure) { throw new WorldIoFailure(); }
+                    send(exchange,200,mapper.writeValueAsString(view));
+                });return;
+            }
             if ("/api/admin/world".equals(path) && "GET".equals(method)) {
                 requireAdmin(exchange,session.get(),()-> {
                     JsonNode view;
@@ -502,7 +511,7 @@ public final class WorldWebServer implements AutoCloseable {
                 });
                 return;
             }
-            if ("/api/me/view".equals(path) && "GET".equals(method)) {
+            if ("/api/me/view".equals(path) && ("GET".equals(method) || "POST".equals(method))) {
                 requirePerson(exchange, session.get(), () -> personView(exchange, session.get()));
                 return;
             }
@@ -672,7 +681,7 @@ public final class WorldWebServer implements AutoCloseable {
 
     private boolean knownRoute(String path, String method) {
         if ("/api/admin/period-statement".equals(path) && "POST".equals(method)) return true;
-        if ("/api/admin/world".equals(path) && "GET".equals(method)) return true;
+        if (("/api/admin/world".equals(path) || "/api/admin/world-exposure".equals(path)) && "GET".equals(method)) return true;
         if (("/api/admin/media".equals(path) || "/api/admin/capabilities".equals(path))
                 && "GET".equals(method)) return true;
         if ("/api/admin/media-story".equals(path) && "POST".equals(method)) return true;
@@ -801,7 +810,8 @@ public final class WorldWebServer implements AutoCloseable {
                 || ("/api/me/read".equals(path) && "POST".equals(method))) {
             return true;
         }
-        return ("/api/me/view".equals(path) || "/api/me/portfolio-history".equals(path)) && "GET".equals(method);
+        return "/api/me/view".equals(path) && ("GET".equals(method) || "POST".equals(method))
+                || "/api/me/portfolio-history".equals(path) && "GET".equals(method);
     }
 
     private Optional<WebSessions.Session> resolveSession(HttpExchange exchange) {
@@ -2905,7 +2915,15 @@ public final class WorldWebServer implements AutoCloseable {
     private void personView(HttpExchange exchange, WebSessions.Session session)
             throws IOException, WorldWebHost.BusyException {
         try {
-            WorldWebHost.PersonPage page = host.personPage(session.personId());
+            WorldWebHost.PersonPage page;
+            if ("POST".equals(exchange.getRequestMethod())) {
+                JsonNode chart = jsonBody(exchange, MARKET_HISTORY_FIELDS);
+                if (!chart.path("symbol").isTextual() || !chart.path("period").isTextual()) {
+                    send(exchange, 400, error("INVALID", "请选择本人可见的证券及行情周期"));
+                    return;
+                }
+                page = host.personPage(session.personId(), chart.get("symbol").textValue(), chart.get("period").textValue());
+            } else page = host.personPage(session.personId());
             RoleView view = page.view();
             List<Map<String, Object>> accounts = new ArrayList<>();
             for (RoleView.Account account : view.accounts()) {
@@ -2960,6 +2978,7 @@ public final class WorldWebServer implements AutoCloseable {
             }
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("personPartyId", view.personPartyId());
+            response.put("runId", host.runId());
             response.put("displayName", page.displayName());
             if (page.decisionPaused()!=null) response.put("decisionPaused",page.decisionPaused());
             if (!page.fundUnits().isEmpty()) response.put("fundUnits",page.fundUnits());
@@ -2970,6 +2989,7 @@ public final class WorldWebServer implements AutoCloseable {
             if (!page.portfolioReturns().isEmpty()) response.put("portfolioReturns", page.portfolioReturns());
             response.put("holdings", holdings);
             response.put("market", market);
+            if (page.publicMarketBars() != null) response.put("publicMarketBars", page.publicMarketBars());
             response.put("appointments", view.appointments().size());
             if (page.media() != null && !view.appointments().isEmpty()) response.put("activeAppointments", view.appointments().stream().map(a -> Map.of(
                     "organization", a.organizationPartyId(), "role", a.role().name(),
@@ -3179,6 +3199,7 @@ public final class WorldWebServer implements AutoCloseable {
             case "/manufacturing.js" -> "manufacturing.js";
             case "/style.css" -> "style.css";
             case "/world-home.js" -> "world-home.js";
+            case "/world-exposure.js" -> "world-exposure.js";
             case "/world-home.css" -> "world-home.css";
             default -> null;
         };

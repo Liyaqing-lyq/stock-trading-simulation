@@ -61,7 +61,9 @@ public final class DigitalOperations {
         /** 期末关账（系统）。 */
         CLOSE_PERIOD,
         /** 外部资本注入（世界治理）。 */
-        INJECT_CAPITAL
+        INJECT_CAPITAL,
+        /** 在任经理落实已通过的停业决议。 */
+        EXIT_BUSINESS
     }
 
     /** 到期完成与关期不由人物触发。 */
@@ -99,6 +101,7 @@ public final class DigitalOperations {
                 case SIGN_CONTRACT -> Set.of("contractId", "quantityUnits", "prepaidCents");
                 case DELIVER -> Set.of("contractId", "units", "receivableId");
                 case TERMINATE -> Set.of("contractId");
+                case EXIT_BUSINESS -> Set.of("meetingId");
                 case REFUND -> Set.of("contractId", "refundCents");
                 case COLLECT, WRITE_OFF -> Set.of("receivableId");
                 case CLOSE_PERIOD -> Set.of("period");
@@ -184,7 +187,11 @@ public final class DigitalOperations {
         }
         DigitalServiceModel.State state = run.ledger();
         String owner = state.config().companyOwnerId();
+        if (run.cessation() != null && newBusiness(request.action())) {
+            return new Outcome(false, "DIGITAL_INTAKE_CLOSED", state, funds);
+        }
         return switch (request.action()) {
+            case EXIT_BUSINESS -> new Outcome(false, "DIGITAL_CESSATION_REQUIRES_BOARD", state, funds);
             case BEGIN_PILOT -> mapped(DigitalServiceModel.beginStage(state, now, owner, commandId,
                     DigitalServiceModel.Stage.PILOT, funds, payer));
             case BEGIN_VALIDATION -> mapped(DigitalServiceModel.beginStage(state, now, owner,
@@ -232,6 +239,11 @@ public final class DigitalOperations {
                     DigitalServiceModel.PERIOD_MILLIS);
             default -> -1L;
         };
+    }
+
+    static boolean newBusiness(Action action) {
+        return action == Action.BEGIN_PILOT || action == Action.BEGIN_VALIDATION
+                || action == Action.APPROVE_COMMERCIAL || action == Action.SIGN_CONTRACT;
     }
 
     private static Outcome complete(DigitalCompanyRun run, long now, String commandId,

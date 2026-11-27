@@ -30,6 +30,10 @@ public final class DigitalDecisionTools {
     private DigitalDecisionTools() {
     }
 
+    /** 本档数字服务董事会可表决的停业条款。 */
+    public static final String CESSATION_TERMS = "DIGITAL_CESSATION：主席可召集数字服务停业会议，五席中至少四席同意，再由在任经理执行。"
+            + "执行后停止新试点、验证、商用准入和新签约。已有阶段按原期结束，原合同可交付、终止、退款、收款，欠款和股份保留。";
+
     /** 数字服务经营工具。 */
     public static final String ACT = "digital.act";
 
@@ -130,6 +134,13 @@ public final class DigitalDecisionTools {
     public static JsonNode observation(DigitalCompanyRun run, long now, BigDecimal cash,
                                        List<CompanyOperationsRun.ReportEntry> reports,
                                        BigDecimal remainingBudget) {
+        return observation(run, now, cash, reports, remainingBudget, null, false);
+    }
+
+    /** 为启用停业条款的本公司经理显示真实的已通过决议、执行记录及可用动作。 */
+    public static JsonNode observation(DigitalCompanyRun run, long now, BigDecimal cash,
+                                       List<CompanyOperationsRun.ReportEntry> reports, BigDecimal remainingBudget,
+                                       BoardModel.State board, boolean cessationEnabled) {
         DigitalServiceModel.State ledger = run.ledger();
         DigitalServiceModel.Config model = ledger.config();
         Map<String, Object> view = new TreeMap<>();
@@ -171,6 +182,18 @@ public final class DigitalDecisionTools {
         actions.put("REFUND", "contractId, refundCents");
         actions.put("COLLECT", "receivableId");
         actions.put("WRITE_OFF", "receivableId");
+        if (cessationEnabled) {
+            Map<String, BigDecimal> unearned = new TreeMap<>();
+            ledger.contracts().forEach((id, contract) -> unearned.put(id, contract.unearned()));
+            view.put("unearnedByContract", unearned);
+            view.put("cessationTerms", CESSATION_TERMS);
+            view.put("cessation", run.cessation());
+            view.put("cessationDecisions", board.meetings().values().stream()
+                    .filter(m -> m.topic() == BoardModel.Topic.DIGITAL_CESSATION && m.status() == BoardModel.MeetingStatus.ADOPTED)
+                    .map(BoardModel.Meeting::meetingId).sorted().toList());
+            if (run.cessation() == null) actions.put("EXIT_BUSINESS", "meetingId");
+            else actions.keySet().removeIf(name -> DigitalOperations.newBusiness(DigitalOperations.Action.valueOf(name)));
+        }
         view.put("actionFields", actions);
 
         view.put("rules", "arguments 所有值为文本，只填所选动作字段；金额字段用整数分文本"

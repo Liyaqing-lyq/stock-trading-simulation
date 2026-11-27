@@ -371,7 +371,6 @@ window.WorldHome = (() => {
       for(const page of ["market","company","org","people"])document.querySelector(`[data-page="${page}"]`).hidden=true;
       if(!view.companies.some(c=>c.id===selected))selected=view.connected?.enabled&&view.companies.some(c=>c.trades>0)?view.companies.find(c=>c.trades>0).id:view.behavior?.enabled&&view.companies.some(c=>c.id==="mfg-tech")?"mfg-tech":view.companies[0].id;
       if(!initialized){$("overview-audit").open=false;initialized=true;}
-      $("context-time").textContent="第 "+Math.floor(Number(view.timeMillis)/86400000)+" 个实验日 · "+view.companies.length+" 家公司";
       paint();
     },
     clear(){
@@ -393,6 +392,10 @@ window.WorldHome = (() => {
     }
   };
   $("world-market-select").addEventListener("change",e=>choose(e.target.value));$("world-company-select").addEventListener("change",e=>choose(e.target.value));
+  $("world-market-candles").addEventListener("click", () => {
+    const security = view?.companies.find(c => c.id === $("world-market-select").value);
+    if (security?.symbol) api.onMarketHistory?.(security.symbol);
+  });
   $("world-report-period").addEventListener("change",()=>view&&renderCompany());
   $("world-autonomy-start").addEventListener("click",()=>void controlAutonomy("start"));
   $("world-autonomy-stop").addEventListener("click",()=>void controlAutonomy("stop"));

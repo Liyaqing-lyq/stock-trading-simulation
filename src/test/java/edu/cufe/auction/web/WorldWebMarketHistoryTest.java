@@ -99,6 +99,45 @@ class WorldWebMarketHistoryTest {
         assertEquals(403, request(valid, base, true).statusCode());
     }
 
+    @Test
+    void aPersonCanReadPublicBarsAtTheCutOfTheirOwnPage() throws Exception {
+        start();
+        String query = JSON.writeValueAsString(java.util.Map.of("symbol", "CUFE1", "period", "day"));
+        assertEquals(401, post("/api/me/view", query, base, true).statusCode());
+        login();
+        assertEquals(403, post("/api/me/view", query, base, true).statusCode());
+        var switched = post("/api/session/person", "{\"personId\":\"alice\"}", base, true);
+        cookie = switched.headers().firstValue("set-cookie").orElseThrow().split(";", 2)[0];
+        var empty = JSON.readTree(post("/api/me/view", query, base, true).body()).required("publicMarketBars");
+        assertEquals(0, empty.required("bars").size());
+        host.call(() -> {
+            order("sell-public", 1000, "investor", "INV", Side.SELL, "10.20", 5);
+            order("buy-public", 2000, "fund-a", "ACC-FUND", Side.BUY, "10.30", 5);
+            world.advanceTo(2000);
+            return null;
+        });
+        var before = host.adminSnapshot();
+        var reply = post("/api/me/view", query, base, true);
+        assertEquals(200, reply.statusCode(), reply.body());
+        var page = JSON.readTree(reply.body());
+        var chart = page.required("publicMarketBars");
+        assertEquals(page.required("timeMillis"), chart.required("timeMillis"));
+        assertEquals("CUFE1", chart.required("selectedSymbol").asText());
+        assertEquals("day", chart.required("period").asText());
+        var bar = chart.required("bars").get(0);
+        assertEquals("5", bar.required("volume").asText());
+        assertEquals("51.00", bar.required("amount").asText());
+        assertEquals("10.20", bar.required("close").asText());
+        assertEquals(java.util.Set.of("startMillis","endMillis","complete","open","high","low","close","volume","volumeStatus","amount"),
+                bar.properties().stream().map(java.util.Map.Entry::getKey).collect(java.util.stream.Collectors.toSet()));
+        assertFalse(chart.has("position"));
+        assertEquals(400, post("/api/me/view", query.replace("CUFE1", "UNKNOWN"), base, true).statusCode());
+        assertEquals(400, post("/api/me/view", query.replace("day", "year"), base, true).statusCode());
+        assertEquals(400, post("/api/me/view", query.replace("{", "{\"position\":1,"), base, true).statusCode());
+        assertEquals(403, request(query, base, true).statusCode());
+        assertEquals(before, host.adminSnapshot());
+    }
+
     private void order(String id, long due, String owner, String account, Side side, String price, long quantity)
             throws Exception {
         world.scheduleOrder(id, id + "-task", due, owner, account, WorldWebScenario.SYMBOL,

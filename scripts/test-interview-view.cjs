@@ -306,7 +306,8 @@ defineCase("admin-interview-cleared-on-leave-page", async () => {
 defineCase("personal-interview-cleared-on-identity-switch", async () => {
   const pending = [];
   let sessionPerson = null;
-  const views = { rita: personView("rita"), bob: personView("bob") };
+  const views = { rita: personView("rita", { runId: "scope-test", accounts: [
+    {accountId: "R-1"}, {accountId: "R-2"}] }), bob: personView("bob", { runId: "scope-test" }) };
   const world = makeWorld(async (method, url, options) => {
     if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
     if (url === "/api/session/person") {
@@ -332,6 +333,9 @@ defineCase("personal-interview-cleared-on-identity-switch", async () => {
 
   await world.context.switchPerson("rita");
   assert.equal(world.rows("person-interview-invites"), 1, "前置：rita 预约已渲染");
+  assert.equal(world.$("context-account").textContent, "可见 2 个交易账户 · 未单选");
+  assert.equal(world.$("context-account").title, "R-1、R-2");
+  assert.equal(world.$("context-time").textContent, "scope-test · 5000 毫秒");
   assert.equal(world.rows("person-interview-contacts"), 1, "前置：rita 联系入口已渲染");
   assert.equal(world.$("person-office-work-budgets").hidden, false);
   const budgetCells = world.$("person-office-work-table").querySelector("tbody").children[0].children;
@@ -345,6 +349,8 @@ defineCase("personal-interview-cleared-on-identity-switch", async () => {
   assert.equal(world.$("person-name").textContent, "正在读取人物…", "新身份观察返回前不显示旧姓名或内部编号");
   const duringInvites = world.rows("person-interview-invites");
   const duringContacts = world.rows("person-interview-contacts");
+  assert.equal(world.$("context-account").title, "");
+  assert.equal(world.$("context-identity").textContent, "实时 · bob");
   assert.equal(world.rows("person-office-work-table"), 0);
   assert.equal(world.$("person-office-work-terms").textContent, "");
   assert.equal(world.$("person-office-work-budgets").hidden, true);

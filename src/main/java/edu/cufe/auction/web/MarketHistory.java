@@ -3,10 +3,14 @@ package edu.cufe.auction.web;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
+import edu.cufe.auction.world.RoleView;
 import edu.cufe.auction.world.WorldExchange;
+import edu.cufe.auction.world.WorldRuntime;
 
 /**
  * 真实成交 OHLC 聚合（只读、纯函数）。
@@ -19,6 +23,33 @@ import edu.cufe.auction.world.WorldExchange;
  * 不修改调用方传入的列表。</p>
  */
 public final class MarketHistory {
+
+    /** 将已授权证券的同帧成交聚合为公开行情，内部成交编号及交易账户不出现在响应中。 */
+    static Map<String,Object> personalBars(WorldRuntime.Snapshot snapshot, RoleView view, String symbol, String periodText) {
+        if (view.market().stream().noneMatch(m -> m.symbol().equals(symbol))) {
+            throw new IllegalArgumentException("当前个人行情中没有该证券");
+        }
+        Period period = Period.fromId(periodText);
+        var result = aggregate(snapshot.exchange().map(WorldExchange.State::trades).orElse(List.of()),
+                symbol, period, view.timeMillis(), snapshot.position());
+        var bars = new ArrayList<Map<String,Object>>();
+        for (var bar : result.bars()) {
+            var row = new LinkedHashMap<String,Object>();
+            row.put("startMillis", Long.toString(bar.startMillis()));
+            row.put("endMillis", bar.endMillis() == null ? null : Long.toString(bar.endMillis()));
+            row.put("complete", bar.complete());
+            row.put("open", bar.open().toPlainString());
+            row.put("high", bar.high().toPlainString());
+            row.put("low", bar.low().toPlainString());
+            row.put("close", bar.close().toPlainString());
+            row.put("volume", bar.volume() == null ? null : Long.toString(bar.volume()));
+            row.put("volumeStatus", bar.volumeStatus());
+            row.put("amount", bar.amount().toPlainString());
+            bars.add(row);
+        }
+        return Map.of("selectedSymbol", symbol, "period", period.id(), "timeMillis", Long.toString(view.timeMillis()),
+                "available", snapshot.exchange().isPresent(), "totalBars", Long.toString(result.totalBars()), "bars", bars);
+    }
 
     /** 单次响应最多保留的 bar 数。 */
     public static final int MAX_BARS = 500;

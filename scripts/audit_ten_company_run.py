@@ -25,15 +25,16 @@ PERSONAL_POLICIES = {**DRAFT_POLICIES, "crisis-office-objectives": "active-appoi
 INTERVIEW_POLICIES = {**PERSONAL_POLICIES, "interview-action-feedback": "bound-coordination-v1",
                       "social-action-feedback": "bound-message-v1", "periodic-action-feedback": "bound-period-result-v1"}
 MEETING_POLICIES = {**INTERVIEW_POLICIES, "periodic-meeting-view": "readable-period-material-v1"}
+DIGITAL_POLICIES = {**MEETING_POLICIES, "digital-cessation": "board-wind-down-v1"}
 OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
                     "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES,
                     "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES,
-                    "web-ten-company-autonomy-v8": MEETING_POLICIES}
+                    "web-ten-company-autonomy-v8": MEETING_POLICIES, "web-ten-company-autonomy-v9": DIGITAL_POLICIES}
 
 
 def check_policies(run_id, data_versions):
     expected = OPENING_POLICIES[run_id]
-    actual = {k: data_versions[k] for k in MEETING_POLICIES if k in data_versions}
+    actual = {k: data_versions[k] for k in DIGITAL_POLICIES if k in data_versions}
     if data_versions.get("branch-profile-run") != run_id or actual != expected:
         raise ValueError("原生开局声明的政策与该版运行身份不符")
 
@@ -72,8 +73,21 @@ def patch_field(before, patch):
         return before
     if kind == "replace":
         return patch["value"]
+    if kind == "array" and isinstance(before, list):
+        length = patch["length"]
+        if not 0 <= length <= len(before) + len(patch["changes"]):
+            raise ValueError("数组差量长度不合法")
+        if any(str(i) not in patch["changes"] for i in range(len(before), length)):
+            raise ValueError("新增订单数组缺少对应值")
+        after = before[:length] + [None] * max(0, length - len(before))
+        for key, change in patch["changes"].items():
+            index = int(key)
+            if str(index) != key or not 0 <= index < length:
+                raise ValueError("数组差量下标越界")
+            after[index] = patch_field(after[index], change)
+        return after
     if kind != "object" or not isinstance(before, dict):
-        raise ValueError("账户或时点差量类型错误")
+        raise ValueError("状态差量类型错误")
     for key in patch["removed"]:
         del before[key]
     for key, change in patch["changes"].items():
@@ -106,6 +120,46 @@ def opening_people(registry, accounts, lots):
             "initiallyFundedPersonalPortfolios": portfolios}
 
 
+def closing_book(orders, symbols):
+    book = {symbol: {"BUY": {}, "SELL": {}} for symbol in symbols}
+    for order in orders:
+        if order["status"] == "ACTIVE":
+            remaining = order["quantity"] - order["filled"]
+            if order["type"] != "LIMIT" or remaining <= 0:
+                raise ValueError("簿上出现不能挂存的订单")
+            levels = book[order["symbol"]][order["side"]]
+            price = order["limitPrice"]
+            levels[price] = levels.get(price, 0) + remaining
+    close = {}
+    for symbol, sides in book.items():
+        bid = max(sides["BUY"], default=None)
+        ask = min(sides["SELL"], default=None)
+        close[symbol] = {"bestBid": bid, "bestBidQuantity": sides["BUY"].get(bid, 0),
+                         "bestAsk": ask, "bestAskQuantity": sides["SELL"].get(ask, 0),
+                         "totalBuyQuantity": sum(sides["BUY"].values()), "totalSellQuantity": sum(sides["SELL"].values())}
+    return close
+
+
+def check_trade_orders(trades, reports, orders):
+    referenced = [trade_id for report in reports for trade_id in report["tradeIds"]]
+    if Counter(t["tradeId"] for t in trades) != Counter(referenced) or len(set(referenced)) != len(referenced):
+        raise ValueError("成交与同帧订单回报未逐笔对应")
+    if not trades:
+        return
+    by_order = {order["orderId"]: order for order in orders}
+    incoming = {trade_id: report["orderId"] for report in reports for trade_id in report["tradeIds"] if report["accepted"]}
+    for t in trades:
+        buy, sell = by_order[t["buyOrderId"]], by_order[t["sellOrderId"]]
+        if (buy["side"] != "BUY" or sell["side"] != "SELL" or
+                not buy["symbol"] == sell["symbol"] == t["symbol"] or
+                buy["accountId"] != t["buyAccountId"] or sell["accountId"] != t["sellAccountId"]):
+            raise ValueError("成交证券、方向或账户与原订单不符")
+        maker, taker = sorted((buy, sell), key=lambda order: order["sequence"])
+        if (incoming.get(t["tradeId"]) != taker["orderId"] or maker["sequence"] == taker["sequence"]
+                or maker["type"] != "LIMIT" or maker["limitPrice"] != t["price"]):
+            raise ValueError("成交与主动单回报或被动方挂价不符")
+
+
 def audit(source, target_days=None):
     if target_days is not None and target_days < 0:
         raise ValueError("目标实验日不能为负")
@@ -115,6 +169,8 @@ def audit(source, target_days=None):
     prior_time, run_id, opening_total = 0, None, None
     opening, previous_cash, gaps = None, None, []
     decision_owners = {}
+    confirmed_trade_ids, filled_by_order = set(), Counter()
+    orders, symbols = [], []
     for frame in checked_frames(source, file_digest):
         position = frame["position"]
         events = frame["events"]
@@ -124,7 +180,7 @@ def audit(source, target_days=None):
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
         if run_id not in OPENING_POLICIES or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2 至 v8 紧凑日志")
+            raise ValueError("此脚本仅复算标准十公司 v2 至 v9 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")
@@ -149,6 +205,20 @@ def audit(source, target_days=None):
         if now < prior_time:
             raise ValueError("世界时钟倒退")
         day = now // DAY
+        if daily and day != prior_time // DAY:
+            daily[prior_time // DAY]["closingBook"] = closing_book(orders, symbols)
+        orders_changed = position == 1
+        if position == 1:
+            symbols = [security["symbol"] for security in registries[0]["securities"]]
+            orders = patch["value"]["exchange"]["orders"]
+        else:
+            exchange = patch["changes"].get("exchange", {})
+            if exchange.get("kind") == "replace":
+                orders = exchange["value"]["orders"]
+                orders_changed = True
+            elif "orders" in exchange.get("changes", {}):
+                orders = patch_field(orders, exchange["changes"]["orders"])
+                orders_changed = True
         if day not in daily:
             if daily and day > prior_time // DAY + 1:
                 gaps.append({"fromDay": prior_time // DAY + 1, "throughDay": day - 1})
@@ -160,20 +230,30 @@ def audit(source, target_days=None):
         row = daily[day]
         row.update(lastPosition=position, lastTimeMillis=now)
         capital_legs = Counter()
+        trades, order_reports = [], []
         for event in events:
             kind = event["type"]
             row["confirmedEventTypes"][kind] += 1
             if kind == TRADE:
                 t = decode(event["payload"])
+                trades.append(t)
                 symbol, qty, price = t["symbol"], t["quantity"], t["price"]
                 if t["timeMillis"] != now or qty <= 0 or price <= 0:
                     raise ValueError("成交时点、数量或价格不合法")
+                if t["tradeId"] in confirmed_trade_ids:
+                    raise ValueError("成交编号在确认记录中重复")
+                confirmed_trade_ids.add(t["tradeId"])
+                filled_by_order[t["buyOrderId"]] += qty
+                filled_by_order[t["sellOrderId"]] += qty
                 row["trades"][symbol] += 1
                 row["quantity"][symbol] += qty
                 row["turnover"][symbol] += price * qty
                 pairs[t["buyAccountId"], t["sellAccountId"]] += 1
             elif kind == ORDER:
                 report = decode(event["payload"])
+                if report["timeMillis"] != now or report["position"] != position:
+                    raise ValueError("订单回报时点或位置与确认帧不符")
+                order_reports.append(report)
                 row["orderOutcomes"][f"{report['kind']}/{report['accepted']}/{report['reason']}"] += 1
             elif kind == READ:
                 observed = decode(event["payload"])
@@ -201,6 +281,12 @@ def audit(source, target_days=None):
                 dispatch = decode(event["payload"])
                 row["dispatchesByPerson"][decision_owners[dispatch["actionId"]]] += 1
                 row["decisionDispatches"] += 1
+        if trades or order_reports:
+            check_trade_orders(trades, order_reports, orders)
+        if orders_changed or trades:
+            ledger_fills = {o["orderId"]: o["filled"] for o in orders if o["filled"]}
+            if ledger_fills != filled_by_order:
+                raise ValueError("按买卖原单累计的成交数量与订单账不符")
         cash = {key: account["cash"] for key, account in state["accounts"].items()}
         for account, net in capital_legs.items():
             if cash[account] - previous_cash[account] != net:
@@ -219,6 +305,7 @@ def audit(source, target_days=None):
         row["cashChangeFromOpening"] = total - opening_total
     if not daily:
         raise ValueError("没有已确认的开局")
+    daily[prior_time // DAY]["closingBook"] = closing_book(orders, symbols)
     return {"runId": run_id, "journalSHA256": file_digest.hexdigest(), "lastPosition": position,
             "lastTimeMillis": prior_time, "lastStateDigest": prior_digest, "openingCash": opening_total, "opening": opening,
             "daysWithoutConfirmedFramesBetweenObservedDays": gaps,

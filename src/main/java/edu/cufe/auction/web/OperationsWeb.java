@@ -186,7 +186,9 @@ final class OperationsWeb {
                 var board=world.boardOfCompany(id).orElseThrow().board();long period=snapshot.timeMillis()/edu.cufe.auction.world.ManufacturingTemplateModel.PERIOD_MILLIS;
                 var category=edu.cufe.auction.world.BoardModel.BudgetCategory.PRODUCTION_LABOR;
                 BigDecimal budget=board.budget(period,category)==null?null:edu.cufe.auction.world.BoardModel.availableBudget(board,period,category);
-                var bank=world.bankOf().orElseThrow().decode(snapshot.accounts());var plan=edu.cufe.auction.world.DigitalDecisionTools.observation(company,snapshot.timeMillis(),snapshot.accounts().get(company.config().model().companyAccountId()).cash(),reports,budget);
+                var plan = edu.cufe.auction.world.DigitalDecisionTools.observation(company, snapshot.timeMillis(),
+                        snapshot.accounts().get(company.config().model().companyAccountId()).cash(), reports, budget, board,
+                        world.digitalCessation(id));
                 List<String> actions=new ArrayList<>();plan.path("actionFields").fieldNames().forEachRemaining(actions::add);
                 Map<String,Object> row=new LinkedHashMap<>();row.put("kind","DIGITAL");row.put("companyId",id);row.put("name","数字服务公司");row.put("actions",manager?actions:List.of());row.put("plan",plan);
                 row.put("financial",JSON.valueToTree(ComposedCompanyReport.of(world,id)));row.put("reports",JSON.valueToTree(reports));

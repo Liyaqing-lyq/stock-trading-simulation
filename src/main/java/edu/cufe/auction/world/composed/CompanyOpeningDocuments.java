@@ -38,8 +38,10 @@ public final class CompanyOpeningDocuments {
         TreeSet<String> companies = new TreeSet<>();
         registry.securities().forEach(security -> companies.add(security.issuerOrganizationId()));
         var data=world.profile().manifest().dataVersions();
-        if (OpeningEntityCopies.VERSION.equals(data.get(OpeningEntityCopies.KEY)))
-            companies.add(OpeningEntityCopies.fromManifest(data).company().id());
+        if (OpeningEntityCopies.enabled(data)) {
+            var copy = OpeningEntityCopies.fromManifest(data).company();
+            if (copy != null) companies.add(copy.id());
+        }
         // 先验证全部候选主体，再排程，避免无效配置留下半份开局材料。
         for (var entry : extraCandidates.entrySet()) {
             if (!companies.contains(entry.getKey()) || world.boardOfCompany(entry.getKey()).isEmpty()) {

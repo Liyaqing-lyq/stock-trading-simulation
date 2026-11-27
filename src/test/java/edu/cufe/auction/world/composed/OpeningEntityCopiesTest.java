@@ -18,6 +18,111 @@ class OpeningEntityCopiesTest {
     }
     private static BigDecimal cash(WorldRuntime w,String account) { return w.snapshot().accounts().get(account).cash(); }
 
+    private Path singleDraft(String field) throws Exception {
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        var root = json.createObjectNode();
+        root.set(field, json.readTree(example.toFile()).required(field));
+        Path file = dir.resolve(field+".json");
+        json.writeValue(file.toFile(), root);
+        return file;
+    }
+
+    @Test void standaloneInvestorHasOwnBankAndReadingWithoutCreatingAnEngineeringFirm() throws Exception {
+        Path file=dir.resolve("investor.journal"), draft=singleDraft("investor");
+        try (var control=ComposedIndustryScenario.openBaselinePartsOperating(dir.resolve("baseline.journal"));
+             var w=ComposedIndustryScenario.openOpeningCopiesOperating(file,draft)) {
+            var data=w.profile().manifest().dataVersions();
+            assertEquals(OpeningEntityCopies.INDEPENDENT,data.get(OpeningEntityCopies.KEY));
+            var plan=OpeningEntityCopies.fromManifest(data);
+            assertNull(plan.company());
+            assertEquals(control.openingRegistry().orElseThrow().securities(),w.openingRegistry().orElseThrow().securities());
+            assertEquals(control.openingRegistry().orElseThrow().allocations(),w.openingRegistry().orElseThrow().allocations());
+            assertEquals(control.openingRegistry().orElseThrow().parties().size()+1,w.openingRegistry().orElseThrow().parties().size());
+            assertEquals(control.snapshot().accounts().size()+1,w.snapshot().accounts().size());
+            for (var account:control.snapshot().accounts().entrySet()) assertEquals(account.getValue(),w.snapshot().accounts().get(account.getKey()));
+            assertEquals(new BigDecimal("0.00"),cash(w,plan.investorAccount()));
+            assertTrue(w.boardOfCompany("independent-engineering").isEmpty());
+            assertFalse(w.snapshot().accounts().containsKey("COPY-COMPANY-independent-engineering"));
+            assertTrue(w.autonomyRoleObservation(plan.investor().id()).at("/engineering/personalMarket").isObject());
+            assertTrue(w.snapshot().information().orElseThrow().information().observations().stream().noneMatch(o->plan.investor().id().equals(o.personPartyId())));
+            long readAt=w.snapshot().timeMillis()+10;
+            w.openRoleSession(plan.investor().id()).startReading("mine","mine",readAt,"engineering-opportunity:A1",1);
+            w.advanceTo(readAt+1000);
+            assertTrue(w.snapshot().information().orElseThrow().information().observations().stream().anyMatch(o->plan.investor().id().equals(o.personPartyId())));
+            assertFalse(w.autonomyRoleObservation(EngineeringCustomerPolicy.REPRESENTATIVE).toString().contains("NEW-INVITATION-1"));
+        }
+        Files.writeString(draft,"{}"); byte[] sealed=Files.readAllBytes(file);
+        try (var w=ComposedIndustryScenario.openOpeningCopiesOperating(file,draft)) {
+            assertNotNull(w.openingRegistry().orElseThrow().owner("independent-reader"));
+            assertTrue(w.boardOfCompany("independent-engineering").isEmpty());
+        }
+        assertArrayEquals(sealed,Files.readAllBytes(file));
+    }
+
+    @Test void standaloneCompanyHasOwnBoardAndInvitationWithoutCreatingAnInvestor() throws Exception {
+        Path file=dir.resolve("company.journal"),draft=singleDraft("company");
+        try (var control=ComposedIndustryScenario.openBaselinePartsOperating(dir.resolve("baseline.journal"));
+             var w=ComposedIndustryScenario.openOpeningCopiesOperating(file,draft)) {
+            var plan=OpeningEntityCopies.fromManifest(w.profile().manifest().dataVersions());
+            assertNull(plan.investor());
+            assertNull(w.openingRegistry().orElseThrow().owner("independent-reader"));
+            assertFalse(w.snapshot().accounts().containsKey("COPY-PERSON-independent-reader"));
+            assertEquals(control.openingRegistry().orElseThrow().parties().size()+1,w.openingRegistry().orElseThrow().parties().size());
+            assertEquals(control.openingRegistry().orElseThrow().allocations(),w.openingRegistry().orElseThrow().allocations());
+            assertEquals(control.snapshot().accounts().size()+1,w.snapshot().accounts().size());
+            assertEquals(sum(control),sum(w)); assertEquals(new BigDecimal("0.00"),cash(w,plan.companyAccount()));
+            String firm=plan.company().id();
+            assertEquals(plan.company().directors(),w.boardOfCompany(firm).orElseThrow().board().charter().seats().stream().map(BoardModel.Seat::partyId).toList());
+            assertTrue(w.snapshot().engineering().orElseThrow().stateOf(firm).contracts().isEmpty());
+            assertTrue(ComposedCompanyReport.of(w,firm).balanced());
+            assertTrue(w.autonomyRoleObservation(plan.company().directors().get(0)).at("/engineering/directorships").toString().contains(firm));
+            assertFalse(w.autonomyRoleObservation("nina").at("/engineering/directorships").toString().contains(firm));
+            assertEquals(plan.company().invitationId(),w.autonomyRoleObservation(EngineeringCustomerPolicy.REPRESENTATIVE)
+                    .at("/engineering/customerMandate/additionalInvitations/0/opportunities/0").textValue());
+        }
+        Files.writeString(draft,Files.readString(example)); byte[] sealed=Files.readAllBytes(file);
+        try (var w=ComposedIndustryScenario.openOpeningCopiesOperating(file,draft)) {
+            assertNull(OpeningEntityCopies.fromManifest(w.profile().manifest().dataVersions()).investor());
+            assertTrue(w.boardOfCompany("independent-engineering").isPresent());
+        }
+        assertArrayEquals(sealed,Files.readAllBytes(file));
+    }
+
+    @Test void independentDraftsStillRequireRealOwnersSeatsAndCustomerSources() throws Exception {
+        String investor=Files.readString(singleDraft("investor"));
+        String company=Files.readString(singleDraft("company"));
+        for (String bad : List.of(investor.replace("nina","absent-source"), investor.replace("independent-reader","nina"),
+                company.replace("mfgtech-d4","absent-director"), company.replace("eng-a-customer","absent-customer"),
+                company.replace("A1","absent-quote"))) {
+            var draft=Files.createTempFile(dir,"invalid",".json");
+            Files.writeString(draft,bad);
+            Path target=dir.resolve(draft.getFileName()+".journal");
+            var error=assertThrows(Exception.class,()->ComposedIndustryScenario.openOpeningCopiesOperating(target,draft));
+            assertTrue(error instanceof IllegalArgumentException || error instanceof com.fasterxml.jackson.databind.JsonMappingException,
+                    error::toString);
+            assertTrue(!Files.exists(target) || Files.size(target)==0);
+        }
+    }
+
+    @Test void validDigestsCannotMixPairedAndSingleSchemasOrUpgradeSiblingWorlds() throws Exception {
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();
+        var old=json.readValue(example.toFile(),OpeningEntityCopies.class);
+        var solo=json.readValue(singleDraft("company").toFile(),OpeningEntityCopies.class);
+        var data=new java.util.TreeMap<String,String>();
+        old.freeze(data); data.put(OpeningEntityCopies.KEY,OpeningEntityCopies.INDEPENDENT);
+        assertThrows(IllegalArgumentException.class,()->OpeningEntityCopies.fromManifest(data));
+        solo.freeze(data); data.put(OpeningEntityCopies.KEY,OpeningEntityCopies.VERSION);
+        assertThrows(IllegalArgumentException.class,()->OpeningEntityCopies.fromManifest(data));
+        solo.freeze(data);
+        assertThrows(IllegalArgumentException.class,()->OpeningEntityCopies.fromManifest(data,RunManifest.OWNER_BANK_VALUATION_RUN_ID));
+        var sibling=dir.resolve("other.journal");
+        assertThrows(IllegalArgumentException.class,()->ComposedIndustryScenario.openOwnerBankValuationOperating(sibling,singleDraft("company")));
+        assertFalse(Files.exists(sibling));
+        var noPlan=dir.resolve("none.json");Files.writeString(noPlan,"{}");
+        assertThrows(java.io.IOException.class,()->ComposedIndustryScenario.openOpeningCopiesOperating(sibling,noPlan));
+        assertFalse(Files.exists(sibling));
+    }
+
     @Test void actualDraftCreatesIndependentAccountsOneUnlistedCompanyAndNoPrivateHistory() throws Exception {
         Path journal=dir.resolve("copies.journal"),draft=dir.resolve("my-draft.json");
         String custom=Files.readString(example).replace("independent-reader","new-investor-2")

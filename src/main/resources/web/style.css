@@ -21,7 +21,7 @@ td.preview{white-space:normal;min-width:240px;max-width:380px;color:#5c6a80}
 .section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
 .section-head h2{margin-bottom:6px}
 .section-head p{margin:0 0 18px;color:#8a95a6;font-size:12px}
-#candle-chart{width:100%;height:auto;min-height:180px;max-height:380px;overflow:visible}
+#candle-chart,#person-chart-svg{width:100%;height:auto;min-height:180px;max-height:380px;overflow:visible}
 .chart-wick{stroke-width:1.5}
 .chart-body{stroke-width:1}
 .chart-up{stroke:#2f7d5c;fill:#dff0e6}

@@ -164,8 +164,7 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void eighthVersionAddsOnlyReadablePeriodMaterialsAndBranchesKeepTheirOpeningPolicy() throws Exception {
-        Path eighthFile = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v8.journal"), eighthFile);
+        Path eighthFile = dir.resolve("world-ten-company-autonomy-v8.journal");
         Path seventhFile = dir.resolve("world-ten-company-autonomy-v7.journal");
         try (var seventh = ComposedIndustryScenario.openInterviewTenCompanyStudy(seventhFile)) {
             assertFalse(seventh.profile().manifest().dataVersions().containsKey(RunManifest.PERIODIC_MEETING_VIEW));
@@ -205,6 +204,42 @@ class StudyTenCompanyOpeningTest {
             assertEquals(recovered.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());
         }
         assertArrayEquals(eighthBytes, Files.readAllBytes(eighthFile));
+    }
+
+    @Test void digitalCessationIsFrozenOnlyForNewWorldsAndTheirBranches() throws Exception {
+        Path ninth = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v9.journal"), ninth);
+        Path eighth = dir.resolve("world-ten-company-autonomy-v8.journal");
+        try (var prior = ComposedIndustryScenario.openMeetingTenCompanyStudy(eighth)) {
+            assertEquals(RunManifest.MEETING_TEN_COMPANY_RUN_ID, prior.profile().manifest().runId());
+        }
+        byte[] archived = Files.readAllBytes(eighth);
+        try (var prior = ComposedIndustryScenario.openDigitalWindDownTenCompanyStudy(WorldWebApp.tenCompanyJournal(dir));
+             var world = ComposedIndustryScenario.openDigitalWindDownTenCompanyStudy(ninth)) {
+            var old = prior.profile().manifest();
+            var current = world.profile().manifest();
+            assertEquals(RunManifest.DIGITAL_WIND_DOWN_RUN_ID, current.runId());
+            var expected = new TreeMap<>(old.dataVersions());
+            expected.put("branch-profile-run", current.runId());
+            expected.put(RunManifest.DIGITAL_CESSATION, RunManifest.BOARD_DIGITAL_WIND_DOWN);
+            assertEquals(expected, current.dataVersions());
+            assertEquals(prior.openingRegistry(), world.openingRegistry());
+            assertEquals(prior.snapshot().accounts(), world.snapshot().accounts());
+            expected.remove(RunManifest.DIGITAL_CESSATION);
+            assertThrows(IllegalArgumentException.class, () -> withPolicies(current, expected));
+            var grafted = new TreeMap<>(old.dataVersions());
+            grafted.put(RunManifest.DIGITAL_CESSATION, RunManifest.BOARD_DIGITAL_WIND_DOWN);
+            assertThrows(IllegalArgumentException.class, () -> withPolicies(old, grafted));
+            world.createBranch("digital-cessation-child", world.snapshot().position(), BranchOrigin.Kind.OPERATOR_BRANCH, "数字公司停接");
+        }
+        assertArrayEquals(archived, Files.readAllBytes(eighth));
+        assertEquals(ninth, WorldWebApp.tenCompanyJournal(dir));
+        var branches = new BranchRepository(dir.resolve("runs"));
+        try (var reopened = ComposedIndustryScenario.openDigitalWindDownTenCompanyStudy(ninth);
+             var child = branches.open("digital-cessation-child", reopened.profile())) {
+            assertEquals(RunManifest.DIGITAL_WIND_DOWN_RUN_ID, child.profile().manifest().policyRunId());
+            assertEquals(reopened.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());
+        }
     }
 
     @Test void historicalNamesUseNonemptyArchiveAndRejectSwappedOrIndependentWorlds() throws Exception {

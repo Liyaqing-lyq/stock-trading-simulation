@@ -88,6 +88,7 @@ function flush(times = 14) {
 const timers = [];
 const connectionEvents = new Map();
 const context = vm.createContext({
+  history: { state: null, replaceState(value) { this.state = value; } },
   addEventListener: (name, handler) => connectionEvents.set(name, handler),
   document, console, BigInt, Number, String, Boolean, Object, Array, Map, Set, JSON,
   Math, Date, Promise, Error, RegExp,
@@ -359,6 +360,29 @@ async function main() {
     assert.equal(after.value,"0");
     assert.equal(document.getElementById("history-next").disabled,true);
     assert.equal(document.getElementById("history-index-status").textContent,"");
+  });
+
+  await check("remember-confirmed-page-and-cut-only-within-admin-context", async () => {
+    resetState();
+    api.state.adminRun = "web-groups";
+    api.state.position = "10";
+    document.getElementById("history-after").value = "2";
+    document.getElementById("history-limit").value = "2";
+    responder = url => url.includes("/history/view") ? respond(200, viewPayload(4, 10))
+      : respond(200, { runId: "web-groups", cutPosition: "10", entries: [{position:"3"},{position:"4"}], nextAfter:"4" });
+    await api.loadHistoryIndex();
+    await api.openHistoryPosition(4);
+    assert.equal(JSON.stringify(context.history.state.worldHistory),
+      JSON.stringify({runId:"web-groups",after:2,limit:2,selected:4}));
+    assert.match(document.getElementById("context-time").textContent, /回看已确认位置 4 · 1004 毫秒/);
+    assert.match(document.getElementById("status").textContent, /实时已确认至 10/);
+    await api.loadHistoryIndex(true);
+    assert.equal(context.history.state.worldHistory.after, 4);
+    api.showMode("person");
+    assert.equal(context.history.state.worldHistory, undefined);
+    const count = fetchLog.length;
+    await api.openHistoryPosition(4);
+    assert.equal(fetchLog.length, count);
   });
 
   await check("history-page-no-business-writes", async () => {

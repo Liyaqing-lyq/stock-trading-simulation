@@ -44,6 +44,8 @@ const state = {
   history: null,
   branch: null,
   personRelations: null,
+  personChart: null,
+  personRefresh: 0,
   personEngineering: null
 };
 
@@ -122,6 +124,14 @@ function setStatus(message) {
   $("status").textContent = message || "";
 }
 
+function setAccountContext(ids) {
+  const box = $("context-account");
+  box.title = ids?.join("、") || "";
+  if (ids == null) box.textContent = state.mode === "admin" ? "账户未单选（全局）" : "";
+  else if (ids.length === 1) box.textContent = "可见交易账户 " + ids[0];
+  else box.textContent = ids.length ? "可见 " + ids.length + " 个交易账户 · 未单选" : "交易账户未单选（无逐户记录）";
+}
+
 function nextGeneration() {
   state.generation += 1;
   return state.generation;
@@ -169,6 +179,7 @@ function clearSecrets() {
 }
 
 function clearAdminDom() {
+  globalThis.WorldExposure?.clear();
   globalThis.WorldHome?.clear();
   state.capabilities = null;
   $("live-persons").replaceChildren();
@@ -198,6 +209,11 @@ function clearAdminDom() {
 }
 
 function clearPersonDom() {
+  state.personChart = null;
+  $("person-chart-symbol").replaceChildren();
+  $("person-chart-period").value = "day";
+  show("person-chart-card", false);
+  clearPersonChart();
   renderFundUnits(null);
   renderPersonPortfolios([]);
   $("person-research-timeline").replaceChildren();
@@ -231,18 +247,22 @@ function clearPersonDom() {
   setMessage("person-error", "");
 }
 
-function showMode(mode) {
+function showMode(mode, forgetBookmark = true) {
   clearGroupsDom();
   clearResearchDom();
   clearOperationsDom();
   clearManufacturingDom();
   state.mode = mode;
   document.body.dataset.mode = mode;
+  $("context-identity").textContent = mode === "admin" ? "实时 · 管理员" : mode === "person" ? "实时 · 正在确认人物" : "";
+  setAccountContext(null);
   $("navigation").hidden = mode !== "admin";
   $("refresh").hidden = mode === "login";
   $("context-time").textContent = mode === "login" ? "本机实验环境" : "读取确认状态…";
   nextGeneration();
   if (mode !== "admin") {
+    if (forgetBookmark) writeHistoryBookmark(null);
+    state.adminRun = null;
     clearAdminDom();
     clearHistoryDom();
   }
@@ -283,17 +303,18 @@ function providerLabel(kind) {
 
 // ---------------------------------------------------------------- 管理员
 
-async function enterAdmin() {
+async function enterAdmin(resume = false) {
+  if (!resume) writeHistoryBookmark(null);
   showMode("admin");
   selectPage("overview", false);
   setStatus("管理员视角");
-  await refreshAdmin();
+  await refreshAdmin(resume);
 }
 
-async function refreshAdmin() {
+async function refreshAdmin(resume = false) {
   stopLivePoll();
   const generation = state.generation;
-  const pageVersion = ++state.pageVersion;
+  let pageVersion = ++state.pageVersion;
   const current = () => isCurrent(generation) && state.mode === "admin" && pageVersion === state.pageVersion;
   let result;
   try {
@@ -301,6 +322,7 @@ async function refreshAdmin() {
   } catch (failure) {
     if (current()) {
       setMessage("admin-error", failure.message);
+      setStatus(state.position == null ? "尚未取得世界数据" : "连接失败 · 显示上次确认数据");
     }
     return;
   }
@@ -313,14 +335,37 @@ async function refreshAdmin() {
   }
   if (result.status !== 200 || !result.payload) {
     setMessage("admin-error", "读取世界快照失败（" + result.status + "），请稍后重试。");
+    setStatus(state.position == null ? "尚未取得世界数据" : "读取失败 · 显示上次确认数据");
     return;
   }
   setMessage("admin-error", "");
+  const runId = result.payload.runId;
+  const saved = resume === true ? globalThis.history?.state?.worldHistory : null;
+  if ((state.adminRun && state.adminRun !== runId) || (saved && saved.runId !== runId)) {
+    writeHistoryBookmark(null);
+    if (state.page === "history") selectPage("overview", false);
+    pageVersion = state.pageVersion;
+  }
+  state.adminRun = runId;
+  const restore = saved && saved.runId === runId && Number.isSafeInteger(saved.after) && saved.after >= 0
+    && Number.isSafeInteger(saved.limit) && saved.limit > 0 && saved.limit <= 200;
+  if (restore) {
+    selectPage("history", false);
+    pageVersion = state.pageVersion;
+    $("history-after").value = String(saved.after);
+    $("history-limit").value = String(saved.limit);
+    if (Number.isSafeInteger(saved.selected) && saved.selected > 0 && saved.selected <= Number(result.payload.position)) {
+      historyState().resumePosition = saved.selected;
+    }
+  }
   renderAdmin(result.payload);
+  renderHistoryHeader();
   if (globalThis.WorldHome) {
     const overview = await request("GET", "/api/admin/world");
     if (!current()) return;
-    if (overview.status === 200) globalThis.WorldHome.render(overview.payload);
+    if (overview.status === 200) {
+      globalThis.WorldHome.render(overview.payload);
+    }
     else setMessage("admin-error", "首页与报表读取失败（" + overview.status + "），请刷新重试。");
   }
   await refreshKeys(generation, current);
@@ -331,6 +376,12 @@ async function refreshAdmin() {
   if (DETAIL_PAGES[state.page]) {
     state.details[state.page] = null;
     await loadDetail(state.page);
+  }
+  if (state.page === "world-exposure" && current()) {
+    const exposure = await request("GET", "/api/admin/world-exposure");
+    if (!current()) return;
+    if (exposure.status === 401 || exposure.status === 403) { sessionLost(); return; }
+    globalThis.WorldExposure?.render(exposure.status === 200 ? exposure.payload : null);
   }
   if (state.page === "market" && current()) {
     await loadMarketHistory(generation, pageVersion);
@@ -356,25 +407,30 @@ async function refreshAdmin() {
   }
   if (state.page === "history" && current()) {
     await loadHistoryIndex(historyState().cursor !== null);
+    if (restore && current() && historyState().request === 0 && historyState().resumePosition)
+      await openHistoryPosition(historyState().resumePosition);
+    if (!current()) return;
     await loadBranchRuns();
   }
   return current();
 }
 
 function renderAdminCut(view) {
-  $("context-time").textContent = (view.runId ? view.runId + " · " : "") + view.timeMillis + " 毫秒";
-  setStatus("管理员视角 · 已确认记录 " + view.position);
+  const run = view.runId || state.adminRun;
+  $("context-time").textContent = (run ? run + " · " : "") + view.timeMillis + " 毫秒";
+  $("context-identity").textContent = "实时 · 管理员";
+  setAccountContext(null);
+  setStatus("已确认记录 " + view.position);
 }
 
 function renderAdmin(view) {
   state.position = view.position;
-  $("context-time").textContent = view.runId + " · " + view.timeMillis + " 毫秒";
+  renderAdminCut(view);
   $("metric-accounts").textContent = String(view.accounts.length);
   $("metric-pending").textContent = String(view.pendingCount);
   $("metric-trades").textContent = String(view.trades.length);
   $("metric-position").textContent = view.position;
   if (!$("advance-target").value) $("advance-target").value = String(BigInt(view.timeMillis) + 1000n);
-  setStatus("管理员视角 · 已确认记录 " + view.position);
 
   const snapshot = $("snapshot");
   snapshot.replaceChildren();
@@ -571,45 +627,56 @@ async function refreshPerson() {
   clearPersonalInterview();
   clearPersonalBank();
   const generation = state.generation;
+  const revision = ++state.personRefresh;
+  const current = () => revision === state.personRefresh && isCurrent(generation) && state.mode === "person";
   let result;
   try {
-    result = await request("GET", "/api/me/view");
+    result = state.personChart
+      ? await request("POST", "/api/me/view", state.personChart)
+      : await request("GET", "/api/me/view");
   } catch (failure) {
-    if (isCurrent(generation) && state.mode === "person") {
+    if (current()) {
       setMessage("person-error", failure.message);
+      setStatus($("context-account").textContent ? "连接失败 · 显示上次本人资料" : "尚未取得本人资料");
     }
     return;
   }
-  if (!isCurrent(generation) || state.mode !== "person") {
+  if (!current()) {
     return;
   }
-  if (result.status === 401) {
+  if (result.status === 401 || result.status === 403) {
     sessionLost();
     return;
   }
   if (result.status !== 200 || !result.payload) {
     setMessage("person-error", "读取个人视图失败（" + result.status + "）。");
+    setStatus($("context-account").textContent ? "读取失败 · 显示上次本人资料" : "尚未取得本人资料");
     return;
   }
   setMessage("person-error", "");
   const view = result.payload;
+  $("context-time").textContent = (view.runId ? view.runId + " · " : "") + view.timeMillis + " 毫秒";
+  const person = view.displayName && !view.displayName.includes(view.personPartyId)
+    ? view.displayName + "（" + view.personPartyId + "）" : view.displayName || view.personPartyId;
+  $("context-identity").textContent = "实时 · " + person;
+  setAccountContext([...new Set((view.accounts || []).map(row => row.accountId))]);
+  setStatus("本人资料已确认");
   renderPersonRelations(view);
   renderPersonResearch(view.personalResearch);
   renderPersonalMedia(view.media);
   await loadGroups(generation, null);
-  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (!current()) return;
   await loadOperations(generation, null);
-  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (!current()) return;
   await loadResearch(generation, null);
-  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (!current()) return;
   await loadManufacturing(generation, null);
-  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (!current()) return;
   await renderPersonalInterview((view.media && view.media.tools) || view.tools, generation);
-  if (!isCurrent(generation) || state.mode !== "person") return;
-  $("context-time").textContent = "人物观察 · " + view.timeMillis + " 毫秒";
+  if (!current()) return;
   $("person-name").textContent = view.displayName || view.personPartyId;
   await loadPersonalBank(generation);
-  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (!current()) return;
 
   const summary = $("person-summary");
   summary.replaceChildren();
@@ -681,6 +748,7 @@ async function refreshPerson() {
     }
     if (row.sessionStatus) cell(tr, sessionLabels[row.sessionStatus] || row.sessionStatus);
   });
+  renderPersonChart(view);
   const depthVisible = (view.market || []).some(row => row.bestBidQuantity != null);
   $("person-best-bid-quantity").hidden = !depthVisible;
   $("person-best-ask-quantity").hidden = !depthVisible;
@@ -699,6 +767,43 @@ const fundClaimFields = [
   ["units","基金份额（份）"],["marketValue","份额市值（元）"],["subscriptionAdvance","申购预付款（元）"],
   ["redemptionReceivable","赎回应收款（元）"],["productLiability","产品预收及赎回应付款（元）"]
 ];
+
+function clearPersonChart() {
+  $("person-chart-svg").replaceChildren();
+  $("person-chart-svg").setAttribute("hidden", "");
+  $("person-chart-caption").textContent = "";
+  fillTable("person-chart-bars", [], () => {});
+  show("person-chart-output", false);
+}
+
+function renderPersonChart(view) {
+  const select = $("person-chart-symbol");
+  const quotes = view.market || [];
+  show("person-chart-card", quotes.length > 0);
+  select.replaceChildren();
+  for (const symbol of ["", ...quotes.map(row => row.symbol)]) {
+    const option = document.createElement("option");
+    option.value = symbol;
+    option.textContent = symbol || "选择证券";
+    select.appendChild(option);
+  }
+  select.value = state.personChart?.symbol || "";
+  clearPersonChart();
+  const chart = view.publicMarketBars;
+  if (!chart) return;
+  show("person-chart-output", true);
+  $("person-chart-period").value = chart.period;
+  const caption = $("person-chart-caption");
+  if (chart.bars.length) renderCandleChart(chart, $("person-chart-svg"), caption);
+  else caption.textContent = chart.available ? "本期尚无公开成交。" : "本运行未启用撮合。";
+  caption.textContent += " 截止 " + chart.timeMillis + " 模拟毫秒。";
+  fillTable("person-chart-bars", chart.bars, (tr, row) => {
+    cell(tr, row.startMillis); cell(tr, row.endMillis); cell(tr, row.complete ? "已完成" : "进行中");
+    for (const key of ["open", "high", "low", "close"]) cell(tr, row[key], "num");
+    cell(tr, row.volume == null ? volumeStatusLabel(row.volumeStatus) : row.volume, "num");
+    cell(tr, row.amount, "num");
+  });
+}
 
 function renderPersonPortfolios(portfolios, returns = {}) {
   const container = $("person-owner-value-rows");
@@ -1063,7 +1168,7 @@ async function boot() {
     const session = await request("GET", "/api/session");
     if (session.status === 200 && session.payload && session.payload.role === "ADMIN") {
       state.localAccess = session.payload.localAccess === true;
-      await enterAdmin();
+      await enterAdmin(true);
       return;
     }
     if (session.status === 200 && session.payload && session.payload.role === "PERSON") {
@@ -1079,7 +1184,7 @@ async function boot() {
     showMode("login");
     setStatus("请先登录");
   } catch (failure) {
-    showMode("login");
+    showMode("login", false);
     setStatus(failure.message);
   }
 }
@@ -1088,6 +1193,7 @@ async function boot() {
 // ---------------------------------------------------------------- 页面与非秘密场景配置
 const pages = {
   overview: ["世界首页", "从公司经营、股票行情和人物开始观察世界。"],
+  "world-exposure": ["世界关系", "按财产登记查看持有人与发行人的价格暴露。"],
   "world-market": ["股票行情", "查看当前世界的实际成交价格、成交量与委托。"],
   "world-companies": ["公司报表", "十家公司的资产、负债、利润与现金变化。"],
   "world-people": ["世界人物", "认识世界里的董事、经理、投资者与媒体人。"],
@@ -1127,7 +1233,10 @@ function selectPage(page, refresh = true) {
   if (state.page === "groups" && page !== "groups") clearGroupsDom();
   if (state.page === "engineering" && page !== "engineering") clearEngineeringDom();
   if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
-  if (state.page === "history" && page !== "history") clearHistoryDom();
+  if (state.page === "history" && page !== "history") {
+    writeHistoryBookmark(null);
+    clearHistoryDom();
+  }
   state.page = page;
   state.pageVersion += 1;
   $("page-title").textContent = pages[page][0];
@@ -1414,9 +1523,8 @@ function volumeStatusLabel(value) {
   return ({ OK: "正常", OVERFLOW: "数量超出整数范围" })[value] || String(value || "—");
 }
 
-function renderCandleChart(view) {
+function renderCandleChart(view, svg = $("candle-chart"), caption = $("chart-caption")) {
   const bars = view.bars || [];
-  const svg = $("candle-chart");
   svg.replaceChildren();
   svg.setAttribute("hidden", "");
   if (!bars.length) return;
@@ -1431,7 +1539,7 @@ function renderCandleChart(view) {
     const low = priceToHundredths(bar.low);
     const close = priceToHundredths(bar.close);
     if (open === null || high === null || low === null || close === null) {
-      $("chart-caption").textContent = "价格字符串无法解析，请查看下表精确值。";
+      caption.textContent = "价格字符串无法解析，请查看下表精确值。";
       return;
     }
     const volume = volumeToBigInt(bar.volume);
@@ -1523,7 +1631,7 @@ function renderCandleChart(view) {
   svg.setAttribute("aria-label", (view.selectedSymbol || "证券") + " "
     + view.period + " 真实成交 OHLC 与成交量，共 " + bars.length + " 根；精确值见下方表格");
   svg.removeAttribute("hidden");
-  $("chart-caption").textContent = (view.selectedSymbol || "证券") + " · "
+  caption.textContent = (view.selectedSymbol || "证券") + " · "
     + ({ minute: "分钟", day: "模拟日", week: "模拟周" }[view.period] || view.period)
     + " · 显示最近 " + bars.length + " / 共 " + view.totalBars
     + " 个有成交桶 · 纵轴：元；横轴：模拟毫秒（近似坐标）";
@@ -1554,6 +1662,34 @@ function historyState() {
       indexRequest: 0, request: 0, exportRequest: 0 };
   }
   return state.history;
+}
+
+/** 只随当前标签的浏览记录保存页码和位置。资格与数据在刷新后重新向服务端取得。 */
+function writeHistoryBookmark(bookmark) {
+  const navigation = globalThis.history;
+  if (!navigation || (!bookmark && !navigation.state?.worldHistory)) return;
+  const next = { ...navigation.state };
+  if (bookmark) next.worldHistory = bookmark;
+  else delete next.worldHistory;
+  navigation.replaceState(next, "");
+}
+
+function saveHistorySelection() {
+  const h = historyState();
+  if (state.mode === "admin" && state.page === "history" && state.adminRun && h.pageAfter != null) {
+    writeHistoryBookmark({ runId: state.adminRun, after: h.pageAfter, limit: h.pageLimit, selected: h.selected ?? h.resumePosition ?? null });
+  }
+}
+
+function renderHistoryHeader() {
+  const h = state.history;
+  if (state.mode !== "admin" || state.page !== "history" || h?.selected == null || !h.frameRun) return;
+  $("context-time").textContent = h.frameRun + " · 回看已确认位置 " + h.selected + " · " + h.frameTime + " 毫秒";
+  $("context-identity").textContent = "回看 · 管理员";
+  const latest = [state.position, h.indexCut, h.frameCut].reduce((last, cut) =>
+    cut != null && BigInt(cut) > BigInt(last) ? cut : last, "0");
+  $("status").textContent = "实时已确认至 " + latest
+    + (h.stale ? " · 索引待重连" : "");
 }
 
 /** 清空历史页 DOM 与本地状态（切页、切身份、退出时调用）。 */
@@ -1609,6 +1745,7 @@ function historyPositionValue() {
 function markHistoryStale(reason) {
   const history = historyState();
   history.stale = true;
+  renderHistoryHeader();
   $("history-index-status").textContent = reason + (history.cursor === null ? " 尚未收到索引记录。" :
     " 当前显示上次读取的记录，已读至位置 " + history.cursor + "。");
 }
@@ -1647,13 +1784,21 @@ async function loadHistoryIndex(continueReading = false) {
   setMessage("history-error", "");
   const view = result.payload;
   history.stale = false;
+  history.indexCut = view.cutPosition;
   if (view.entries.length) history.cursor = view.nextAfter;
+  else if (!continueReading) history.cursor = null;
   $("history-next").disabled = history.cursor === null;
   const progress = history.cursor === null ? "尚未收到索引记录" : "已读至位置 " + history.cursor;
   $("history-index-status").textContent = progress + "，读取时确认至 " + view.cutPosition + "。"
     + (continueReading && !view.entries.length ? " 暂无后续记录。" : "");
-  if (!continueReading || view.entries.length) history.entries = view.entries;
+  if (!continueReading || view.entries.length) {
+    history.entries = view.entries;
+    history.pageAfter = Number(after);
+    history.pageLimit = Math.min(limit, 200);
+    saveHistorySelection();
+  }
   renderHistoryIndex(view);
+  renderHistoryHeader();
 }
 
 /** 渲染历史索引（位置为精确字符串）。 */
@@ -1680,6 +1825,7 @@ function renderHistoryIndex(view) {
 
 /** 打开某个确认位置的只读历史视图。 */
 async function openHistoryPosition(position) {
+  if (state.mode !== "admin" || state.page !== "history") return;
   if (!Number.isSafeInteger(position) || position < 1) {
     setMessage("history-error", "请先选择一个有效的确认位置。");
     return;
@@ -1711,7 +1857,14 @@ async function openHistoryPosition(position) {
   }
   setMessage("history-error", "");
   history.selected = position;
+  history.resumePosition = null;
+  $("history-position-input").value = String(position);
+  history.frameRun = result.payload.runId;
+  history.frameTime = result.payload.timeMillis;
+  history.frameCut = result.payload.cutPosition;
   renderHistoryView(result.payload);
+  renderHistoryHeader();
+  saveHistorySelection();
 }
 
 /** 历史总览字段顺序（固定，避免对象键序漂移）。 */
@@ -2255,6 +2408,15 @@ $("history-verify").addEventListener("click",
   () => guard(verifyHistoryCheckpointText($("history-checkpoint-text").value)));
 $("branch-check").addEventListener("click", () => guard(checkBranchSupport()));
 $("branch-create").addEventListener("click", () => guard(createBranchRun()));
+for (const id of ["person-chart-symbol", "person-chart-period"]) {
+  $(id).addEventListener("change", () => {
+    if (state.mode !== "person") return;
+    const symbol = $("person-chart-symbol").value;
+    state.personChart = symbol ? {symbol, period: $("person-chart-period").value} : null;
+    clearPersonChart();
+    guard(refreshPerson());
+  });
+}
 $("refresh").addEventListener("click", () => guard(state.mode === "admin" ? refreshAdmin() : refreshPerson()));
 $("market-symbol").addEventListener("change", () => guard(loadMarketHistory()));
 $("market-period").addEventListener("change", () => guard(loadMarketHistory()));
@@ -2262,7 +2424,7 @@ $("market-refresh").addEventListener("click", () => guard(loadMarketHistory()));
 // ---------------------------------------------------------------- 管理详情页（公司 / 表现 / 人物任职 / 信息阅读）
 
 const LABELS = {
-  topic: { MANAGER_APPOINTMENT: "经理任免", BUDGET: "预算授权", OPERATING_REVIEW: "经营考核", DIVIDEND_AUTHORIZATION: "分红授权", RESOURCE_CESSATION: "资源公司停业决议", RESOURCE_PRIMARY_OFFER: "资源公司普通股认购要约" },
+  topic: { MANAGER_APPOINTMENT: "经理任免", BUDGET: "预算授权", OPERATING_REVIEW: "经营考核", DIVIDEND_AUTHORIZATION: "分红授权", DIGITAL_CESSATION: "数字服务停业决议", RESOURCE_CESSATION: "资源公司停业决议", RESOURCE_PRIMARY_OFFER: "资源公司普通股认购要约" },
   meeting: { CONVENED: "已召集", MATERIALS_FROZEN: "材料已冻结", REVIEWED: "已评分", VOTING: "表决中",
     ADOPTED: "已通过", REJECTED: "未通过", ADJOURNED_NO_QUORUM: "不足法定人数",
     IMPLEMENTED: "已实施", IMPLEMENTATION_FAILED: "实施失败" },
@@ -4045,6 +4207,15 @@ $("media-story-select").addEventListener("change", () => guard(loadMediaStory())
 
 if (globalThis.WorldHome) {
   globalThis.WorldHome.onPage = selectPage;
+  globalThis.WorldHome.onMarketHistory = symbol => {
+    if (state.mode !== "admin" || state.page !== "world-market") return;
+    const option = document.createElement("option");
+    option.value = symbol;
+    option.textContent = symbol;
+    $("market-symbol").replaceChildren(option);
+    $("market-symbol").value = symbol;
+    selectPage("market");
+  };
   globalThis.WorldHome.onOperations = companyId => {
     state.operationsRequestedCompany = companyId;
     selectPage("operations");
@@ -5220,6 +5391,11 @@ const ENGINEERING_TOOL_FIELDS = {
     required: ["periodicPeriod", "draftId", "draftVersion"],
     note: "由被授权本人发布公开正文；发布后不可回填旧版本，逾期会记为迟报。"
   },
+  "board.conveneDigitalCessation": {
+    fields: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    required: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    note: "五席中至少四席赞成后，在任经理可按会议号停止接纳新业务。既有合同继续履约、收款或退款。"
+  },
   "board.conveneAppointment": {
     fields: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
     required: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
@@ -5296,6 +5472,7 @@ const ENGINEERING_TOOL_LABELS = {
   "engineering.requestRetention": "请求质保金",
   "engineering.waive": "执行董事会豁免",
   "board.conveneAppointment": "召集经理任免会议",
+  "board.conveneDigitalCessation": "召集数字服务停业会议",
   "periodic.attend": "登记周期会议出席",
   "periodic.prepare": "准备周期财报",
   "periodic.score": "提交本席评分",
@@ -6575,7 +6752,7 @@ function engineeringToolDefaults(tool, now) {
   const defaults = {};
   if (now === null) return defaults;
   if (tool === "board.convene" || tool === "board.conveneWaiver"
-      || tool === "board.conveneAppointment" || tool === "issuer.dividend.convene") {
+      || tool === "board.conveneAppointment" || tool === "board.conveneDigitalCessation" || tool === "issuer.dividend.convene") {
     defaults.materialDeadline = String(now + 60_000);
     defaults.opensAt = String(now + 120_000);
     defaults.closesAt = String(now + 180_000);
@@ -6882,7 +7059,7 @@ function renderEngineeringFields(tool) {
       hint.className = "hint";
       hint.textContent = key === "meetingId"
         && (tool === "board.convene" || tool === "board.conveneWaiver"
-          || tool === "board.conveneAppointment")
+          || tool === "board.conveneAppointment" || tool === "board.conveneDigitalCessation")
         ? field.conveneHint : field.hint;
       wrapper.appendChild(hint);
     }

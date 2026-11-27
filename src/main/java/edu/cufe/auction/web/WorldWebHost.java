@@ -949,7 +949,16 @@ public final class WorldWebHost implements AutoCloseable {
                              List<Map<String, Object>> publicReports, Map<String, Object> personalResearch,
                              List<PersonBusinessRelations.Edge> businessRelations, String displayName,
                              Map<RoleView.Holding, Map<String,String>> holdingWeights, Boolean marketClosed, Boolean decisionPaused,
-                             Map<String,Object> fundUnits, Map<String,Map<String,String>> portfolioReturns) {
+                             Map<String,Object> fundUnits, Map<String,Map<String,String>> portfolioReturns,
+                             Map<String,Object> publicMarketBars) {
+        /** 兼容未查询公开成交历史的个人页面。 */
+        public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
+                          Map<String,Object> personalResearch, List<PersonBusinessRelations.Edge> businessRelations,
+                          String displayName, Map<RoleView.Holding,Map<String,String>> holdingWeights, Boolean marketClosed,
+                          Boolean decisionPaused, Map<String,Object> fundUnits, Map<String,Map<String,String>> portfolioReturns) {
+            this(view, media, publicReports, personalResearch, businessRelations, displayName, holdingWeights, marketClosed,
+                    decisionPaused, fundUnits, portfolioReturns, null);
+        }
         /** 兼容仅显示基金份额和期末净值的页面。 */
         public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
                           Map<String,Object> personalResearch,List<PersonBusinessRelations.Edge> businessRelations,
@@ -1002,11 +1011,17 @@ public final class WorldWebHost implements AutoCloseable {
      * @throws Exception 人物无效或世界读取失败
      */
     public PersonPage personPage(String personId) throws Exception {
+        return personPage(personId, null, null);
+    }
+
+    /** 本人选定行情后，在同一次快照取得账户、公开报价与相同截止的 K 线。 */
+    PersonPage personPage(String personId, String symbol, String period) throws Exception {
         return call(() -> {
             WorldRuntime current = readyNow();
             var snapshot = current.snapshot();
             RoleTradingView trading = snapshot.media().isPresent() ? current.openRoleSession(personId).view() : null;
             RoleView view = trading == null ? current.roleView(personId) : trading.profile();
+            var publicBars = symbol == null ? null : MarketHistory.personalBars(snapshot, view, symbol, period);
             var publicReports = CompanyPublications.personalReports(current, snapshot, view);
             var businessRelations = PersonBusinessRelations.of(current, snapshot, view);
             var holdingWeights = PersonalHoldingWeights.holdingWeights(current, view, snapshot.position());
@@ -1016,7 +1031,7 @@ public final class WorldWebHost implements AutoCloseable {
             String name = WorldOverviewView.displayName(personId, current.openingRegistry().map(r -> displayName(r, personId)).orElse(personId));
             var fundUnits = fundUnitsPage(current, personId);
             var portfolioReturns = OwnerBankValuationWeb.portfolioReturns(current, view);
-            if (trading == null) return new PersonPage(view, null, publicReports, Map.of(), businessRelations, name, holdingWeights, marketClosed, decisionPaused, fundUnits, portfolioReturns);
+            if (trading == null) return new PersonPage(view, null, publicReports, Map.of(), businessRelations, name, holdingWeights, marketClosed, decisionPaused, fundUnits, portfolioReturns, publicBars);
             List<Map<String, Object>> stories = new ArrayList<>();
             Set<String> visibleStories = new LinkedHashSet<>();
             for (RoleTradingView.MediaStory story : trading.media()) {
@@ -1083,7 +1098,7 @@ public final class WorldWebHost implements AutoCloseable {
                     }
                 }
             }
-            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research, businessRelations, name, holdingWeights, marketClosed, decisionPaused, fundUnits, portfolioReturns);
+            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research, businessRelations, name, holdingWeights, marketClosed, decisionPaused, fundUnits, portfolioReturns, publicBars);
         });
     }
 
@@ -2325,6 +2340,11 @@ public final class WorldWebHost implements AutoCloseable {
             view.put("autonomy", autonomyStatusOnWriter());
             return view;
         });
+    }
+
+    /** 在同一确认时点只读计算登记持有人的价格冲击，供管理员关系页使用。 */
+    WorldExposureMatrix.View worldExposure() throws Exception {
+        return call(() -> WorldExposureMatrix.of(readyNow()));
     }
 
     /**
@@ -6699,6 +6719,7 @@ public final class WorldWebHost implements AutoCloseable {
      * 只在真实治理董事会里开一次任免议题会议，不新建角色或无限期任职。
      */
     public static final String BOARD_CONVENE_APPOINTMENT_TOOL = "board.conveneAppointment";
+    private static final String BOARD_CONVENE_DIGITAL_CESSATION = "board.conveneDigitalCessation";
 
     /**
      * 只读解析持久化待办载荷用的映射器；不持有世界状态。
@@ -8549,6 +8570,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (seat.equals(charter.chairSeatId())) {
                 // 只有主席能召集任免议题；该入口在运行层复用同一任免机制，不新建角色。
                 tools.add(BOARD_CONVENE_APPOINTMENT_TOOL);
+                if (current.digitalCessation(companyPartyId)) tools.add(BOARD_CONVENE_DIGITAL_CESSATION);
             }
         }
         if (manager) {
@@ -8827,6 +8849,7 @@ public final class WorldWebHost implements AutoCloseable {
                     PERIODIC_ATTEND_TOOL));
             if (seat.equals(charter.chairSeatId())) {
                 tools.add(BOARD_CONVENE_APPOINTMENT_TOOL);
+                if (current.digitalCessation(companyPartyId)) tools.add(BOARD_CONVENE_DIGITAL_CESSATION);
             }
         }
         if (manager) {
@@ -8875,6 +8898,9 @@ public final class WorldWebHost implements AutoCloseable {
                         : current.scheduleEngineeringWaiverConvene(cid, tid, due, company, person,
                                 meeting, command.materialDeadline(), command.opensAt(),
                                 command.closesAt());
+            case BOARD_CONVENE_DIGITAL_CESSATION:
+                return current.scheduleCompanyBoardConvene(cid, tid, due, company, person, meeting,
+                        command.materialDeadline(), command.opensAt(), command.closesAt(), BoardModel.Topic.DIGITAL_CESSATION);
             case BOARD_CONVENE_APPOINTMENT_TOOL:
                 // 任免议题召集：与工程董事会同一入口，章程公司用其唯一治理董事会。
                 return current.scheduleEngineeringAppointmentConvene(cid, tid, due, company,
