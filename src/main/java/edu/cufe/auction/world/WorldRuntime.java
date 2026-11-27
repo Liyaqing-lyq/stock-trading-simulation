@@ -369,6 +369,14 @@ public final class WorldRuntime implements AutoCloseable {
     private final Object historicalInformationSource = new Object();
     private final HistoricalInformationCache historicalInformationCache =
             new HistoricalInformationCache(mapper, decisionMapper);
+    /** 只保留尚可选择采编的决定与未完成采编工作引用的观察帧；同一位置共享不可变资料。 */
+    private final Map<Long, MediaObservation> activeMediaObservations = new HashMap<>();
+    private final Set<Integer> openMediaDecisionIndices = new HashSet<>();
+    private int confirmedDecisionCount;
+    private MediaObservation lastVerifiedMediaObservation;
+    private MediaObservation lastHistoricalMediaObservation;
+    private java.lang.ref.WeakReference<WorldState> historicalMediaCursor;
+    private record MediaObservation(long position, long timeMillis, byte[] fingerprint, InformationModel.State information) {}
     /** 仅在完整原命令核验后推进；受控捕获及未核验的解码不会推进。 */
     private long verifiedInformationPosition;
 
@@ -11101,6 +11109,11 @@ public final class WorldRuntime implements AutoCloseable {
         }
         closed = true;
         historicalInformationCache.clear();
+        activeMediaObservations.clear();
+        openMediaDecisionIndices.clear();
+        lastVerifiedMediaObservation = null;
+        lastHistoricalMediaObservation = null;
+        historicalMediaCursor = null;
         if (liveInbox != null) {
             liveInbox.close();
         }
@@ -20949,7 +20962,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (!body.hasObservedPosition() || body.observedPosition() > previous.position()) {
             throw new IOException("媒体待办缺少真实观察帧：" + task.taskId());
         }
-        Long frameTime = verifiedFrameTimeAtOrNull(body.observedPosition());
+        Long frameTime = verifiedFrameTimeAtOrNull(body.observedPosition(), !body.budgetRejected());
         if (frameTime == null || frameTime != body.observedAtMillis()) {
             throw new IOException("媒体待办的观察帧不可解析：" + task.taskId());
         }
@@ -20970,11 +20983,18 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 只复用已权威核验帧的时点；未命中仍完整解码，不准入或推进可信前沿。 */
     private Long verifiedFrameTimeAtOrNull(long position) {
+        return verifiedFrameTimeAtOrNull(position, false);
+    }
+
+    private Long verifiedFrameTimeAtOrNull(long position, boolean reserveMediaCut) {
         if (position <= 0) return null;
         for (WorldCommit commit : commitSource.commitAt(position).stream().toList()) {
             if (commit.position() != position) continue;
             try {
                 if (compactState() && commit.position() <= verifiedInformationPosition) {
+                    MediaObservation observation = activeMediaObservation(commit);
+                    if (observation != null) return observation.timeMillis();
+                    if (reserveMediaCut) return reserveMediaObservationTime(commit);
                     Long cached = historicalInformationCache.findTime(historicalInformationSource, commit);
                     if (cached != null) return cached;
                 }
@@ -27843,6 +27863,10 @@ public final class WorldRuntime implements AutoCloseable {
      * @throws IOException 日志解码失败
      */
     private WorldState frameAt(long position) throws IOException {
+        return frameAt(position, false);
+    }
+
+    private WorldState frameAt(long position, boolean reserveHistoricalMedia) throws IOException {
         if (position <= 0 || position > state.position()) {
             throw new IllegalArgumentException("观察位置不存在或尚未确认：" + position);
         }
@@ -27850,7 +27874,9 @@ public final class WorldRuntime implements AutoCloseable {
             if (commit.position() != position) {
                 continue;
             }
-            WorldState frame = decodeSnapshot(commit);
+            WorldState frame = reserveHistoricalMedia && compactState() && manifest.hasMedia()
+                    && position < state.position() && position <= verifiedInformationPosition
+                    ? decodeHistoricalMediaCut(commit) : decodeSnapshot(commit);
             if (frame.position() != position) {
                 throw new IOException("帧位置与提交不一致：" + position);
             }
@@ -29988,7 +30014,7 @@ public final class WorldRuntime implements AutoCloseable {
         if (personPartyId == null || personPartyId.isBlank()) {
             throw new IllegalArgumentException("角色会话不可用");
         }
-        WorldState frame = frameAt(observedPosition);
+        WorldState frame = frameAt(observedPosition, true);
         return sessionFor(frame, personPartyId, observedPosition);
     }
 
@@ -32752,6 +32778,98 @@ public final class WorldRuntime implements AutoCloseable {
         }
         historicalInformationCache.remember(historicalInformationSource, commit,
                 frame.information() == null ? null : frame.information().information(), frame.timeMillis());
+        if (frame.media() != null && frame.information() != null) retainMediaObservations(commit, frame);
+    }
+
+    private void retainMediaObservations(WorldCommit commit, WorldState frame) {
+        Set<Long> needed = new HashSet<>();
+        if (frame.decisions() != null) {
+            var decisions = frame.decisions().state().decisions();
+            // 决定只能追加，原决定的状态在原索引更新。只查新开的尾段和仍在等待回执的采编决定。
+            for (int index = confirmedDecisionCount; index < decisions.size(); index++) {
+                var decision = decisions.get(index);
+                if (decision.status() == DecisionModel.Status.OPEN
+                        && decision.allowedTools().contains(RoleTradingView.TOOL_MEDIA_CANCEL)) {
+                    openMediaDecisionIndices.add(index);
+                }
+            }
+            confirmedDecisionCount = decisions.size();
+            openMediaDecisionIndices.removeIf(index -> decisions.get(index).status() != DecisionModel.Status.OPEN);
+            for (int index : openMediaDecisionIndices) needed.add(decisions.get(index).cutoffPosition());
+        }
+        for (var task : frame.pending()) {
+            if (MediaRun.KINDS.contains(task.kind())) {
+                var body = mediaBody(task);
+                if (!body.budgetRejected()) needed.add(body.observedPosition());
+            }
+        }
+        activeMediaObservations.keySet().retainAll(needed);
+        if (lastVerifiedMediaObservation != null && needed.contains(lastVerifiedMediaObservation.position())) {
+            activeMediaObservations.put(lastVerifiedMediaObservation.position(), lastVerifiedMediaObservation);
+        }
+        if (lastHistoricalMediaObservation != null && needed.contains(lastHistoricalMediaObservation.position())) {
+            activeMediaObservations.put(lastHistoricalMediaObservation.position(), lastHistoricalMediaObservation);
+        }
+        lastHistoricalMediaObservation = null;
+        historicalMediaCursor = null;
+        byte[] identity = historicalInformationCache.confirmedFingerprint(historicalInformationSource,
+                commit.runId(), commit.position());
+        try {
+            // 单份信息过大也可在此保留上一确认帧，供下一批开决定或排工作时使用。
+            if (identity == null) identity = HistoricalInformationCache.fingerprint(commit);
+            lastVerifiedMediaObservation = new MediaObservation(frame.position(), frame.timeMillis(), identity,
+                    frame.information().information());
+        } catch (IOException unavailable) {
+            lastVerifiedMediaObservation = null;
+        }
+    }
+
+    private MediaObservation activeMediaObservation(WorldCommit commit) throws IOException {
+        return checkedMediaObservation(commit, activeMediaObservations.get(commit.position()));
+    }
+
+    private MediaObservation checkedMediaObservation(WorldCommit commit, MediaObservation observation) throws IOException {
+        if (observation != null && !MessageDigest.isEqual(observation.fingerprint(),
+                HistoricalInformationCache.fingerprint(commit))) throw new IOException("已确认的采编观察帧发生变化");
+        return observation;
+    }
+
+    /** 工时已预留。优先复用确切的会话或近期投影，否则只在首次受理时冷读。 */
+    private long reserveMediaObservationTime(WorldCommit commit) throws IOException {
+        long position = commit.position();
+        if (lastVerifiedMediaObservation != null && lastVerifiedMediaObservation.position() == position)
+            return checkedMediaObservation(commit, lastVerifiedMediaObservation).timeMillis();
+        if (lastHistoricalMediaObservation != null && lastHistoricalMediaObservation.position() == position)
+            return checkedMediaObservation(commit, lastHistoricalMediaObservation).timeMillis();
+        InformationModel.State information = historicalInformationCache.find(historicalInformationSource, commit);
+        Long time = information == null ? null : historicalInformationCache.findTime(historicalInformationSource, commit);
+        if (time == null) return decodeHistoricalMediaCut(commit).timeMillis();
+        lastHistoricalMediaObservation = new MediaObservation(position, time,
+                historicalInformationCache.confirmedFingerprint(historicalInformationSource, commit.runId(), position), information);
+        historicalMediaCursor = null;
+        return time;
+    }
+
+    /** 会话晚交时只暂存上一次本地确认源的精确投影，下一次持久确认按实际工作引用提升或丢弃。 */
+    private WorldState decodeHistoricalMediaCut(WorldCommit commit) throws IOException {
+        // 父前缀扫描器没有自有物理日志；可用已确认的普通缓存，冷读不自行确立身份。
+        boolean ownJournal = journal != null && commit.position() > journal.base();
+        if (ownJournal && journal.commitAt(commit.position()).filter(commit::equals).isEmpty())
+            throw new IOException("历史采编会话的目标与原确认源不一致");
+        if (lastHistoricalMediaObservation != null && lastHistoricalMediaObservation.position() == commit.position()
+                && historicalMediaCursor != null && deltaReadCursor != null && historicalMediaCursor.refersTo(deltaReadCursor)) {
+            checkedMediaObservation(commit, lastHistoricalMediaObservation);
+            return deltaReadCursor;
+        }
+        // 同位置的普通游标不能证明本次读取的是此提交；按原差量合同实际校验目标和基准摘要。
+        if (deltaReadCursor != null && deltaReadCursor.position() == commit.position()) deltaReadCursor = null;
+        WorldState frame = decodeSnapshot(commit);
+        if (ownJournal && frame.information() != null) {
+            lastHistoricalMediaObservation = new MediaObservation(commit.position(), frame.timeMillis(),
+                    HistoricalInformationCache.fingerprint(commit), frame.information().information());
+            historicalMediaCursor = new java.lang.ref.WeakReference<>(frame);
+        }
+        return frame;
     }
 
     /** 按真实观察位置取历史信息子集；没有位置或帧不可读时返回 null。 */
@@ -32765,6 +32883,8 @@ public final class WorldRuntime implements AutoCloseable {
             }
             try {
                 if (compactState() && commit.position() <= verifiedInformationPosition) {
+                    MediaObservation observation = activeMediaObservation(commit);
+                    if (observation != null) return observation.information();
                     InformationModel.State cached = historicalInformationCache.find(historicalInformationSource, commit);
                     if (cached != null) return cached;
                     // 未命中（包括目标身份变化）必须实际核验目标，不能复用同位置的旧解码对象。
