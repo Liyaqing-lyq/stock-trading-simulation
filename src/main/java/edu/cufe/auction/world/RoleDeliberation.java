@@ -3,6 +3,7 @@ package edu.cufe.auction.world;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import edu.cufe.auction.world.bank.BankCrisis;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -89,7 +90,8 @@ public final class RoleDeliberation {
     }
 
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final long MONTH = ManufacturingTemplateModel.PERIOD_MILLIS;
+    static final int MAX_BASIS_UTF16_UNITS = 600;
+    private static final long MONTH = RolePlanningContext.MAX_REVIEW_AFTER_MILLIS;
     private RoleDeliberation() { }
 
     /** @param version 角色输入版本 @return 是否具有原evidence-v1资料能力 */
@@ -230,6 +232,26 @@ public final class RoleDeliberation {
         }
     }
 
+    /** 仅为本人仍在任且当前有应急办公室职权的代表列出职责，业务条件由银行另行审查。 */
+    static void appendCrisisOfficeObjectives(ObjectNode engineering, RoleAccess.State access,
+                                             String person, long now) {
+        if (engineering.at("/issuerCredit/crisisOffices").isEmpty()) return;
+        for (var office : access.appointments()) {
+            if (!office.personPartyId().equals(person) || !office.activeAt(now)
+                    || office.role() != RoleAccess.Role.COMPANY_MANAGER) continue;
+            String purpose = switch (office.organizationPartyId()) {
+                case BankCrisis.PROVIDER -> "评估本机构的可用资金、应急额度条款及风险，自主决定是否授权。";
+                case BankCrisis.AUTHORITY -> "查阅银行处置条件和已有处置进度，独立判断是否依法启动或推进处置。";
+                default -> null;
+            };
+            if (purpose == null) continue;
+            engineering.withObject("/deliberation").withArray("objectives").addObject()
+                    .put("id", "appointment:" + office.id()).put("appointmentId", office.id())
+                    .put("organizationPartyId", office.organizationPartyId()).put("role", office.role().name())
+                    .put("purpose", purpose);
+        }
+    }
+
     /**
      * 新版只验证决定声明合同并剥离元数据供原工具外壳验证；原回执仍原样持久保存。
      * @param inputText 冻结的程序输入，不能取资料正文作为版本开关
@@ -252,7 +274,7 @@ public final class RoleDeliberation {
             throw new IllegalArgumentException("BAD_DELIBERATION");
         if (!statement.isObject() || !fields.equals(Set.of("objective", "basis", reviewField))
                 || !statement.path("objective").isTextual() || !statement.path("basis").isTextual()
-                || statement.path("basis").asText().isBlank() || statement.path("basis").asText().length() > 600
+                || statement.path("basis").asText().isBlank() || statement.path("basis").asText().length() > MAX_BASIS_UTF16_UNITS
                 || !statement.path(reviewField).isIntegralNumber() || !statement.path(reviewField).canConvertToLong())
             throw new IllegalArgumentException("BAD_DELIBERATION");
         boolean own = facts.objectives().contains(statement.path("objective").asText());

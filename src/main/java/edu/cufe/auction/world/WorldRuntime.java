@@ -30684,6 +30684,8 @@ public final class WorldRuntime implements AutoCloseable {
             RoleDeliberation.append(root, person, now, snap.decisions(), snap.pending());
         if (RoleDeliberation.EMPTY_WAIT_ARGS.equals(manifest.dataVersions().get("wait-empty-args")))
             root.put("waitArgsPolicy", RoleDeliberation.EMPTY_WAIT_ARGS);
+        if (RunManifest.TYPED_REVIEW_FIELDS.equals(manifest.dataVersions().get(RunManifest.DECISION_ENVELOPE_GUIDE)))
+            root.put("decisionEnvelopeGuide", RunManifest.TYPED_REVIEW_FIELDS);
         if (PersonalOpeningProfiles.VERSION.equals(manifest.dataVersions().get("personal-opening-profiles"))) {
             PersonalOpeningProfiles.append(root, person, now, PersonalMarket.accounts(snap.roles(), person),
                     orderedOpenings, snap.accounts(), snap.exchange(), hasCashSettlement());
@@ -30743,6 +30745,10 @@ public final class WorldRuntime implements AutoCloseable {
                 && snap.roles() != null) {
             RoleDeliberation.appendInvestmentObjectives(root, snap.roles().access(), person, now);
         }
+        if (RunManifest.ACTIVE_APPOINTMENT_GOALS.equals(manifest.dataVersions().get(RunManifest.CRISIS_OFFICE_OBJECTIVES))
+                && snap.roles() != null) {
+            RoleDeliberation.appendCrisisOfficeObjectives(root, snap.roles().access(), person, now);
+        }
         if (RoleDeliberation.isAccountable(roleContext))
             RoleActionFeedback.append(root, person, snap.decisions(), snap.pending(),
                     snap.engineering(), snap.companyOperations(), snap.information(), snap.trading());
@@ -30764,7 +30770,8 @@ public final class WorldRuntime implements AutoCloseable {
             PersonalResearchNotes.append(root, person, snap.decisions(), recallAt(snap, person), read ->
                     InformationModel.visible(InformationModel.audienceOf(information, read.docId()).orElseThrow(),
                             snap.roles().access(), person, now, read.publishedAt(), groupAccess(snap), roleBoards(snap)),
-                    "household-plans-v1".equals(manifest.dataVersions().get("personal-opening-profiles")));
+                    "household-plans-v1".equals(manifest.dataVersions().get("personal-opening-profiles")),
+                    RunManifest.EXPLICIT_NOTE_REFERENCE.equals(manifest.dataVersions().get(RunManifest.PERSONAL_NOTE_CONTRACT)));
             if (PersonalContactHistory.VERSION.equals(manifest.dataVersions().get(PersonalContactHistory.POLICY)))
                 PersonalContactHistory.append(root, person, snap.decisions());
         }

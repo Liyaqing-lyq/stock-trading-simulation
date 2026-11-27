@@ -32,8 +32,8 @@ public final class AutonomousLifecycleProbe {
                     throw new IllegalArgumentException("专项人物名单须非空且没有重复");
             }
 
-            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING", "COMPANY_INFORMATION_OPERATING", "FORWARD_BUDGET_OPERATING", "AGED_ORDER_OPERATING", "BOARD_PROCEDURE_OPERATING", "ISSUER_REPORT_OPERATING", "ROLE_TABLE_OPERATING", "HYDRO_SETTLEMENT_OPERATING", "PERSONAL_LIMIT_OPERATING", "CONTINUING_ROLES_OPERATING", "ISSUER_CREDIT_OPERATING", "ISSUER_CREDIT_DECISIONS_OPERATING", "PERSONAL_PROFILES_OPERATING", "FUND_MANDATE_OPERATING", "FUND_OFFICE_CONTACTS_OPERATING", "FUND_OFFICE_ROUTING_OPERATING", "MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY", "TEN_COMPANY_STUDY", "TEN_COMPANY_GOVERNANCE_STUDY", "TEN_COMPANY_EDITORIAL_STUDY", "OPEN_FUND").contains(mode)
-                    || !(java.util.Set.of("TEN_COMPANY_AUTONOMY","TEN_COMPANY_STUDY","TEN_COMPANY_GOVERNANCE_STUDY","TEN_COMPANY_EDITORIAL_STUDY").contains(mode) && maxHttpCalls == 0 && wallMinutes == 0)
+            if (!java.util.Set.of("ACCOUNTABLE", "OPERATING", "PLANNING", "PLANNING_OPERATING", "INFORMED_OPERATING", "CONTEXTUAL_INFORMED_OPERATING", "THINKING_INFORMED_OPERATING", "FUNDED_THINKING_OPERATING", "PERSONAL_MARKET_OPERATING", "ENGINEERING_CUSTOMER_OPERATING", "COMPANY_INFORMATION_OPERATING", "FORWARD_BUDGET_OPERATING", "AGED_ORDER_OPERATING", "BOARD_PROCEDURE_OPERATING", "ISSUER_REPORT_OPERATING", "ROLE_TABLE_OPERATING", "HYDRO_SETTLEMENT_OPERATING", "PERSONAL_LIMIT_OPERATING", "CONTINUING_ROLES_OPERATING", "ISSUER_CREDIT_OPERATING", "ISSUER_CREDIT_DECISIONS_OPERATING", "PERSONAL_PROFILES_OPERATING", "FUND_MANDATE_OPERATING", "FUND_OFFICE_CONTACTS_OPERATING", "FUND_OFFICE_ROUTING_OPERATING", "MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY", "TEN_COMPANY_STUDY", "TEN_COMPANY_GOVERNANCE_STUDY", "TEN_COMPANY_EDITORIAL_STUDY", "TEN_COMPANY_PERSONAL_STUDY", "OPEN_FUND").contains(mode)
+                    || !(java.util.Set.of("TEN_COMPANY_AUTONOMY","TEN_COMPANY_STUDY","TEN_COMPANY_GOVERNANCE_STUDY","TEN_COMPANY_EDITORIAL_STUDY","TEN_COMPANY_PERSONAL_STUDY").contains(mode) && maxHttpCalls == 0 && wallMinutes == 0)
                     && (maxHttpCalls < 1 || maxHttpCalls > 3000 || wallMinutes < 1 || wallMinutes > 60)
                     || targetMillis <= 0 || targetMillis > 180L * 86400000
                     || stepMillis != 3_600_000
@@ -83,6 +83,7 @@ public final class AutonomousLifecycleProbe {
             try (var host = new WorldWebHost(() -> {
                 var world = openWorld(config.mode(), out.resolve("world.journal"));
                 String targetRun = switch (config.mode()) {
+                    case "TEN_COMPANY_PERSONAL_STUDY" -> edu.cufe.auction.world.RunManifest.PERSONAL_TEN_COMPANY_RUN_ID;
                     case "TEN_COMPANY_EDITORIAL_STUDY" -> edu.cufe.auction.world.RunManifest.READABLE_DRAFT_TEN_COMPANY_RUN_ID;
                     case "TEN_COMPANY_GOVERNANCE_STUDY" -> edu.cufe.auction.world.RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID;
                     case "TEN_COMPANY_STUDY" -> edu.cufe.auction.world.RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID;
@@ -213,6 +214,7 @@ public final class AutonomousLifecycleProbe {
             case "BASELINE_PARTS_OPERATING" -> ComposedIndustryScenario.openBaselinePartsOperating(journal);
             case "UNPRICED_REFERENCE" -> ComposedIndustryScenario.openUnpricedReferenceOperating(journal, journal.resolveSibling("opening-copies.json"));
             case "OPEN_FUND" -> ComposedIndustryScenario.openOpenFundOperating(journal);
+            case "TEN_COMPANY_PERSONAL_STUDY" -> ComposedIndustryScenario.openPersonalTenCompanyStudy(journal);
             case "TEN_COMPANY_EDITORIAL_STUDY" -> ComposedIndustryScenario.openEditorialTenCompanyStudy(journal);
             case "TEN_COMPANY_GOVERNANCE_STUDY" -> ComposedIndustryScenario.openCurrentTenCompanyStudy(journal);
             case "TEN_COMPANY_STUDY" -> ComposedIndustryScenario.openStudyTenCompanyAutonomy(journal);
@@ -259,14 +261,14 @@ public final class AutonomousLifecycleProbe {
 
     static boolean usesMeasuredLength(String mode) {
         return "ENGINEERING_CUSTOMER_OPERATING".equals(mode) || "COMPANY_INFORMATION_OPERATING".equals(mode) || "FORWARD_BUDGET_OPERATING".equals(mode) || "AGED_ORDER_OPERATING".equals(mode) || "BOARD_PROCEDURE_OPERATING".equals(mode) || "ISSUER_REPORT_OPERATING".equals(mode) || "ROLE_TABLE_OPERATING".equals(mode) || "HYDRO_SETTLEMENT_OPERATING".equals(mode) || "PERSONAL_LIMIT_OPERATING".equals(mode) || "CONTINUING_ROLES_OPERATING".equals(mode) || "ISSUER_CREDIT_OPERATING".equals(mode) || "ISSUER_CREDIT_DECISIONS_OPERATING".equals(mode) || "PERSONAL_PROFILES_OPERATING".equals(mode) || "FUND_MANDATE_OPERATING".equals(mode) || "FUND_OFFICE_CONTACTS_OPERATING".equals(mode) || "FUND_OFFICE_ROUTING_OPERATING".equals(mode)
-                || java.util.Set.of("MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY", "TEN_COMPANY_STUDY", "TEN_COMPANY_GOVERNANCE_STUDY", "TEN_COMPANY_EDITORIAL_STUDY", "OPEN_FUND").contains(mode);
+                || java.util.Set.of("MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING", "INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING", "OPENING_COPIES", "OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY", "TEN_COMPANY_STUDY", "TEN_COMPANY_GOVERNANCE_STUDY", "TEN_COMPANY_EDITORIAL_STUDY", "TEN_COMPANY_PERSONAL_STUDY", "OPEN_FUND").contains(mode);
     }
 
     static boolean thinkingMode(String mode) { return mode.equals("THINKING_INFORMED_OPERATING") || mode.equals("FUNDED_THINKING_OPERATING") || mode.equals("PERSONAL_MARKET_OPERATING") || usesMeasuredLength(mode); }
 
     static java.util.List<SceneRoutes.Route> probeRoutes(SceneRoutes.Snapshot original, String mode) {
         boolean thinking = thinkingMode(mode);
-        boolean longStudy = java.util.Set.of("TEN_COMPANY_AUTONOMY", "TEN_COMPANY_STUDY", "TEN_COMPANY_GOVERNANCE_STUDY", "TEN_COMPANY_EDITORIAL_STUDY", "OPEN_FUND").contains(mode);
+        boolean longStudy = java.util.Set.of("TEN_COMPANY_AUTONOMY", "TEN_COMPANY_STUDY", "TEN_COMPANY_GOVERNANCE_STUDY", "TEN_COMPANY_EDITORIAL_STUDY", "TEN_COMPANY_PERSONAL_STUDY", "OPEN_FUND").contains(mode);
         String policy = longStudy ? DecisionModel.Route.LONG_HORIZON : "lifecycle-v1";
         return original.routes().stream().map(r -> new SceneRoutes.Route(r.scene(), r.slotId(), "deepseek-flash", true,
                 longStudy ? DecisionModel.Route.callCeiling(policy) : 2500,
@@ -275,7 +277,7 @@ public final class AutonomousLifecycleProbe {
     }
 
     static String systemPrompt(Config config) {
-        if (java.util.Set.of("OPENING_COPIES","OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY", "TEN_COMPANY_STUDY", "TEN_COMPANY_GOVERNANCE_STUDY", "TEN_COMPANY_EDITORIAL_STUDY", "OPEN_FUND").contains(config.mode())) return LiveDecisionProvider.DECLARED_FIELDS_SYSTEM_TEXT;
+        if (java.util.Set.of("OPENING_COPIES","OWNER_BANK_VALUATION", "UNPRICED_REFERENCE", "ISSUER_RESOLUTION", "PERSON_PAUSE", "TEN_COMPANY_AUTONOMY", "TEN_COMPANY_STUDY", "TEN_COMPANY_GOVERNANCE_STUDY", "TEN_COMPANY_EDITORIAL_STUDY", "TEN_COMPANY_PERSONAL_STUDY", "OPEN_FUND").contains(config.mode())) return LiveDecisionProvider.DECLARED_FIELDS_SYSTEM_TEXT;
         if (java.util.Set.of("INTEGRATED_OPERATING", "MANUFACTURING_LIFECYCLE_OPERATING", "BANK_CRISIS_OPERATING", "PRICE_BAND_OPERATING", "ISSUER_DIVIDEND_OPERATING", "LOAN_PROMOTION_OPERATING", "BASELINE_PARTS_OPERATING").contains(config.mode()) || "PERSONAL_PROFILES_OPERATING".equals(config.mode()) || "FUND_MANDATE_OPERATING".equals(config.mode()) || "FUND_OFFICE_CONTACTS_OPERATING".equals(config.mode()) || "FUND_OFFICE_ROUTING_OPERATING".equals(config.mode())) return LiveDecisionProvider.PERSONAL_PROFILE_SYSTEM_TEXT;
         if (java.util.Set.of("MEDIA_DESKS_OPERATING", "MARKET_SESSIONS_OPERATING").contains(config.mode()) || "CONTINUING_ROLES_OPERATING".equals(config.mode()) || "ISSUER_CREDIT_OPERATING".equals(config.mode()) || "ISSUER_CREDIT_DECISIONS_OPERATING".equals(config.mode())) return LiveDecisionProvider.RESEARCH_NOTE_SYSTEM_TEXT;
         return (config.mode().startsWith("PLANNING") || informedMode(config.mode())) ? LiveDecisionProvider.PLANNING_SYSTEM_TEXT

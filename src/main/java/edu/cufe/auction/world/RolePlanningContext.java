@@ -40,13 +40,26 @@ public final class RolePlanningContext {
             guide.put("decisionCadence", "本人可见新事实、本人动作完成或声明的相对复查时长到期会重新评估；每次一个动作。严格格式失败耗尽重试后，本人相同事实暂停调用，真实新事实可重新唤醒，其他人继续运行。");
         }
         if ("role-choice-v1".equals(eng.path("publicPostWakePolicy").asText())) {
-            String choice = "仅role.wait的decision可选publicPostWake。IMMEDIATE（默认）表示新事实提前唤醒。"
+            String wakeEffect = "IMMEDIATE（默认）表示新事实提前唤醒。"
                     + "ON_REVIEW表示仅将陌生人的新广场帖留到本次复查。联系人、私信、正式报道、更正及其他事实变化仍可提前唤醒。";
             String contract = "每轮一个JSON对象，包含tool与decision（objective、basis、reviewAfterMillis）。"
                     + "复查时长为从本次input.time起的正整数毫秒，至多30日。等待说明条件或缺项且不带args，其余动作按工具合同提供args。"
-                    + choice + " 可选顶层privateNote记录本人判断，结构见engineering.researchNotes.contract。";
+                    + "仅role.wait的decision可选publicPostWake。" + wakeEffect + " 可选顶层privateNote记录本人判断，结构见engineering.researchNotes.contract。";
+            boolean typed = RunManifest.TYPED_REVIEW_FIELDS.equals(eng.path("decisionEnvelopeGuide").textValue());
+            if (typed) {
+                contract = "整份回复是单个JSON对象，字段名不得重复，最多" + config.limits().maxReplyChars() + "个UTF-16单元。"
+                        + "顶层tool是本次tools中的名称字符串。顶层decision是对象，必填且仅有以下三项，等待另有一项可选字段。"
+                        + "objective是字符串，精确取本次engineering.deliberation.objectives中一行的id。"
+                        + "basis是含非空白字符的字符串，长度1至" + RoleDeliberation.MAX_BASIS_UTF16_UNITS + "个UTF-16单元。写简短依据，等待时说明条件或缺项。"
+                        + "reviewAfterMillis是JSON整数，从input.time起算，范围1至" + MAX_REVIEW_AFTER_MILLIS + "毫秒（含两端），相加须在有符号64位整数范围内。"
+                        + "仅当tool为role.wait时，decision.publicPostWake可选，值是字符串IMMEDIATE或ON_REVIEW。" + wakeEffect
+                        + "等待通常省略顶层args，本档也接受空对象{}。其他工具必须有顶层args对象，按对应工具合同填写。"
+                        + "可选的顶层笔记和联系人评语字段见engineering.researchNotes及engineering.contactHistory，其余字段不接收。";
+            }
             delib.put("replyContract", contract);
-            if (eng.path("decisionGuide") instanceof ObjectNode guide) guide.put("waitContract", contract);
+            if (eng.path("decisionGuide") instanceof ObjectNode guide) {
+                guide.put("waitContract", typed ? "等待通常省略args，也接受空对象{}。完整字段见engineering.deliberation.replyContract。" : contract);
+            }
         }
         for (var director : eng.path("directorships")) {
             var d = (ObjectNode) director;

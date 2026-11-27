@@ -141,6 +141,20 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String GOVERNANCE_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v4";
     /** 第五版普通档只在编辑部实际收到内稿后提供文档标识与版次。 */
     public static final String READABLE_DRAFT_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v5";
+    /** 第六版把在任应急职责与本人的可用笔记引用列入实际决定输入。 */
+    public static final String PERSONAL_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v6";
+    /** 决定目标是否覆盖当时有效的应急金融任职。 */
+    public static final String CRISIS_OFFICE_OBJECTIVES = "crisis-office-objectives";
+    /** 使用当时有效的任职编号生成职责目标。 */
+    public static final String ACTIVE_APPOINTMENT_GOALS = "active-appointments-v1";
+    /** 本人决定如何引用已有私人笔记。 */
+    public static final String PERSONAL_NOTE_CONTRACT = "personal-note-contract";
+    /** 明示本人笔记编号和新建、修订、撤回的条件。 */
+    public static final String EXPLICIT_NOTE_REFERENCE = "explicit-note-reference-v1";
+    /** 人物决定信封的字段说明版本。 */
+    public static final String DECISION_ENVELOPE_GUIDE = "decision-envelope-guide";
+    /** 列出目标来源、复查范围及等待专属字段的精确类型。 */
+    public static final String TYPED_REVIEW_FIELDS = "typed-review-fields-v1";
     /** 本人可见的编辑部内稿阅读入口口径。 */
     public static final String EDITORIAL_DRAFT_VISIBILITY = "editorial-draft-visibility";
     /** 只有实际生成的内稿版本才有阅读入口。 */
@@ -158,13 +172,26 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** 董事按本期经营和风险凭据评分的口径。 */
     public static final String OPERATING_PERIOD_EVIDENCE = "operating-evidence-v1";
 
-    /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的阅读、采编与期末考核口径 */
+    /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
+    public static java.util.List<String> standardTenCompanyRuns() {
+        return java.util.List.of(PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+                GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
+                TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
+    }
+
+    /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
     public static Map<String, String> tenCompanyStudyPolicies(String id) {
-        if (GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)) {
+        if (GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
+                || PERSONAL_TEN_COMPANY_RUN_ID.equals(id)) {
             var policies = new java.util.TreeMap<>(Map.of(DOCUMENT_READING_CLOCK, BODY_PACING_300,
                     EDITORIAL_TEMPLATE_GUIDE, OFFICE_TEMPLATE_KEYS, ISSUER_PERIOD_METRICS, OPERATING_PERIOD_EVIDENCE));
-            if (READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)) {
+            if (!GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id)) {
                 policies.put(EDITORIAL_DRAFT_VISIBILITY, SUBMITTED_DOCUMENT);
+            }
+            if (PERSONAL_TEN_COMPANY_RUN_ID.equals(id)) {
+                policies.put(CRISIS_OFFICE_OBJECTIVES, ACTIVE_APPOINTMENT_GOALS);
+                policies.put(PERSONAL_NOTE_CONTRACT, EXPLICIT_NOTE_REFERENCE);
+                policies.put(DECISION_ENVELOPE_GUIDE, TYPED_REVIEW_FIELDS);
             }
             return Map.copyOf(policies);
         }
@@ -190,7 +217,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static boolean usesCurrentTenCompany(String id) {
         return TEN_COMPANY_AUTONOMY_RUN_ID.equals(id) || STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
                 || GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
-                || OPEN_FUND_RUN_ID.equals(id)
+                || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
                 || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
     }
 

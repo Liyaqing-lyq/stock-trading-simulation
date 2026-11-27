@@ -2,6 +2,7 @@ package edu.cufe.auction.world;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.util.HashSet;
@@ -13,11 +14,16 @@ final class PersonalResearchNotes {
     private static final String CONTRACT = "可在任意决定的顶层另附privateNote，省略沿用、null撤回。新笔记替换本人上一份："
             + "{judgment:本人当前判断,reviewCondition:什么情况会让本人重新评估,evidence:[{docId,version}]}。"
             + "两个摘要各1至240字，仅引用下列本人仍有权查看且能回忆的1至3个不同固定版本。笔记不授权、不公开、不改变事实。";
+    private static final String EXPLICIT_CONTRACT = "顶层privateNote可省略以沿用，或填JSON null撤回。"
+            + "新笔记只填judgment（本人判断）、reviewCondition（复查条件）和evidence。两个摘要须为非空白字符串，各至多240个UTF-16代码单元。"
+            + "evidence为数组，从本次engineering.researchNotes.citableReadings原样选1至3个不同的{docId,version}，docId为字符串，version为整数。"
+            + "新笔记替换本人上一份，只对本人可见。";
 
     private PersonalResearchNotes() { }
 
     static void append(ObjectNode engineering, String person, DecisionRun decisions, CognitionRecall.Result recall,
-                       java.util.function.Predicate<InformationModel.ReadObservation> visible, boolean revisions) {
+                       java.util.function.Predicate<InformationModel.ReadObservation> visible, boolean revisions,
+                       boolean explicitReference) {
         ObjectNode section = engineering.putObject("researchNotes");
         section.put("version", revisions ? "v2" : "v1").put("contract", CONTRACT);
         if (revisions) section.put("revisionContract",
@@ -28,6 +34,20 @@ final class PersonalResearchNotes {
             var read = item.observation();
             if (visible.test(read)) evidence.addObject().put("docId", read.docId()).put("version", read.version());
         }
+        appendRecorded(section, person, decisions, revisions, evidence);
+        if (explicitReference) {
+            section.put("contract", evidence.isEmpty()
+                    ? EXPLICIT_CONTRACT + "本次列表为空。写新笔记须先完成阅读，待固定版本列入清单。此时仍可省略或撤回笔记。"
+                    : EXPLICIT_CONTRACT);
+            section.put("revisionContract", "行动或等待可在回复顶层附basedOnNote。它是JSON字符串，唯一合法值为本次输入engineering.researchNotes.current.actionId的原值。"
+                    + (section.has("current")
+                    ? "修正该笔记可在privateNote中另加revises和changeReason，两项须一起填写。revises为同一编号字符串，changeReason为非空白字符串，至多240个UTF-16代码单元。"
+                    : "本次没有可引用的本人当前笔记。省略顶层basedOnNote及privateNote中的revises和changeReason。"));
+        }
+    }
+
+    private static void appendRecorded(ObjectNode section, String person, DecisionRun decisions, boolean revisions,
+                                       ArrayNode evidence) {
         if (decisions == null) return;
         String predecessor = null;
         var history = decisions.state().decisions();

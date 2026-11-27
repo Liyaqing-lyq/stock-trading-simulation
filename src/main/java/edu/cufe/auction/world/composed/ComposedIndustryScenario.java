@@ -572,14 +572,21 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.READABLE_DRAFT_TEN_COMPANY_RUN_ID);
     }
 
+    /**
+     * 新建按本人在任职责及笔记引用规则决定的十公司世界，已有世界按原版本恢复。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的普通世界
+     * @throws Exception 开局或逐帧重演失败
+     */
+    public static WorldRuntime openPersonalTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.PERSONAL_TEN_COMPANY_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
             var first = WorldJournalScanner.readPrefix(journal, 1, null).first();
-            if (first == null || !java.util.Set.of(RunManifest.ORIGINAL_TEN_COMPANY_RUN_ID,
-                    RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID, RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
-                    RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID, RunManifest.READABLE_DRAFT_TEN_COMPANY_RUN_ID)
-                    .contains(first.runId())) throw new java.io.IOException("存档不是普通十公司世界");
+            if (first == null || !RunManifest.standardTenCompanyRuns().contains(first.runId())) throw new java.io.IOException("存档不是普通十公司世界");
             runId = first.runId();
         }
         return openCompanyInformationOperating(journal, runId);

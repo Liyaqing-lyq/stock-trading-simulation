@@ -81,6 +81,58 @@ class PersonalResearchNotesTest {
         }
     }
 
+    @Test void explicitNoteReferenceUsesOnlyTheCurrentReadersActionId() throws Exception {
+        Path file = dir.resolve("personal-v6.journal");
+        String doc = "social:contact-intro";
+        String id = "person-decision:sam:5";
+        try (var world = ComposedIndustryScenario.openPersonalTenCompanyStudy(file)) {
+            var empty = world.autonomyRoleObservation("sam").at("/engineering/researchNotes");
+            assertTrue(empty.required("citableReadings").isEmpty());
+            assertFalse(empty.has("current"));
+            assertTrue(empty.required("contract").textValue().contains("须先完成阅读"));
+            assertTrue(empty.required("revisionContract").textValue().contains("本次没有可引用"));
+            assertEquals(DecisionModel.Outcome.WAIT, waitWithNote(world, "sam", "withdraw-empty", JSON.nullNode()));
+            var written = note("留待核实讲述者").put("reviewCondition", "再次读到具名叙述时复查");
+            ((ObjectNode) written.at("/evidence/0")).put("docId", doc);
+            assertEquals(DecisionModel.Outcome.TECHNICAL_FAILED, waitWithNote(world, "sam", "as-yet-unread", written));
+            long at = world.snapshot().timeMillis() + 1;
+            world.openRoleSession("sam").startReading("start", "reading", at, doc, 1);
+            world.advanceTo(at);
+            long due = world.roleView("sam").readings().stream()
+                    .filter(r -> doc.equals(r.ref().docId())).findFirst().orElseThrow().dueAt();
+            assertTrue(world.autonomyRoleObservation("sam").at("/engineering/researchNotes/citableReadings").isEmpty());
+            world.advanceTo(due);
+            assertEquals(DecisionModel.Outcome.WAIT, waitWithNote(world, "sam", id, written));
+
+            var notes = world.autonomyRoleObservation("sam").at("/engineering/researchNotes");
+            assertEquals(id, notes.at("/current/actionId").textValue());
+            assertTrue(notes.required("revisionContract").textValue().contains("JSON字符串"));
+            assertTrue(notes.required("revisionContract").textValue().contains("engineering.researchNotes.current.actionId"));
+            assertFalse(world.autonomyRoleObservation("omar").at("/engineering/researchNotes").toString().contains(id));
+
+            var action = JSON.createObjectNode().put("tool", "media.story.propose").put("basedOnNote", true);
+            action.putObject("args").put("storyId", "story:sam:oldbridge:1").put("template", "INVESTIGATIVE")
+                    .put("topic", "旧街道与桥：不同年份的同一座桥，各位讲述者各自亲历了什么");
+            assertEquals(DecisionModel.Outcome.TECHNICAL_FAILED, decide(world, "sam", "boolean-reference", action));
+            action.put("basedOnNote", doc);
+            assertEquals(DecisionModel.Outcome.TECHNICAL_FAILED, decide(world, "sam", "document-reference", action));
+            var foreign = JSON.createObjectNode().put("tool", "role.wait").put("basedOnNote", id);
+            assertEquals(DecisionModel.Outcome.TECHNICAL_FAILED, decide(world, "omar", "someone-elses-note", foreign));
+            action.put("basedOnNote", id);
+            assertEquals(DecisionModel.Outcome.INTENT, decide(world, "sam", "valid-reference", action));
+            var queued = world.snapshot().decisions().orElseThrow().actionRef("valid-reference");
+            world.advanceTo(queued.dueMillis());
+            assertTrue(world.snapshot().media().orElseThrow().reports().get(queued.taskId()).accepted());
+        }
+        try (var reopened = ComposedIndustryScenario.openPersonalTenCompanyStudy(file)) {
+            assertEquals(id, current(reopened, "sam").required("actionId").textValue());
+            assertEquals(DecisionModel.Outcome.WAIT, waitWithNote(reopened, "sam", "withdraw-current", JSON.nullNode()));
+            assertTrue(current(reopened, "sam").isMissingNode());
+            assertTrue(reopened.autonomyRoleObservation("sam").at("/engineering/researchNotes/revisionContract")
+                    .textValue().contains("本次没有可引用"));
+        }
+    }
+
     private static ObjectNode note(String opinion) {
         var note = JSON.createObjectNode().put("judgment", opinion).put("reviewCondition", "取得下期披露时复核");
         note.putArray("evidence").addObject().put("docId", DOC).put("version", 1);

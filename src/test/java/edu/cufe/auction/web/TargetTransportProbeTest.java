@@ -118,8 +118,9 @@ class TargetTransportProbeTest {
         exchange.getResponseBody().write(bytes);
     }
 
-    @ParameterizedTest @ValueSource(strings={"EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
-    void measuredNonBusinessReceiptNeedsAttributableIdentityUsageAndFinish(String variant) throws Exception {
+    @ParameterizedTest @ValueSource(strings={"EMPTY","V6_EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
+    void measuredNonBusinessReceiptNeedsAttributableIdentityUsageAndFinish(String sample) throws Exception {
+        String variant = sample.equals("V6_EMPTY") ? "EMPTY" : sample;
         var http=HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
         var actors=new CopyOnWriteArrayList<String>();
         http.createContext("/chat/completions",exchange->{
@@ -147,7 +148,8 @@ class TargetTransportProbeTest {
             var uri=URI.create("http://127.0.0.1:"+http.getAddress().getPort()+"/chat/completions");
             var provider=new LiveDecisionProvider(slot->new DeepSeekClient(()->"sk-fixture-aaaaaaaaaaaaaaaa",uri));
             var people=List.of("alice","bob");
-            String mode=switch(variant) {
+            String mode=switch(sample) {
+                case "V6_EMPTY" -> "TEN_COMPANY_PERSONAL_STUDY";
                 case "EMPTY" -> "TEN_COMPANY_GOVERNANCE_STUDY";
                 case "FILTERED" -> "TEN_COMPANY_STUDY";
                 case "TOOL_CALLS" -> "TEN_COMPANY_EDITORIAL_STUDY";
@@ -168,7 +170,8 @@ class TargetTransportProbeTest {
             assertThrows(IllegalArgumentException.class,()->run(mode.equals("TEN_COMPANY_GOVERNANCE_STUDY") ? "TEN_COMPANY_STUDY" : "TEN_COMPANY_GOVERNANCE_STUDY",
                     "wrong-mode",seed,200,people,provider));
             var second=run(mode,"second",seed,200,people,provider);
-            String runId=switch(variant) {
+            String runId=switch(sample) {
+                case "V6_EMPTY" -> edu.cufe.auction.world.RunManifest.PERSONAL_TEN_COMPANY_RUN_ID;
                 case "EMPTY" -> edu.cufe.auction.world.RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID;
                 case "FILTERED" -> edu.cufe.auction.world.RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID;
                 case "TOOL_CALLS" -> edu.cufe.auction.world.RunManifest.READABLE_DRAFT_TEN_COMPANY_RUN_ID;
