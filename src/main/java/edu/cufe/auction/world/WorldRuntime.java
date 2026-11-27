@@ -13144,10 +13144,13 @@ public final class WorldRuntime implements AutoCloseable {
         String reported = companyDecisionsEnabled() ? companyOfTask(task) : company != null ? company
                 : state.companyGovernance().companies().isEmpty() ? "north"
                 : state.companyGovernance().companies().get(0);
-        EngineeringRun.Report report = new EngineeringRun.Report(task.taskId(),
-                task.kind().equals(PendingTask.PERIOD_CAPTURE_V1)
-                        ? "system:periodic-capture" : "system:periodic-action",
-                task.kind(), reported,
+        String command = task.kind().equals(PendingTask.PERIOD_CAPTURE_V1)
+                ? "system:periodic-capture" : "system:periodic-action";
+        if (PendingTask.ENGINEERING_PERIODIC_V1.equals(task.kind())
+                && RunManifest.ATTRIBUTED_PERIOD_RESULTS.equals(manifest.dataVersions().get(RunManifest.PERIODIC_RECEIPTS))) {
+            command = mapper.readValue(task.payload(), PeriodicActionPayload.class).commandId();
+        }
+        EngineeringRun.Report report = new EngineeringRun.Report(task.taskId(), command, task.kind(), reported,
                 accepted, reason, task.dueTimeMillis(), state.position() + 1);
         EngineeringRun run = companyDecisionsEnabled() ? state.engineering().withReport(report) : state.engineering();
         List<PendingTask> pending = new ArrayList<>(state.pending());
@@ -20225,8 +20228,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         completed.sort(Comparator.comparingLong(PendingTask::dueTimeMillis)
                 .thenComparing(PendingTask::taskId));
-        completed.removeIf(task -> PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1.equals(task.kind())
-                && task.dueTimeMillis() > candidate.timeMillis());
+        completed.removeIf(task -> discardedDialogueDeadline(task, candidate, commit));
         InterviewRun expectedRun = before;
         InformationRun expectedInformation = previous == null ? candidate.information()
                 : previous.information();
@@ -20265,6 +20267,16 @@ public final class WorldRuntime implements AutoCloseable {
                 throw new IOException("在途采访任务被删除或漏排：" + expectedId);
             }
         }
+    }
+
+    /** 识别由另一项已确认动作撤销的回复截止门。 */
+    private boolean discardedDialogueDeadline(PendingTask task, WorldState candidate, WorldCommit commit) {
+        if (!PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1.equals(task.kind())) return false;
+        // 结束会话与回复截止可以同毫秒到期。被真实动作撤销的截止门不产生第二次业务回执或结算。
+        if (RunManifest.ATTRIBUTED_INTERVIEW_RESULTS.equals(manifest.dataVersions().get(RunManifest.INTERVIEW_RECEIPTS))) {
+            return !commit.commandId().equals("task:" + task.taskId());
+        }
+        return task.dueTimeMillis() > candidate.timeMillis();
     }
 
     /** 只取采访任务。 */
@@ -20326,6 +20338,45 @@ public final class WorldRuntime implements AutoCloseable {
             return RoleTradingView.TOOL_INTERVIEW_SPEAK;
         }
         return null;
+    }
+
+    /** 只取本人这次动作所绑定的协调回执。系统门、同一邀请的另一次回应均有不同任务编号。 */
+    private void interviewActionFeedback(com.fasterxml.jackson.databind.node.ObjectNode row, WorldState snap,
+                                         String person, long now) {
+        if (snap.decisions() == null || snap.interviews() == null) return;
+        String action = row.path("actionId").asText();
+        var ref = snap.decisions().actionRef(action);
+        if (ref == null || !action.equals(ref.actionId()) || !ref.tool().equals(row.path("tool").asText())) return;
+        var report = snap.interviews().coordinations().get(ref.taskId());
+        if (report == null || !ref.taskId().equals(report.taskId()) || !person.equals(report.personPartyId())
+                || !ref.tool().equals(interviewToolOf(report.kind())) || ref.dueMillis() != report.timeMillis()
+                || report.position() > snap.position() || report.timeMillis() > now) return;
+        var binding = snap.decisions().binding(action);
+        if (binding == null || !binding.actionId().equals(action) || !person.equals(binding.personPartyId())) return;
+        try {
+            var original = recordedInterviewBody(snap, action);
+            if (!report.kind().equals(original.operation())) return;
+            var args = mapper.readTree(original.body());
+            String requestId = PendingTask.INTERVIEW_INVITE_V1.equals(report.kind())
+                    ? InterviewModel.requestId(person, args.required("requestClientId").textValue())
+                    : args.required("requestId").textValue();
+            if (!requestId.equals(report.requestId())) return;
+            var office = snap.interviews().stateOf(original.organizationPartyId());
+            if (office == null) return;
+            var invite = findInvite(office, requestId);
+            if (invite == null && !PendingTask.INTERVIEW_INVITE_V1.equals(report.kind())) return;
+            if (invite != null && (!original.organizationPartyId().equals(invite.organizationPartyId())
+                    || !(person.equals(invite.fromPartyId()) || person.equals(invite.toPartyId())))) return;
+            row.put("execution", report.accepted() ? "APPLIED" : "REJECTED").put("accepted", report.accepted())
+                    .put("reason", report.reason()).put("resultKind", report.kind()).put("resultAt", report.timeMillis())
+                    .put("requestId", requestId);
+            if (!report.accepted()) row.put("businessReject", report.reason());
+            row.put("organizationPartyId", original.organizationPartyId());
+            if (PendingTask.INTERVIEW_RESPOND_V1.equals(report.kind()) && "BUDGET".equals(report.reason()))
+                row.put("reasonDetail", "本次接受未生效：发起采访的媒体机构可预留工时不足以覆盖邀请时长。");
+        } catch (IOException invalid) {
+            throw new IllegalStateException("已确认的采访命令无法读取：" + action, invalid);
+        }
     }
 
     /**
@@ -20435,8 +20486,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (body.observedPosition() < 0 || body.observedPosition() > previous.position()) {
             throw new IOException("采访待办缺少真实观察帧：" + task.taskId());
         }
-        WorldState frame = frameAtOrNull(body.observedPosition());
-        if (frame == null || frame.timeMillis() != body.observedAtMillis()) {
+        Long frameTime = verifiedFrameTimeAtOrNull(body.observedPosition());
+        if (frameTime == null || frameTime != body.observedAtMillis()) {
             throw new IOException("采访待办的观察帧不可解析：" + task.taskId());
         }
         if (PendingTask.ONSITE_ACTION_V1.equals(task.kind())) {
@@ -20585,8 +20636,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         completed.sort(Comparator.comparingLong(PendingTask::dueTimeMillis)
                 .thenComparing(PendingTask::taskId));
-        completed.removeIf(task -> PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1.equals(task.kind())
-                && task.dueTimeMillis() > candidate.timeMillis());
+        completed.removeIf(task -> discardedDialogueDeadline(task, candidate, commit));
 
         // 2）从上一帧与真实待办请求重算这些完成
         MediaRun expectedRun = before;
@@ -20841,24 +20891,6 @@ public final class WorldRuntime implements AutoCloseable {
                 // 实际目标身份可能已改变；同位置旧游标不能替代本次完整核验。
                 if (deltaReadCursor != null && deltaReadCursor.position() == position) deltaReadCursor = null;
                 return decodeSnapshot(commit).timeMillis();
-            } catch (IOException unreadable) {
-                return null;
-            }
-        }
-        return null;
-    }
-
-    /** 按位置取历史帧；不存在返回 null（校验期不依赖当前 state 的边界）。 */
-    private WorldState frameAtOrNull(long position) {
-        if (position <= 0) {
-            return null;
-        }
-        for (WorldCommit commit : commitSource.commitAt(position).stream().toList()) {
-            if (commit.position() != position) {
-                continue;
-            }
-            try {
-                return decodeSnapshot(commit);
             } catch (IOException unreadable) {
                 return null;
             }
@@ -21301,7 +21333,35 @@ public final class WorldRuntime implements AutoCloseable {
         contacts.sort(Comparator.comparing(ContactView::targetPartyId)
                 .thenComparing(ContactView::channel));
         return new InterviewView(personPartyId, List.copyOf(invites), List.copyOf(sessions),
-                List.copyOf(contacts));
+                List.copyOf(contacts), officeWorkBudgets(base, personPartyId, now));
+    }
+
+    private OfficeWorkBudgets officeWorkBudgets(WorldState snapshot, String person, long now) {
+        if (!RunManifest.ATTRIBUTED_INTERVIEW_RESULTS.equals(manifest.dataVersions().get(RunManifest.INTERVIEW_RECEIPTS))
+                || snapshot.media() == null || snapshot.interviews() == null) return null;
+        var offices = new java.util.TreeSet<String>();
+        for (var appointment : snapshot.roles().access().appointments()) {
+            if (appointment.personPartyId().equals(person) && appointment.activeAt(now)
+                    && (appointment.role() == RoleAccess.Role.JOURNALIST || appointment.role() == RoleAccess.Role.EDITOR)
+                    && snapshot.interviews().stateOf(appointment.organizationPartyId()) != null) {
+                offices.add(appointment.organizationPartyId());
+            }
+        }
+        if (offices.isEmpty()) return null;
+        var rows = new ArrayList<OfficeWorkBudget>();
+        var media = snapshot.media();
+        var inFlight = mediaInFlight(snapshot.pending());
+        for (String office : offices) {
+            var budget = media.budgetOf(office);
+            var policy = snapshot.interviews().stateOf(office).policy();
+            long interviewReserve = snapshot.interviews().reservedMillis(office);
+            rows.add(new OfficeWorkBudget(office, budget.totalMillis(), budget.spentMillis(),
+                    media.reservedMillis(office, inFlight), interviewReserve,
+                    media.availableMillis(office, inFlight, interviewReserve),
+                    policy.maxDurationMillis(), policy.minLeadMillis(), policy.inviteTtlMillis()));
+        }
+        return new OfficeWorkBudgets("这是本社整个运行期的采编工时总额，单位为毫秒，不按日补充。"
+                + "受邀人接受本社发起的预约时，系统从本社可用工时中预留整段采访时长。", List.copyOf(rows));
     }
 
     /**
@@ -21357,8 +21417,23 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 本人预约投影。 */
     public record InterviewView(String personPartyId, List<InterviewEntry> invites,
-                                List<InterviewSessionEntry> sessions, List<ContactView> contacts) {
+                                List<InterviewSessionEntry> sessions, List<ContactView> contacts,
+                                @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                OfficeWorkBudgets officeWorkBudgets) {
+        /** 历史口径与未启用采访的角色不带机构工时字段。 */
+        public InterviewView(String personPartyId, List<InterviewEntry> invites, List<InterviewSessionEntry> sessions,
+                             List<ContactView> contacts) {
+            this(personPartyId, invites, sessions, contacts, null);
+        }
     }
+
+    /** 本人在有效记者或编辑任职下可见的机构工时及其计量规则。 */
+    public record OfficeWorkBudgets(String terms, List<OfficeWorkBudget> offices) { }
+
+    /** 本社采编工时；媒体任务与已约采访分别预留，所有数值均为模拟毫秒。 */
+    public record OfficeWorkBudget(String organizationPartyId, long totalMillis, long spentMillis,
+                                  long mediaReservedMillis, long interviewReservedMillis, long availableMillis,
+                                  long maxDurationMillis, long minLeadMillis, long inviteTtlMillis) { }
 
     /** 一条邀请的只读投影。 */
     public record InterviewEntry(String requestId, String fromPartyId, String toPartyId,
@@ -30141,6 +30216,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         var sessionNodes = root.putArray("sessions");
         var contactNodes = root.putArray("contacts");
+        var workBudgets = officeWorkBudgets(snap, person, now);
+        if (workBudgets != null) root.set("officeWorkBudgets", mapper.valueToTree(workBudgets));
         for (InterviewModel.State state : run.states()) {
             String organization = state.policy().mediaOrganizationPartyId();
             InterviewDialogue.State dialogue = run.dialoguesOf(organization);
@@ -30159,7 +30236,10 @@ public final class WorldRuntime implements AutoCloseable {
                 node.put("windowEndMillis", invite.windowEndMillis());
                 node.put("durationMillis", invite.durationMillis());
                 node.put("startMillis", invite.startMillis());
-                node.put("scheduledEndMillis", invite.scheduledEnd());
+                if (invite.startMillis() >= 0 || !RunManifest.ATTRIBUTED_INTERVIEW_RESULTS.equals(
+                        manifest.dataVersions().get(RunManifest.INTERVIEW_RECEIPTS))) {
+                    node.put("scheduledEndMillis", invite.scheduledEnd());
+                }
                 node.put("expiresAtMillis", invite.expiresAtMillis());
                 node.put("sessionId", "SESSION-" + invite.requestId());
             }
@@ -30755,6 +30835,21 @@ public final class WorldRuntime implements AutoCloseable {
         if (RoleDeliberation.isAccountable(roleContext))
             GroupActionFeedback.append(root, person, snap.decisions(), snap.pending(), snap.groups(),
                     snap.position(), snap.timeMillis(), commitSource::nonSnapshotCommitAt, this::groupFeedbackIdentity);
+        if (RunManifest.ATTRIBUTED_INTERVIEW_RESULTS.equals(manifest.dataVersions().get(RunManifest.INTERVIEW_RECEIPTS))) {
+            var history = root.path("deliberation");
+            for (var row : history.path("recentDecisions"))
+                interviewActionFeedback((com.fasterxml.jackson.databind.node.ObjectNode) row, snap, person, now);
+            if (history.path("lastActionResult") instanceof com.fasterxml.jackson.databind.node.ObjectNode last)
+                interviewActionFeedback(last, snap, person, now);
+        }
+        if (RunManifest.ATTRIBUTED_SOCIAL_RESULTS.equals(manifest.dataVersions().get(RunManifest.SOCIAL_RECEIPTS))) {
+            var history = root.path("deliberation");
+            for (var row : history.path("recentDecisions"))
+                SocialActionFeedback.apply((com.fasterxml.jackson.databind.node.ObjectNode) row, person, snap.decisions(),
+                        snap.social(), snap.commandContents(), snap.position(), now);
+            if (history.path("lastActionResult") instanceof com.fasterxml.jackson.databind.node.ObjectNode last)
+                SocialActionFeedback.apply(last, person, snap.decisions(), snap.social(), snap.commandContents(), snap.position(), now);
+        }
         if (IssuerCreditDecisions.enabled(manifest)) {
             var history = root.path("deliberation");
             for (var row : history.path("recentDecisions")) creditFeedback((com.fasterxml.jackson.databind.node.ObjectNode) row, snap, person);

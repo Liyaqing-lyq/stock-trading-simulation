@@ -318,7 +318,11 @@ defineCase("personal-interview-cleared-on-identity-switch", async () => {
       if (sessionPerson === "rita") {
         return { status: 200, payload: { personPartyId: "rita",
           invites: [invite("rita-1", "rita", "investor", "旧")],
-          sessions: [], contacts: [{ targetPartyId: "investor", channel: "c", description: "d" }] } };
+          sessions: [], contacts: [{ targetPartyId: "investor", channel: "c", description: "d" }],
+          officeWorkBudgets: { terms: "本社工时按毫秒计算", offices: [{ organizationPartyId: "wire",
+            totalMillis: 480000, spentMillis: 12000, mediaReservedMillis: 1000,
+            interviewReservedMillis: 60000, availableMillis: 407000, maxDurationMillis: 1800000,
+            minLeadMillis: 60000, inviteTtlMillis: 3600000 }] } } };
       }
       return new Promise((resolve, reject) => pending.push({ reject }));
     }
@@ -329,18 +333,28 @@ defineCase("personal-interview-cleared-on-identity-switch", async () => {
   await world.context.switchPerson("rita");
   assert.equal(world.rows("person-interview-invites"), 1, "前置：rita 预约已渲染");
   assert.equal(world.rows("person-interview-contacts"), 1, "前置：rita 联系入口已渲染");
+  assert.equal(world.$("person-office-work-budgets").hidden, false);
+  const budgetCells = world.$("person-office-work-table").querySelector("tbody").children[0].children;
+  assert.deepEqual(Array.from(budgetCells, cell => String(cell.textContent)), [
+    "wire", "8 分钟", "12 秒", "1 秒", "1 分钟", "407 秒",
+    "单次最长 30 分钟，至少提前 1 分钟，邀请有效期 1 小时"
+  ]);
 
   const second = world.context.switchPerson("bob");
   await waitFor(() => pending.length === 1, "bob 的采访请求已发出");
   assert.equal(world.$("person-name").textContent, "正在读取人物…", "新身份观察返回前不显示旧姓名或内部编号");
   const duringInvites = world.rows("person-interview-invites");
   const duringContacts = world.rows("person-interview-contacts");
+  assert.equal(world.rows("person-office-work-table"), 0);
+  assert.equal(world.$("person-office-work-terms").textContent, "");
+  assert.equal(world.$("person-office-work-budgets").hidden, true);
   const duringHidden = world.$("person-interview").hidden;
 
   pending[0].reject(new Error("network down"));
   await second;
   const afterInvites = world.rows("person-interview-invites");
   const afterContacts = world.rows("person-interview-contacts");
+  assert.equal(world.rows("person-office-work-table"), 0);
   const afterHidden = world.$("person-interview").hidden;
   console.log("  诊断 切身份等待期 rows=" + duringInvites + "/" + duringContacts
     + " hidden=" + duringHidden + " → 新请求失败后 rows=" + afterInvites + "/" + afterContacts

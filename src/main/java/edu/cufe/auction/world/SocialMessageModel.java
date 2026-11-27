@@ -1097,22 +1097,18 @@ public final class SocialMessageModel {
             if (!message.from().equals(person)) {
                 continue;
             }
-            OutboxStatus status;
-            switch (message.status()) {
-                case QUEUED:
-                    status = OutboxStatus.QUEUED;
-                    break;
-                case DELIVERED:
-                    status = OutboxStatus.DELIVERED;
-                    break;
-                default:
-                    status = OutboxStatus.UNDELIVERED;
-                    break;
-            }
             views.add(new OutboxView(message.messageId(), message.to(), message.channel(),
-                    message.sentAt(), message.dueAt(), status));
+                    message.sentAt(), message.dueAt(), outboxStatus(message.status())));
         }
         return List.copyOf(views);
+    }
+
+    static OutboxStatus outboxStatus(MessageStatus status) {
+        return switch (status) {
+            case QUEUED -> OutboxStatus.QUEUED;
+            case DELIVERED -> OutboxStatus.DELIVERED;
+            default -> OutboxStatus.UNDELIVERED;
+        };
     }
 
     // ---------------------------------------------------------------- 内部

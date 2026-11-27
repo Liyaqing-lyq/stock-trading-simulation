@@ -87,9 +87,10 @@ class StudyTenCompanyOpeningTest {
         assertArrayEquals(previousBytes, Files.readAllBytes(old));
     }
 
-    @Test void standardEntryStartsSixthVersionAndReopensEarlierFilesWithoutChangingThem() throws Exception {
-        Path latest = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v6.journal"), latest);
+    @Test void standardEntryStartsSeventhVersionAndReopensEarlierFilesWithoutChangingThem() throws Exception {
+        Path latest = dir.resolve("world-ten-company-autonomy-v6.journal");
+        Path seventhFile = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v7.journal"), seventhFile);
         Path newWorld = dir.resolve("world-ten-company-autonomy-v5.journal");
         Path oldWorld = dir.resolve("world-ten-company-autonomy-v4.journal");
         try (var fourth = ComposedIndustryScenario.openCurrentTenCompanyStudy(oldWorld)) {
@@ -134,6 +135,31 @@ class StudyTenCompanyOpeningTest {
         }
         assertArrayEquals(fifthBytes, Files.readAllBytes(newWorld));
         assertEquals(latest, WorldWebApp.tenCompanyJournal(dir));
+        byte[] sixthBytes = Files.readAllBytes(latest);
+        try (var sixth = ComposedIndustryScenario.openInterviewTenCompanyStudy(WorldWebApp.tenCompanyJournal(dir));
+             var seventh = ComposedIndustryScenario.openInterviewTenCompanyStudy(seventhFile)) {
+            var previous = sixth.profile().manifest();
+            var manifest = seventh.profile().manifest();
+            assertEquals(RunManifest.PERSONAL_TEN_COMPANY_RUN_ID, previous.runId());
+            assertEquals(RunManifest.INTERVIEW_TEN_COMPANY_RUN_ID, manifest.runId());
+            var expected = new TreeMap<>(previous.dataVersions());
+            expected.put("branch-profile-run", manifest.runId());
+            expected.put(RunManifest.INTERVIEW_RECEIPTS, RunManifest.ATTRIBUTED_INTERVIEW_RESULTS);
+            expected.put(RunManifest.SOCIAL_RECEIPTS, RunManifest.ATTRIBUTED_SOCIAL_RESULTS);
+            expected.put(RunManifest.PERIODIC_RECEIPTS, RunManifest.ATTRIBUTED_PERIOD_RESULTS);
+            assertEquals(expected, manifest.dataVersions());
+            assertEquals(sixth.openingRegistry(), seventh.openingRegistry());
+            for (String key : java.util.List.of(RunManifest.INTERVIEW_RECEIPTS, RunManifest.SOCIAL_RECEIPTS, RunManifest.PERIODIC_RECEIPTS)) {
+                var missing = new TreeMap<>(expected);
+                missing.remove(key);
+                assertThrows(IllegalArgumentException.class, () -> withPolicies(manifest, missing));
+                var grafted = new TreeMap<>(previous.dataVersions());
+                grafted.put(key, expected.get(key));
+                assertThrows(IllegalArgumentException.class, () -> withPolicies(previous, grafted));
+            }
+        }
+        assertEquals(seventhFile, WorldWebApp.tenCompanyJournal(dir));
+        assertArrayEquals(sixthBytes, Files.readAllBytes(latest));
     }
 
     @Test void historicalNamesUseNonemptyArchiveAndRejectSwappedOrIndependentWorlds() throws Exception {

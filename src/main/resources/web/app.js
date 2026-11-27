@@ -4825,6 +4825,7 @@ function renderInterviewAudit(view) {
 function clearPersonalInterview() {
   const panel = $("person-interview");
   if (panel) panel.hidden = true;
+  renderOfficeWorkBudgets(null);
   if ($("person-site-visits")) {
     $("person-site-visits").hidden = true;
     fillTable("person-site-visit-table", [], () => {});
@@ -4900,7 +4901,9 @@ async function renderPersonalInterview(tools, generation) {
   const view = result.payload;
   const invites = view.invites || [];
   const contacts = view.contacts || [];
-  panel.hidden = !(invites.length || contacts.length || actions.length || view.siteVisits?.appointments?.length);
+  panel.hidden = !(invites.length || contacts.length || actions.length || view.siteVisits?.appointments?.length
+    || view.officeWorkBudgets?.offices?.length);
+  renderOfficeWorkBudgets(view.officeWorkBudgets);
   renderSiteVisits(view, generation);
   fillTable("person-interview-invites", invites, (tr, row) => {
     const other = row.fromPartyId === view.personPartyId ? row.toPartyId : row.fromPartyId;
@@ -4921,6 +4924,21 @@ async function renderPersonalInterview(tools, generation) {
   });
   $("person-interview-contacts-empty").textContent = contacts.length
     ? "" : "本人尚未通过实际阅读取得可私信的联系入口。";
+}
+
+function renderOfficeWorkBudgets(budgets) {
+  const section = $("person-office-work-budgets");
+  if (!section) return;
+  const offices = budgets?.offices || [];
+  section.hidden = offices.length === 0;
+  $("person-office-work-terms").textContent = budgets?.terms || "";
+  fillTable("person-office-work-table", offices, (tr, row) => {
+    cell(tr, row.organizationPartyId);
+    for (const value of [row.totalMillis, row.spentMillis, row.mediaReservedMillis,
+      row.interviewReservedMillis, row.availableMillis]) cell(tr, researchDuration(value), "num");
+    cell(tr, "单次最长 " + researchDuration(row.maxDurationMillis) + "，至少提前 " + researchDuration(row.minLeadMillis)
+      + "，邀请有效期 " + researchDuration(row.inviteTtlMillis));
+  });
 }
 
 function renderSiteVisits(view, generation) {

@@ -582,6 +582,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.PERSONAL_TEN_COMPANY_RUN_ID);
     }
 
+    /**
+     * 新建能追溯本人采访回执的普通十公司世界，已有日志按其开局版本恢复。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的世界
+     * @throws Exception 开局或逐帧重演失败
+     */
+    public static WorldRuntime openInterviewTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.INTERVIEW_TEN_COMPANY_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {

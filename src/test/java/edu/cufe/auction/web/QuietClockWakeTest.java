@@ -70,6 +70,54 @@ class QuietClockWakeTest {
         }
     }
 
+    @Test void busyReaderReceivesNoDecisionUntilCompletionIncludingAfterRestart() throws Exception {
+        var journal = dir.resolve("busy-reader.journal");
+        long starts = 1_200_002, finishes = starts + 5_000;
+        try (var world = ComposedIndustryScenario.openTenCompanyAutonomy(journal)) {
+            world.schedulePublishDocument("private-receipt", "publish", starts - 1, "receipt", "omar",
+                    InformationModel.Audience.direct("nina"), "核对一笔收款", "到账金额十八元", "私信", 5_000, List.of());
+            world.advanceTo(starts - 1);
+            world.scheduleStartReading("read-receipt", "read", starts, "nina", "receipt", 1);
+            world.advanceTo(starts);
+            assertTrue(world.autonomyRoleBusy("nina"));
+            assertFalse(world.autonomyRoleBusy("investor"));
+        }
+        var calls = new CopyOnWriteArrayList<JsonNode>();
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        try (var routes = SceneRoutes.open(dir)) {
+            routes.replace(0, AutonomousLifecycleProbe.probeRoutes(routes.view(), TenCompanyAutonomyTest.MODE));
+            for (long target : List.of(finishes - 1, finishes + 1)) {
+                try (var host = new WorldWebHost(() -> {
+                    var world = ComposedIndustryScenario.openTenCompanyAutonomy(journal);
+                    return new WorldWebHost.Opened(world, world.profile().manifest().runId());
+                }, routes, (call, timeout) -> {
+                    var input = assertDoesNotThrow(() -> json.readTree(call.inputText()));
+                    calls.add(input);
+                    var reply = json.createObjectNode().put("tool", "role.wait");
+                    reply.putObject("decision").put("objective", "person:" + input.path("person").asText())
+                            .put("basis", "稍后核对").put("reviewAfterMillis", 60_000L);
+                    return LiveCompletionInbox.Completion.business(new DecisionModel.Reply(call.runId(), call.actionId(),
+                            call.attemptId(), call.attemptNo(), call.recoveryGeneration(), reply.toString(),
+                            DecisionModel.Usage.unknownCost(1, 40, 20), "fixture"));
+                })) {
+                    host.startAutonomy(Long.parseLong(host.autonomyStatus().position()), routes.view().revision(),
+                            target, 3_600_000, Set.of("nina", "investor"));
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(25);
+                    while (host.autonomyStatus().running() && System.nanoTime() < deadline) Thread.sleep(10);
+                    assertEquals("TARGET_REACHED", host.autonomyStatus().reason());
+                    assertEquals(0, host.autonomyStatus().failures());
+                    assertEquals(target < finishes ? 1 : 2, calls.size());
+                }
+            }
+        }
+        assertEquals("investor", calls.get(0).path("person").asText());
+        assertEquals(starts, calls.get(0).path("time").asLong());
+        assertFalse(calls.get(0).at("/profile/catalog").toString().contains("核对一笔收款"));
+        assertEquals("nina", calls.get(1).path("person").asText());
+        assertEquals(finishes, calls.get(1).path("time").asLong());
+        assertTrue(calls.get(1).at("/profile/readExperiences").toString().contains("receipt"));
+    }
+
     @Test void quietMillisecondDoesNotWakeAnyoneButPrivateDeliveryAndMarketOpeningDo() throws Exception {
         var ref = new AtomicReference<WorldRuntime>();
         try (var host = new WorldWebHost(() -> {

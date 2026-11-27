@@ -151,6 +151,31 @@ class WorldRuntimeHistoricalInformationCacheTest {
         }
     }
 
+    @Test void interviewSchedulingChecksTheConfirmedObservationTimeWithoutReplayingEarlierFrames() throws Exception {
+        Path file = journal("interview-observed-time-");
+        String saved;
+        try (var world = ComposedIndustryScenario.openCompactAccountableAutonomous(file)) {
+            world.advanceTo(4);
+            var reporter = world.openRoleSession("rita");
+            long observed = world.snapshot().position();
+            world.advanceTo(5);
+            var commits = field("commitSource");
+            var source = new CountingSource((CommitSource) commits.get(world));
+            commits.set(world, source);
+            long due = 5 + world.interviews().actionMillis(PendingTask.INTERVIEW_INVITE_V1);
+            reporter.inviteInterview("request", "invite", due, new WorldRoleSession.InterviewInviteDraft(
+                    "observed-time", "investor", "核对公开资料", 300_000, 700_000, 120_000));
+            assertTrue(source.reads.contains(observed), "必须核对观察位置所对应的实际提交");
+            assertFalse(source.reads.stream().anyMatch(position -> position < observed),
+                    "已核验的观察时点不应要求重新解码更早的增量帧");
+            world.advanceTo(due);
+            saved = stateJson(world);
+        }
+        try (var reopened = ComposedIndustryScenario.openCompactAccountableAutonomous(file)) {
+            assertEquals(saved, stateJson(reopened));
+        }
+    }
+
     @Test void realMediaCompletionAndStrictReopenKeepIdenticalStateAndHistoricalBytes() throws Exception {
         Path file = journal("media-"); String saved; String old; long observedPosition;
         try (WorldRuntime world = ComposedIndustryScenario.openCompactAccountableAutonomous(file)) {

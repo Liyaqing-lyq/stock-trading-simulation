@@ -447,8 +447,12 @@ public final class WorldWebHost implements AutoCloseable {
         if (localInputPolicy()) retainEligibleInputBlocks(roster.stream()
                 .flatMap(group -> group.persons().stream()).collect(java.util.stream.Collectors.toSet()));
         for (String person : roster.stream().flatMap(g -> g.persons().stream()).distinct().toList()) {
+            if (runtime.autonomyRoleBusy(person)) {
+                autonomy.busy.add(person);
+                continue;
+            }
             var input = runtime.autonomyRoleObservation(person);
-            if (runtime.autonomyRoleBusy(person) || !input.path("pendingActions").isEmpty()) {
+            if (!input.path("pendingActions").isEmpty()) {
                 autonomy.busy.add(person);
                 continue;
             }

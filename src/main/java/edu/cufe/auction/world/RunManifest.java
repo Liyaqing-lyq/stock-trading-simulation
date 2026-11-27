@@ -143,6 +143,20 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String READABLE_DRAFT_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v5";
     /** 第六版把在任应急职责与本人的可用笔记引用列入实际决定输入。 */
     public static final String PERSONAL_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v6";
+    /** 第七版把本人的采访决定与实际协调回执相连。 */
+    public static final String INTERVIEW_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v7";
+    /** 采访人员看见回执、约定时间和本社工时的口径。 */
+    public static final String INTERVIEW_RECEIPTS = "interview-action-feedback";
+    /** 从本人决定绑定的协调任务读取业务结果。 */
+    public static final String ATTRIBUTED_INTERVIEW_RESULTS = "bound-coordination-v1";
+    /** 个人社交动作的完成与投递口径。 */
+    public static final String SOCIAL_RECEIPTS = "social-action-feedback";
+    /** 从本人决定和消息编号核对写信、投递及屏蔽动作。 */
+    public static final String ATTRIBUTED_SOCIAL_RESULTS = "bound-message-v1";
+    /** 董事期末评分、披露等动作如何向本人报告结算结果。 */
+    public static final String PERIODIC_RECEIPTS = "periodic-action-feedback";
+    /** 以本人已绑定的发行人期末任务及正式回执确认后果。 */
+    public static final String ATTRIBUTED_PERIOD_RESULTS = "bound-period-result-v1";
     /** 决定目标是否覆盖当时有效的应急金融任职。 */
     public static final String CRISIS_OFFICE_OBJECTIVES = "crisis-office-objectives";
     /** 使用当时有效的任职编号生成职责目标。 */
@@ -174,7 +188,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
@@ -182,16 +196,21 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
     public static Map<String, String> tenCompanyStudyPolicies(String id) {
         if (GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
-                || PERSONAL_TEN_COMPANY_RUN_ID.equals(id)) {
+                || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || INTERVIEW_TEN_COMPANY_RUN_ID.equals(id)) {
             var policies = new java.util.TreeMap<>(Map.of(DOCUMENT_READING_CLOCK, BODY_PACING_300,
                     EDITORIAL_TEMPLATE_GUIDE, OFFICE_TEMPLATE_KEYS, ISSUER_PERIOD_METRICS, OPERATING_PERIOD_EVIDENCE));
             if (!GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id)) {
                 policies.put(EDITORIAL_DRAFT_VISIBILITY, SUBMITTED_DOCUMENT);
             }
-            if (PERSONAL_TEN_COMPANY_RUN_ID.equals(id)) {
+            if (PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || INTERVIEW_TEN_COMPANY_RUN_ID.equals(id)) {
                 policies.put(CRISIS_OFFICE_OBJECTIVES, ACTIVE_APPOINTMENT_GOALS);
                 policies.put(PERSONAL_NOTE_CONTRACT, EXPLICIT_NOTE_REFERENCE);
                 policies.put(DECISION_ENVELOPE_GUIDE, TYPED_REVIEW_FIELDS);
+            }
+            if (INTERVIEW_TEN_COMPANY_RUN_ID.equals(id)) {
+                policies.put(INTERVIEW_RECEIPTS, ATTRIBUTED_INTERVIEW_RESULTS);
+                policies.put(SOCIAL_RECEIPTS, ATTRIBUTED_SOCIAL_RESULTS);
+                policies.put(PERIODIC_RECEIPTS, ATTRIBUTED_PERIOD_RESULTS);
             }
             return Map.copyOf(policies);
         }
@@ -217,7 +236,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static boolean usesCurrentTenCompany(String id) {
         return TEN_COMPANY_AUTONOMY_RUN_ID.equals(id) || STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
                 || GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
-                || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
+                || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || INTERVIEW_TEN_COMPANY_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
                 || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
     }
 
