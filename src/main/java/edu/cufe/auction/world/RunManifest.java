@@ -157,6 +157,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String EDITORIAL_FEEDBACK_RUN_ID = "web-ten-company-autonomy-v10";
     /** 第十一版普通十公司，按本人阅读、订阅和等候安排提供新闻。 */
     public static final String PERSONAL_NEWS_RUN_ID = "web-ten-company-autonomy-v11";
+    /** 常规调度允许在已开场采访内自主发言与阅读的十公司开局。 */
+    public static final String INTERVIEW_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v12";
+    /** 已开场采访的自主决定政策键。 */
+    public static final String INTERVIEW_AUTONOMY_POLICY = "interview-autonomy";
+    /** 在当前会话的读权、正工时与发言顺序内决定。 */
+    public static final String INTERVIEW_AUTONOMY_VERSION = "active-session-turn-v1";
     /** 本人已获显示资格的新闻排序口径。 */
     public static final String PERSONAL_NEWS_RANKING = "personal-news-ranking";
     /** 已读、兴趣和来源探索共同决定新闻展示次序。 */
@@ -242,14 +248,19 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
 
+    /** @param id 普通开局或分支继承的政策标识 @return 是否继承个人消息、有限水文与药企许可的开局规则 */
+    public static boolean usesPersonalNewsOpening(String id) {
+        return PERSONAL_NEWS_RUN_ID.equals(id) || INTERVIEW_AUTONOMY_RUN_ID.equals(id);
+    }
+
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
     public static Map<String, String> tenCompanyStudyPolicies(String id) {
-        boolean personalNews = PERSONAL_NEWS_RUN_ID.equals(id);
+        boolean personalNews = usesPersonalNewsOpening(id);
         boolean editorialFeedback = EDITORIAL_FEEDBACK_RUN_ID.equals(id) || personalNews;
         boolean digitalWindDown = DIGITAL_WIND_DOWN_RUN_ID.equals(id) || editorialFeedback;
         boolean periodMeetings = MEETING_TEN_COMPANY_RUN_ID.equals(id) || digitalWindDown;
@@ -287,6 +298,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 policies.put(PHARMA_LICENSING, APPROVED_USE_CONTRACT);
                 policies.put(HYDRO_INFLOW_PATH, FINITE_1080_DAYS);
             }
+            if (INTERVIEW_AUTONOMY_RUN_ID.equals(id))
+                policies.put(INTERVIEW_AUTONOMY_POLICY, INTERVIEW_AUTONOMY_VERSION);
             return Map.copyOf(policies);
         }
         return STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
@@ -313,7 +326,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 || GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
                 || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || INTERVIEW_TEN_COMPANY_RUN_ID.equals(id)
                 || MEETING_TEN_COMPANY_RUN_ID.equals(id) || DIGITAL_WIND_DOWN_RUN_ID.equals(id)
-                || EDITORIAL_FEEDBACK_RUN_ID.equals(id) || PERSONAL_NEWS_RUN_ID.equals(id) || OPEN_FUND_RUN_ID.equals(id)
+                || EDITORIAL_FEEDBACK_RUN_ID.equals(id) || usesPersonalNewsOpening(id) || OPEN_FUND_RUN_ID.equals(id)
                 || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
     }
 

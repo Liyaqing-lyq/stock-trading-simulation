@@ -283,8 +283,7 @@ class StudyTenCompanyOpeningTest {
 
     @Test void personalNewsPoliciesAreFrozenForTheNewOpeningAndInheritedByBranches() throws Exception {
         Path tenth = dir.resolve("world-ten-company-autonomy-v10.journal");
-        Path newest = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v11.journal"), newest);
+        Path newest = dir.resolve("world-ten-company-autonomy-v11.journal");
         try (var previous = ComposedIndustryScenario.openEditorialFeedbackTenCompanyStudy(tenth)) {
             assertEquals(RunManifest.EDITORIAL_FEEDBACK_RUN_ID, previous.profile().manifest().runId());
         }
@@ -323,6 +322,42 @@ class StudyTenCompanyOpeningTest {
         try (var restored = ComposedIndustryScenario.openPersonalNewsTenCompanyStudy(newest);
              var child = new BranchRepository(dir.resolve("runs")).open("news-child", restored.profile())) {
             assertEquals(RunManifest.PERSONAL_NEWS_RUN_ID, child.profile().manifest().policyRunId());
+            assertEquals(restored.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());
+        }
+    }
+
+    @Test void activeInterviewDecisionsAreFrozenOnlyForTheNewWorldAndItsBranches() throws Exception {
+        Path current = WorldWebApp.tenCompanyJournal(dir);
+        Path previous = dir.resolve("world-ten-company-autonomy-v11.journal");
+        assertEquals(dir.resolve("world-ten-company-autonomy-v12.journal"), current);
+        try (var old = ComposedIndustryScenario.openPersonalNewsTenCompanyStudy(previous)) {
+            assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.INTERVIEW_AUTONOMY_POLICY));
+        }
+        assertEquals(previous, WorldWebApp.tenCompanyJournal(dir));
+        byte[] saved = Files.readAllBytes(previous);
+        try (var old = ComposedIndustryScenario.openInterviewAutonomyTenCompanyStudy(previous);
+             var world = ComposedIndustryScenario.openInterviewAutonomyTenCompanyStudy(current)) {
+            var manifest = world.profile().manifest();
+            var oldManifest = old.profile().manifest();
+            assertEquals(RunManifest.INTERVIEW_AUTONOMY_RUN_ID, manifest.runId());
+            var expected = new TreeMap<>(oldManifest.dataVersions());
+            expected.put("branch-profile-run", manifest.runId());
+            expected.put(RunManifest.INTERVIEW_AUTONOMY_POLICY, RunManifest.INTERVIEW_AUTONOMY_VERSION);
+            assertEquals(expected, manifest.dataVersions());
+            assertEquals(old.openingRegistry(), world.openingRegistry());
+            assertEquals(old.snapshot().accounts(), world.snapshot().accounts());
+            expected.remove(RunManifest.INTERVIEW_AUTONOMY_POLICY);
+            assertThrows(IllegalArgumentException.class, () -> withPolicies(manifest, expected));
+            expected.put("branch-profile-run", oldManifest.runId());
+            expected.put(RunManifest.INTERVIEW_AUTONOMY_POLICY, RunManifest.INTERVIEW_AUTONOMY_VERSION);
+            assertThrows(IllegalArgumentException.class, () -> withPolicies(oldManifest, expected));
+            world.createBranch("interview-child", world.snapshot().position(), BranchOrigin.Kind.OPERATOR_BRANCH, "采访轮次");
+        }
+        assertArrayEquals(saved, Files.readAllBytes(previous));
+        assertEquals(current, WorldWebApp.tenCompanyJournal(dir));
+        try (var restored = ComposedIndustryScenario.openInterviewAutonomyTenCompanyStudy(current);
+             var child = new BranchRepository(dir.resolve("runs")).open("interview-child", restored.profile())) {
+            assertEquals(RunManifest.INTERVIEW_AUTONOMY_RUN_ID, child.profile().manifest().policyRunId());
             assertEquals(restored.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());
         }
     }

@@ -668,7 +668,7 @@ public final class InterviewDialogue {
         }
     }
 
-    private static boolean readAndRecalled(InformationModel.State information, String person,
+    static boolean readAndRecalled(InformationModel.State information, String person,
                                            Turn previous, Config config, long now) {
         if (!InformationModel.canCite(information, person, previous.docId(),
                 previous.docVersion(), now)) {

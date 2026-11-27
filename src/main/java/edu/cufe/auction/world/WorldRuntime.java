@@ -6468,8 +6468,69 @@ public final class WorldRuntime implements AutoCloseable {
     public synchronized boolean autonomyRoleBusy(String personPartyId) {
         requireOpen();
         long now = state.timeMillis();
-        return runtimeBusy(state, personPartyId, null, now).stream()
-                .anyMatch(slot -> slot.fromMillis() <= now && slot.toMillis() > now);
+        var occupied = runtimeBusy(state, personPartyId, null, now).stream()
+                .filter(slot -> slot.fromMillis() <= now && slot.toMillis() > now);
+        if (!interviewAutonomy()) return occupied.findAny().isPresent();
+        long count = occupied.count();
+        if (count == 0) return false;
+        // 只豁免这场会谈本身，以及记者已到同一现场的驻留；在途、阅读、其他占用仍然挡住派发。
+        var turn = activeInterviewTurn(state, personPartyId);
+        return turn == null || turn.nextTool() == null || count != (turn.onsiteReporter() ? 2 : 1)
+                || state.pending().stream()
+                .filter(task -> InterviewRun.COMMAND_KINDS.contains(task.kind()))
+                .map(this::readRolePayload).anyMatch(p -> p != null && personPartyId.equals(p.personPartyId()));
+    }
+
+    private boolean interviewAutonomy() {
+        return RunManifest.INTERVIEW_AUTONOMY_VERSION.equals(
+                manifest.dataVersions().get(RunManifest.INTERVIEW_AUTONOMY_POLICY));
+    }
+
+    private record ActiveInterviewTurn(String requestId, long deadlineMillis,
+            String nextTool, String docId, long version, boolean onsiteReporter) {
+        boolean targetsReading(String document, long fixedVersion) {
+            return document != null && document.equals(docId) && fixedVersion == version;
+        }
+    }
+
+    private ActiveInterviewTurn activeInterviewTurn(WorldState snapshot, String person) {
+        if (!interviewAutonomy() || snapshot.interviews() == null) return null;
+        var run = snapshot.interviews();
+        var information = snapshot.information().information();
+        long now = snapshot.timeMillis();
+        for (var office : run.states()) {
+            String organization = office.policy().mediaOrganizationPartyId();
+            for (var session : office.sessions()) {
+                if (!session.open()) continue;
+                var invite = findInvite(office, session.requestId());
+                if (!person.equals(invite.fromPartyId()) && !person.equals(invite.toPartyId())) continue;
+                var dialogue = run.dialoguesOf(organization);
+                var turns = dialogue.turnsOf(session.sessionId());
+                var last = turns.isEmpty() ? null : turns.get(turns.size() - 1);
+                long lastAt = last == null ? session.startedAtMillis() : publishedAt(information, last);
+                long deadline = Math.min(invite.startMillis() + invite.durationMillis(),
+                        Math.addExact(lastAt, requireDialogueConfig().replyDeadlineMillis()));
+                String next = null;
+                String docId = null;
+                long version = 0;
+                var visit = run.visits().get(invite.requestId());
+                if ((visit == null || "ONSITE".equals(visit.stage())) && now < deadline
+                        && InterviewDialogue.canSend(dialogue, office,
+                        new InterviewModel.Context(snapshot.roles().access(), Map.of(), Map.of()),
+                        requireDialogueConfig(), session.sessionId(), person, now)) {
+                    next = RoleTradingView.TOOL_INTERVIEW_SPEAK;
+                    if (last != null && !InterviewDialogue.readAndRecalled(information, person, last,
+                            requireDialogueConfig(), now)) {
+                        next = RoleTradingView.TOOL_READING_START;
+                        docId = last.docId();
+                        version = last.docVersion();
+                    }
+                }
+                boolean onsiteReporter = visit != null && "ONSITE".equals(visit.stage()) && person.equals(invite.fromPartyId());
+                return new ActiveInterviewTurn(invite.requestId(), deadline, next, docId, version, onsiteReporter);
+            }
+        }
+        return null;
     }
 
     /** @param person 本人 @param fallback 旧版固定复查时点 @return 新版持久决定中的复查时点，事件仍可提前唤醒 */
@@ -8882,6 +8943,23 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("观望不能排业务动作");
         }
         JsonNode args = replyArgs(recorded.lastAttempt().replyBody());
+        if (interviewAutonomy() && forcedTaskId == null) {
+            var turn = activeInterviewTurn(base, binding.personPartyId());
+            // 全部后续帧会重核已排任务的原文；这里只在首次放置及同截止的严格重放检查时权。
+            if (turn != null || (recorded.allowedTools().contains(RoleTradingView.TOOL_INTERVIEW_END)
+                    && !recorded.allowedTools().contains(RoleTradingView.TOOL_INTERVIEW_RESPOND))) {
+                var observed = mapper.readTree(recorded.inputText()).at("/interview/activeTurn");
+                boolean matches = turn != null && turn.requestId().equals(observed.path("requestId").asText())
+                        && (RoleTradingView.TOOL_INTERVIEW_END.equals(tool) || tool.equals(turn.nextTool()));
+                if (matches && RoleTradingView.TOOL_READING_START.equals(tool)) {
+                    matches = turn.targetsReading(args.path("docId").asText(), args.path("version").asLong())
+                            && args.path("docId").equals(observed.path("docId"))
+                            && args.path("version").asLong() == observed.path("version").asLong();
+                } else if (matches) matches = args.path("requestId").asText().equals(turn.requestId());
+                if (!matches) return new PlacedAction(recorded.actionId(), tool, "", "", "",
+                        recorded.barrierAtMillis(), "", null, "INTERVIEW_FOCUS");
+            }
+        }
         if (forcedTaskId == null && hasMediaSubscriptions() && !tool.startsWith("media.subscription.")
                 && base.pending().stream().anyMatch(t -> MediaSubscriptions.TASKS.contains(t.kind()))) {
             long due = DecisionModel.actionDueMillis(model, recorded.actionId());
@@ -22988,10 +23066,16 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private List<InterviewModel.Interval> travelIntervals(WorldState base,String person,String excludeOrganization) {
+        return travelIntervals(base, person, excludeOrganization, null);
+    }
+
+    private List<InterviewModel.Interval> travelIntervals(WorldState base,String person,String excludeOrganization,
+                                                         String readingAtVisit) {
         if (base.interviews()==null || base.interviews().visits().isEmpty()) return List.of();
         var periods=new ArrayList<InterviewModel.Interval>();
         for (var trip:base.interviews().visits().values()) {
             if (!trip.traveling()) continue;
+            if (trip.requestId().equals(readingAtVisit) && "ONSITE".equals(trip.stage())) continue;
             var invite=interviewInvite(base,trip.requestId());
             if (!person.equals(invite.fromPartyId()) || invite.organizationPartyId().equals(excludeOrganization)) continue;
             long end="RETURNING".equals(trip.stage())?trip.nextAt():invite.scheduledEnd()+OnsiteVisit.LEG;
@@ -30498,6 +30582,9 @@ public final class WorldRuntime implements AutoCloseable {
             if (MediaSubscriptions.canRelease(snap.interviews(), snap.information().information(), snap.trading(), person))
                 tools.add(MediaSubscriptions.RELEASE);
         }
+        var activeTurn = activeInterviewTurn(snap, person);
+        if (activeTurn != null)
+            tools.removeIf(tool -> !tool.equals(activeTurn.nextTool()) && !RoleTradingView.TOOL_INTERVIEW_END.equals(tool));
         tools = new ArrayList<>(new java.util.LinkedHashSet<>(tools));
         SocialRun.SocialView socialView = manifest.hasSocial() && snap.social() != null
                 ? socialViewAt(snap, person, now) : null;
@@ -30514,6 +30601,13 @@ public final class WorldRuntime implements AutoCloseable {
         InformationModel.State information = snap.information().information();
         var root = mapper.createObjectNode();
         var inviteNodes = root.putArray("invites");
+        var activeTurn = activeInterviewTurn(snap, person);
+        if (activeTurn != null) {
+            var focus = root.putObject("activeTurn").put("requestId", activeTurn.requestId())
+                    .put("deadlineMillis", activeTurn.deadlineMillis());
+            if (activeTurn.nextTool() != null) focus.put("nextTurnTool", activeTurn.nextTool());
+            if (activeTurn.docId() != null) focus.put("docId", activeTurn.docId()).put("version", activeTurn.version());
+        }
         if (onsiteEnabled()) {
             var visits=siteVisitsAt(snap,person,now);
             if (!visits.appointments().isEmpty()) {
@@ -31468,7 +31562,9 @@ public final class WorldRuntime implements AutoCloseable {
     /** 会话开始阅读：组织资料要核对本次观察任职，公开与本人直投按个人能力。 */
     String scheduleRoleRead(WorldRoleSession session, String clientCommandId, String clientTaskId,
                             long dueMillis, String docId, long version) throws IOException {
-        if (travelIntervals(state,session.personPartyId(),null).stream()
+        var turn = activeInterviewTurn(state, session.personPartyId());
+        String readingAtVisit = turn != null && turn.targetsReading(docId, version) ? turn.requestId() : null;
+        if (travelIntervals(state,session.personPartyId(),null,readingAtVisit).stream()
                 .anyMatch(i->i.fromMillis()<=dueMillis && dueMillis<i.toMillis()))
             throw new IllegalArgumentException("本人正在现场出行，不能开始另一项阅读");
         return scheduleRoleAction(session, PendingTask.ROLE_TRADING_READ_V1, clientCommandId,
@@ -33240,8 +33336,11 @@ public final class WorldRuntime implements AutoCloseable {
             RoleReadBody body = mapper.readValue(payload.body(), RoleReadBody.class);
             subject = body.docId();
             InformationModel.Document document = documentOf(before, body.docId());
+            var turn = activeInterviewTurn(state, payload.personPartyId());
             boolean allowed = document != null
-                    && travelIntervals(state,payload.personPartyId(),null).stream().noneMatch(i->i.fromMillis()<=now && now<i.toMillis())
+                    && (turn == null || turn.targetsReading(body.docId(), body.version()))
+                    && travelIntervals(state,payload.personPartyId(),null,turn == null ? null : turn.requestId())
+                            .stream().noneMatch(i->i.fromMillis()<=now && now<i.toMillis())
                     && InformationModel.catalog(before, access, payload.personPartyId(), now,
                     groupAccess(), roleBoards(state)).stream()
                     .anyMatch(entry -> entry.docId().equals(body.docId()))
@@ -37276,7 +37375,7 @@ public final class WorldRuntime implements AutoCloseable {
                     + declared + "，收到 " + sorted);
         }
         // v11 新开局将集合及映射按现有规范顺序落盘；重演仍沿用该档已确认的原命令。
-        ObjectMapper openingWriter = RunManifest.PERSONAL_NEWS_RUN_ID.equals(manifest.policyRunId()) ? stateCanonical() : mapper;
+        ObjectMapper openingWriter = RunManifest.usesPersonalNewsOpening(manifest.policyRunId()) ? stateCanonical() : mapper;
         String content = recordedContent != null ? recordedContent
                 : openingWriter.writeValueAsString(new OperationsOpenPayload(List.copyOf(companies), resource, hydro, digital, aged));
         String cid = "operations-open:" + commandId;

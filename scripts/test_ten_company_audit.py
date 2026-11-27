@@ -1,4 +1,4 @@
-"""标准十公司审计共享的版本身份、清单事件和十一版增量规则回归。"""
+"""标准十公司审计共享的版本身份、清单事件和增量规则回归。"""
 import json
 import unittest
 from copy import deepcopy
@@ -40,6 +40,18 @@ class OpeningPolicyTest(unittest.TestCase):
         frame["events"][0]["payload"] = self.frame(self.old, OPENING_POLICIES[self.old])["commandContent"]
         with self.assertRaises(ValueError):
             checked_opening(frame)
+
+    def test_interview_autonomy_is_the_only_additional_v12_policy(self):
+        run = "web-ten-company-autonomy-v12"
+        previous = OPENING_POLICIES[self.new]
+        current = {**previous, "interview-autonomy": "active-session-turn-v1"}
+        self.assertEqual(OPENING_POLICIES[run], current)
+        checked_opening(self.frame(run, current))
+        for version, policies in ((self.new, current), (run, previous),
+                                  (run, {**current, "interview-autonomy": "unregistered"}),
+                                  (run, {k: v for k, v in current.items() if k != "pharma-licensing"})):
+            with self.subTest(run=version), self.assertRaises(ValueError):
+                checked_opening(self.frame(version, policies))
 
 
 class RepeatedReadingTest(unittest.TestCase):

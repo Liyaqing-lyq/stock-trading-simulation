@@ -632,6 +632,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.PERSONAL_NEWS_RUN_ID);
     }
 
+    /**
+     * 开始允许人物在本人实际采访时段内作决定的普通十公司世界。已有存档按原清单恢复。
+     * @param journal 世界日志路径
+     * @return 启用自身开局规则的世界
+     * @throws Exception 恢复或初始化失败
+     */
+    public static WorldRuntime openInterviewAutonomyTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.INTERVIEW_AUTONOMY_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
@@ -798,7 +808,7 @@ public final class ComposedIndustryScenario {
             if (currentTen) timings.put(ResourcePrimaryEquity.TOOL, ResourceDecisionTools.ACTION_MILLIS);
             if (crisis) timings.put("bank.crisis.act",60_000L);
             if (RunManifest.usesPersonalProfiles(thinkingRunId)) timings.put("role.library.search", 1000L);
-            if (RunManifest.PERSONAL_NEWS_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.usesPersonalNewsOpening(thinkingRunId)) {
                 timings.put(edu.cufe.auction.world.ResearchLicensing.TOOL, ResearchDecisionTools.ACTION_MILLIS);
                 for (String tool : List.of("media.subscription.join", "media.subscription.leave", "media.subscription.releaseTurn"))
                     timings.put(tool, 1000L);

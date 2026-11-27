@@ -371,6 +371,8 @@ public final class WorldWebHost implements AutoCloseable {
 
     // 比较本人可见的具体事实；世界时间或观察时点自身变化不触发全体付费调用。
     com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
+        var interviewTurn = input.at("/interview/activeTurn");
+        if (interviewTurn.isObject()) return interviewTurn.deepCopy();
         var facts = (com.fasterxml.jackson.databind.node.ObjectNode) input.deepCopy();
         if (edu.cufe.auction.world.RoleInputTables.enabled(runtime.profile().manifest().dataVersions()
                 .get(edu.cufe.auction.world.RoleInputTables.POLICY))) {

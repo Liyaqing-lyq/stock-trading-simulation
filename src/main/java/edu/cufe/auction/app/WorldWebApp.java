@@ -169,7 +169,8 @@ public final class WorldWebApp {
         boolean routesAbsent = !Files.exists(workDir.resolve(SceneRoutes.FILE_NAME));
         SceneRoutes routes = SceneRoutes.open(workDir);
         if (thinkingInformedOperatingMode && routesAbsent) {
-            boolean longStudy = tenCompanyPath(workDir, RunManifest.PERSONAL_NEWS_RUN_ID).equals(ordinaryJournal)
+            boolean longStudy = tenCompanyPath(workDir, RunManifest.INTERVIEW_AUTONOMY_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.PERSONAL_NEWS_RUN_ID).equals(ordinaryJournal)
                     || tenCompanyPath(workDir, RunManifest.EDITORIAL_FEEDBACK_RUN_ID).equals(ordinaryJournal);
             String budget = longStudy ? DecisionModel.Route.LONG_HORIZON : "lifecycle-v1";
             int calls = longStudy ? DecisionModel.Route.callCeiling(budget) : 2500;
@@ -187,7 +188,7 @@ public final class WorldWebApp {
                     var runtime=sessionsMode ? ComposedIndustryScenario.openMarketSessionsOperating(workDir.resolve("world-market-sessions-operating-v1.journal"))
                             : manufacturingUpgradeMode ? ComposedIndustryScenario.openManufacturingUpgradeOperating(workDir.resolve("world-manufacturing-upgrade-v1.journal"))
                             : openFundMode ? ComposedIndustryScenario.openOpenFundOperating(workDir.resolve("world-open-fund-v1.journal"))
-                            : ordinaryJournal != null ? ComposedIndustryScenario.openPersonalNewsTenCompanyStudy(ordinaryJournal)
+                            : ordinaryJournal != null ? ComposedIndustryScenario.openInterviewAutonomyTenCompanyStudy(ordinaryJournal)
                             : personPauseMode ? ComposedIndustryScenario.openPersonPauseOperating(workDir.resolve("world-person-pause-v1.journal"), workDir.resolve("opening-copies.json"))
                             : issuerResolutionMode ? ComposedIndustryScenario.openIssuerResolutionOperating(workDir.resolve("world-issuer-resolution-v1.journal"), workDir.resolve("opening-copies.json"))
                             : unpricedReferenceMode ? ComposedIndustryScenario.openUnpricedReferenceOperating(workDir.resolve("world-unpriced-reference-v1.journal"), workDir.resolve("opening-copies.json"))
@@ -482,7 +483,7 @@ public final class WorldWebApp {
                 throw new IOException("十公司日志文件名和存档版本不符：" + file);
             return file;
         }
-        return tenCompanyPath(workDir, RunManifest.PERSONAL_NEWS_RUN_ID);
+        return tenCompanyPath(workDir, RunManifest.INTERVIEW_AUTONOMY_RUN_ID);
     }
 
     private static Path tenCompanyPath(Path workDir, String runId) {
