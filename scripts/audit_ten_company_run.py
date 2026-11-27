@@ -186,6 +186,33 @@ def check_trade_orders(trades, reports, orders):
             raise ValueError("成交与主动单回报或被动方挂价不符")
 
 
+def checked_reread(frame, raw, observed, now, read_ids):
+    """复读返回本人该文该版首次经验；另由本帧新完成的阅读任务和回执证明本次工时。"""
+    first_id = observed["readId"]
+    digest = hashlib.sha256(raw.encode("utf8")).hexdigest()
+    if first_id not in read_ids and observed["completedAt"] == now:
+        read_ids[first_id] = digest
+        return False
+    if read_ids.get(first_id) != digest or observed["completedAt"] > now:
+        raise ValueError("阅读经验时间或原文与首次确认不符")
+    tasks = [decode(e["payload"]) for e in frame["events"] if e["type"] == "TASK_COMPLETED_V1"]
+    reports = [decode(e["payload"]) for e in frame["events"] if e["type"] == "INFORMATION_REPORT_V1"]
+    if len(tasks) != 1 or len(reports) != 1:
+        raise ValueError("复读缺少唯一的完成任务和信息回执")
+    task, report = tasks[0], reports[0]
+    new_id = task["readId"]
+    task_id = "read:" + new_id
+    if (new_id in read_ids or frame["commandId"] != "task:" + task_id or frame["result"] != "COMPLETED"
+            or any(task[k] != observed[k] for k in ("personPartyId", "docId", "version"))
+            or (report["kind"], report["taskId"], report["commandId"], report["subjectId"], report["readerPartyId"],
+                report["accepted"], report["reason"], report["position"], report["timeMillis"]) !=
+               ("INFORMATION_COMPLETE_READ_V1", task_id, task["commandId"], new_id, observed["personPartyId"],
+                True, "COMPLETED", frame["position"], now)):
+        raise ValueError("复读任务、读者、文号版本或完成时点与回执不符")
+    read_ids[new_id] = None  # 重读任务已经计过，保留首次经验摘要。
+    return True
+
+
 def audit(source, target_days=None):
     if target_days is not None and target_days < 0:
         raise ValueError("目标实验日不能为负")
@@ -195,6 +222,7 @@ def audit(source, target_days=None):
     prior_time, run_id, opening_total = 0, None, None
     opening, previous_cash, gaps = None, None, []
     decision_owners = {}
+    read_ids = {}
     confirmed_trade_ids, filled_by_order = set(), Counter()
     orders, symbols = [], []
     for frame in checked_frames(source, file_digest):
@@ -280,8 +308,8 @@ def audit(source, target_days=None):
                 row["orderOutcomes"][f"{report['kind']}/{report['accepted']}/{report['reason']}"] += 1
             elif kind == READ:
                 observed = decode(event["payload"])
-                if observed["completedAt"] != now:
-                    raise ValueError("阅读完成时点与提交不符")
+                if checked_reread(frame, event["payload"], observed, now, read_ids):
+                    row["completedRereads"] = row.get("completedRereads", 0) + 1
                 row["readsByPerson"][observed["personPartyId"]] += 1
             elif kind == "DECISION_OPENED_V1":
                 for decision in decode(event["payload"]):

@@ -122,6 +122,13 @@ else
   bad "黑盒复算未通过"; cat "$LOG/csv.log"
 fi
 
+if PYTHONIOENCODING=utf-8 python -B scripts/test_ten_company_audit.py > "$LOG/ten-company-audit.log" 2>&1; then
+  ok "十公司原生账本审计回归"
+else
+  bad "十公司原生账本审计回归失败"
+  cat "$LOG/ten-company-audit.log"
+fi
+
 echo "== 3/4 Web 图表、采访身份隔离与页面结构 =="
 if node --check src/main/resources/web/app.js > "$LOG/web-chart.log" 2>&1 \
     && node --check src/main/resources/web/person-takeover.js >> "$LOG/web-chart.log" 2>&1 \
