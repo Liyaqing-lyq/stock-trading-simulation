@@ -81,6 +81,20 @@ public final class DecisionModel {
     /** 单次冻结输入允许的最大 UTF-8 字节数。 */
     public static final long MAX_INPUT_BYTES = 60_000L;
 
+    /** 标记新十公司档人物可使用较长的个人材料；既有计划没有该字段。 */
+    public static final String EXTENDED_ROLE_INPUT = "131072-chars-262144-utf8-v1";
+    /** 新档可发送的最大 UTF-16 代码单元数，与 String.length 的检查一致。 */
+    public static final int EXTENDED_INPUT_CHARS = 131_072;
+    /** 新档角色观察原文的 UTF-8 上限，HTTP 封装另计。 */
+    public static final int EXTENDED_INPUT_BYTES = 262_144;
+
+    /** 返回冻结输入政策允许的 UTF-8 字节数，未知政策拒绝。 */
+    public static long inputByteLimit(String policy) {
+        if (policy == null) return MAX_INPUT_BYTES;
+        if (EXTENDED_ROLE_INPUT.equals(policy)) return EXTENDED_INPUT_BYTES;
+        throw new IllegalArgumentException("未知人物输入政策");
+    }
+
     /** 当前 session 未开启。 */
     public static final String REASON_SESSION_NOT_OPEN = "SESSION_NOT_OPEN";
     /** session 已开启。 */
@@ -310,10 +324,42 @@ public final class DecisionModel {
      * @param maxTotalTokens  场景输入加输出的 token 总上限 256..1000000
      * @param maxOutputTokens 单次输出预留 128..8192，且不超过总上限
      * @param maxConcurrency  派发并发上限 1..4，且不超过调用上限
+     * @param providerPolicy  空值保留关闭思考；deepseek-thinking-high-v1 显式启用思考
+     * @param budgetPolicy    空值保留旧上限；lifecycle-v1 显式启用有限跨期预算
      */
     public record Route(String sceneId, String slotId, String model, long revision,
-                        int maxCalls, int maxTotalTokens, int maxOutputTokens,
-                        int maxConcurrency) {
+                        int maxCalls, long maxTotalTokens, int maxOutputTokens,
+                        int maxConcurrency,
+                        @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy,
+                        @JsonInclude(JsonInclude.Include.NON_NULL) String providerPolicy) {
+
+        /** 仅用于明确启用长期实验的开局。实际决定和费用仍逐次记账。 */
+        public static final String LONG_HORIZON = "long-horizon-v1";
+
+        /** 各版本可配置的调用数上界。单个实验批次有自己的派发上限。 */
+        public static int callCeiling(String policy) {
+            return LONG_HORIZON.equals(policy) ? Integer.MAX_VALUE : policy == null ? 100 : 5000;
+        }
+
+        /** 返回前后端均可精确表示的累计 token 上界。 */
+        public static long tokenCeiling(String policy) {
+            return LONG_HORIZON.equals(policy) ? 9_007_199_254_740_991L : policy == null ? 1_000_000L : 100_000_000L;
+        }
+
+        /** 旧路由保留原有预算边界与序列化形态。 */
+        public Route(String sceneId, String slotId, String model, long revision,
+                     int maxCalls, long maxTotalTokens, int maxOutputTokens, int maxConcurrency) {
+            this(sceneId, slotId, model, revision, maxCalls, maxTotalTokens, maxOutputTokens,
+                    maxConcurrency, null);
+        }
+
+        /** 旧九参路由保留关闭思考策略。 */
+        public Route(String sceneId, String slotId, String model, long revision,
+                     int maxCalls, long maxTotalTokens, int maxOutputTokens, int maxConcurrency,
+                     String budgetPolicy) {
+            this(sceneId, slotId, model, revision, maxCalls, maxTotalTokens, maxOutputTokens,
+                    maxConcurrency, budgetPolicy, null);
+        }
 
         /** 校验场景、槽位、模型与各项范围。 */
         public Route {
@@ -329,11 +375,17 @@ public final class DecisionModel {
             if (revision < 0) {
                 throw new IllegalArgumentException("路由版本不能为负：" + revision);
             }
-            if (maxCalls < 1 || maxCalls > 100) {
-                throw new IllegalArgumentException("场景调用上限必须是 1..100：" + maxCalls);
+            if (providerPolicy != null && !"deepseek-thinking-high-v1".equals(providerPolicy)) {
+                throw new IllegalArgumentException("未知提供方策略");
             }
-            if (maxTotalTokens < 256 || maxTotalTokens > 1_000_000) {
-                throw new IllegalArgumentException("场景 token 总上限必须是 256..1000000："
+            if (budgetPolicy != null && !"lifecycle-v1".equals(budgetPolicy) && !LONG_HORIZON.equals(budgetPolicy)) {
+                throw new IllegalArgumentException("未知预算策略");
+            }
+            if (maxCalls < 1 || maxCalls > callCeiling(budgetPolicy)) {
+                throw new IllegalArgumentException("场景调用上限超出预算策略范围：" + maxCalls);
+            }
+            if (maxTotalTokens < 256 || maxTotalTokens > tokenCeiling(budgetPolicy)) {
+                throw new IllegalArgumentException("场景 token 总上限超出预算策略范围："
                         + maxTotalTokens);
             }
             if (maxOutputTokens < 128 || maxOutputTokens > 8_192) {
@@ -358,15 +410,20 @@ public final class DecisionModel {
      * 1024 只是本地估算余量，不是官方账单上限。费用一律未知。</p>
      *
      * @param route      本次决定冻结的路由
-     * @param inputBytes 冻结输入的 UTF-8 字节数，1..60000
+     * @param inputBytes 冻结输入的 UTF-8 字节数，上限由冻结输入政策决定
+     * @param inputPolicy 本次输入政策，旧档为空
      */
-    public record ProviderPlan(Route route, long inputBytes) {
+    public record ProviderPlan(Route route, long inputBytes, @JsonInclude(JsonInclude.Include.NON_NULL) String inputPolicy) {
+
+        /** 既有提供方计划保留原 60000 字节边界。 */
+        public ProviderPlan(Route route, long inputBytes) { this(route, inputBytes, null); }
 
         /** 校验路由存在与输入字节范围；与输入正文的一致性由 OpenRequest 与决定核。 */
         public ProviderPlan {
             Objects.requireNonNull(route, "路由");
-            if (inputBytes < 1 || inputBytes > MAX_INPUT_BYTES) {
-                throw new IllegalArgumentException("输入字节必须在 1.." + MAX_INPUT_BYTES
+            long limit = inputByteLimit(inputPolicy);
+            if (inputBytes < 1 || inputBytes > limit) {
+                throw new IllegalArgumentException("输入字节必须在 1.." + limit
                         + "：" + inputBytes);
             }
         }
@@ -380,10 +437,23 @@ public final class DecisionModel {
     /** 冻结的运行限制。 */
     public record Limits(int maxAttemptsPerDecision, long maxInputChars, long maxReplyChars,
                          long perCallInputTokens, long perCallOutputTokens, int queueCapacity,
-                         int maxInFlight, long wallTimeoutMillis) {
+                         int maxInFlight, long wallTimeoutMillis,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) String inputPolicy) {
+
+        /** 历史配置没有扩展输入政策，沿用原有序列化与限制。 */
+        public Limits(int maxAttemptsPerDecision, long maxInputChars, long maxReplyChars, long perCallInputTokens,
+                      long perCallOutputTokens, int queueCapacity, int maxInFlight, long wallTimeoutMillis) {
+            this(maxAttemptsPerDecision, maxInputChars, maxReplyChars, perCallInputTokens, perCallOutputTokens,
+                    queueCapacity, maxInFlight, wallTimeoutMillis, null);
+        }
 
         /** 校验限制为正或非负。 */
         public Limits {
+            long bytes = inputByteLimit(inputPolicy);
+            if (inputPolicy != null && (maxInputChars != EXTENDED_INPUT_CHARS
+                    || perCallInputTokens != bytes + ESTIMATE_MARGIN_TOKENS)) {
+                throw new IllegalArgumentException("扩展输入的字符上限或逐次预留不符合冻结政策");
+            }
             if (maxAttemptsPerDecision < 1) {
                 throw new IllegalArgumentException("每次决定至少允许一次尝试");
             }
@@ -818,7 +888,8 @@ public final class DecisionModel {
             if (!config.live()) {
                 throw new IllegalArgumentException("旧档案不得携带提供方计划");
             }
-            if (plan.reservedInputTokens() > config.limits().perCallInputTokens()
+            if (!Objects.equals(plan.inputPolicy(), config.limits().inputPolicy())
+                    || plan.reservedInputTokens() > config.limits().perCallInputTokens()
                     || plan.route().maxOutputTokens() > config.limits().perCallOutputTokens()) {
                 throw new IllegalArgumentException("计划的单次预留超过冻结上限");
             }
@@ -888,7 +959,7 @@ public final class DecisionModel {
                 throw new IllegalArgumentException("已记录回执结果或长度不合法");
             }
             try {
-                Parsed parsed = parse(config, decision.allowedTools(), attempt.replyBody());
+                Parsed parsed = parse(config, decision.allowedTools(), attempt.replyBody(), decision.inputText());
                 Outcome expectedOutcome = parsed.abstain() ? Outcome.WAIT : Outcome.INTENT;
                 if (attempt.outcome() != expectedOutcome) {
                     throw new IllegalArgumentException("回执正文与尝试结果不一致");
@@ -1112,7 +1183,8 @@ public final class DecisionModel {
         }
         Usage reserved;
         if (plan != null) {
-            if (plan.reservedInputTokens() > config.limits().perCallInputTokens()
+            if (!Objects.equals(plan.inputPolicy(), config.limits().inputPolicy())
+                    || plan.reservedInputTokens() > config.limits().perCallInputTokens()
                     || plan.route().maxOutputTokens() > config.limits().perCallOutputTokens()) {
                 return reject(Verdict.REJECTED, REASON_PLAN_EXCEEDS_PER_CALL, state);
             }
@@ -1213,7 +1285,7 @@ public final class DecisionModel {
         Outcome outcome;
         String recordedTool;
         try {
-            Parsed parsed = parse(config, decision.allowedTools(), reply.body());
+            Parsed parsed = parse(config, decision.allowedTools(), reply.body(), decision.inputText());
             outcome = parsed.abstain() ? Outcome.WAIT : Outcome.INTENT;
             recordedTool = parsed.abstain() ? "" : parsed.tool();
             if (!parsed.abstain()) {
@@ -2021,7 +2093,7 @@ public final class DecisionModel {
         return Math.addExact(decision.barrierAtMillis(), millis);
     }
 
-    private static Parsed parse(Config config, List<String> allowedTools, String body) {
+    private static Parsed parse(Config config, List<String> allowedTools, String body, String inputText) {
         JsonNode node;
         try {
             node = MAPPER.readTree(body);
@@ -2031,6 +2103,8 @@ public final class DecisionModel {
         if (node == null || !node.isObject()) {
             throw new ReplyFailure(REASON_BAD_REPLY_SHELL);
         }
+        try { node = RoleDeliberation.validatedAction(inputText, node); }
+        catch (IllegalArgumentException invalid) { throw new ReplyFailure("BAD_DELIBERATION"); }
         Set<String> fields = new LinkedHashSet<>();
         node.fieldNames().forEachRemaining(fields::add);
         if (!fields.contains("tool") || !node.get("tool").isTextual()) {

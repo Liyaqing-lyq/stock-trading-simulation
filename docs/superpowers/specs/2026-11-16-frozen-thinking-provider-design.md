@@ -1,0 +1,27 @@
+# 显式冻结思考调用策略设计
+
+2026-11-16，基于Task22十八次只读对照：enabled6召集/3WAIT，disabled1召集/8WAIT，全部回复合同有效，0世界命令。不能据此宣称经营成立；独立事实核查仍进行。目标是使真实世界可明确选择经验证的调用设置并可审计、可重演，随后新档检验实际预算与经营链。
+
+## 方案取舍
+不改全局默认：会无声改变旧档。也不从角色描述或模型名猜开关：同一模型可有不同模式且派发后配置可变。采用可空providerPolicy逐路由冻结到DecisionModel.ProviderPlan。旧null原样disabled，不额外发送reasoning_effort；唯一新值deepseek-thinking-high-v1发送enabled/high。其余模型、system/user、工具合同不变，不加行动脚本或默认赞成。
+
+## 数据与调用合同
+SceneRoutes.Route/RouteDto及DecisionModel.Route末尾增加@JsonInclude(NON_NULL) String providerPolicy，保留旧8/9参数构造。未知非null拒绝；省略仍null。旧序列化字节、旧请求body与旧来源元数据不变。SceneRoutes持久化/服务端API/WorldWebHost冻结映射/页面保存必须完整透传；页面可显示“思考模式”关闭或开启(high)，保存关闭时省略字段，保留budgetPolicy。改路由只影响新决定，不影响已冻结计划/重试/恢复；同revision策略冲突由已有Route相等性拒绝。
+
+DeepSeekClient.Request增加末尾nullable providerPolicy并保留旧5参；实际requestBody仅按Request字段选择。模式只改变thinking.type并为新策略添加reasoning_effort=high。既有max_tokens、timeout、传输、认证、脱敏、1MiB响应限额不放宽。不记录或输出reasoning_content。Result末尾增加nullable安全finishReason，保留旧构造；已解析stop/length/content_filter可记录，未知不伪造。所有completion_tokens(包含提供方计算的思考生成)继续计入原DecisionModel.Usage.outputTokens，不能只按最终JSON长度记账；LENGTH/EMPTY/超时保持技术失败，既有未知用量保守结算、费用UNKNOWN不变。
+
+LiveDecisionProvider从call.plan.route取策略。旧ProviderProvenance v1字节不变；新策略使用provider-provenance-v2并额外包含nullable invocation对象，其字段providerPolicy/thinkingType/reasoningEffort/maxOutputTokens/finishReason，身份/model/失败代码仍既有安全过滤。不存推理正文。ProbeProviderEvidence按显式模式冻结v1/v2策略并逐调用验证Invocation与原Route、结果分类一致，缺失/篡改拒绝接续；旧v1继续支持，不能混用或自动补齐。
+
+## 显式新档
+ComposedIndustryScenario.openThinkingInformedOperating(Path)在原v5 contextual informed开局基础上，新runId=web-thinking-operating-v1、manifest.dataVersions.provider-policy=deepseek-thinking-high-v1；新档DecisionModel.Config只将wallTimeoutMillis设60000，其余限制、预算、经济与角色输入v5合同保持。新factory恢复要求精确manifest/config，旧工厂打开新档或反之必须拒绝。旧工厂不能变。可为私有open增加最后一个boolean封装，避免改动原调用语义。
+
+AutonomousLifecycleProbe新增THINKING_INFORMED_OPERATING，明确新factory，新路由全5场景providerPolicy固定新值/maxOutputTokens8192，预算仍2500calls/35000000tokens/4并发/lifecycle-v1。已有世界层最大在途2、每人/全局预算保留。现有probe modes仍2048/null和原factory。seed必须同mode/source/system/policy和完成证据，新旧不能互转。新模式发现提供方不完整/未知证据时停止调度并排空保留在途，不能隐性重试。可增加仅新模式的证据停止原因，但不能将真实失败改成WAIT。
+
+## 验证与边界
+通过真实回环HTTP断言旧请求body和新enabled/high/max_tokens8192、输入原样与冻结策略不随配置改变。模拟带reasoning_content的响应只检查该正文未进入任何保存/回执，而completion_tokens完整结算。覆盖length/empty/unknownfinish、用量超预留、未知policy拒绝、旧JSON字节、v1/v2seed不混用、source/config恢复。新档生命周期不安排董事投票/经理采购，不补预算。只证明机制后运行有界新档；成败以实际预算、订单、交付、到账、跨期而非动作建议或测试数。
+
+局部TDD、独审后统一一次verify.sh --with-gui及JavaDoc，不重复无变化测试。真实UI与人工PR审查仍须后续；禁止自动合并。日志保留项目文件夹，失败全部保留。
+
+实现澄清（Root核对BASE DecisionModel.settleTechnical）：正常声明完整completion_tokens计入结算；若提供方声明超过单次预留，沿既有合同在Attempt.declaredUsage完整保留实际声明，结算计数使用原预留并全局阻断，不能将结算计数冒充真实超额用量，也不能继续自动调用。真实审计另对提供方声明求和，不能只统计最终JSON。该切片不改旧预算核。
+
+入口补全（Root检查现有WorldWebApp后明确）：新增显式world-thinking-informed-operating模式，调用openThinkingInformedOperating并使用独立world-thinking-informed-operating-v1.journal。只在scene-routes.json缺失时初始化2500/35000000/8192/4/lifecycle-v1/new providerPolicy，五场景全部enabled=false且不自动开始。包括revision0在内的已有配置文件逐字保留，旧入口不改。WorldWebAppRouteDefaultsTest覆盖已有文件/新默认/新journal与60000ms配置。此入口用于随后同一真实世界的Web核验，不新增页面、不以启动代替业务验收。

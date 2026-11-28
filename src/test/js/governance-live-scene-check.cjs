@@ -72,7 +72,7 @@ const context = vm.createContext({
 vm.runInContext(source, context);
 vm.runInContext("globalThis.__api = { state, liveCheckedPersons, livePersonScenes, liveStartBody,"
   + " renderLiveSceneChoices, renderLiveCompanyChoices, liveRoundSummary, clearAdminDom,"
-  + " clearLiveDom, renderLivePersons, livePersonPool, LIVE_SCENES } ;", context);
+  + " clearLiveDom, renderLivePersons, livePersonPool, renderLive, LIVE_SCENES } ;", context);
 const api = context.__api;
 
 function fire(node, type) {
@@ -342,6 +342,22 @@ check("clearing-selection-keeps-independent-board-pool-reachable", () => {
 check("empty-company-intersection-does-not-reopen-for-third-person", () => {
   adminLive();
   assert.deepEqual(Array.from(api.renderLiveCompanyChoices(["alice", "omar", "dave"])), []);
+});
+
+check("review-display-distinguishes-relative-and-absolute-and-keeps-basis-literal", () => {
+  for (const [statement, expected, absent] of [
+    [{ objective: "director:cufe", basis: "<img src=x onerror=alert(1)>", reviewAfterMillis: 10000 }, "从本次观察起复查间隔（模拟毫秒） 10000", "下次复查（模拟毫秒）"],
+    [{ objective: "director:cufe", basis: "legacy basis", nextReviewAt: 12345 }, "下次复查（模拟毫秒） 12345", "从本次观察起复查间隔"]
+  ]) {
+    adminLive();
+    api.state.live.decisions = [{ personPartyId: "alice", actionId: "a1", status: "WAIT", outcome: "WAIT", replyPreview: JSON.stringify({ tool: "WAIT", decision: statement }), replyTruncated: false }];
+    api.renderLive(api.state.live);
+    const nodes = document.getElementById("live-decisions").children[0].children;
+    const text = nodes.map(n => n.textContent).join("|");
+    assert.ok(text.includes(expected), text); assert.ok(!text.includes(absent), text);
+    assert.ok(nodes.some(n => n.textContent === "角色陈述的依据：" + statement.basis));
+    assert.ok(!nodes.some(n => n.tag === "img"));
+  }
 });
 
 const failed = cases.filter(([status]) => status === "FAIL");

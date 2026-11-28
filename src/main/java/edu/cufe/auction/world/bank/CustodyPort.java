@@ -300,7 +300,7 @@ public final class CustodyPort {
             kept.remove(custodySource.token());
         }
         kept.entrySet().removeIf(entry -> entry.getValue().signum() == 0);
-        return new CashFreeze(kept);
+        return new CashFreeze(kept, frozen.checkAllCashDebits());
     }
 
     private static Map<String, String> bodyOf(BankPayment payment) {

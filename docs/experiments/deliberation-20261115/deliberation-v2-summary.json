@@ -1,0 +1,150 @@
+{
+  "sourceCommit": "b80c023",
+  "httpCalls": 200,
+  "replies": 200,
+  "hist": {
+    "role.reading.start": 69,
+    "board.convene": 27,
+    "role.wait": 88,
+    "board.attend": 9,
+    "board.addMaterial": 5,
+    "board.proposeAppointment": 1,
+    "board.vote": 1
+  },
+  "knownProviderUsage": {
+    "input": 1080375,
+    "output": 15477
+  },
+  "costStatus": "UNKNOWN",
+  "autonomy": {
+    "available": true,
+    "running": false,
+    "reason": "ALL_DECISIONS_FAILED",
+    "position": "854",
+    "timeMillis": "371001",
+    "targetMillis": "86400000",
+    "cycles": 53,
+    "calls": 200,
+    "failures": 6,
+    "companies": 10,
+    "persons": 52
+  },
+  "physicalInFlight": 0,
+  "companyResults": [
+    {
+      "company": "aged-company",
+      "meetings": 1,
+      "materials": 0,
+      "attendees": 0,
+      "ballots": [
+        ""
+      ],
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0
+    },
+    {
+      "company": "digital-company",
+      "meetings": 1,
+      "materials": 0,
+      "attendees": 2,
+      "ballots": [
+        ""
+      ],
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0
+    },
+    {
+      "company": "eng-a",
+      "meetings": 0,
+      "materials": 0,
+      "attendees": 0,
+      "ballots": [],
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0
+    },
+    {
+      "company": "hydro",
+      "meetings": 0,
+      "materials": 0,
+      "attendees": 0,
+      "ballots": [],
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0
+    },
+    {
+      "company": "mfg-struct",
+      "meetings": 1,
+      "materials": 0,
+      "attendees": 0,
+      "ballots": [
+        ""
+      ],
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0
+    },
+    {
+      "company": "mfg-tech",
+      "meetings": 1,
+      "materials": 0,
+      "attendees": 3,
+      "ballots": [
+        ""
+      ],
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0
+    },
+    {
+      "company": "mfg-versa",
+      "meetings": 1,
+      "materials": 0,
+      "attendees": 2,
+      "ballots": [
+        ""
+      ],
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0
+    },
+    {
+      "company": "north",
+      "meetings": 0,
+      "materials": 0,
+      "attendees": 0,
+      "ballots": [],
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0
+    },
+    {
+      "company": "pharma",
+      "meetings": 0,
+      "materials": 0,
+      "attendees": 0,
+      "ballots": [],
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0
+    },
+    {
+      "company": "resources",
+      "meetings": 0,
+      "materials": 0,
+      "attendees": 0,
+      "ballots": [],
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0
+    }
+  ],
+  "acceptance": "FAILED",
+  "findings": [
+    "I1_BEGIN_IS_NOT_FINISH",
+    "I2_SINGLE_PERSON_FAILURE_STOPS_ALL"
+  ]
+}

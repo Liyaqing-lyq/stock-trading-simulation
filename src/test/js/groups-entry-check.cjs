@@ -20,7 +20,7 @@ function node(id) {
 }
 const panel = node("group-panel"); panel.dataset.panel = "groups"; panel.hidden = true;
 node("admin").appendChild(panel);
-const state = { mode: "admin", generation: 0, page: "overview", pageVersion: 0, personGroups: null };
+const state = { mode: "admin", generation: 0, page: "overview", pageVersion: 0, personRefresh: 0, personGroups: null };
 const calls = []; let pendingGroup = null, pendingAction = null;
 const context = { state, console, BigInt, Number, String, Date, $: node,
   document: { body: {dataset:{}}, querySelector: () => panel,
@@ -40,16 +40,18 @@ const context = { state, console, BigInt, Number, String, Date, $: node,
   }
 };
 for(const name of ["clearAdminDom","clearPersonDom","clearPersonalMedia","clearPersonalInterview",
- "clearHistoryDom","renderPersonalMedia","renderPersonalInterview","renderPersonalDialogue","renderPersonalEvidence",
+ "clearHistoryDom","renderPersonRelations","renderPersonResearch","renderPersonalMedia","renderPersonalInterview","renderPersonalDialogue","renderPersonalEvidence",
  "renderPersonalSocial","renderPersonalEngineering","clearPersonalBank","renderPersonalBank","loadPersonalBank",
  "clearResearchDom","placeResearchPanel","loadResearch",
  "clearOperationsDom","placeOperationsPanel","loadOperations",
  "clearManufacturingDom","placeManufacturingPanel","loadManufacturing"]) context[name]=()=>{};
 vm.createContext(context);
-for(const name of ["showMode","enterPerson","refreshPerson"]) vm.runInContext(sourceFunction(name),context);
+for(const name of ["setAccountContext","writeHistoryBookmark","showMode","enterPerson","renderPersonalReports",
+ "renderPersonPortfolios","renderFundUnits","clearPersonChart","renderPersonChart","refreshPerson"]) vm.runInContext(sourceFunction(name),context);
 vm.runInContext(fs.readFileSync(path.join(root,"groups.js"),"utf8"),context);
 (async()=>{
  await context.enterPerson("alice");
+ assert.equal(node("person-owner-valuations").hidden,true,"没有本人金融账户时不显示估值");
  assert(calls.includes("/api/me/groups"),"从真实人物入口必须加载本人群，不依赖管理员当前页");
  assert.equal(panel.parentElement,node("person"),"本人群必须移入可见人物区域");
  assert.equal(panel.hidden,false,"人物群面板必须可见");

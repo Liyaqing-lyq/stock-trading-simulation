@@ -45,7 +45,7 @@ public final class InterviewDialogue {
     /** 同一命令/轮次标识被不同参数复用。 */
     public static final String REASON_DUPLICATE = "DUPLICATE";
 
-    private static final String DOC_PREFIX = "dialogue-turn:";
+    static final String DOC_PREFIX = "dialogue-turn:";
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
 
@@ -272,6 +272,12 @@ public final class InterviewDialogue {
     public static Outcome send(State dialogue, InformationModel.State information,
                                InterviewModel.State interviews, InterviewModel.Context context,
                                Config config, String speaker, SpeakRequest request, long now) {
+        return send(dialogue, information, interviews, context, config, speaker, request, now, null);
+    }
+
+    static Outcome send(State dialogue, InformationModel.State information, InterviewModel.State interviews,
+                        InterviewModel.Context context, Config config, String speaker, SpeakRequest request,
+                        long now, InterviewSourceBasis basis) {
         requireAll(dialogue, information, interviews, context, config, request);
         requireText(speaker, "发言者");
         if (now < 0) {
@@ -289,7 +295,7 @@ public final class InterviewDialogue {
         Turn existing = turnOf(dialogue, request.turnId());
         if (existing != null) {
             return sameSpeak(existing, session.sessionId(), speaker, request, information, now,
-                    config)
+                    config, basis)
                     ? new Outcome(true, REASON_OK, dialogue, information)
                     : reject(dialogue, information, REASON_DUPLICATE);
         }
@@ -341,12 +347,16 @@ public final class InterviewDialogue {
         if (documentOf(information, docId) != null) {
             return reject(dialogue, information, REASON_DUPLICATE);
         }
+        if (basis != null && basis.sources().stream().anyMatch(ref ->
+                !InformationModel.canCite(information, speaker, ref.docId(), ref.version(), startedAt))) {
+            return reject(dialogue, information, "INTERVIEW_SOURCE_UNAVAILABLE");
+        }
         InformationModel.State next;
         try {
             next = InformationModel.publish(information, docId, speaker,
                     InformationModel.Audience.direct(other),
-                    new InformationModel.VersionDraft(request.title(), request.body(), "",
-                            now, request.readDurationMillis(), List.of()));
+                    new InformationModel.VersionDraft(request.title(), request.body(), basis == null ? "" : basis.description(),
+                            now, request.readDurationMillis(), basis == null ? List.of() : basis.tags()));
         } catch (IllegalArgumentException rejected) {
             return reject(dialogue, information, REASON_STATE);
         }
@@ -609,7 +619,7 @@ public final class InterviewDialogue {
 
     private static boolean sameSpeak(Turn existing, String sessionId, String speaker,
                                      SpeakRequest request, InformationModel.State information,
-                                     long now, Config config) {
+                                     long now, Config config, InterviewSourceBasis basis) {
         if (!existing.sessionId().equals(sessionId)
                 || !existing.speakerPartyId().equals(speaker)
                 || !existing.docId().equals(turnDocId(sessionId, existing.sequence()))) {
@@ -621,6 +631,7 @@ public final class InterviewDialogue {
         }
         InformationModel.DocumentVersion version = document.at(existing.docVersion());
         return version != null
+                && (basis == null ? version.internalSourceIds().isEmpty() : basis.equals(InterviewSourceBasis.recorded(version)))
                 && version.title().equals(request.title())
                 && version.body().equals(request.body())
                 && version.readDurationMillis() == request.readDurationMillis()
@@ -668,7 +679,7 @@ public final class InterviewDialogue {
         }
     }
 
-    private static boolean readAndRecalled(InformationModel.State information, String person,
+    static boolean readAndRecalled(InformationModel.State information, String person,
                                            Turn previous, Config config, long now) {
         if (!InformationModel.canCite(information, person, previous.docId(),
                 previous.docVersion(), now)) {

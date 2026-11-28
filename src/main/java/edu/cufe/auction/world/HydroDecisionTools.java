@@ -18,6 +18,22 @@ public final class HydroDecisionTools {
     private static final ObjectMapper JSON = new ObjectMapper().enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .registerModule(new SimpleModule().addSerializer(BigDecimal.class, ToStringSerializer.instance)
                     .addSerializer(Long.class, ToStringSerializer.instance).addSerializer(Long.TYPE, ToStringSerializer.instance));
+    /** 在本公司经理输入中注明物量和电费的已结算口径。 */
+    public static final String SETTLEMENT_POLICY = "hydro-settlement-view";
+    /** 仅使用已结算物量和实际收款的投影版本。 */
+    public static final String SETTLEMENT_VERSION = "settled-cumulative-v1";
+
+    static JsonNode settlement(HydroModel.State ledger) {
+        var plant = ledger.plant();
+        return JSON.valueToTree(Map.of(
+                "fromMillis", 0L, "throughMillis", ledger.watermark(),
+                "inflowCubicMetres", plant.inflowCubicMetres(),
+                "deliveredKilowattHours", plant.deliveredKilowattHours(),
+                "revenue", HydroModel.revenue(ledger.config(), plant.deliveredKilowattHours()),
+                "collectedCash", plant.collectedCash(), "receivable", HydroModel.receivable(ledger.config(), plant),
+                "basis", "来水为该已结算区间累计立方米，交付为累计千瓦时。收入、实收与应收以元计。已交付电费未另设到期日，实际收款受请求额、已结应收和购电方可用资金限制。"));
+    }
+
     /** 身份与公司由真实任职决定。 */
     public record Draft(String action, JsonNode arguments) { }
     /** 仅给显式新档加入工具，不改调用额度。 */

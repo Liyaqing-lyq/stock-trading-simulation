@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import edu.cufe.auction.world.CashLedger.CashAccount;
 
 import java.math.BigDecimal;
@@ -647,11 +648,19 @@ public final class ResearchModel {
      * @param projects         项目，按标识索引
      * @param commandContents  命令内容索引，用于幂等重放
      * @param commandOutcomes  命令结果索引
+     * @param licenses         获批项目已经签订的商业使用权，旧档及从未签约时为空
      */
     public record State(Config config, BigDecimal initialEquity, BigDecimal initialWorldCash,
                         long watermark, Map<String, Project> projects,
                         Map<String, String> commandContents,
-                        Map<String, String> commandOutcomes) {
+                        Map<String, String> commandOutcomes,
+                        @JsonInclude(JsonInclude.Include.NON_NULL) Map<String,ResearchLicensing.Contract> licenses) {
+
+        /** 保留原研发状态的构造和归档格式。 */
+        public State(Config config, BigDecimal initialEquity, BigDecimal initialWorldCash, long watermark,
+                     Map<String,Project> projects, Map<String,String> commandContents, Map<String,String> commandOutcomes) {
+            this(config, initialEquity, initialWorldCash, watermark, projects, commandContents, commandOutcomes, null);
+        }
 
         /** 深拷贝集合、校验索引一致性。 */
         public State {
@@ -677,6 +686,19 @@ public final class ResearchModel {
             commandOutcomes = Collections.unmodifiableMap(new TreeMap<>(commandOutcomes));
             if (!commandContents.keySet().equals(commandOutcomes.keySet())) {
                 throw new IllegalArgumentException("命令索引不一致");
+            }
+            if (licenses != null) {
+                if (licenses.isEmpty()) throw new IllegalArgumentException("已签许可索引不能为空");
+                licenses = Collections.unmodifiableMap(new TreeMap<>(licenses));
+                for (var entry : licenses.entrySet()) {
+                    var project = projects.get(entry.getKey());
+                    var contract = entry.getValue();
+                    if (project == null || contract == null || !entry.getKey().equals(contract.projectId())
+                            || project.status() != ProjectStatus.APPROVED || project.approvedAt() > contract.signedAt()
+                            || contract.signedAt() > watermark || contract.deliveredAt() != null && contract.deliveredAt() > watermark
+                            || contract.paidAt() != null && contract.paidAt() > watermark)
+                        throw new IllegalArgumentException("许可与已批准项目或确认时点不符");
+                }
             }
         }
     }
@@ -713,17 +735,26 @@ public final class ResearchModel {
      * @param availableNet          可用资产净额
      * @param rndAsset              研发资产净额（在研 + 可用净额）
      * @param impairment            累计减值
-     * @param profit                累计损益（−费用 −摊销 −减值）
+     * @param profit                累计损益（已交付许可收入 −费用 −摊销 −减值）
      * @param equity                期末权益（期初权益 + 损益）
      * @param worldCash             世界现金合计
      * @param balanced              资产 = 权益且世界现金守恒
+     * @param licensing             已签许可的收入、货币实收及未收余额，原档为空
      */
     public record Report(BigDecimal companyCash, BigDecimal otherAssets, BigDecimal paid,
                          BigDecimal expense, BigDecimal workInProgress,
                          BigDecimal availableAsset, BigDecimal accumulatedAmortization,
                          BigDecimal availableNet, BigDecimal rndAsset, BigDecimal impairment,
                          BigDecimal profit, BigDecimal equity, BigDecimal worldCash,
-                         boolean balanced) {
+                         boolean balanced, @JsonInclude(JsonInclude.Include.NON_NULL) ResearchLicensing.Totals licensing) {
+        /** 兼容既有未签许可的研发报表。 */
+        public Report(BigDecimal companyCash, BigDecimal otherAssets, BigDecimal paid, BigDecimal expense,
+                      BigDecimal workInProgress, BigDecimal availableAsset, BigDecimal accumulatedAmortization,
+                      BigDecimal availableNet, BigDecimal rndAsset, BigDecimal impairment, BigDecimal profit,
+                      BigDecimal equity, BigDecimal worldCash, boolean balanced) {
+            this(companyCash,otherAssets,paid,expense,workInProgress,availableAsset,accumulatedAmortization,
+                    availableNet,rndAsset,impairment,profit,equity,worldCash,balanced,null);
+        }
     }
 
     // ------------------------------------------------------------------ 纯核动作
@@ -1166,6 +1197,11 @@ public final class ResearchModel {
         BigDecimal assets = CashLedger.money(cash.add(state.config().otherAssets()).add(rnd));
         BigDecimal profit = CashLedger.money(ZERO.subtract(expense).subtract(amortized)
                 .subtract(impairment));
+        var licensing = state.licenses() == null ? null : ResearchLicensing.totals(state.licenses());
+        if (licensing != null) {
+            assets = assets.add(licensing.receivable());
+            profit = profit.add(licensing.revenue());
+        }
         BigDecimal equity = CashLedger.money(state.initialEquity().add(profit));
         BigDecimal world = worldCash(accounts);
         boolean balanced = assets.compareTo(equity) == 0
@@ -1173,7 +1209,7 @@ public final class ResearchModel {
         return new Report(CashLedger.money(cash), CashLedger.money(state.config().otherAssets()),
                 CashLedger.money(paid), CashLedger.money(expense), CashLedger.money(work),
                 CashLedger.money(available), CashLedger.money(amortized), availableNet, rnd,
-                CashLedger.money(impairment), profit, equity, world, balanced);
+                CashLedger.money(impairment), profit, equity, world, balanced, licensing);
     }
 
     /**
@@ -1206,6 +1242,7 @@ public final class ResearchModel {
         private final Map<String, Project> projects;
         private final Map<String, String> commandContents;
         private final Map<String, String> commandOutcomes;
+        private final Map<String,ResearchLicensing.Contract> licenses;
         private long watermark;
 
         Draft(State state) {
@@ -1216,11 +1253,12 @@ public final class ResearchModel {
             projects = new LinkedHashMap<>(state.projects());
             commandContents = new TreeMap<>(state.commandContents());
             commandOutcomes = new TreeMap<>(state.commandOutcomes());
+            licenses = state.licenses();
         }
 
         State build() {
             return new State(config, initialEquity, initialWorldCash, watermark, projects,
-                    commandContents, commandOutcomes);
+                    commandContents, commandOutcomes, licenses);
         }
     }
 

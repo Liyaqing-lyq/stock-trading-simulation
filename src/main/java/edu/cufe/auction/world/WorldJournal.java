@@ -29,10 +29,18 @@ import java.util.Set;
  */
 public final class WorldJournal implements AutoCloseable {
     private static final int MAX_BYTES = 16 * 1024 * 1024;
+    /** 超过冻结帧上限；只公开安全大小，不携带业务正文。 */
+    public static final class FrameTooLargeException extends IllegalArgumentException {
+        private final int actualBytes;
+        FrameTooLargeException(int actualBytes) { super("世界提交批次超过 16 MiB (COMMIT_FRAME_TOO_LARGE)"); this.actualBytes = actualBytes; }
+        /** @return 未压缩批次实际字节数 */
+        public int actualBytes() { return actualBytes; }
+    }
     private static final int DIGEST_BYTES = 32;
     private final ObjectMapper mapper = new ObjectMapper();
     private final String runId;
     private final boolean compress;
+    private final boolean readOnly;
     /**
      * 位置基准：本文件首帧的确认位置减一。
      *
@@ -51,8 +59,9 @@ public final class WorldJournal implements AutoCloseable {
             return size() > 4;
         }
     };
-    /** 与 {@link #history} 一一对应的帧末字节偏移；用于对"已确认前缀"做原始字节摘要。 */
-    private final List<Long> frameEnds = new ArrayList<>();
+    /** 首次提交或恢复时核验过的磁盘帧；索引不随之后的读取更改。 */
+    private record ConfirmedFrame(long endOffset, byte[] checksum) { }
+    private final List<ConfirmedFrame> frames = new ArrayList<>();
     private final Map<String, Integer> commands = new LinkedHashMap<>();
     private final Set<String> eventIds = new HashSet<>();
     private final FileLock fileLock;
@@ -87,6 +96,21 @@ public final class WorldJournal implements AutoCloseable {
 
     /** 新档显式选择压缩写入；恢复按每帧自身标志解码，既有字节不改写。 */
     WorldJournal(Path file, String runId, long base, boolean compress) throws IOException {
+        this(file, runId, base, compress, null);
+    }
+
+    /** 正常续跑时先在写锁内核对原开局，只有相容的运行才可修复其残尾。 */
+    WorldJournal(Path file, String runId, long base, boolean compress, String expectedOpening) throws IOException {
+        this(file, runId, base, compress, expectedOpening, false);
+    }
+
+    /** 封存父前缀只读打开，复用逐帧校验和小型索引，残尾一律拒绝。 */
+    static WorldJournal openSealed(Path file, String runId) throws IOException {
+        return new WorldJournal(file, runId, 0L, false, null, true);
+    }
+
+    private WorldJournal(Path file, String runId, long base, boolean compress, String expectedOpening, boolean readOnly) throws IOException {
+        this.readOnly = readOnly;
         this.compress = compress;
         if (Thread.currentThread().isInterrupted()) {
             throw new IOException("当前线程已中断；由上层处理取消后在有效工作线程恢复日志");
@@ -100,16 +124,16 @@ public final class WorldJournal implements AutoCloseable {
         this.runId = runId;
         this.base = base;
         Path absolute = file.toAbsolutePath();
-        Files.createDirectories(absolute.getParent());
+        if (!readOnly) Files.createDirectories(absolute.getParent());
         this.file = absolute;
-        channel = FileChannel.open(absolute, StandardOpenOption.CREATE,
+        channel = readOnly ? FileChannel.open(absolute, StandardOpenOption.READ) : FileChannel.open(absolute, StandardOpenOption.CREATE,
                 StandardOpenOption.READ, StandardOpenOption.WRITE);
         try {
-            fileLock = channel.tryLock();
+            fileLock = readOnly ? channel.tryLock(0, Long.MAX_VALUE, true) : channel.tryLock();
             if (fileLock == null) {
                 throw new IOException("世界日志已有写入者");
             }
-            recover();
+            recover(expectedOpening);
         } catch (IOException | RuntimeException failure) {
             channel.close();
             if (failure instanceof OverlappingFileLockException) {
@@ -131,6 +155,7 @@ public final class WorldJournal implements AutoCloseable {
     public synchronized WorldCommit commit(String commandId, String commandContent, String result,
                                            List<WorldEvent> events) throws IOException {
         requireWritable();
+        if (readOnly) throw new IOException("封存父前缀不接受写入");
         Integer previousIndex = commands.get(commandId);
         if (previousIndex != null) {
             WorldCommit previous = readCommit(previousIndex);
@@ -144,7 +169,7 @@ public final class WorldJournal implements AutoCloseable {
         validateNewEvents(batch);
         byte[] payload = mapper.writeValueAsBytes(batch);
         if (payload.length > MAX_BYTES) {
-            throw new IllegalArgumentException("世界提交批次超过 16 MiB");
+            throw new FrameTooLargeException(payload.length);
         }
         boolean compressed = false;
         if (compress) {
@@ -153,7 +178,8 @@ public final class WorldJournal implements AutoCloseable {
         }
         int headerLength = compressed ? payload.length | Integer.MIN_VALUE : payload.length;
         ByteBuffer frame = ByteBuffer.allocate(8 + payload.length + DIGEST_BYTES);
-        frame.putInt(headerLength).putInt(~headerLength).put(payload).put(digest(payload)).flip();
+        byte[] checksum = digest(payload);
+        frame.putInt(headerLength).putInt(~headerLength).put(payload).put(checksum).flip();
         try {
             channel.position(channel.size());
             while (frame.hasRemaining()) {
@@ -164,7 +190,7 @@ public final class WorldJournal implements AutoCloseable {
             failed = true;
             throw failure;
         }
-        remember(batch, channel.position());
+        remember(batch, channel.position(), checksum);
         return batch;
     }
 
@@ -190,6 +216,18 @@ public final class WorldJournal implements AutoCloseable {
         WorldCommit candidate = readCommit((int) (index - 1));
         return candidate.position() == position
                 ? java.util.Optional.of(candidate) : java.util.Optional.empty();
+    }
+
+    synchronized java.util.Optional<WorldCommit> nonSnapshotByCommand(String command) {
+        Integer index = commands.get(command);
+        return index == null ? java.util.Optional.empty() : java.util.Optional.of(history.get(index));
+    }
+
+    /** 精确读取现有非快照索引；越界为空，不读取或重建历史状态。 */
+    synchronized java.util.Optional<WorldCommit> nonSnapshotCommitAt(long position) {
+        if (position <= base || position - base > history.size()) return java.util.Optional.empty();
+        WorldCommit candidate = history.get((int) (position - base - 1));
+        return candidate.position() == position ? java.util.Optional.of(candidate) : java.util.Optional.empty();
     }
 
     /**
@@ -245,7 +283,7 @@ public final class WorldJournal implements AutoCloseable {
         channel.close();
     }
 
-    private void recover() throws IOException {
+    private void recover(String expectedOpening) throws IOException {
         long confirmed = 0;
         while (confirmed < channel.size()) {
             channel.position(confirmed);
@@ -276,12 +314,15 @@ public final class WorldJournal implements AutoCloseable {
             }
             try {
                 WorldCommit batch = mapper.readValue(JournalFrameCodec.decode(payload, headerLength), WorldCommit.class);
+                if (confirmed == 0 && expectedOpening != null && !expectedOpening.equals(batch.commandContent())) {
+                    throw new IOException("运行清单或开局现金与持久记录不一致，续跑与派生均未开启。可用原版本打开，或在本机查看归档：WorldWebApp --archive inspect \"" + file + "\"");
+                }
                 if (!runId.equals(batch.runId()) || batch.position() != base + history.size() + 1L
                         || commands.containsKey(batch.commandId())) {
                     throw new IOException("世界日志运行、提交位置或命令标识不匹配");
                 }
                 validateNewEvents(batch);
-                remember(batch, channel.position());
+                remember(batch, channel.position(), checksum);
             } catch (IllegalArgumentException failure) {
                 throw new IOException("世界日志事件不合法", failure);
             }
@@ -298,6 +339,7 @@ public final class WorldJournal implements AutoCloseable {
     }
 
     private void truncateTail(long confirmed) throws IOException {
+        if (readOnly) throw new IOException("封存父前缀存在未确认的残尾");
         channel.truncate(confirmed);
         channel.force(true);
     }
@@ -317,10 +359,10 @@ public final class WorldJournal implements AutoCloseable {
         }
     }
 
-    private void remember(WorldCommit batch, long endOffset) {
+    private void remember(WorldCommit batch, long endOffset, byte[] checksum) {
         int index = history.size();
         history.add(withoutSnapshot(batch));
-        frameEnds.add(endOffset);
+        frames.add(new ConfirmedFrame(endOffset, checksum));
         commands.put(batch.commandId(), index);
         cache(index, batch);
         batch.events().forEach(event -> eventIds.add(event.eventId()));
@@ -344,7 +386,7 @@ public final class WorldJournal implements AutoCloseable {
     static WorldCommit withoutSnapshot(WorldCommit batch) {
         return new WorldCommit(batch.schemaVersion(), batch.position(), batch.runId(), batch.commandId(),
                 batch.commandContent(), batch.result(), batch.events().stream()
-                        .filter(e -> !"STATE_SNAPSHOT_V1".equals(e.type())).toList());
+                        .filter(e -> !"STATE_SNAPSHOT_V1".equals(e.type()) && !StateDeltaCodec.TYPE.equals(e.type())).toList());
     }
 
     private void cache(int index, WorldCommit batch) {
@@ -358,8 +400,9 @@ public final class WorldJournal implements AutoCloseable {
         if (failed) throw new IllegalStateException("世界日志发生I/O失败，须恢复后读取");
         WorldCommit cached = recent.get(index);
         if (cached != null) return cached;
-        long start = index == 0 ? 0 : frameEnds.get(index - 1);
-        int size = Math.toIntExact(frameEnds.get(index) - start);
+        ConfirmedFrame confirmed = frames.get(index);
+        long start = index == 0 ? 0 : frames.get(index - 1).endOffset();
+        int size = Math.toIntExact(confirmed.endOffset() - start);
         ByteBuffer frame = ByteBuffer.allocate(size);
         try {
             while (frame.hasRemaining()) {
@@ -373,7 +416,7 @@ public final class WorldJournal implements AutoCloseable {
                 throw new IOException("已确认帧头变化：" + (base + index + 1));
             byte[] payload = new byte[length], checksum = new byte[DIGEST_BYTES];
             frame.get(payload).get(checksum);
-            if (!MessageDigest.isEqual(checksum, digest(payload))) throw new IOException("已确认帧校验失败");
+            verifyReadChecksum(payload, checksum, confirmed.checksum());
             WorldCommit batch = mapper.readValue(JournalFrameCodec.decode(payload, headerLength), WorldCommit.class);
             if (!withoutSnapshot(batch).equals(history.get(index))) throw new IOException("已确认帧索引不一致");
             cache(index, batch);
@@ -392,10 +435,10 @@ public final class WorldJournal implements AutoCloseable {
      */
     public synchronized long endOffsetOf(long position) {
         long index = position - base;
-        if (index < 1 || index > frameEnds.size()) {
+        if (index < 1 || index > frames.size()) {
             return -1L;
         }
-        return frameEnds.get((int) (index - 1));
+        return frames.get((int) (index - 1)).endOffset();
     }
 
     /**
@@ -474,7 +517,12 @@ public final class WorldJournal implements AutoCloseable {
         return endOffset;
     }
 
-    private byte[] digest(byte[] payload) {
+    static void verifyReadChecksum(byte[] payload, byte[] checksum, byte[] confirmedChecksum) throws IOException {
+        if (!MessageDigest.isEqual(checksum, confirmedChecksum) || !MessageDigest.isEqual(checksum, digest(payload)))
+            throw new IOException("已确认帧校验失败");
+    }
+
+    private static byte[] digest(byte[] payload) {
         try {
             return MessageDigest.getInstance("SHA-256").digest(payload);
         } catch (NoSuchAlgorithmException impossible) {

@@ -82,6 +82,7 @@ for (const name of ["clearResearchDom", "placeResearchPanel", "loadResearch",
 }
 
 const context = vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(path.join(root, "interview-coordination.js"), "utf8"), context);
 const code = fs.readFileSync(path.join(root, "app.js"), "utf8");
 vm.runInContext(code, context, { filename: "app.js" });
 

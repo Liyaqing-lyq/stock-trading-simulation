@@ -63,7 +63,11 @@ class ManufacturingBehaviorTest {
             assertEquals(ManufacturingTemplateModel.ReceivableStatus.COLLECTED, ledger.receivables().values().iterator().next().status());
             assertEquals(initialCash, total(w));
             assertTrue(ComposedCompanyReport.of(w, COMPANY).balanced());
-            assertTrue(ManufacturingBehaviorLoop.audit(w).stream().anyMatch(r -> r.get("action").equals("WAIT")));
+            var audit = ManufacturingBehaviorLoop.audit(w);
+            assertTrue(audit.stream().anyMatch(r -> r.get("action").equals("WAIT")));
+            var collection = audit.stream().filter(r -> r.get("action").equals("COLLECT")).findFirst().orElseThrow();
+            assertEquals(ledger.receivables().values().iterator().next().amount().toPlainString(), collection.get("collectedAmount"));
+            assertTrue(audit.stream().filter(r -> !r.get("action").equals("COLLECT")).noneMatch(r -> r.containsKey("collectedAmount")));
             assertEquals(0, w.snapshot().exchange().orElseThrow().trades().size(), "经营修复不能暗造成交");
         }
         try (var w = ComposedIndustryScenario.openBehavior(path)) {

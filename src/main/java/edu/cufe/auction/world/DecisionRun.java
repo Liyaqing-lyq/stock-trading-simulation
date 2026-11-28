@@ -396,6 +396,24 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                                    com.fasterxml.jackson.databind.JsonNode interview,
                                    com.fasterxml.jackson.databind.JsonNode engineering,
                                    com.fasterxml.jackson.databind.JsonNode groups) {
+        return inputText(view, wakeReason, cutoffTimeMillis, pending, tools, config, toolContractVersion,
+                interview, engineering, groups, Map.of(), null);
+    }
+
+    static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
+                            List<PendingAction> pending, List<String> tools, DecisionModel.Config config,
+                            String toolContractVersion, com.fasterxml.jackson.databind.JsonNode interview,
+                            com.fasterxml.jackson.databind.JsonNode engineering, com.fasterxml.jackson.databind.JsonNode groups,
+                            Map<String, Long> ownVisibleReadTimes, String roleInputFormat) {
+        return inputText(view, wakeReason, cutoffTimeMillis, pending, tools, config, toolContractVersion,
+                interview, engineering, groups, ownVisibleReadTimes, Map.of(), roleInputFormat);
+    }
+
+    static String inputText(RoleTradingView view, String wakeReason, long cutoffTimeMillis,
+                            List<PendingAction> pending, List<String> tools, DecisionModel.Config config,
+                            String toolContractVersion, com.fasterxml.jackson.databind.JsonNode interview,
+                            com.fasterxml.jackson.databind.JsonNode engineering, com.fasterxml.jackson.databind.JsonNode groups,
+                            Map<String, Long> ownVisibleReadTimes, Map<String, Long> visibleReadingDurations, String roleInputFormat) {
         Objects.requireNonNull(view, "观察视图");
         Objects.requireNonNull(config, "冻结配置");
         Objects.requireNonNull(toolContractVersion, "工具合同版本");
@@ -436,6 +454,9 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
 
         ObjectNode profile = root.putObject("profile");
+        if (view.profile().portfolios() != null && !view.profile().portfolios().isEmpty()) {
+            profile.set("portfolios", MAPPER.valueToTree(view.profile().portfolios()));
+        }
         ArrayNode accounts = profile.putArray("accounts");
         for (RoleView.Account account : sorted(view.profile().accounts(), RoleView.Account::accountId)) {
             ObjectNode node = accounts.addObject();
@@ -463,14 +484,33 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("lastTradeAtMillis", quote.lastTradeAtMillis());
             node.put("bestBid", quote.bestBid() == null ? null : money(quote.bestBid()));
             node.put("bestAsk", quote.bestAsk() == null ? null : money(quote.bestAsk()));
+            if (quote.bestBidQuantity() != null) { node.put("bestBidQuantity",quote.bestBidQuantity()); node.put("bestAskQuantity",quote.bestAskQuantity()); }
+            if (quote.priceBand() != null) node.set("priceBand", MAPPER.valueToTree(quote.priceBand()));
+            if (quote.issuerResolution() != null) node.set("issuerResolution", MAPPER.valueToTree(quote.issuerResolution()));
+            if (engineering != null && RunManifest.ROLE_MARKET_VALUATION.equals(engineering.path("marketValuationPolicy").asText())) {
+                var reference = quote.reference();
+                if (reference != null) {
+                    node.put("referencePrice", reference.price() == null ? null : money(reference.price()));
+                    node.put("referenceSource", reference.source().name());
+                    node.put("referenceAtMillis", reference.asOfMillis());
+                    node.put("referenceAgeMillis", reference.ageMillis());
+                }
+            }
         }
         ArrayNode catalog = profile.putArray("catalog");
-        for (InformationModel.CatalogEntry entry
-                : sorted(view.profile().catalog(), InformationModel.CatalogEntry::docId)) {
+        boolean discovery = engineering != null && RunManifest.DISCOVERY_CATALOG_VERSION.equals(
+                engineering.at("/librarySearch/catalogPolicy").asText());
+        var entries = discovery ? CatalogDiscovery.preview(view.profile().catalog())
+                : sorted(view.profile().catalog(), InformationModel.CatalogEntry::docId);
+        for (InformationModel.CatalogEntry entry : entries) {
             ObjectNode node = catalog.addObject();
             node.put("docId", entry.docId());
             node.put("version", entry.version());
-            node.put("title", entry.title());
+            node.put("title", discovery ? CatalogDiscovery.title(entry.title()) : entry.title());
+            Long duration = visibleReadingDurations.get(entry.docId());
+            if (duration != null) node.put("readDurationMillis", duration.longValue());
+            Long lastRead = ownVisibleReadTimes.get(entry.docId());
+            if (lastRead != null) node.put("lastReadAtMillis", lastRead);
         }
         ArrayNode observations = profile.putArray("readExperiences");
         for (RoleView.Experience experience
@@ -483,6 +523,10 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("body", experience.body());
             node.put("source", experience.publicSourceDescription());
             node.put("publishedAt", experience.publishedAt());
+            if (engineering != null && engineering.has("crossBorderComparisonMillis")) {
+                node.put("publishedAtLocalUTC8", MediaDesks.displayClock(experience.publishedAt()));
+                node.put("publishedAtDeskUTC0", MediaDesks.displayClock(experience.publishedAt() - 8 * 3_600_000L));
+            }
             node.put("completedAt", experience.completedAt());
             if (experience.recall() != null) {
                 ObjectNode origin = node.putObject("lastReadRef");
@@ -615,10 +659,23 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("filled", target.filled());
             node.put("leaves", target.leaves());
             node.put("remaining", target.remaining());
+            if (target.current().sourceResearchId() != null) {
+                node.put("sourceResearchId", target.current().sourceResearchId());
+                node.put("haltedUntilMillis", target.haltedUntilMillis());
+                RoleTradingView.ReviewView review = target.review();
+                if (review == null) {
+                    node.putNull("review");
+                } else {
+                    node.putObject("review").put("riskRevision", review.revision()).put("approved", review.approved())
+                            .put("maxTotalQuantity", review.maxTotal()).put("maxChildQuantity", review.maxChild())
+                            .put("priceLimit", money(review.priceLimit())).put("validUntilMillis", review.validUntil())
+                            .put("reason", review.reason());
+                }
+            }
         }
 
         ArrayNode children = root.putArray("children");
-        for (RoleTradingView.ChildView child : sorted(view.children(),
+        for (RoleTradingView.ChildView child : sorted(FundChildHistory.visible(root, view),
                 item -> item.ref().childId())) {
             ObjectNode node = children.addObject();
             node.put("parentId", child.ref().parentId());
@@ -631,8 +688,9 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("status", child.status());
         }
 
+        var businessHistory = MediaRoleHistory.project(root,view);
         ArrayNode notices = root.putArray("notices");
-        for (RoleTradingView.Notice notice : sorted(view.notices(),
+        for (RoleTradingView.Notice notice : sorted(businessHistory.notices(),
                 item -> item.clientTaskId() + "#" + item.timeMillis())) {
             ObjectNode node = notices.addObject();
             node.put("clientTaskId", notice.clientTaskId());
@@ -642,12 +700,14 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("timeMillis", notice.timeMillis());
         }
 
-        if (TOOL_CONTRACT_VERSION_V4.equals(toolContractVersion) && view.media() != null
-                && !view.media().isEmpty()) {
+        boolean editorialOffice = TOOL_CONTRACT_VERSION_V6.equals(toolContractVersion)
+                && engineering != null && engineering.has("editorialProcedure");
+        if ((TOOL_CONTRACT_VERSION_V4.equals(toolContractVersion) || editorialOffice)
+                && view.media() != null && !view.media().isEmpty()) {
             // schema16 最小稿件投影：只用于让模型拿到本人可见的 storyId/版次/状态与实际可读标识，
             // 不含真实根、私证、策略、其他机构或隐藏字段；旧 v1–v3 输入逐字不变。
             ArrayNode stories = root.putArray("media");
-            for (RoleTradingView.MediaStory story : sorted(view.media(),
+            for (RoleTradingView.MediaStory story : sorted(businessHistory.media(),
                     item -> item.storyId())) {
                 ObjectNode node = stories.addObject();
                 node.put("storyId", story.storyId());
@@ -658,10 +718,21 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 node.put("own", story.own());
                 node.put("canReview", story.canReview());
                 node.put("canPublish", story.canPublish());
-                node.put("draftDocId", story.draftDocId());
-                node.put("draftVersion", story.draftVersion());
+                if (story.draftVersion() == null) {
+                    node.put("draftStatus", "AWAITING_SUBMISSION");
+                } else {
+                    node.put("draftDocId", story.draftDocId());
+                    node.put("draftVersion", story.draftVersion());
+                }
                 node.put("publicDocId", story.publicDocId());
                 node.put("publicVersion", story.publicVersion());
+                if (story.withdrawWorkMillis() != null) node.put("withdrawWorkMillis", story.withdrawWorkMillis());
+                if (story.reviewNotes() != null) {
+                    ArrayNode notes = node.putArray("reviewNotes");
+                    for (var note : story.reviewNotes())
+                        notes.addObject().put("revisionNo", note.revisionNo()).put("docId", note.docId())
+                                .put("version", note.version()).put("read", note.read());
+                }
             }
         }
 
@@ -669,9 +740,12 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 || TOOL_CONTRACT_VERSION_V6.equals(toolContractVersion)) && view.social() != null) {
             // schema17 人物社交投影：只本人 inbox/outbox 与合法联系人，不含正文与他人消息
             ObjectNode social = root.putObject("social");
+            var visibleMail = root.at("/engineering/historyLookup").isObject()
+                    ? SocialMessageHistory.preview(root, social, view) : null;
             ArrayNode inbox = social.putArray("inbox");
             for (SocialMessageModel.EnvelopeView envelope : sorted(view.social().inbox(),
                     item -> item.messageId())) {
+                if (visibleMail != null && !visibleMail.contains(envelope.messageId())) continue;
                 ObjectNode node = inbox.addObject();
                 node.put("messageId", envelope.messageId());
                 node.put("docId", envelope.docId());
@@ -684,6 +758,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             ArrayNode outbox = social.putArray("outbox");
             for (SocialMessageModel.OutboxView entry : sorted(view.social().outbox(),
                     item -> item.messageId())) {
+                if (visibleMail != null && !visibleMail.contains(entry.messageId())) continue;
                 ObjectNode node = outbox.addObject();
                 node.put("messageId", entry.messageId());
                 node.put("to", entry.to());
@@ -727,11 +802,98 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("name", tool);
             Long millis = config.actionMillisByTool().get(tool);
             node.put("actionMillis", millis == null ? 0L : millis);
+            if (RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND.equals(tool)
+                    || (RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE.equals(tool)
+                        && tools.contains(RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND))) {
+                node.put("terms", "每股现金股息 perShare 为正金额。登记、除息和付款使用模拟毫秒，"
+                        + "recordAtMillis < exAtMillis <= payAtMillis，除息须在交易日当天 09:30 开市之前。");
+                if (RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND.equals(tool))
+                    node.put("procedure", "schemeId 与 expectedVersion 取自本公司董事席位下的 amendableAnnouncements。"
+                            + "operation 与 reason 分别为处理方式及公开理由。CANCEL 只填这两项及公司、会议、方案和版本。"
+                            + "REPLACE 另须填齐 perShare、recordAtMillis、exAtMillis、payAtMillis。"
+                            + "本次提交是新会议的提案。须经董事表决和主席实施，在原登记时点前发布新公告。");
+            }
+            if (engineering != null && RunManifest.ROLE_ARGUMENTS_VERSION.equals(engineering.path("roleToolArguments").asText())) {
+                if (RoleTradingView.TOOL_TARGET_REVIEW.equals(tool)) {
+                    var review = node.putObject("reviewArguments");
+                    review.put("target", "targetId、expectedVersion 取自本人能审的母目标及当前版本。");
+                    review.put("priceLimit", "批准与拒绝都须给正价格，精确到分。拒绝时可沿用母目标的限价。");
+                    review.put("validUntilMillis", "批准与拒绝都用绝对模拟毫秒，须晚于审核实际办结，且不晚于该版本的 deadlineMillis。");
+                    review.put("approved", "批准时总数不超过目标变动股数且不少于已执行数量，单笔为正且不超过总数。买价不得高于母目标限价，卖价不得低于母目标限价。");
+                    review.put("rejected", "拒绝用 approved=false、非空 reason；maxTotalQuantity 和 maxChildQuantity 可同时为 0。拒绝不会授权报单。");
+                }
+                if (RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET.equals(tool))
+                    node.put("lines", "每项均须给 period（非负整数期号）、category（PROCUREMENT 或 PRODUCTION_LABOR）、amount（非负金额，精确到分）。明确填 0.00 表示该期该类新承诺上限为零；表决并实施后才生效。");
+                if (RoleTradingView.TOOL_GROUP_POST.equals(tool) || RoleTradingView.TOOL_GROUP_CORRECT.equals(tool)
+                        || RoleTradingView.TOOL_PLATFORM_POST.equals(tool) || RoleTradingView.TOOL_PLATFORM_CORRECT.equals(tool)) {
+                    node.putObject("arrayItems").putObject("cites").put("docId", "string").put("version", "long");
+                    node.put("citationSource", "引用本人实际读完且可引用的文号与版次。无引用可省略 cites 或给空数组 []。");
+                }
+                if (RoleTradingView.TOOL_INTERVIEW_RESPOND.equals(tool)) {
+                    var shape = node.putObject("responseArguments");
+                    shape.put("requestId", "取自本人作为收件人的待回应邀请。");
+                    shape.putObject("accept").put("accept", true).put("startMillis",
+                            "整数毫秒，不早于回应办结时刻和 windowStartMillis，两者取较晚值。开始时间加 durationMillis 不得超过 windowEndMillis。");
+                    shape.putObject("decline").put("accept", false).put("startMillis", -1);
+                    shape.put("deadline", "接受或拒绝都须在 expiresAtMillis 之前办结。拒绝时须显式填整数 -1。接受时还要核对双方预约冲突和发起媒体的可用工时。");
+                }
+            }
+            if (RoleTradingView.TOOL_INTERVIEW_SPEAK.equals(tool) && interview != null && interview.has("deadlineTerms")) {
+                node.put("readingTime", "readDurationMillis 是对方阅读这段发言的正整数毫秒下限。正文每个汉字计一单位，"
+                        + "其余连续的非汉字字母和数字合计一单位，标点和空格分隔单位；每单位 200 毫秒。实际读时取两者较大值。"
+                        + "对方须先读完本轮发言且仍能回忆，才能在有效窗口内作答。可按剩余时间选择发言、等待或结束。");
+            }
+            if (RoleTradingView.TOOL_MEDIA_WITHDRAW.equals(tool)) {
+                var reasons = node.putObject("publicReasons");
+                for (var reason : MediaModel.WithdrawalReason.values()) reasons.put(reason.name(), reason.label());
+                node.put("publicVersionRule", "列有 withdrawWorkMillis 的本社稿件可签发撤稿公告。expectedPublicVersion 取该稿的 publicVersion，publicReason 选公开原因代码。历次公开版本保留。");
+            }
+            if (RoleTradingView.TOOL_MEDIA_SUBMIT.equals(tool) && editorialOffice
+                    && "personal-read-index-v1".equals(engineering.path("editorialEvidenceContract").asText())) {
+                var items = node.putObject("arrayItems");
+                items.putObject("evidence").put("docId", "string").put("version", "long").put("index", "long");
+                items.putObject("aliases").put("rootDocId", "string").put("rootVersion", "long").put("label", "string");
+                node.put("evidenceSource", "每条从本人 profile.readExperiences 中仍可引用的 lastReadRef 取齐三项。"
+                        + "index 是本人该版本的阅读序号，目录、他人提及和转述均不授予原件引用权。"
+                        + "aliases 可省略。每个标签需绑定本版证据中的真实根及版本。");
+            }
+            if (ResearchDecisionTools.BOARD.equals(tool) && engineering != null
+                    && engineering.path("directorships").findValue("researchBoardProcedure") != null) {
+                node.put("argumentSource","action 为 PROPOSE 或 IMPLEMENT；根据同公司董事席位 researchBoardProcedure 及本次会议 materials 填写。");
+                node.putObject("arrayItems").putObject("evidence").put("materialId","string")
+                        .put("sourceRef","string（同一材料的 docId）").put("version","long").put("asOf","long（同一材料的模拟毫秒）");
+            }
+            if (IssuerCreditDecisions.CRISIS.equals(tool) && engineering != null
+                    && engineering.at("/issuerCredit/crisisOffices/0").has("actionArguments"))
+                node.put("argumentSource","在 engineering.issuerCredit.crisisOffices 中按 bank 和本职 actions 选 kind；lineId 与 amount 的具体填法见该行 actionArguments[kind]。");
+            if (engineering != null && engineering.has("orderPredictionRules")) {
+                if (RoleTradingView.TOOL_BELIEF_ASSERT.equals(tool)) {
+                    node.putObject("arrayItems").putObject("evidence")
+                            .put("docId", "string").put("version", "long").put("index", "long");
+                    node.put("evidenceSource", "从本人 profile.readExperiences 中取 1 至 " + BeliefModel.MAX_EVIDENCE
+                            + " 条仍可引用的 lastReadRef。人物由当前身份确定。对象、比较方式、期限与核验见 engineering.orderPredictionRules。");
+                }
+                if (RoleTradingView.TOOL_FORECAST_PUBLISH.equals(tool))
+                    node.put("publication", "署名发布公开预测，targetAsOfMillis 须晚于实际发表时刻。指标、公司和比较方式见 engineering.orderPredictionRules。");
+                if (RoleTradingView.TOOL_COMPANY_REPORT_ORDERS.equals(tool))
+                    node.put("publication", "从 engineering.orderPredictionRules.canReportCompanyIds 选择本人有权披露的公司。"
+                            + "asOfMillis 须为未来精确模拟毫秒；到点从公司账取数并公开。");
+            }
             ArrayNode parameters = node.putArray("parameters");
             for (String[] field : toolParameters(tool, toolContractVersion)) {
                 ObjectNode parameter = parameters.addObject();
                 parameter.put("name", field[0]);
                 parameter.put("type", field[1]);
+            }
+            if (RoleTradingView.TOOL_INTERVIEW_SPEAK.equals(tool) && interview != null
+                    && interview.at("/activeTurn/sourceBasisEnabled").asBoolean()) {
+                parameters.addObject().put("name","sourceBasis").put("type","object (optional)");
+                node.put("sourceBasis", "可省略。亲身观察用 {kind:'DIRECT_OBSERVATION'}，是发言者自述。"
+                        + "转述用 {kind:'READ_SOURCE',sources:[{docId,version},…]}，列出本人已读且仍有权阅读的原件及准确版次；同一来源不重复计。"
+                        + "提问或未核实用 {kind:'UNVERIFIED'}。省略也按未核实处理，可正常发言，不增加独立佐证。");
+            }
+            if (discovery && PersonalLibrarySearch.TOOL.equals(tool)) {
+                parameters.addObject().put("name","cursor").put("type","string (optional)");
             }
         }
 
@@ -746,11 +908,41 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 node.put("decision", permission.decision().name());
             }
         }
+        PublicationRoleHistory.project(root);
+        RolePlanningContext.append(root, wakeReason, config);
+        EngineeringManagerHistory.project(root);
+        PersonalContactHistory.project(root);
+        if (BoardProcedureView.VERSION.equals(roleInputFormat) || RoleInputTables.enabled(roleInputFormat)) BoardProcedureView.project(root);
+        return renderInput(root, roleInputFormat, config.limits().maxInputChars(), DecisionModel.inputByteLimit(config.limits().inputPolicy()));
+    }
+
+    static String renderInput(ObjectNode root, String format, long maxChars) {
+        return renderInput(root, format, maxChars, DecisionModel.MAX_INPUT_BYTES);
+    }
+
+    private static String renderInput(ObjectNode root, String format, long maxChars, long maxBytes) {
         try {
+            String ordinary = MAPPER.writeValueAsString(root);
+            if (!RoleInputTables.enabled(format) || fitsInput(ordinary, maxChars, maxBytes)) return ordinary;
+            RoleInputTables.compact(root);
+            String tables = MAPPER.writeValueAsString(root);
+            boolean mixedMarket = RoleInputTables.MIXED_MARKET_FORMAT.equals(format);
+            if (!(RoleInputTables.BOARD_VERSION.equals(format) || mixedMarket) || fitsInput(tables, maxChars, maxBytes)) return tables;
+            RoleInputTables.compactBoardConditions(root);
+            String board = MAPPER.writeValueAsString(root);
+            if (!mixedMarket || fitsInput(board, maxChars, maxBytes)) return board;
+            RoleInputTables.compactMixedMarket(root);
+            String market = MAPPER.writeValueAsString(root);
+            if (fitsInput(market, maxChars, maxBytes)) return market;
+            RoleInputTables.compactPlanningAndHistory(root);
             return MAPPER.writeValueAsString(root);
         } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
             throw new IllegalStateException("无法生成决定输入", failure);
         }
+    }
+
+    private static boolean fitsInput(String text, long maxChars, long maxBytes) {
+        return text.length() <= maxChars && text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= maxBytes;
     }
 
     /** 一次开决定的请求；字段全部由可信宿主填充，模型不可见。 */
@@ -844,8 +1036,29 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             return List.of();
         }
         if (TOOL_CONTRACT_VERSION_V6.equals(version)) {
+            if (MediaSubscriptions.JOIN.equals(tool) || MediaSubscriptions.LEAVE.equals(tool) || MediaSubscriptions.RELEASE.equals(tool))
+                return List.<String[]>of(new String[]{"target", "string"});
+            if (RunManifest.PARTICIPANT_HISTORY_TOOL.equals(tool)) return List.of(new String[]{"section","interview|media|notices|messages|fund-children|publications"},
+                    new String[]{"id","string (optional)"},new String[]{"before","string (optional)"});
+            if (PersonalLibrarySearch.TOOL.equals(tool)) return List.<String[]>of(new String[]{"query", "string"});
             // 只声明模型可选的业务对象；actor/seat 由运行层按本人真实任职派生，不能自授
             switch (tool) {
+                case "fund.subscribe", "fund.redeem" -> {
+                    return List.of(new String[]{"requestId","string"}, new String[]{"amount","decimal"});
+                }
+                case "fund.cancel" -> { return List.<String[]>of(new String[]{"requestId","string"}); }
+                case PersonalMarket.SUBMIT -> {
+                    return List.of(new String[]{"accountId", "string"}, new String[]{"symbol", "string"},
+                            new String[]{"side", "BUY|SELL"}, new String[]{"limitPrice", "decimal"},
+                            new String[]{"quantity", "long"});
+                }
+                case PersonalMarket.MARKET -> {
+                    return List.of(new String[]{"accountId", "string"}, new String[]{"symbol", "string"},
+                            new String[]{"side", "BUY|SELL"}, new String[]{"quantity", "long"});
+                }
+                case PersonalMarket.CANCEL -> {
+                    return List.of(new String[]{"accountId", "string"}, new String[]{"orderRef", "string"});
+                }
                 case RoleTradingView.TOOL_GROUP_JOIN -> {
                     return List.<String[]>of(new String[]{"groupId", "string"});
                 }
@@ -880,6 +1093,31 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                             new String[]{"basedOnVersion", "long"},
                             new String[]{"title", "string"}, new String[]{"body", "string"},
                             new String[]{"cites", "array"});
+                }
+                case RoleTradingView.TOOL_ISSUER_DIVIDEND_CONVENE -> {
+                    return List.of(new String[]{"companyPartyId","string"},new String[]{"meetingId","string"},
+                            new String[]{"materialDeadline","long"},new String[]{"opensAt","long"},new String[]{"closesAt","long"});
+                }
+                case RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE -> {
+                    return List.of(new String[]{"companyPartyId","string"},new String[]{"meetingId","string"},
+                            new String[]{"schemeId","string"},new String[]{"perShare","string"},
+                            new String[]{"recordAtMillis","long"},new String[]{"exAtMillis","long"},new String[]{"payAtMillis","long"});
+                }
+                case RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND -> {
+                    return List.of(new String[]{"companyPartyId", "string"}, new String[]{"meetingId", "string"},
+                            new String[]{"schemeId", "string"}, new String[]{"expectedVersion", "int"},
+                            new String[]{"operation", "CANCEL|REPLACE"}, new String[]{"reason", "string"},
+                            new String[]{"perShare", "string"}, new String[]{"recordAtMillis", "long"},
+                            new String[]{"exAtMillis", "long"}, new String[]{"payAtMillis", "long"});
+                }
+                case RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE -> {
+                    return List.of(new String[]{"companyPartyId","string"},new String[]{"meetingId","string"});
+                }
+                case DividendClaimDecisions.IMPAIR -> {
+                    return List.of(new String[]{"claimId","string"},new String[]{"amount","string"},new String[]{"evidenceRef","string"});
+                }
+                case DividendClaimDecisions.RETRY -> {
+                    return java.util.Collections.singletonList(new String[]{"schemeId","string"});
                 }
                 case RoleTradingView.TOOL_BOARD_CONVENE -> {
                     return List.of(new String[]{"companyPartyId", "string"},
@@ -933,6 +1171,29 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                     return List.of(new String[]{"companyPartyId", "string"},
                             new String[]{"contractId", "string"});
                 }
+                case IssuerCreditDecisions.CRISIS -> {
+                    return List.of(new String[]{"bank","string"},new String[]{"kind","string"},
+                            new String[]{"lineId","string|null"},new String[]{"amount","decimal|null"});
+                }
+                case IssuerCreditDecisions.REQUEST -> {
+                    return List.of(new String[]{"bank","string"}, new String[]{"borrower","string"}, new String[]{"loanId","string"},
+                            new String[]{"amount","decimal"}, new String[]{"rateU","long"}, new String[]{"tenorMs","long"}, new String[]{"purpose","string"});
+                }
+                case IssuerCreditDecisions.ACCEPT, IssuerCreditDecisions.APPROVE, IssuerCreditDecisions.DRAW -> {
+                    return List.<String[]>of(new String[]{"loanId","string"});
+                }
+                case IssuerCreditDecisions.INTEREST, IssuerCreditDecisions.REPAY,
+                     IssuerCreditDecisions.IMPAIR, IssuerCreditDecisions.WRITE_OFF -> {
+                    return List.of(new String[]{"loanId","string"}, new String[]{"amount","decimal"});
+                }
+                case IssuerCreditDecisions.MOVE -> {
+                    return List.of(new String[]{"bank","string"}, new String[]{"customer","string"},
+                            new String[]{"sourceToken","string"}, new String[]{"payeeToken","string"}, new String[]{"amount","decimal"});
+                }
+                case IssuerCreditDecisions.DEPOSIT, IssuerCreditDecisions.WITHDRAW -> {
+                    return List.of(new String[]{"bank","string"}, new String[]{"borrower","string"}, new String[]{"amount","decimal"});
+                }
+                case ResourcePrimaryEquity.TOOL -> { return List.of(new String[]{"meetingId", "string"}, new String[]{"shares", "long"}); }
                 case ResourceDecisionTools.ACT, HydroDecisionTools.ACT, DigitalDecisionTools.ACT, AgedDecisionTools.ACT -> {
                     return List.of(new String[]{"action", "string"}, new String[]{"arguments", "object"});
                 }
@@ -942,6 +1203,9 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 case ResearchDecisionTools.ACT -> {
                     return List.of(new String[]{"action", "string"}, new String[]{"projectId", "string"},
                             new String[]{"stage", "string"}, new String[]{"meetingId", "string"});
+                }
+                case ResearchLicensing.TOOL -> {
+                    return List.of(new String[]{"action", "string"}, new String[]{"projectId", "string"});
                 }
                 case ResearchDecisionTools.BOARD -> {
                     return List.of(new String[]{"companyPartyId", "string"},
@@ -1064,6 +1328,9 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 || TOOL_CONTRACT_VERSION_V5.equals(version)
                 || TOOL_CONTRACT_VERSION_V6.equals(version)) {
             switch (tool) {
+                case OnsiteVisit.TOOL -> {
+                    return List.of(new String[]{"requestId","string"},new String[]{"action","string"});
+                }
                 case RoleTradingView.TOOL_INTERVIEW_INVITE -> {
                     return List.of(new String[]{"requestClientId", "string"},
                             new String[]{"toPartyId", "string"}, new String[]{"topic", "string"},
@@ -1160,6 +1427,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             case RoleTradingView.TOOL_MEDIA_REVIEW -> List.of(
                     new String[]{"storyId", "string"}, new String[]{"expectedRevision", "int"},
                     new String[]{"approve", "boolean"}, new String[]{"note", "string"});
+            case RoleTradingView.TOOL_MEDIA_WITHDRAW -> List.of(new String[]{"storyId", "string"},
+                    new String[]{"expectedPublicVersion", "long"}, new String[]{"publicReason", "string"});
             case RoleTradingView.TOOL_MEDIA_PUBLISH -> List.of(
                     new String[]{"storyId", "string"}, new String[]{"expectedRevision", "int"});
             case RoleTradingView.TOOL_MEDIA_CORRECTION -> List.of(

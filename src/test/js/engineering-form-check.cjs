@@ -16,6 +16,7 @@ function makeElement(tag = "div", registry) {
     tag, attrs: {}, children: [], _text: "", hidden: false, value: "", required: false,
     dataset: {}, htmlFor: "", type: "text", autocomplete: "", _id: "", listeners: {},
     get textContent() { return this._text; },
+    get childElementCount() { return this.children.length; },
     set textContent(v) { this._text = v === null || v === undefined ? "" : String(v); },
     setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) { return this.attrs[k] === undefined ? null : this.attrs[k]; },
@@ -76,7 +77,7 @@ vm.runInContext("globalThis.__api = { state, renderEngineeringFields, engineerin
   + " engineeringValidate, engineeringActionBody, clearPersonalEngineering,"
   + " fillEngineeringSelectors, refreshEngineeringTools, engineeringToolsOf,"
   + " renderPeriodicBlock, currentPeriodicCard, fillPersonalEngineeringCompanies,"
-  + " scheduleDocumentReading, currentPersonCompany,"
+  + " scheduleDocumentReading, currentPersonCompany, renderPersonalMedia,"
   + " ENGINEERING_TOOL_FIELDS, ENGINEERING_FIELD_SPECS } ;", context);
 const api = context.__api;
 
@@ -250,6 +251,21 @@ check("budget-period-zero-default", () => {
   person(1000);
   api.renderEngineeringFields("board.proposeBudget");
   assert.equal(api.engineeringFieldValues().period, "0");
+});
+check("explicit-budget-period-follows-opening-policy", () => {
+  person(1000);
+  for (const current of [false, true]) {
+    if (current) api.state.personEngineering.roleToolArguments = "conditional-fields-and-readable-errors-v1";
+    openTool("board.proposeBudget");
+    const period = document.getElementById(api.ENGINEERING_FIELD_SPECS.period.id);
+    assert.equal(period.required, current);
+    assert.equal(period.value, current ? "" : "0");
+    const fields = { dueTimeMillis: "1001", meetingId: "m", procurementLimit: "0.00", period: "" };
+    assert.equal(api.engineeringValidate("board.proposeBudget", fields).length, current ? 1 : 0);
+    fields.period = "0";
+    assert.equal(api.engineeringValidate("board.proposeBudget", fields).length, 0);
+    assert.equal(api.engineeringActionBody("board.proposeBudget", fields).period, "0");
+  }
 });
 check("material-version-default", () => {
   person(1000);
@@ -603,6 +619,27 @@ function releaseRow(extra) {
   }, extra || {});
 }
 
+check("periodic-result-button-reads-the-authorized-version", () => {
+  person(2593000000);
+  api.state.personEngineering.observationToken = "891";
+  const card = periodicCard();
+  const score = { closed: true, resultVisible: false, reviewDocId: "periodic-board-result:eng-a:1:3", reviewVersion: 1 };
+  card.periods[0].score = score;
+  const container = document.createElement("div");
+  api.renderPeriodicBlock(container, card, { personView: true });
+  fetchCalls.length = 0;
+  fire(buttonByText(container, "阅读第1期考核结果"), "click");
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, "/api/me/read");
+  const body = JSON.parse(fetchCalls[0].options.body);
+  assert.equal(body.docId, score.reviewDocId);
+  assert.equal(body.version, "1");
+  assert.equal(body.expectedPosition, "891");
+  card.periods[0].score = { closed: true, resultVisible: false };
+  api.renderPeriodicBlock(container, card, { personView: true });
+  assert.equal(buttonByText(container, "考核结果"), null);
+});
+
 check("periodic-forgotten-body-needs-reread", () => {
   const card = periodicCard();
   const row = card.periods[0];
@@ -797,6 +834,68 @@ check("convene-appointment-meeting-hint-is-new-meeting", () => {
   const text = allText(document.getElementById("eng-fields"));
   assert.ok(text.includes("本次要新召集的会议标识"), text);
   assert.ok(!text.includes("必须是自己召集或参与的会议"), text);
+});
+
+check("media-review-reading-keeps-revisions-and-person-separate", () => {
+  person(1000);
+  const notes = [
+    {revisionNo: "1", docId: "held-note-a", version: "1", read: true, body: "已读的一稿原意见"},
+    {revisionNo: "2", docId: "held-note-b", version: "1", read: false}
+  ];
+  const story = {topic:"工程机会", storyId:"story-1", reviewNotes:notes};
+  const documents = {rows:[]};
+  api.renderPersonalMedia({stories:{rows:[story]}, documents});
+  const list = document.getElementById("person-media-review-list");
+  assert.equal(list.childElementCount, 2);
+  assert.equal(document.getElementById("person-media-reviews").hidden, false);
+  assert.match(allText(list.children[0]), /第1稿审阅意见.*本人已读/);
+  assert.match(allText(list.children[0]), /已读的一稿原意见/);
+  assert.match(allText(list.children[1]), /第2稿审阅意见.*本人未读/);
+  assert.doesNotMatch(allText(list.children[1]), /一稿原意见/);
+  fetchCalls.length = 0;
+  fire(buttonByText(list.children[1], "阅读审阅意见"), "click");
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, "/api/me/read");
+  const sent = JSON.parse(fetchCalls[0].options.body);
+  assert.equal(sent.docId, "held-note-b");
+  assert.equal(sent.version, "1");
+  api.renderPersonalMedia({stories:{rows:[]}, documents:{rows:[]}});
+  assert.equal(document.getElementById("person-media-reviews").hidden, true);
+  assert.equal(list.childElementCount, 0);
+  api.renderPersonalMedia({stories:{rows:[{storyId:"old-story"}]}, documents:{rows:[]}});
+  assert.equal(document.getElementById("person-media-reviews").hidden, true);
+});
+
+check("dividend-cancel-omits-replacement-terms-and-keeps-the-notice-version", () => {
+  const card = governanceCompany();
+  card.tools = [...card.tools, "issuer.dividend.amend"];
+  card.amendableAnnouncements = [{schemeId:"a", expectedVersion:2}];
+  person(1000, [card]);
+  openTool("issuer.dividend.amend");
+  assert.match(document.getElementById("eng-fields-note").textContent, /a（公告第 2 版）/);
+  const control = key => document.getElementById(api.ENGINEERING_FIELD_SPECS[key].id);
+  const op = control("operation");
+  control("schemeId").value = "a";
+  control("expectedVersion").value = "2";
+  control("reason").value = "调低支出";
+  control("meetingId").value = "m";
+  op.value = "REPLACE";
+  fire(op, "change");
+  assert.equal(control("perShare").required, true);
+  assert.ok(api.engineeringValidate("issuer.dividend.amend", api.engineeringFieldValues()).length > 0);
+  control("perShare").value = "0.03";
+  control("recordAt").value = "8000";
+  control("exAt").value = "9000";
+  control("payAt").value = "10000";
+  const args = () => api.engineeringActionBody("issuer.dividend.amend", api.engineeringFieldValues());
+  assert.equal(args().perShare, "0.03");
+  assert.equal(api.engineeringValidate("issuer.dividend.amend", api.engineeringFieldValues()).length, 0);
+  op.value = "CANCEL";
+  fire(op, "change");
+  assert.equal(control("perShare").disabled, true);
+  assert.equal(api.engineeringValidate("issuer.dividend.amend", api.engineeringFieldValues()).length, 0);
+  for (const k of ["perShare","recordAt","exAt","payAt"]) assert.equal(args()[k], undefined);
+  assert.equal(args().expectedVersion, "2");
 });
 
 let failed = 0;

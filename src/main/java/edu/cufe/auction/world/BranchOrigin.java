@@ -1,6 +1,8 @@
 package edu.cufe.auction.world;
 
 import java.util.Objects;
+import java.util.List;
+import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**
  * 独立分支首帧携带的派生来源：从哪一条已验父运行、哪一个确认位置派生，以及这次派生的策略。
@@ -25,11 +27,22 @@ import java.util.Objects;
  * @param parentPrefixBytes      封存父前缀的精确字节数；封存件长度必须等于它
  * @param profileVersion         可信画像摘要口径版本；当前只支持 {@link BranchProfile#VERSION}
  * @param profileDigest          完整可信画像（含全部已启用模块配置）规范化 JSON 的 SHA-256
+ * @param takeoverRoutes         正式网页接管时固化的五个父模型路由参数；其他来源为空
  */
 public record BranchOrigin(String parentRunId, long parentPosition, String parentPrefixSha256,
                            String parentManifestDigest, String childRunId, Kind kind, String note,
                            long createdAtEpochMillis, Policy policy, long parentPrefixBytes,
-                           String profileVersion, String profileDigest) {
+                           String profileVersion, String profileDigest,
+                           @JsonInclude(JsonInclude.Include.NON_NULL) List<DecisionModel.Route> takeoverRoutes) {
+
+    /** 旧分支和未携带网页路由的原生派生保留原来源形状。 */
+    public BranchOrigin(String parentRunId, long parentPosition, String parentPrefixSha256,
+                        String parentManifestDigest, String childRunId, Kind kind, String note,
+                        long createdAtEpochMillis, Policy policy, long parentPrefixBytes,
+                        String profileVersion, String profileDigest) {
+        this(parentRunId, parentPosition, parentPrefixSha256, parentManifestDigest, childRunId,
+                kind, note, createdAtEpochMillis, policy, parentPrefixBytes, profileVersion, profileDigest, null);
+    }
 
     /** 分支种类。 */
     public enum Kind {
@@ -91,6 +104,14 @@ public record BranchOrigin(String parentRunId, long parentPosition, String paren
             throw new IllegalArgumentException("分支子运行不能复用父标识：" + childRunId);
         }
         Objects.requireNonNull(kind, "kind");
+        if (takeoverRoutes != null) {
+            takeoverRoutes = List.copyOf(takeoverRoutes);
+            if (kind != Kind.GOD_TAKEOVER || !DecisionModel.SCENE_IDS.equals(
+                    takeoverRoutes.stream().map(DecisionModel.Route::sceneId).toList())
+                    || takeoverRoutes.stream().map(DecisionModel.Route::revision).distinct().count() != 1) {
+                throw new IllegalArgumentException("接管来源必须冻结同一配置修订的全部五个场景");
+            }
+        }
         note = note == null ? "" : note;
         if (createdAtEpochMillis < 0) {
             throw new IllegalArgumentException("分支创建时刻不能为负：" + createdAtEpochMillis);

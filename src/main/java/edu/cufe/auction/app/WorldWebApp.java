@@ -7,6 +7,11 @@ import edu.cufe.auction.web.SceneRoutes;
 import edu.cufe.auction.web.WorldWebHost;
 import edu.cufe.auction.web.WorldWebScenario;
 import edu.cufe.auction.web.WorldWebServer;
+import edu.cufe.auction.world.DecisionModel;
+import edu.cufe.auction.world.WorldRuntime;
+import edu.cufe.auction.world.RunManifest;
+import edu.cufe.auction.world.WorldJournalScanner;
+import edu.cufe.auction.world.composed.ComposedIndustryScenario;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -22,7 +27,7 @@ import java.util.concurrent.CountDownLatch;
  * 凭据只加载到服务端内存，用于场景调用及遮罩/显式查看，控制台只打印一次性管理员引导凭据，
  * 绝不打印 API key。启动不调用模型；只有管理员显式开始后，已启用场景才可发送有界请求。</p>
  *
- * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media|engineering|composed|custody|research|world|world-manager|world-debug|world-ready|world-manufacturing|world-industry]}；默认
+ * <p>用法：{@code WorldWebApp [工作目录] [key 文件] [端口] [live|scripted|cognition|belief|media|engineering|composed|custody|research|world|world-manager|world-debug|world-ready|world-manufacturing|world-industry|world-informed-operating|world-thinking-informed-operating|world-personal-market-operating|world-engineering-customer-operating|world-company-information-operating|world-continuing-roles-operating]}；默认
  * {@code logs/web-workbench}、{@code C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt}、
  * 端口 18080（被占用则明确失败，不会杀掉已有服务）；默认live用独立world-live.journal，scripted仍用world.journal，
  * 显式cognition使用world-cognition.journal与冻结的回忆实验策略，belief使用独立world-belief.journal
@@ -53,12 +58,18 @@ public final class WorldWebApp {
     }
 
     /**
-     * 启动并阻塞，直至进程结束或启动失败。
+     * 启动并阻塞，直至进程结束或启动失败。本机管理员可在原模块不可用时用
+     * {@code --archive inspect|show 日志 [位置|end]} 查看档案，或用
+     * {@code --archive export 日志 位置|end 新文件} 导出原始前缀；此模式不加载密钥或启动世界。
      *
-     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous或world-events，均可省略
+     * @param args 工作目录 / key 文件 / 端口 / live、scripted、cognition、belief、media、interview、dialogue、evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating 或 world-continuing-roles-operating，均可省略
      * @throws Exception 启动失败（凭据、目录、端口、世界）
      */
     public static void main(String[] args) throws Exception {
+        if (args.length > 0 && "--archive".equals(args[0])) {
+            System.out.println(WorldArchive.run(args));
+            return;
+        }
         Path workDir = Path.of(args.length > 0 ? args[0] : DEFAULT_WORK_DIR);
         Path keyFile = Path.of(args.length > 1 ? args[1] : DEFAULT_KEY_FILE);
         int port = args.length > 2 ? Integer.parseInt(args[2]) : DEFAULT_PORT;
@@ -67,7 +78,49 @@ public final class WorldWebApp {
         }
 
         String mode = args.length > 3 ? args[3] : "live";
-        boolean autonomousMode = mode.equals("world-autonomous") || mode.equals("world-events");
+        boolean fundRoutingMode = mode.equals("world-fund-office-routing-operating");
+        boolean fundContactsMode = mode.equals("world-fund-office-contacts-operating");
+        boolean fundMandateMode = mode.equals("world-fund-mandate-operating");
+        boolean personalProfilesMode = mode.equals("world-personal-profiles-operating");
+        boolean manufacturingUpgradeMode = mode.equals("world-manufacturing-upgrade");
+        boolean openFundMode = mode.equals("world-open-fund");
+        boolean tenCompanyMode = mode.equals("world-ten-company-autonomy") || openFundMode || manufacturingUpgradeMode;
+        boolean personPauseMode = mode.equals("world-person-pause");
+        boolean issuerResolutionMode = mode.equals("world-issuer-resolution");
+        boolean unpricedReferenceMode = mode.equals("world-unpriced-reference");
+        boolean ownerBankValuationMode = mode.equals("world-owner-bank-valuation");
+        boolean openingCopiesMode = mode.equals("world-opening-copies");
+        boolean baselinePartsMode = mode.equals("world-baseline-parts-operating");
+        boolean priceBandMode = mode.equals("world-price-band-operating");
+        boolean issuerDividendMode = mode.equals("world-issuer-dividend-operating");
+        boolean loanPromotionMode = mode.equals("world-loan-promotion-operating");
+        boolean bankCrisisMode = mode.equals("world-bank-crisis-operating");
+        boolean manufacturingLifecycleMode = mode.equals("world-manufacturing-lifecycle-operating");
+        boolean integratedMode = mode.equals("world-integrated-operating");
+        boolean mediaDesksMode = mode.equals("world-media-desks-operating");
+        boolean sessionsMode = mode.equals("world-market-sessions-operating");
+        boolean creditDecisionsMode = mode.equals("world-issuer-credit-decisions-operating");
+        boolean issuerCreditMode = mode.equals("world-issuer-credit-operating") || creditDecisionsMode;
+        boolean continuingRolesMode = mode.equals("world-continuing-roles-operating") || issuerCreditMode || fundMandateMode || fundContactsMode || fundRoutingMode || ownerBankValuationMode || unpricedReferenceMode || issuerResolutionMode || tenCompanyMode || personPauseMode || openingCopiesMode || baselinePartsMode || priceBandMode || issuerDividendMode || loanPromotionMode || bankCrisisMode || manufacturingLifecycleMode || integratedMode || personalProfilesMode || mediaDesksMode || sessionsMode;
+        boolean personalLimitMode = mode.equals("world-personal-limit-operating") || continuingRolesMode;
+        boolean hydroSettlementMode = mode.equals("world-hydro-settlement-operating") || personalLimitMode;
+        boolean tableMode = mode.equals("world-role-table-operating") || hydroSettlementMode;
+        boolean issuerReportMode = mode.equals("world-issuer-report-operating") || tableMode;
+        boolean boardProcedureMode = mode.equals("world-board-procedure-operating") || issuerReportMode;
+        boolean agedOrderMode = mode.equals("world-aged-order-operating") || boardProcedureMode;
+        boolean forwardBudgetMode = mode.equals("world-forward-budget-operating") || agedOrderMode;
+        boolean companyInformationMode = mode.equals("world-company-information-operating") || forwardBudgetMode;
+        boolean engineeringCustomerMode = mode.equals("world-engineering-customer-operating") || companyInformationMode;
+        boolean personalMarketMode = mode.equals("world-personal-market-operating") || engineeringCustomerMode;
+        boolean thinkingInformedOperatingMode = mode.equals("world-thinking-informed-operating") || personalMarketMode;
+        boolean contextualInformedOperatingMode = mode.equals("world-contextual-informed-operating");
+        boolean informedOperatingMode = mode.equals("world-informed-operating");
+        boolean planningMode = mode.equals("world-planning");
+        boolean planningOperatingMode = mode.equals("world-planning-operating");
+        boolean operatingMode = mode.equals("world-operating");
+        boolean accountableMode = mode.equals("world-accountable");
+        boolean autonomousMode = mode.equals("world-autonomous") || mode.equals("world-events")
+                || operatingMode || accountableMode || planningMode || planningOperatingMode || informedOperatingMode || contextualInformedOperatingMode || thinkingInformedOperatingMode;
         if (!mode.equals("live") && !mode.equals("scripted") && !mode.equals("cognition")
                 && !mode.equals("belief") && !mode.equals("media") && !mode.equals("interview")
                 && !mode.equals("dialogue") && !mode.equals("evidence")
@@ -76,7 +129,7 @@ public final class WorldWebApp {
                 && !mode.equals("composed") && !mode.equals("custody") && !mode.equals("research") && !mode.equals("world") && !mode.equals("world-manager") && !mode.equals("world-debug") && !mode.equals("world-ready") && !mode.equals("world-manufacturing") && !mode.equals("world-industry") && !mode.equals("world-hydro") && !mode.equals("world-baseline") && !(mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode)) && !mode.equals("world-behavior")) {
             throw new IllegalArgumentException(
                     "运行模式只能是live、scripted、cognition、belief、media、interview、dialogue、"
-                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous或world-events");
+                            + "evidence、social、engineering、groups、intent、composed、custody、research、world、world-manager、world-debug、world-ready、world-manufacturing、world-industry、world-hydro、world-baseline、world-prototype、world-behavior、world-connected、world-autonomous、world-events、world-accountable、world-operating、world-planning、world-planning-operating、world-informed-operating、world-contextual-informed-operating、world-thinking-informed-operating 、world-personal-market-operating、world-engineering-customer-operating 、world-company-information-operating、world-continuing-roles-operating 、world-issuer-credit-operating、world-issuer-credit-decisions-operating、world-integrated-operating、world-manufacturing-lifecycle-operating、world-bank-crisis-operating、world-owner-bank-valuation、world-ten-company-autonomy、world-open-fund、world-manufacturing-upgrade、world-person-pause、world-issuer-resolution、world-unpriced-reference、world-opening-copies、world-baseline-parts-operating、world-price-band-operating、world-issuer-dividend-operating、world-loan-promotion-operating、world-media-desks-operating、world-market-sessions-operating 、world-personal-profiles-operating 、world-fund-mandate-operating 、world-fund-office-routing-operating 或 world-fund-office-contacts-operating");
         }
         boolean worldMode = mode.equals("world");
         boolean managerMode = mode.equals("world-manager");
@@ -112,10 +165,80 @@ public final class WorldWebApp {
             throw new IOException("Web 启动失败：无法加载本机凭据");
         }
 
+        Path ordinaryJournal = mode.equals("world-ten-company-autonomy") ? tenCompanyJournal(workDir) : null;
+        boolean routesAbsent = !Files.exists(workDir.resolve(SceneRoutes.FILE_NAME));
         SceneRoutes routes = SceneRoutes.open(workDir);
+        if (thinkingInformedOperatingMode && routesAbsent) {
+            boolean longStudy = tenCompanyPath(workDir, RunManifest.EDITORIAL_SOURCE_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.EXACT_DECIMAL_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.ROLE_ARGUMENTS_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.AGGREGATOR_EVIDENCE_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.ONSITE_DECISION_CLOCK_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.DIVIDEND_AMENDMENT_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.INTERVIEW_TIME_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.PERSONAL_BELIEF_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.BANK_LOAN_LOSS_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.MEDIA_WITHDRAWAL_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.ISSUER_DECISIONS_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.INTERVIEW_AUTONOMY_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.PERSONAL_NEWS_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.EDITORIAL_FEEDBACK_RUN_ID).equals(ordinaryJournal);
+            String budget = longStudy ? DecisionModel.Route.LONG_HORIZON : "lifecycle-v1";
+            int calls = longStudy ? DecisionModel.Route.callCeiling(budget) : 2500;
+            long tokens = longStudy ? DecisionModel.Route.tokenCeiling(budget) : 35_000_000L;
+            routes.replace(0, routes.view().routes().stream().map(r -> new SceneRoutes.Route(
+                    r.scene(), r.slotId(), r.model(), false, calls, tokens, 8192, 4, budget,
+                    "deepseek-thinking-high-v1")).toList());
+        }
+        if ((operatingMode || accountableMode || planningMode || planningOperatingMode || informedOperatingMode || contextualInformedOperatingMode) && routesAbsent) {
+            routes.replace(0, routes.view().routes().stream().map(r -> new SceneRoutes.Route(
+                    r.scene(), r.slotId(), r.model(), false, 2500, 35_000_000, 2048, 4, "lifecycle-v1")).toList());
+        }
         WorldWebHost host = (mode.equals("world-prototype") || mode.equals("world-behavior") || (mode.equals("world-connected") || autonomousMode))
                 ? new WorldWebHost(() -> {
-                    var runtime=autonomousMode ? (mode.equals("world-events") ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openEventAutonomous(workDir.resolve("world-autonomous-v2.journal")) : edu.cufe.auction.world.composed.ComposedIndustryScenario.openAutonomous(workDir.resolve("world-autonomous-v1.journal"))) : mode.equals("world-connected") ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openConnected(workDir.resolve("world-connected-v1.journal")) : mode.equals("world-behavior") ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openBehavior(workDir.resolve("world-industry-behavior-v1.journal")) : edu.cufe.auction.world.composed.ComposedIndustryScenario.openPrototype(workDir.resolve("world-industry-prototype-v1.journal"));
+                    var runtime=sessionsMode ? ComposedIndustryScenario.openMarketSessionsOperating(workDir.resolve("world-market-sessions-operating-v1.journal"))
+                            : manufacturingUpgradeMode ? ComposedIndustryScenario.openManufacturingUpgradeOperating(workDir.resolve("world-manufacturing-upgrade-v1.journal"))
+                            : openFundMode ? ComposedIndustryScenario.openOpenFundOperating(workDir.resolve("world-open-fund-v1.journal"))
+                            : ordinaryJournal != null ? ComposedIndustryScenario.openEditorialSourceTenCompanyStudy(ordinaryJournal)
+                            : personPauseMode ? ComposedIndustryScenario.openPersonPauseOperating(workDir.resolve("world-person-pause-v1.journal"), workDir.resolve("opening-copies.json"))
+                            : issuerResolutionMode ? ComposedIndustryScenario.openIssuerResolutionOperating(workDir.resolve("world-issuer-resolution-v1.journal"), workDir.resolve("opening-copies.json"))
+                            : unpricedReferenceMode ? ComposedIndustryScenario.openUnpricedReferenceOperating(workDir.resolve("world-unpriced-reference-v1.journal"), workDir.resolve("opening-copies.json"))
+                            : ownerBankValuationMode ? ComposedIndustryScenario.openOwnerBankValuationOperating(workDir.resolve("world-owner-bank-valuation-v1.journal"), workDir.resolve("opening-copies.json"))
+                            : openingCopiesMode ? ComposedIndustryScenario.openOpeningCopiesOperating(workDir.resolve("world-opening-copies-v1.journal"), workDir.resolve("opening-copies.json"))
+                            : baselinePartsMode ? ComposedIndustryScenario.openBaselinePartsOperating(workDir.resolve("world-baseline-parts-operating-v1.journal"))
+                            : priceBandMode ? ComposedIndustryScenario.openPriceBandOperating(workDir.resolve("world-price-band-operating-v1.journal"))
+                            : issuerDividendMode ? ComposedIndustryScenario.openIssuerDividendOperating(workDir.resolve("world-issuer-dividend-operating-v1.journal"))
+                            : loanPromotionMode ? ComposedIndustryScenario.openLoanPromotionOperating(workDir.resolve("world-loan-promotion-operating-v1.journal"))
+                            : bankCrisisMode ? ComposedIndustryScenario.openBankCrisisOperating(workDir.resolve("world-bank-crisis-operating-v1.journal"))
+                            : manufacturingLifecycleMode ? ComposedIndustryScenario.openManufacturingLifecycleOperating(workDir.resolve("world-manufacturing-lifecycle-operating-v1.journal"))
+                            : integratedMode ? ComposedIndustryScenario.openIntegratedOperating(workDir.resolve("world-integrated-operating-v1.journal"))
+                            : mediaDesksMode ? ComposedIndustryScenario.openMediaDesksOperating(workDir.resolve("world-media-desks-operating-v1.journal"))
+                            : fundRoutingMode ? ComposedIndustryScenario.openFundOfficeRoutingOperating(workDir.resolve("world-fund-office-routing-operating-v1.journal"))
+                            : fundContactsMode ? ComposedIndustryScenario.openFundOfficeContactsOperating(workDir.resolve("world-fund-office-contacts-operating-v1.journal"))
+                            : fundMandateMode ? ComposedIndustryScenario.openFundMandateOperating(workDir.resolve("world-fund-mandate-operating-v1.journal"))
+                            : personalProfilesMode ? ComposedIndustryScenario.openPersonalProfilesOperating(workDir.resolve("world-personal-profiles-operating-v1.journal"))
+                            : creditDecisionsMode ? ComposedIndustryScenario.openIssuerCreditDecisionsOperating(workDir.resolve("world-issuer-credit-decisions-operating-v1.journal"))
+                            : issuerCreditMode ? ComposedIndustryScenario.openIssuerCreditOperating(workDir.resolve("world-issuer-credit-operating-v1.journal"))
+                            : continuingRolesMode ? ComposedIndustryScenario.openContinuingRolesOperating(workDir.resolve("world-continuing-roles-operating-v1.journal"))
+                            : personalLimitMode ? ComposedIndustryScenario.openPersonalLimitOperating(workDir.resolve("world-personal-limit-operating-v1.journal"))
+                            : hydroSettlementMode ? ComposedIndustryScenario.openHydroSettlementOperating(workDir.resolve("world-hydro-settlement-operating-v1.journal"))
+                            : tableMode ? ComposedIndustryScenario.openRoleTableOperating(workDir.resolve("world-role-table-operating-v1.journal"))
+                            : issuerReportMode ? ComposedIndustryScenario.openIssuerReportOperating(workDir.resolve("world-issuer-report-operating-v1.journal"))
+                            : boardProcedureMode ? ComposedIndustryScenario.openBoardProcedureOperating(workDir.resolve("world-board-procedure-operating-v1.journal"))
+                            : agedOrderMode ? ComposedIndustryScenario.openAgedOrderOperating(workDir.resolve("world-aged-order-operating-v1.journal"))
+                            : forwardBudgetMode ? ComposedIndustryScenario.openForwardBudgetOperating(workDir.resolve("world-forward-budget-operating-v1.journal"))
+                            : companyInformationMode ? ComposedIndustryScenario.openCompanyInformationOperating(workDir.resolve("world-company-information-operating-v1.journal"))
+                            : engineeringCustomerMode ? ComposedIndustryScenario.openEngineeringCustomerOperating(workDir.resolve("world-engineering-customer-operating-v1.journal"))
+                            : personalMarketMode ? ComposedIndustryScenario.openPersonalMarketOperating(workDir.resolve("world-personal-market-operating-v1.journal"))
+                            : thinkingInformedOperatingMode ? openThinkingOperating(workDir)
+                            : contextualInformedOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openContextualInformedOperating(workDir.resolve("world-contextual-informed-operating-v2.journal"))
+                            : informedOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openInformedOperating(workDir.resolve("world-informed-operating-v1.journal"))
+                            : planningOperatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openPlanningOperating(workDir.resolve("world-planning-operating-v4.journal"))
+                            : planningMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openPlanningAutonomous(workDir.resolve("world-planning-v4.journal"))
+                            : operatingMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openOperatingAutonomous(workDir.resolve("world-operating-v1.journal"))
+                            : accountableMode ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openAccountableAutonomous(workDir.resolve("world-accountable-v3.journal"))
+                            : autonomousMode ? (mode.equals("world-events") ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openEventAutonomous(workDir.resolve("world-autonomous-v2.journal")) : edu.cufe.auction.world.composed.ComposedIndustryScenario.openAutonomous(workDir.resolve("world-autonomous-v1.journal"))) : mode.equals("world-connected") ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openConnected(workDir.resolve("world-connected-v1.journal")) : mode.equals("world-behavior") ? edu.cufe.auction.world.composed.ComposedIndustryScenario.openBehavior(workDir.resolve("world-industry-behavior-v1.journal")) : edu.cufe.auction.world.composed.ComposedIndustryScenario.openPrototype(workDir.resolve("world-industry-prototype-v1.journal"));
                     return new WorldWebHost.Opened(runtime,runtime.profile().manifest().runId());
                 },routes,new LiveDecisionProvider(keys))
                 : baselineMode
@@ -229,12 +352,13 @@ public final class WorldWebApp {
 
         try {
             // 先确认世界真的能打开（失败即退出，不监听端口）
+            host.awaitOpening();
             host.adminSnapshot();
         } catch (Exception failure) {
             System.err.println("世界初始化失败，未启动 Web 服务：" + failure.getMessage());
             host.close();
             routes.close();
-            throw new IOException("Web 启动失败：世界初始化失败");
+            throw new IOException("Web 启动失败：" + failure.getMessage(), failure);
         }
 
         String bootstrap = newBootstrap();
@@ -358,6 +482,34 @@ public final class WorldWebApp {
             // 取不到代码位置时只用已有 classpath；子进程启动失败会给出真实原因
         }
         return String.join(java.io.File.pathSeparator, parts);
+    }
+
+    static Path tenCompanyJournal(Path workDir) throws IOException {
+        for (String id : RunManifest.standardTenCompanyRuns()) {
+            Path file = tenCompanyPath(workDir, id);
+            if (!Files.exists(file)) continue;
+            if (!Files.isRegularFile(file)) throw new IOException("十公司日志路径不是文件：" + file);
+            if (Files.size(file) == 0) continue;
+            var first = WorldJournalScanner.readPrefix(file, 1, null).first();
+            if (first == null || !id.equals(first.runId()))
+                throw new IOException("十公司日志文件名和存档版本不符：" + file);
+            return file;
+        }
+        return tenCompanyPath(workDir, RunManifest.standardTenCompanyRuns().get(0));
+    }
+
+    private static Path tenCompanyPath(Path workDir, String runId) {
+        return workDir.resolve("world-" + runId.substring("web-".length()) + ".journal");
+    }
+
+    private static WorldRuntime openThinkingOperating(Path workDir) throws Exception {
+        Path legacy = workDir.resolve("world-thinking-informed-operating-v1.journal");
+        Path funded = workDir.resolve("world-thinking-informed-operating-v2.journal");
+        if (Files.exists(legacy) && Files.size(legacy) > 0) {
+            if (Files.exists(funded)) throw new IOException("工作目录内存在两版思考经营档案，请分别打开");
+            return ComposedIndustryScenario.openThinkingInformedOperating(legacy);
+        }
+        return ComposedIndustryScenario.openFundedThinkingOperating(funded);
     }
 
     private static String newBootstrap() {

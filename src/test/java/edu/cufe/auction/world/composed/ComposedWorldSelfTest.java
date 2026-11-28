@@ -145,6 +145,7 @@ public final class ComposedWorldSelfTest {
     public static long appoint(WorldRuntime runtime, long start, String company, String manager,
             String tag, String docId) throws Exception {
         BoardModel.Charter charter = charterOf(runtime, company);
+        boolean engineering = runtime.snapshot().engineering().map(run -> run.stateOf(company) != null).orElse(false);
         List<String> attendees = new ArrayList<>();
         for (BoardModel.Seat seat : charter.seats()) {
             attendees.add(seat.partyId());
@@ -165,7 +166,7 @@ public final class ComposedWorldSelfTest {
                 WorldWebScenario.INVESTOR, InformationModel.Audience.publicAudience(),
                 "任免材料 " + tag, "真实任免材料 " + tag, "实验材料", 10L, List.of());
         String meeting = "mtg-" + tag;
-        if (ENG_A.equals(company)) {
+        if (engineering) {
             runtime.scheduleEngineeringAppointmentConvene("cv-" + tag, "cvt-" + tag, start + 2,
                     company, chair, meeting, start + 12, start + 14, start + 40);
         } else {
@@ -174,7 +175,7 @@ public final class ComposedWorldSelfTest {
         }
         runtime.advanceTo(start + 3);
         for (String person : attendees) {
-            if (ENG_A.equals(company)) {
+            if (engineering) {
                 runtime.scheduleEngineeringAttend("at-" + tag + "-" + person,
                         "att-" + tag + "-" + person, start + 5, company, person, meeting,
                         managerRecused && person.equals(manager));
@@ -185,7 +186,7 @@ public final class ComposedWorldSelfTest {
             }
         }
         runtime.advanceTo(start + 6);
-        if (ENG_A.equals(company)) {
+        if (engineering) {
             runtime.scheduleEngineeringMaterial("mt-" + tag, "mtt-" + tag, start + 8, company,
                     chair, meeting, "mat-" + tag, docId, 1L);
         } else {
@@ -200,7 +201,7 @@ public final class ComposedWorldSelfTest {
         BoardModel.AppointmentRequest request = new BoardModel.AppointmentRequest(
                 "app-" + tag, manager, company, edu.cufe.auction.world.RoleAccess.Role.COMPANY_MANAGER,
                 BoardModel.AppointmentAction.APPOINT, start + 43, start + 900 * DAY);
-        if (ENG_A.equals(company)) {
+        if (engineering) {
             runtime.scheduleEngineeringAppointmentProposal("pp-" + tag, "ppt-" + tag, start + 10,
                     company, chair, meeting, List.of(), request);
         } else {
@@ -210,7 +211,7 @@ public final class ComposedWorldSelfTest {
         runtime.advanceTo(start + 10);
         runtime.advanceTo(start + 16);
         for (String person : voters) {
-            if (ENG_A.equals(company)) {
+            if (engineering) {
                 runtime.scheduleEngineeringVote("vt-" + tag + "-" + person,
                         "vtt-" + tag + "-" + person, start + 18, company, person, meeting,
                         BoardModel.Vote.YES, 1L);
@@ -221,7 +222,7 @@ public final class ComposedWorldSelfTest {
             }
         }
         runtime.advanceTo(start + 40);
-        if (ENG_A.equals(company)) {
+        if (engineering) {
             runtime.scheduleEngineeringImplement("im-" + tag, "imt-" + tag, start + 42, company,
                     chair, meeting);
         } else {

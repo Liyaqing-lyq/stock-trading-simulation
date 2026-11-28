@@ -24,6 +24,11 @@ package edu.cufe.auction.world;
 public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phase phase,
                           String kind, String payload) {
 
+    /** 本人已决定的基金申购、赎回或撤回。 */
+    public static final String OPEN_FUND_ORDER_V1 = "OPEN_FUND_ORDER_V1";
+    /** 受理申请后的统一确认或付款时钟。 */
+    public static final String OPEN_FUND_CYCLE_V1 = "OPEN_FUND_CYCLE_V1";
+
     /** 现金转账任务：在 COMPLETION 阶段结算资金。 */
     public static final String CASH_TRANSFER_V1 = "CASH_TRANSFER_V1";
 
@@ -47,6 +52,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
 
     /** 世界收盘：受信系统动作，撤销全簿并释放冻结。 */
     public static final String EXCHANGE_CLOSE_V1 = "EXCHANGE_CLOSE_V1";
+    /** 交易规则时点清退适用的挂单，保留原成交与产权。 */
+    public static final String EXCHANGE_EXPIRY_V1 = "EXCHANGE_EXPIRY_V1";
 
     /** 外部管理夹具：到期形成采购承诺并按固定耗时自动排到货。 */
     public static final String MANUFACTURING_PURCHASE_ORDER_V1 = "MANUFACTURING_PURCHASE_ORDER_V1";
@@ -123,6 +130,9 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     /** 差异制造公司的自动关期；必须先于同日周期采样。 */
     public static final String COMPANY_OPERATIONS_CLOSE_V1 = "COMPANY_OPERATIONS_CLOSE_V1";
 
+    /** 系统外部需求日结：只消费已交付商品并转移真实外部现金。 */
+    public static final String EXTERNAL_DEMAND_SETTLE_V1 = "EXTERNAL_DEMAND_SETTLE_V1";
+
     /** 外部治理夹具：召集一次预算会议；只接受 BUDGET，复盘会议由系统关期产生。 */
     public static final String GOVERNANCE_MEETING_V1 = "GOVERNANCE_MEETING_V1";
 
@@ -175,6 +185,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
     public static final String RESEARCH_RESULT_V1 = "RESEARCH_RESULT_V1";
     /** schema23 商业化批准执行帧：经理在真实会话中把董事会授权落成可摊销事实。 */
     public static final String RESEARCH_APPROVE_V1 = "RESEARCH_APPROVE_V1";
+    /** 获批项目许可的签约、交付或实收，由已绑定的经理执行。 */
+    public static final String RESEARCH_LICENSE_V1 = "RESEARCH_LICENSE_V1";
 
     /** schema18b：公司经理经营动作（签约/开工/开票/终止/付款等）。 */
     public static final String ENGINEERING_ACTION_V1 = "ENGINEERING_ACTION_V1";
@@ -212,6 +224,9 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
 
     /** 人物会话：开始阅读一个明确版本，并核对本次观察任职（COMPLETION）。 */
     public static final String ROLE_TRADING_READ_V1 = "ROLE_TRADING_READ_V1";
+
+    /** 本人在目录与已读资料中检索自选关键词；检索本身不产生阅读经历。 */
+    public static final String ROLE_LIBRARY_SEARCH_V1 = "ROLE_LIBRARY_SEARCH_V1";
 
     /** 人物会话：取消本人正在读的一单（COMPLETION）。 */
     public static final String ROLE_TRADING_UNREAD_V1 = "ROLE_TRADING_UNREAD_V1";
@@ -301,6 +316,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
 
     /** 媒体：发布已批准版本（COMPLETION，schema13）。 */
     public static final String MEDIA_STORY_PUBLISH_V1 = "MEDIA_STORY_PUBLISH_V1";
+    /** 编辑对已刊版本发布撤稿公告。 */
+    public static final String MEDIA_STORY_WITHDRAW_V1 = "MEDIA_STORY_WITHDRAW_V1";
 
     /** 媒体：开启更正轮（COMPLETION，schema13）。 */
     public static final String MEDIA_STORY_CORRECTION_V1 = "MEDIA_STORY_CORRECTION_V1";
@@ -355,6 +372,10 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
 
     /** 逐轮访谈：双方各发一轮（COMPLETION，schema15）。 */
     public static final String INTERVIEW_SPEAK_V1 = "INTERVIEW_SPEAK_V1";
+    /** 接待人或记者本人的现场合同指令。 */
+    public static final String ONSITE_ACTION_V1 = "ONSITE_ACTION_V1";
+    /** 已出发记者到站、按约返程或到家的实际确认时刻。 */
+    public static final String ONSITE_GATE_V1 = "ONSITE_GATE_V1";
 
     /** 逐轮访谈：回复期限门，到期结束真实会话（RULES，schema15）。 */
     public static final String INTERVIEW_DIALOGUE_DEADLINE_V1 = "INTERVIEW_DIALOGUE_DEADLINE_V1";
@@ -387,7 +408,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
             throw new IllegalArgumentException("任务阶段、种类与参数不能为空");
         }
         switch (kind) {
-            case CASH_TRANSFER_V1, SELL_RESERVE_V1, SELL_CANCEL_V1, FILL_SETTLE_V1,
+            case EXTERNAL_DEMAND_SETTLE_V1, CASH_TRANSFER_V1, SELL_RESERVE_V1, SELL_CANCEL_V1, FILL_SETTLE_V1,
                  EXCHANGE_ORDER_V1, EXCHANGE_CANCEL_V1, EXCHANGE_CLOSE_V1,
                  MANUFACTURING_PURCHASE_ORDER_V1, MANUFACTURING_GOODS_RECEIPT_V1,
                  MANUFACTURING_PRODUCTION_V1, MANUFACTURING_BATCH_COMPLETION_V1,
@@ -400,7 +421,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  INFORMATION_PUBLISH_V1, INFORMATION_PUBLISH_VERSION_V1,
                  INFORMATION_START_READ_V1, INFORMATION_CANCEL_READ_V1,
                  INFORMATION_COMPLETE_READ_V1,
-                 ROLE_TRADING_READ_V1, ROLE_TRADING_UNREAD_V1,
+                 MediaSubscriptions.JOIN_TASK, MediaSubscriptions.LEAVE_TASK, MediaSubscriptions.RELEASE_TASK,
+                 ParticipantHistory.TASK, ROLE_LIBRARY_SEARCH_V1, ROLE_TRADING_READ_V1, ROLE_TRADING_UNREAD_V1,
                  ROLE_TRADING_RESEARCH_V1, ROLE_TRADING_TARGET_V1,
                  ROLE_TRADING_REVIEW_V1, ROLE_TRADING_CONFIRM_V1,
                  ROLE_TRADING_HALT_V1, ROLE_TRADING_CANCEL_V1,
@@ -418,7 +440,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  ROLE_TRADING_APPOINTMENT_END_V1, ROLE_TRADING_HALT_RELEASE_V1,
                  INTERVIEW_START_GATE_V1, INTERVIEW_MISS_GATE_V1,
                  INTERVIEW_END_GATE_V1, INTERVIEW_TTL_GATE_V1,
-                 INTERVIEW_DIALOGUE_DEADLINE_V1 -> {
+                 EXCHANGE_EXPIRY_V1, INTERVIEW_DIALOGUE_DEADLINE_V1 -> {
                 if (phase != WorldScheduler.Phase.RULES) {
                     throw new IllegalArgumentException(kind + " 必须落在 RULES 阶段，收到 " + phase);
                 }
@@ -446,6 +468,9 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                             + " 必须落在 COMPLETION、RULES 或周期边界关期阶段，收到 " + phase);
                 }
             }
+            case OPEN_FUND_CYCLE_V1 -> {
+                if (phase != WorldScheduler.Phase.RULES) throw new IllegalArgumentException("基金确认与付款须在统一规则阶段");
+            }
             case TRANSFER_NOTICE_V1, INFORMATION_BELIEF_PUBLISH_FACT_V1 -> {
                 if (phase != WorldScheduler.Phase.DELIVERY) {
                     throw new IllegalArgumentException(kind + " 必须落在 DELIVERY 阶段，收到 " + phase);
@@ -465,7 +490,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
             case ENGINEERING_BEGIN_V1, ENGINEERING_BOARD_V1, BOARD_ATTEND_V1,
                  ENGINEERING_ACTION_V1, ENGINEERING_FUND_V1, ENGINEERING_PERIODIC_V1,
                  RESEARCH_REGISTER_V1, RESEARCH_BEGIN_V1, RESEARCH_RESULT_V1,
-                 RESEARCH_APPROVE_V1,
+                 RESEARCH_APPROVE_V1, RESEARCH_LICENSE_V1,
                  COMPANY_OPERATIONS_V1,
                  PERIOD_CLOSE_V1,
                  PERIOD_DISCLOSURE_DEADLINE_V1, BANK_ACTION_BEGIN_V1 -> {
@@ -499,9 +524,9 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                 }
             }
             case MEDIA_STORY_PROPOSE_V1, MEDIA_STORY_SUBMIT_V1, MEDIA_STORY_REVIEW_V1,
-                 MEDIA_STORY_PUBLISH_V1, MEDIA_STORY_CORRECTION_V1, MEDIA_WORK_CANCEL_V1,
+                 MEDIA_STORY_PUBLISH_V1, MEDIA_STORY_WITHDRAW_V1, MEDIA_STORY_CORRECTION_V1, MEDIA_WORK_CANCEL_V1,
                  INTERVIEW_INVITE_V1, INTERVIEW_RESPOND_V1,
-                 INTERVIEW_CANCEL_V1, INTERVIEW_END_V1, INTERVIEW_SPEAK_V1,
+                 OPEN_FUND_ORDER_V1, INTERVIEW_CANCEL_V1, INTERVIEW_END_V1, INTERVIEW_SPEAK_V1, ONSITE_ACTION_V1, ONSITE_GATE_V1,
                  MEDIA_EVIDENCE_SHARE_V1, SOCIAL_BEGIN_V1, SOCIAL_FINISH_V1, SOCIAL_DELIVER_V1,
                  SOCIAL_BLOCK_V1, SOCIAL_UNBLOCK_V1,
                  BANK_ACTION_V1, GROUP_BEGIN_V1, GROUP_FINISH_V1, GROUP_PUBLISH_V1 -> {

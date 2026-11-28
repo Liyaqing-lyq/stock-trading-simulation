@@ -1,0 +1,175 @@
+{
+  "httpCalls": 478,
+  "replies": 478,
+  "inputTokens": 2889093,
+  "outputTokens": 33223,
+  "tools": {
+    "role.reading.start": 79,
+    "role.wait": 339,
+    "board.attend": 22,
+    "board.addMaterial": 4,
+    "board.convene": 17,
+    "board.proposeAppointment": 2,
+    "board.vote": 8,
+    "board.implement": 7
+  },
+  "providerFailures": {},
+  "runId": "web-autonomous-deliberation-v3",
+  "sourceCommit": "eeaf720ce10b31aead3f2abb384b66f4649bda41",
+  "requestedModel": "deepseek-flash",
+  "costStatus": "UNKNOWN",
+  "position": "2001",
+  "timeMillis": "465632000",
+  "reason": "WORLD_FAULT",
+  "technicalFailedDecisions": 22,
+  "physicalInFlight": 0,
+  "archiveFiles": 961,
+  "archiveSha256": "53ac223b23ef8a692d5ff35a2ec851a68d8550c0b1a128361020ac859abf0d74",
+  "journalBytes": 2397066556,
+  "journalSha256": "1125a81ac9af90020774dd1a9cdc977bd811c741087c1b4ca961f03658378bdf",
+  "governance": {
+    "aged-company": {
+      "meetings": 1,
+      "materials": 1,
+      "attendances": 2,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0,
+      "states": [
+        {
+          "id": "aged-meeting-1",
+          "status": "CONVENED"
+        }
+      ]
+    },
+    "digital-company": {
+      "meetings": 1,
+      "materials": 1,
+      "attendances": 1,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0,
+      "states": [
+        {
+          "id": "digital-company-meeting-manager-1",
+          "status": "REJECTED"
+        }
+      ]
+    },
+    "eng-a": {
+      "meetings": 0,
+      "materials": 0,
+      "attendances": 0,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0,
+      "states": []
+    },
+    "hydro": {
+      "meetings": 1,
+      "materials": 1,
+      "attendances": 2,
+      "ballots": 2,
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0,
+      "states": [
+        {
+          "id": "hydro-mtg-1-20260001",
+          "status": "ADJOURNED_NO_QUORUM"
+        }
+      ]
+    },
+    "mfg-struct": {
+      "meetings": 0,
+      "materials": 0,
+      "attendances": 0,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0,
+      "states": []
+    },
+    "mfg-tech": {
+      "meetings": 1,
+      "materials": 0,
+      "attendances": 1,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0,
+      "states": [
+        {
+          "id": "mfgtech-d1-apt-1",
+          "status": "CONVENED"
+        }
+      ]
+    },
+    "mfg-versa": {
+      "meetings": 2,
+      "materials": 1,
+      "attendances": 6,
+      "ballots": 5,
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0,
+      "states": [
+        {
+          "id": "mv1-mgr-13002",
+          "status": "ADOPTED"
+        },
+        {
+          "id": "mv1-mgr-13001",
+          "status": "REJECTED"
+        }
+      ]
+    },
+    "north": {
+      "meetings": 0,
+      "materials": 0,
+      "attendances": 0,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0,
+      "states": []
+    },
+    "pharma": {
+      "meetings": 0,
+      "materials": 0,
+      "attendances": 0,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0,
+      "states": []
+    },
+    "resources": {
+      "meetings": 1,
+      "materials": 0,
+      "attendances": 0,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "contracts": 0,
+      "states": [
+        {
+          "id": "resources-mgr-13001",
+          "status": "REJECTED"
+        }
+      ]
+    }
+  },
+  "lastFrame": {
+    "frames": 2001,
+    "journalBytes": 2397066556,
+    "lastUncompressedBytes": 16765502,
+    "limit": 16777216,
+    "position": 2001,
+    "commandId": "hydro-settle:462600000:465600000"
+  },
+  "accepted": false
+}

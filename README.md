@@ -30,6 +30,8 @@ mvnw.cmd exec:java -Dexec.mainClass=edu.cufe.auction.app.WorldRoleTradingDemo -D
 
 制造夹具连接同一世界交易和现金日志，治理夹具加入五席预算表决、经营承诺和固定期间复盘。schema6人物阅读夹具保存任职、固定版本、实际阅读和本人经历。schema7四岗交易夹具通过绑定人物会话依次提交研究、经理目标、风控审核、经理确认及真实子单，prepare保留部分成交后的活动单，full恢复到绝对目标60股，第三次启动逐条重发原计划并保持成交与位置不变。以上独立夹具采用model=none，其历史范围不代表最新十公司 Web 的能力；当前可用项和剩余任务见[实施 Plan](docs/superpowers/plans/2026-11-06-world-implementation.md)，实际证据见[运行记录](docs/05-运行与验证记录.md)。
 
+需要用现有工程与个人模板建立新实例时，可将 [开局草稿示例](src/main/resources/world/opening-copies-example.json) 另存到独立工作目录并命名为 `opening-copies.json`，修改个人与公司的 ID、显示名及董事映射。以该目录作为 `WorldWebApp` 的第一参数，第四参数使用 `world-opening-copies`。新公司初始未上市，新个人和公司初始现金、持股均为零。首次成功建立后，重启从同一目录的 `world-opening-copies-v1.journal` 读取当时的配置。
+
 需要 JDK 17+（本机为 JDK 21）。仓库自带 Maven Wrapper，**无需安装 Maven**。
 
 ```bash
@@ -204,6 +206,14 @@ AI 决策间隔、LLM 端点与限流、输出目录。要点：
 .\mvnw.cmd compile exec:java "-Dexec.mainClass=edu.cufe.auction.app.WorldWebApp" "-Dexec.args=logs/web-media C:/Users/JXGU/api-key/deepseek/java-stock-trade.txt 18081 media"
 ```
 
+同一份开局草稿也可用第四参数 `world-unpriced-reference` 启动独立缺价对照档，日志名为 `world-unpriced-reference-v1.journal`。HY1 保留全部发行股数和历史配售成本，开局参考估值留空。个人与管理页会显示缺价状态，依据不全时净资产、收益和收益名次留空。其他证券继续按各自行情撮合。
+
 启动、浏览和保存模型配置均不会自动调用提供方。要执行模型决定，需启用已接入的场景并显式启动单轮；原始Key只从指定本机文件加载，上帝配置页默认遮罩，人物接口不返回Key。
 
 账户表现页现已实现净资产规模、剔除出入资后的表现指数、当前回撤三条历史曲线，以及逐确认点的精确数值表。区间最多400个确认点，超出直接提示；缺估值或单点区间明确显示不可计算，注资和提款不会算作投资收益。本地1280项标准、CSV、两组Web图表回归和真实GUI通过；真实HTTP浏览器已验证资本流、回撤恢复、区间错误和身份清空。独审、持续网页升级及PR状态以实施Plan为准，详见docs/05第41节。
+
+将上述开局草稿放入新的工作目录，第四参数改为 `world-owner-bank-valuation`，可在个人页查看现金、股票、存款、托管、借款与净资产。有效基金经理可用角色银行表单在产品自己的账户之间划转。新档保存到 `world-owner-bank-valuation-v1.journal`；管理端“账户表现与历史”提供各主体同一确认帧的净资产和期间收益。
+
+常规十公司开局的第四参数为 `world-ten-company-autonomy`。新工作目录建立 `world-ten-company-autonomy-v3.journal`，包含十家上市公司、61 名各有私人关切的自然人及一个系统刊发身份。本人决定前可查获准阅读材料的预计耗时，完成后才能取得正文。已有第一或第二版日志的目录按原版本打开。仅打开网页即可核对开局，自主调度由运行控制启用。在“世界人物”可分别暂停或恢复某人接受新决定，已排定的业务仍按时复核。独立验证角色暂停的复制实验入口为 `world-person-pause`，使用上文的开局草稿。
+
+开放式基金使用独立工作目录与模式 `world-open-fund`。以投资者本人身份在“基金份额”提交申购、赎回或撤回，可逐笔核对交易日收市确认和下一交易日到账。常规档沿用固定资本基金。制造采购模板的成组变更使用 `world-manufacturing-upgrade`。管理员在“产品经营与扩产”选定制造公司，核对并登记，再应用该批变更。经理经营页显示当前版本及新采购单交期。

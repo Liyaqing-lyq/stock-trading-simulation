@@ -338,40 +338,72 @@ public final class PerformanceModel {
                     Collections.unmodifiableList(drawdownByPoint), null, null, null, status);
         }
 
-        BigDecimal index = ONE;
-        BigDecimal peak = ONE;
-        BigDecimal maxDrawdown = BigDecimal.ZERO;
+        Curve curve = new Curve();
         indexByPoint.set(0, ONE.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN));
         drawdownByPoint.set(0, BigDecimal.ZERO.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN));
         for (int i = 1; i < input.size(); i++) {
             Point previous = input.get(i - 1);
             Point current = input.get(i);
-            BigDecimal factor = current.navBeforeFlow()
-                    .divide(previous.navAfterFlow(), MATH);
+            BigDecimal factor = curve.link(current.navBeforeFlow(), previous.navAfterFlow());
             BigDecimal segmentReturn = factor.subtract(ONE).setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN);
-            index = index.multiply(factor, MATH);
-            BigDecimal currentDrawdown = BigDecimal.ZERO;
-            if (index.compareTo(peak) > 0) {
-                peak = index;
-            } else {
-                currentDrawdown = peak.subtract(index).divide(peak, MATH);
-                if (currentDrawdown.compareTo(maxDrawdown) > 0) {
-                    maxDrawdown = currentDrawdown;
-                }
-            }
             segments.add(new Segment(previous.position(), current.position(), Status.COMPLETE,
-                    segmentReturn, index.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN)));
-            indexByPoint.set(i, index.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN));
-            drawdownByPoint.set(i, currentDrawdown.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN));
+                    segmentReturn, displayed(curve.index)));
+            indexByPoint.set(i, displayed(curve.index));
+            drawdownByPoint.set(i, displayed(curve.drawdown));
         }
         return new Linked(Collections.unmodifiableList(input),
                 Collections.unmodifiableList(segments),
                 Collections.unmodifiableList(indexByPoint),
                 Collections.unmodifiableList(drawdownByPoint),
-                index.subtract(ONE).setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN),
-                index.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN),
-                maxDrawdown.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN),
+                displayed(curve.index.subtract(ONE)), displayed(curve.index), displayed(curve.maxDrawdown),
                 Status.COMPLETE);
+    }
+
+    private static BigDecimal displayed(BigDecimal value) {
+        return value.setScale(OUTPUT_SCALE, RoundingMode.HALF_EVEN);
+    }
+
+    private static final class Curve {
+        BigDecimal index = ONE, peak = ONE, drawdown = BigDecimal.ZERO, maxDrawdown = BigDecimal.ZERO;
+
+        BigDecimal link(BigDecimal beforeFlow, BigDecimal previousAfter) {
+            var factor = beforeFlow.divide(previousAfter, MATH);
+            index = index.multiply(factor, MATH);
+            peak = peak.max(index);
+            drawdown = peak.subtract(index).divide(peak, MATH);
+            maxDrawdown = maxDrawdown.max(drawdown);
+            return factor;
+        }
+    }
+
+    /** 从开局到指定确认位置的完整期间汇总，区间数包含净值未变的帧。 */
+    public record Summary(Status status, BigDecimal returnRate, BigDecimal index,
+                          BigDecimal maxDrawdown, long segmentCount) { }
+
+    /** 对已验证、按确认位置顺序到达的经济快照逐次链接，不保留历史明细数组。 */
+    static final class OpeningPeriod {
+        private final Curve curve = new Curve();
+        private BigDecimal previousAfter;
+        private boolean incomplete, nonPositive;
+
+        void accept(Point point) {
+            if (point.valuationStatus() != ValuationModel.Status.COMPLETE) {
+                incomplete = true;
+                return;
+            }
+            checkFlowRelation(point);
+            nonPositive |= point.navBeforeFlow().signum() <= 0 || point.navAfterFlow().signum() <= 0;
+            if (!incomplete && !nonPositive && previousAfter != null) curve.link(point.navBeforeFlow(), previousAfter);
+            previousAfter = point.navAfterFlow();
+        }
+
+        Summary at(long position) {
+            Status status = incomplete ? Status.INCOMPLETE_VALUATION : nonPositive ? Status.NON_POSITIVE_EQUITY
+                    : position < 2 ? Status.NO_PERIOD : Status.COMPLETE;
+            if (status != Status.COMPLETE) return new Summary(status, null, null, null, position - 1);
+            return new Summary(status, displayed(curve.index.subtract(ONE)), displayed(curve.index),
+                    displayed(curve.maxDrawdown), position - 1);
+        }
     }
 
     private static void validateStructure(String ownerId, List<Point> points) {

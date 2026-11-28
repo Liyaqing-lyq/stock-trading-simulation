@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -66,6 +67,8 @@ import java.util.TreeSet;
  * 组织工时的预留与消费属于 M4h.2 运行桥，本类不声称已执行资源限制。</p>
  */
 public final class MediaModel {
+    static final String REVIEW_NOTE_PREFIX = "media-review:";
+    static final String WITHDRAWAL_NOTICE_PREFIX = "withdrawal-notice:";
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
@@ -115,15 +118,17 @@ public final class MediaModel {
     /** 本阶段唯一允许启用的两类模板。 */
     private static final Set<TemplateKind> PHASE_ONE =
             Set.of(TemplateKind.WIRE, TemplateKind.INVESTIGATIVE);
+    /** 八类采编开局的模板目录版本。 */
+    public static final String EIGHT_DESKS = "eight-desks-v1";
 
     private static final String DRAFT_PREFIX = "media-draft:";
-    private static final String PUBLIC_PREFIX = "media-public:";
+    static final String PUBLIC_PREFIX = "media-public:";
 
     private MediaModel() {
     }
 
     /**
-     * 媒体模板：按专题登记八类名称，本阶段只启用前两类。
+     * 媒体模板：原目录开放通讯和调查，八类编辑部开局分别冻结本社模板。
      */
     public enum TemplateKind {
         /** 通讯／快讯。 */
@@ -144,7 +149,7 @@ public final class MediaModel {
         INDEPENDENT
     }
 
-    /** 稿件状态；没有「撤回」状态，未提交的稿件自然没有公开影响。 */
+    /** 稿件状态；撤稿保留此前公开版本与审计记录。 */
     public enum Status {
         /** 编辑中：记者可提交或重新提交。 */
         DRAFT,
@@ -155,25 +160,49 @@ public final class MediaModel {
         /** 编辑已批准，等待发布。 */
         APPROVED,
         /** 已公开发布。 */
-        PUBLISHED
+        PUBLISHED,
+        /** 已经对外发表正式撤稿公告。 */
+        WITHDRAWN
     }
 
     /**
      * 冻结的实验策略：媒体组织、启用模板与来源下限、四类正耗时、回忆参数。
      *
      * @param mediaOrganizationPartyId 媒体组织标识
-     * @param enabledTemplates         启用模板 → 最少独立来源组（本阶段只允许 WIRE/INVESTIGATIVE）
+     * @param enabledTemplates         启用模板及对应的最少独立来源组
      * @param writeMillis              写作耗时，正毫秒
      * @param reviewMillis             审阅耗时，正毫秒
      * @param publishMillis            发布耗时，正毫秒
      * @param draftReadMillis          组织草稿的固定阅读耗时，正毫秒
      * @param publicReadMillis         公开成稿的固定阅读耗时，正毫秒
      * @param recallPolicy             回忆参数，决定证据是否仍可被记起
+     * @param templateCatalog          明确启用的模板目录，旧档为 null
+     * @param draftComparisonMillis    编译稿读者核对两地时间与原文的额外工时，普通稿件为空
      */
     public record Policy(String mediaOrganizationPartyId, Map<TemplateKind, Integer> enabledTemplates,
                          long writeMillis, long reviewMillis, long publishMillis,
                          long draftReadMillis, long publicReadMillis,
-                         CognitionRecall.Policy recallPolicy) {
+                         CognitionRecall.Policy recallPolicy,
+                         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                         String templateCatalog,
+                         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                         Long draftComparisonMillis) {
+
+        /** 按原八类媒体合同创建策略，档案中不增加编译工时字段。 */
+        public Policy(String mediaOrganizationPartyId, Map<TemplateKind, Integer> enabledTemplates,
+                      long writeMillis, long reviewMillis, long publishMillis, long draftReadMillis,
+                      long publicReadMillis, CognitionRecall.Policy recallPolicy, String templateCatalog) {
+            this(mediaOrganizationPartyId, enabledTemplates, writeMillis, reviewMillis, publishMillis,
+                    draftReadMillis, publicReadMillis, recallPolicy, templateCatalog, null);
+        }
+
+        /** 按原两类模板合同创建策略，保持原开局及历史序列化。 */
+        public Policy(String mediaOrganizationPartyId, Map<TemplateKind, Integer> enabledTemplates,
+                      long writeMillis, long reviewMillis, long publishMillis, long draftReadMillis,
+                      long publicReadMillis, CognitionRecall.Policy recallPolicy) {
+            this(mediaOrganizationPartyId, enabledTemplates, writeMillis, reviewMillis, publishMillis,
+                    draftReadMillis, publicReadMillis, recallPolicy, null);
+        }
 
         /** 校验组织、模板范围与全部正耗时。 */
         public Policy {
@@ -183,9 +212,14 @@ public final class MediaModel {
             if (copy.isEmpty()) {
                 throw new IllegalArgumentException("至少启用一个媒体模板");
             }
+            if (draftComparisonMillis != null && (draftComparisonMillis <= 0
+                    || !copy.keySet().equals(Set.of(TemplateKind.CROSS_BORDER))))
+                throw new IllegalArgumentException("编译工时只适用于跨市场稿件且必须为正");
+            if (templateCatalog != null && !EIGHT_DESKS.equals(templateCatalog))
+                throw new IllegalArgumentException("未知媒体模板目录：" + templateCatalog);
             for (Map.Entry<TemplateKind, Integer> entry : copy.entrySet()) {
                 Objects.requireNonNull(entry.getKey(), "模板种类");
-                if (!PHASE_ONE.contains(entry.getKey())) {
+                if (templateCatalog == null && !PHASE_ONE.contains(entry.getKey())) {
                     throw new IllegalArgumentException("本阶段未启用的模板：" + entry.getKey());
                 }
                 if (entry.getValue() == null || entry.getValue() < 1) {
@@ -328,15 +362,28 @@ public final class MediaModel {
      * @param docId        关联资料；无关联为空串
      * @param docVersion   关联版本；无关联为 0
      * @param note         结果代码或退回理由
+     * @param reviewNoteDocId 新制正式退稿对应的内部资料，旧档为空
      */
     public record Revision(String storyId, int revisionNo, Status status, String actorPartyId,
-                           long atMillis, String docId, long docVersion, String note) {
+                           long atMillis, String docId, long docVersion, String note,
+                           @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                           String reviewNoteDocId) {
+
+        /** 旧流程的稿件记录没有单独的意见资料。 */
+        public Revision(String storyId, int revisionNo, Status status, String actorPartyId,
+                        long atMillis, String docId, long docVersion, String note) {
+            this(storyId, revisionNo, status, actorPartyId, atMillis, docId, docVersion, note, null);
+        }
 
         /** 校验字段。 */
         public Revision {
             requireText(storyId, "记录稿件");
             requireText(actorPartyId, "记录执行人");
             Objects.requireNonNull(status, "记录状态");
+            if (reviewNoteDocId != null) {
+                requireText(reviewNoteDocId, "审阅意见资料");
+                if (status != Status.RETURNED) throw new IllegalArgumentException("审阅意见资料须对应退稿");
+            }
             if (revisionNo < 0 || atMillis < 0 || docVersion < 0) {
                 throw new IllegalArgumentException("记录计数不能为负：" + storyId);
             }
@@ -527,6 +574,26 @@ public final class MediaModel {
          */
         Optional<List<Ref>> originsOf(InformationModel.State information, String docId,
                                       long version);
+
+        /** 此档是否采用已登记的机构和采访来源规则。 */
+        default boolean registeredSourceGroups() { return false; }
+
+        /** 返回规范原件所属的独立来源组；未核实的原件没有独立来源组。 */
+        default String sourceGroup(Document document, long version) {
+            return "person:" + document.publisherPartyId();
+        }
+    }
+
+    /**
+     * 已核验来源组数不足时，供投稿人核对的两个数字。
+     * @param counted 按该档规则从合格原始来源核得的组数
+     * @param required 冻结模板要求的最低组数
+     */
+    public record SourceShortfall(int counted, int required) {
+        /** 仅接受已经成立的来源不足结果。 */
+        public SourceShortfall {
+            if (counted < 0 || counted >= required) throw new IllegalArgumentException("来源不足计数非法");
+        }
     }
 
     /**
@@ -537,10 +604,17 @@ public final class MediaModel {
      * @param state       媒体状态
      * @param information 信息状态
      * @param evidence    追加别名后的证据状态
+     * @param sourceShortfall 仅在已验来源不足时返回计数
      */
     public record EvidenceBridgeOutcome(boolean accepted, String reason, State state,
                                         InformationModel.State information,
-                                        MediaEvidence.State evidence) {
+                                        MediaEvidence.State evidence,
+                                        @JsonInclude(JsonInclude.Include.NON_NULL) SourceShortfall sourceShortfall) {
+        /** 未附来源计数的既有结果。 */
+        public EvidenceBridgeOutcome(boolean accepted, String reason, State state,
+                                     InformationModel.State information, MediaEvidence.State evidence) {
+            this(accepted, reason, state, information, evidence, null);
+        }
     }
 
     /**
@@ -887,6 +961,10 @@ public final class MediaModel {
         if (problem != null) {
             return evidenceReject(state, information, context.evidence(), problem);
         }
+        if (story.template() == TemplateKind.AGGREGATOR && (request.evidence().isEmpty()
+                || !context.privateEvidence().isEmpty()
+                || request.evidence().stream().anyMatch(ref -> !ref.docId().startsWith(PUBLIC_PREFIX))))
+            return evidenceReject(state, information, context.evidence(), "AGGREGATOR_REQUIRES_PUBLISHED_STORY");
         List<Ref> roots;
         try {
             roots = rootsFor(state, mediaContext, information, request.evidence(),
@@ -895,13 +973,13 @@ public final class MediaModel {
             return evidenceReject(state, information, context.evidence(),
                     REASON_EVIDENCE_PROVENANCE);
         }
-        int groups = sourceGroups(information, roots);
-        if (groups < 1) {
+        int groups = sourceGroups(information, roots, origins);
+        if (groups < 0 || (groups == 0 && !origins.registeredSourceGroups())) {
             return evidenceReject(state, information, context.evidence(), REASON_EVIDENCE);
         }
         if (groups < minGroups) {
-            return evidenceReject(state, information, context.evidence(),
-                    REASON_INSUFFICIENT_SOURCES);
+            return new EvidenceBridgeOutcome(false, REASON_INSUFFICIENT_SOURCES, state, information,
+                    context.evidence(), origins.registeredSourceGroups() ? new SourceShortfall(groups, minGroups) : null);
         }
         MediaEvidence.State nextEvidence;
         try {
@@ -916,7 +994,9 @@ public final class MediaModel {
         InformationModel.VersionDraft draft = new InformationModel.VersionDraft(
                 request.title(), request.body(),
                 "作者来源描述（自由文字，未经程序核验）：" + request.publicSourceDescription(),
-                request.completedAtMillis(), policy.draftReadMillis(),
+                request.completedAtMillis(), policy.draftComparisonMillis() == null ? policy.draftReadMillis()
+                        : Math.addExact(InformationModel.readingMillis(request.body(), policy.draftReadMillis(),
+                                information.readingClock()), policy.draftComparisonMillis()),
                 sourceIdsOf(allEvidence));
         InformationModel.State next;
         long version;
@@ -970,6 +1050,33 @@ public final class MediaModel {
     public static Outcome review(State state, Policy policy, RoleAccess.State access,
                                  InformationModel.State information, String editor,
                                  ReviewRequest request) {
+        return review(state, policy, access, information, editor, request, null);
+    }
+
+    /** 新制正式退稿在同一批产生不可追加的内部意见资料，绑定这次投稿版本。 */
+    static BridgeOutcome reviewWithFeedback(State state, Policy policy, RoleAccess.State access,
+                                           InformationModel.State information, String editor, ReviewRequest request) {
+        String id = null;
+        if (!request.approve()) {
+            String prefix = REVIEW_NOTE_PREFIX + request.expectedRevision() + ":" + draftDocId(policy, request.storyId());
+            id = prefix;
+            for (int n = 1; documentOf(information, id) != null; n++) id = prefix + ":" + n;
+        }
+        Outcome outcome = review(state, policy, access, information, editor, request, id);
+        if (!outcome.accepted() || id == null)
+            return new BridgeOutcome(outcome.accepted(), outcome.reason(), outcome.state(), information);
+        Story story = findStory(state, request.storyId());
+        var audience = new InformationModel.Audience(AudienceKind.EDITORIAL_REVIEW,
+                policy.mediaOrganizationPartyId(), story.authorPartyId());
+        var note = new InformationModel.VersionDraft(story.topic() + "（第" + story.revisionNo() + "稿退稿意见）",
+                request.note(), "本编辑部内部审阅意见", request.completedAtMillis(), policy.draftReadMillis(), List.of());
+        return new BridgeOutcome(true, outcome.reason(), outcome.state(),
+                InformationModel.publish(information, id, editor, audience, note));
+    }
+
+    private static Outcome review(State state, Policy policy, RoleAccess.State access,
+                                  InformationModel.State information, String editor,
+                                  ReviewRequest request, String reviewNoteDocId) {
         requireState(state);
         requirePolicy(policy);
         requireAccess(access);
@@ -1025,7 +1132,7 @@ public final class MediaModel {
         return new Outcome(true, REASON_OK, append(state, updated, new Revision(story.storyId(),
                 story.revisionNo(), next, editor, request.completedAtMillis(), story.draftDocId(),
                 story.draftVersion(), request.note().isBlank()
-                ? (request.approve() ? "APPROVED" : "RETURNED") : request.note())));
+                ? (request.approve() ? "APPROVED" : "RETURNED") : request.note(), reviewNoteDocId)));
     }
 
     /**
@@ -1184,18 +1291,14 @@ public final class MediaModel {
         }
         Policy policy = state.policy();
         String organization = policy.mediaOrganizationPartyId();
-        boolean editor = authorizedAt(access, person, Action.REVIEW_STORY, organization, nowMillis)
-                || authorizedAt(access, person, Action.PUBLISH_STORY, organization, nowMillis);
-        boolean journalist = authorizedAt(access, person, Action.WRITE_STORY, organization,
-                nowMillis);
+        StoryAccess rights = storyAccess(access, person, organization, nowMillis);
         List<StoryView> views = new ArrayList<>();
         for (Story story : state.stories()) {
             if (story.createdAtMillis() > nowMillis || story.updatedAtMillis() > nowMillis) {
                 // 未来才存在的稿件不在当前时点投影，避免提前泄露未发生的工作流
                 continue;
             }
-            boolean visible = (journalist && story.authorPartyId().equals(person)) || editor;
-            if (!visible) {
+            if (!rights.canSee(person, story.authorPartyId())) {
                 continue;
             }
             boolean read = story.draftVersion() > 0
@@ -1215,6 +1318,33 @@ public final class MediaModel {
                     story.publicVersion(), story.approvedBy(), story.updatedAtMillis()));
         }
         return List.copyOf(views);
+    }
+
+    /** 内稿工作台与退稿资料共用同一时点的真实任职权。 */
+    static StoryAccess storyAccess(RoleAccess.State access, String person, String organization, long now) {
+        return new StoryAccess(authorizedAt(access, person, Action.WRITE_STORY, organization, now),
+                authorizedAt(access, person, Action.REVIEW_STORY, organization, now)
+                        || authorizedAt(access, person, Action.PUBLISH_STORY, organization, now));
+    }
+
+    record StoryAccess(boolean writes, boolean edits) {
+        boolean canSee(String person, String author) { return edits || writes && person.equals(author); }
+    }
+
+    /** 仅在新制本人有权的稿件行上给出退稿意见阅读入口。 */
+    static Map<String,List<RoleTradingView.ReviewNote>> reviewNotes(State state, InformationModel.State information,
+            List<StoryView> visibleStories, String person, long now) {
+        Map<String,List<RoleTradingView.ReviewNote>> notes = new HashMap<>();
+        for (StoryView story : visibleStories) notes.put(story.storyId(), new ArrayList<>());
+        for (Revision revision : state.revisions()) {
+            String id = revision.reviewNoteDocId();
+            var rows = notes.get(revision.storyId());
+            if (id != null && rows != null && revision.atMillis() <= now) {
+                rows.add(new RoleTradingView.ReviewNote(revision.revisionNo(), id, 1L,
+                        InformationModel.canCite(information, person, id, 1L, now)));
+            }
+        }
+        return notes;
     }
 
     /**
@@ -1346,11 +1476,11 @@ public final class MediaModel {
                 return REASON_EVIDENCE;
             }
         }
-        Set<String> recalled = new LinkedHashSet<>();
+        Map<String, String> recalled = new TreeMap<>();
         CognitionRecall.Result recall = CognitionRecall.recall(information, author, now,
                 policy.recallPolicy());
         for (CognitionRecall.Item item : recall.selected()) {
-            recalled.add(item.observation().docId() + '\u0000' + item.observation().version());
+            recalled.put(item.observation().docId() + '\u0000' + item.observation().version(), item.lastReadId());
         }
         for (ReadingRef ref : evidence) {
             // 旧次序：先判公开性，再判是否读过；拒绝码会被旧档案引用，不能换
@@ -1361,13 +1491,13 @@ public final class MediaModel {
             if (document.audience().kind() != AudienceKind.PUBLIC) {
                 return REASON_EVIDENCE_NOT_PUBLIC;
             }
-            String problem = citationProblem(information, author, ref, recalled, now);
+            String problem = citationProblem(information, author, ref, recalled, policy, now);
             if (problem != null) {
                 return problem;
             }
         }
         for (ReadingRef ref : privateRefs) {
-            String problem = citationProblem(information, author, ref, recalled, now);
+            String problem = citationProblem(information, author, ref, recalled, policy, now);
             if (problem != null) {
                 return problem;
             }
@@ -1380,7 +1510,7 @@ public final class MediaModel {
 
     /** 单条引用的通用校验：存在、已读、序号一致、可回忆。 */
     private static String citationProblem(InformationModel.State information, String author,
-                                          ReadingRef ref, Set<String> recalled, long now) {
+                                          ReadingRef ref, Map<String, String> recalled, Policy policy, long now) {
         Document document = documentOf(information, ref.docId());
         if (document == null || document.at(ref.version()) == null) {
             return REASON_EVIDENCE_NOT_READ;
@@ -1388,10 +1518,12 @@ public final class MediaModel {
         if (!InformationModel.canCite(information, author, ref.docId(), ref.version(), now)) {
             return REASON_EVIDENCE_NOT_READ;
         }
-        if (ordinalOf(information, author, ref.docId(), ref.version()) != ref.index()) {
+        String key = ref.docId() + '\u0000' + ref.version();
+        String lastRead = EIGHT_DESKS.equals(policy.templateCatalog()) ? recalled.get(key) : null;
+        if (ordinalOf(information, author, ref.docId(), ref.version(), lastRead) != ref.index()) {
             return REASON_EVIDENCE_INDEX;
         }
-        if (!recalled.contains(ref.docId() + '\u0000' + ref.version())) {
+        if (!recalled.containsKey(key)) {
             return REASON_EVIDENCE_NOT_RECALLABLE;
         }
         return null;
@@ -1498,14 +1630,7 @@ public final class MediaModel {
                 throw new IllegalArgumentException("媒体来源上下文重复或为空");
             }
             for (Lineage entry : source.lineage()) {
-                Story publisher = source.stories().stream().filter(story ->
-                        story.publicDocId().equals(entry.docId())
-                                && story.publicVersion() >= entry.version()).findFirst().orElse(null);
-                Document document = documentOf(information, entry.docId());
-                if (publisher == null || document == null || document.at(entry.version()) == null
-                        || document.audience().kind() != AudienceKind.PUBLIC
-                        || !document.publisherPartyId().equals(publisher.authorPartyId())
-                        || !entry.docId().equals(publicDocId(source.policy(), publisher.storyId()))
+                if (boundPublishedVersion(source, entry, information) == null
                         || catalog.putIfAbsent(new Ref(entry.docId(), entry.version()), entry) != null) {
                     throw new IllegalArgumentException("媒体来源版本未确认或冲突");
                 }
@@ -1532,8 +1657,8 @@ public final class MediaModel {
                     collectOrigins(bindings, information, new Ref(ref.docId(), ref.version()),
                             origins, fromPrivate, inheritPrivate, catalog, new ArrayList<>(), roots);
                 } else {
-                    roots.add(resolveShared(bindings, information,
-                            new Ref(ref.docId(), ref.version())));
+                    addSharedRoot(bindings, information, new Ref(ref.docId(), ref.version()), origins,
+                            fromPrivate, inheritPrivate, catalog, new ArrayList<>(), roots);
                 }
             } else {
                 DocumentVersion cited = versionOf(information, ref.docId(), ref.version());
@@ -1549,7 +1674,8 @@ public final class MediaModel {
                             && document.audience().kind() != AudienceKind.PUBLIC) {
                         throw new IllegalArgumentException("媒体来源根不是公开资料");
                     }
-                    roots.add(resolveShared(bindings, information, root));
+                    addSharedRoot(bindings, information, root, origins, fromPrivate, inheritPrivate,
+                            catalog, new ArrayList<>(), roots);
                 }
             }
         }
@@ -1583,7 +1709,7 @@ public final class MediaModel {
             throw new IllegalArgumentException("群/平台帖缺少可信版本来源");
         }
         if (declared.get().isEmpty()) {
-            roots.add(resolveShared(bindings, information, ref));
+            addSharedRoot(bindings, information, ref, origins, fromPrivate, inheritPrivate, catalog, path, roots);
             return;
         }
         DocumentVersion cited = versionOf(information, ref.docId(), ref.version());
@@ -1650,7 +1776,8 @@ public final class MediaModel {
                         collectOrigins(bindings, information, deep, origins, fromPrivate,
                                 inheritPrivate, catalog, path, roots);
                     } else {
-                        roots.add(resolveShared(bindings, information, deep));
+                        addSharedRoot(bindings, information, deep, origins, fromPrivate, inheritPrivate,
+                                catalog, path, roots);
                     }
                 }
             } finally {
@@ -1662,32 +1789,44 @@ public final class MediaModel {
             collectOrigins(bindings, information, root, origins, fromPrivate, inheritPrivate,
                     catalog, path, roots);
         } else {
-            roots.add(resolveShared(bindings, information, root));
+            addSharedRoot(bindings, information, root, origins, fromPrivate, inheritPrivate, catalog, path, roots);
         }
     }
 
-    /** 独立来源组数：根资料的不同发布人物个数。 */
-    private static int sourceGroups(InformationModel.State information, List<Ref> roots) {
-        Set<String> publishers = new TreeSet<>();
+    /** 身份共享信封不构成新来源，信封指向受核验的转述原件时继续展开。 */
+    private static void addSharedRoot(Map<String, IdentityBinding> bindings, InformationModel.State information,
+            Ref ref, SourceOrigins origins, boolean fromPrivate, boolean inheritPrivate,
+            Map<Ref, Lineage> catalog, List<Ref> path, List<Ref> roots) {
+        Ref original = resolveShared(bindings, information, ref);
+        if (origins.registeredSourceGroups() && !original.equals(ref) && origins.covers(original.docId())) {
+            collectOrigins(bindings, information, original, origins, fromPrivate, inheritPrivate, catalog, path, roots);
+        } else {
+            roots.add(original);
+        }
+    }
+
+    /** 按原始来源分组。已阅读但尚未核实的采访原件可以引用，不增加独立组数。 */
+    private static int sourceGroups(InformationModel.State information, List<Ref> roots, SourceOrigins origins) {
+        Set<String> groups = new TreeSet<>();
         for (Ref root : roots) {
             Document document = documentOf(information, root.docId());
-            if (document == null) {
-                return 0;
-            }
-            publishers.add(document.publisherPartyId());
+            if (document == null || document.at(root.version()) == null) return -1;
+            String group = origins.sourceGroup(document, root.version());
+            if (group != null) groups.add(group);
         }
-        return publishers.size();
+        return groups.size();
     }
 
     /** 本人阅读序号：与运行层 readingOrdinals 同一口径（READ-n 序，其后按标识）。 */
     private static int ordinalOf(InformationModel.State information, String person, String docId,
-                                 long version) {
-        String readId = null;
-        for (ReadObservation observation : information.observations()) {
-            if (observation.personPartyId().equals(person)
-                    && observation.docId().equals(docId) && observation.version() == version) {
-                readId = observation.readId();
-                break;
+                                 long version, String readId) {
+        if (readId == null) {
+            for (ReadObservation observation : information.observations()) {
+                if (observation.personPartyId().equals(person)
+                        && observation.docId().equals(docId) && observation.version() == version) {
+                    readId = observation.readId();
+                    break;
+                }
             }
         }
         if (readId == null) {
@@ -1720,6 +1859,60 @@ public final class MediaModel {
         }
     }
 
+    /** 编辑选择的公开原因。固定表述避免把内部审阅意见和匿名采访标识带进公开公告。 */
+    public enum WithdrawalReason {
+        /** 可复核事实出现错误。 */
+        FACTUAL_ERROR("原稿存在事实错误"),
+        /** 原发表依据不足。 */
+        INSUFFICIENT_EVIDENCE("支持原稿的证据不足"),
+        /** 授权口径发生问题。 */
+        QUOTATION_PERMISSION("引述授权存在问题"),
+        /** 未达到本社发布标准。 */
+        EDITORIAL_STANDARDS("原稿未达到本社发布标准");
+
+        private final String label;
+        WithdrawalReason(String label) { this.label = label; }
+        /** @return 允许公开的撤稿原因 */
+        public String label() { return label; }
+    }
+
+    static BridgeOutcome withdraw(State state, Policy policy, RoleAccess.State access, InformationModel.State info,
+                                  String editor, WorldRoleSession.MediaWithdrawalDraft request, long start, long now) {
+        if (!frozen(state, policy)) return bridgeReject(state, info, REASON_POLICY_MISMATCH);
+        if (!authorized(access, editor, Action.PUBLISH_STORY, policy, start)
+                || !authorized(access, editor, Action.PUBLISH_STORY, policy, now)) return bridgeReject(state, info, REASON_NOT_AUTHORIZED);
+        if (!windowOk(start, now, policy.publishMillis()) || now < watermark(state)) return bridgeReject(state, info, REASON_TIME);
+        var story = findStory(state, request.storyId());
+        if (story == null) return bridgeReject(state, info, REASON_UNKNOWN_STORY);
+        if (story.publicVersion() == 0 || story.status() == Status.WITHDRAWN) return bridgeReject(state, info, REASON_STATE);
+        if (request.expectedPublicVersion() != story.publicVersion()) return bridgeReject(state, info, REASON_VERSION);
+        var document = documentOf(info, story.publicDocId());
+        if (document == null || document.versions().size() != story.publicVersion()
+                || !document.publisherPartyId().equals(story.authorPartyId())
+                || document.audience().kind() != AudienceKind.PUBLIC) return bridgeReject(state, info, REASON_STATE);
+        var prior = document.at(story.publicVersion());
+        if (prior.publishedAt() >= now) return bridgeReject(state, info, REASON_TIME);
+        String title = "撤稿公告 · " + prior.title();
+        String body = "本社撤回《" + prior.title() + "》公开第 " + story.publicVersion()
+                + " 版。" + request.publicReason().label() + "。签发编辑：" + editor + "。";
+        String source = policy.mediaOrganizationPartyId() + " 编辑部正式撤稿公告";
+        String prefix = WITHDRAWAL_NOTICE_PREFIX + story.publicVersion() + ":" + story.publicDocId();
+        String noticeId = prefix;
+        for (int n = 1; documentOf(info, noticeId) != null; n++) noticeId = prefix + ":" + n;
+        var notice = new InformationModel.VersionDraft(title, body, source, now, policy.publicReadMillis(), List.of());
+        var next = InformationModel.publish(info, noticeId, editor, InformationModel.Audience.publicAudience(), notice);
+        next = InformationModel.publishVersion(next, story.publicDocId(),
+                new InformationModel.VersionDraft(title, body, source, now, policy.publicReadMillis(), List.of(noticeId)));
+        long version = story.publicVersion() + 1;
+        var updated = new Story(story.storyId(), story.template(), story.authorPartyId(), story.topic(),
+                Status.WITHDRAWN, story.revisionNo(), story.draftDocId(), story.draftVersion(), story.publicDocId(), version,
+                story.evidence(), story.roots(), story.sourceGroups(), null, -1, 0, story.createdAtMillis(), now);
+        var revised = append(state, updated, new Revision(story.storyId(), story.revisionNo(), Status.WITHDRAWN,
+                editor, now, story.publicDocId(), version, request.publicReason().name()));
+        revised = withLineage(revised, new Lineage(story.publicDocId(), version, List.of(new Ref(noticeId, 1))));
+        return new BridgeOutcome(true, "WITHDRAWN", revised, next);
+    }
+
     private static DocumentVersion draftVersion(InformationModel.State information, Story story) {
         return versionOf(information, story.draftDocId(), story.draftVersion());
     }
@@ -1728,6 +1921,17 @@ public final class MediaModel {
                                              long version) {
         Document document = documentOf(information, docId);
         return document == null ? null : document.at(version);
+    }
+
+    /** 精确版本、发表者、派生单号和公开文档均与已发表稿件绑定。 */
+    static DocumentVersion boundPublishedVersion(State source, Lineage entry, InformationModel.State information) {
+        Story publisher = source.stories().stream().filter(story -> story.publicDocId().equals(entry.docId())
+                && story.publicVersion() >= entry.version()).findFirst().orElse(null);
+        Document document = documentOf(information, entry.docId());
+        if (publisher == null || document == null || document.audience().kind() != AudienceKind.PUBLIC
+                || !document.publisherPartyId().equals(publisher.authorPartyId())
+                || !entry.docId().equals(publicDocId(source.policy(), publisher.storyId()))) return null;
+        return document.at(entry.version());
     }
 
     private static Document documentOf(InformationModel.State information, String docId) {

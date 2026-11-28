@@ -1,0 +1,27 @@
+{
+  "writerCommit": "75f17f4",
+  "sequence": "Original writer init reports; close; original writer reopen then create first decision; original reader reopen passes.",
+  "source": "logs/operating-cycle/task9-review-restart-compat",
+  "cases": {
+    "delta": {
+      "journalSha256": "3ff4746385a09193ba5ef5a483233082568b6edf82cd1b0f3c0f57674aadfec5",
+      "inputSha256": "f3b7ce864aae6a0276ee3b144e6742372e454c6ab04aa4ff475cf2b6668537f3",
+      "originalReader": {
+        "exit": 0,
+        "stdout": "phase=read position=174 pid=49372 reports=[a-second-task:finish@170, z-first-task:finish@167]\r\n",
+        "stderr": "",
+        "wallMillis": 5396
+      }
+    },
+    "snapshot": {
+      "journalSha256": "598dff8a21ddd15efc101884422c507e08917424c4fa9051844127a15bc9b9fc",
+      "inputSha256": "9d571f4fa3cfb23665e53afe46aa6a680fff811b1978bdda210f8bfa6884a752",
+      "originalReader": {
+        "exit": 0,
+        "stdout": "phase=read position=174 pid=48368 reports=[a-second-task:finish@170, z-first-task:finish@167]\r\n",
+        "stderr": "",
+        "wallMillis": 4279
+      }
+    }
+  }
+}

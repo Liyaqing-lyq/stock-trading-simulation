@@ -143,12 +143,13 @@ final class CompanyOperationsRuntime {
      * @param now            执行时点
      * @param funds          当前资金三态（不得复用旧结果）
      * @param payer          为本次资金腿绑定的付款人；不动钱的动作可为 null
+     * @param requireFundedContract 是否按冻结规则在签订新合同时检查客户未承诺现金
      * @return 候选结果
      */
     static Applied apply(CompanyOperationsRun run, BoardRun board, InformationRun information,
                          String companyPartyId, CompanyOperationsRun.Action action,
                          CompanyOperationsRun.Fields fields, String commandId, String personPartyId,
-                         String actor, long now, FundState funds, FundPayer payer) {
+                         String actor, long now, FundState funds, FundPayer payer, boolean requireFundedContract) {
         if (run == null) {
             return Applied.reject(null, board, null, "OPERATIONS_NOT_READY");
         }
@@ -163,6 +164,8 @@ final class CompanyOperationsRuntime {
         if (!actor.equals(ledger.accounts().companyOwnerId())) {
             return Applied.reject(run, board, funds, "ACTOR_NOT_COMPANY_OWNER");
         }
+        if (action == CompanyOperationsRun.Action.SIGN_CONTRACT && ManufacturingIntake.RUNOFF.equals(company.intakeVersion()))
+            return Applied.reject(run, board, funds, "INTAKE_RETIRED");
         if (action == CompanyOperationsRun.Action.START_EXPANSION
                 && (company.expansionOffer() == null || !company.expansionOffer().matches(fields))) {
             return Applied.reject(run, board, funds, "EXPANSION_OFFER_MISMATCH");
@@ -235,7 +238,7 @@ final class CompanyOperationsRuntime {
         Outcome outcome;
         try {
             outcome = call(ledger, information, action, fields, commandId, personPartyId, actor,
-                    now, funds, payer);
+                    now, funds, payer, ManufacturingUpgrade.leadMillis(run, companyPartyId));
         } catch (RuntimeException invalid) {
             return Applied.reject(run, board, funds, "OPERATIONS_REJECTED:" + invalid.getMessage());
         }
@@ -251,6 +254,16 @@ final class CompanyOperationsRuntime {
                         CashLedger.money(BigDecimal.ZERO), List.of());
             }
             return Applied.reject(run, board, outcome.funds(), outcome.reason());
+        }
+
+        // 签约只核承诺，不冻结现金；已签合同的收款仍取决于到期时客户是否实际有钱。
+        if (requireFundedContract && action == CompanyOperationsRun.Action.SIGN_CONTRACT
+                && !ledger.contracts().containsKey(fields.contractId())) {
+            var contract = outcome.ledger().contracts().get(fields.contractId());
+            String account = ledger.accounts().customerAccounts().get(contract.customerId());
+            BigDecimal value = contract.unitPrice().multiply(BigDecimal.valueOf(contract.quantity()));
+            if (ManufacturingCustomerOffers.uncommittedCash(run, account, base).compareTo(value) < 0)
+                return Applied.reject(run, board, funds, "CUSTOMER_AVAILABLE_CASH_INSUFFICIENT");
         }
 
         // 3) 到货把采购承诺转已花（金额以采购单锁定单价为准，不用当前报价重估）。
@@ -289,7 +302,7 @@ final class CompanyOperationsRuntime {
                                 CompanyOperationsRun.Action action,
                                 CompanyOperationsRun.Fields fields, String commandId,
                                 String person, String actor, long now, FundState funds,
-                                FundPayer payer) {
+                                FundPayer payer, long leadMillis) {
         ManufacturingTemplateModel.FundOutcome funded;
         ManufacturingTemplateModel.Outcome plain;
         String business = "";
@@ -297,7 +310,7 @@ final class CompanyOperationsRuntime {
             case ORDER_MATERIAL -> {
                 business = purchaseOrderIdFor(commandId);
                 plain = ManufacturingTemplateModel.orderMaterial(ledger, now, actor, commandId,
-                        business, fields.materialId(), fields.quantity(), funds.accounts());
+                        business, fields.materialId(), fields.quantity(), funds.accounts(), leadMillis);
                 return new Outcome(plain.accepted(), plain.reason(), plain.state(),
                         new FundState(plain.accounts(), funds.bank(), funds.book()), business);
             }
@@ -592,6 +605,7 @@ final class CompanyOperationsRuntime {
                     "addCapacity", offer.addCapacity()));
         }
         view.put("actions", actions(company));
+        if (company.intakeVersion() != null) view.put("intakeVersion", company.intakeVersion());
         view.put("rules", "这里只列自家公开方案、可见报价与已批预算余额；不含未来认证结果、"
                 + "客户私有预算或别家台账。认证所需的『已读』必须来自本人真实阅读。");
         return view;
@@ -609,7 +623,7 @@ final class CompanyOperationsRuntime {
                 break;
             }
         }
-        actions.add(CompanyOperationsRun.Action.SIGN_CONTRACT.name());
+        if (company.intakeVersion() == null) actions.add(CompanyOperationsRun.Action.SIGN_CONTRACT.name());
         actions.add(CompanyOperationsRun.Action.DELIVER.name());
         actions.add(CompanyOperationsRun.Action.COLLECT.name());
         actions.add(CompanyOperationsRun.Action.MARK_OVERDUE.name());

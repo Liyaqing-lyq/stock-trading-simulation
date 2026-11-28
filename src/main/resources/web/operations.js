@@ -3,6 +3,8 @@ const OPERATIONS_ACTIONS = {
   BEGIN_PILOT:["开始试点",[]], BEGIN_VALIDATION:["开始客户验证",[]], APPROVE_COMMERCIAL:["确认客户商用准入",["approvalId"]], TERMINATE:["终止未交付合同",["contractId"]], REFUND:["退还预收",["contractId","refundCents"]],
   ORDER_RAW:["订购原料",["orderId","units"]],RECEIVE_RAW:["接收并付款",["orderId"]],PRODUCE:["投入陈酿生产",["batchId","units"]],SET_PRICE:["设置渠道报价",["channelId","priceCents"]],SHIP:["发往寄售渠道",["shipmentId","channelId","units"]],PAY_REFUND:["支付渠道退款",["channelId","amountCents"]],PAY_FIXED:["支付欠付固定费",["amountCents"]],
   DISPATCH_FLOW: ["调整过机流量", ["cubicMetresPerHour"]], DISPATCH_OUTPUT: ["调整发电出力", ["outputKw"]], MAINTENANCE: ["按报价检修", []],
+  EXIT_BUSINESS: ["按董事会决议停止生产",["meetingId"]], SETTLE_BILL: ["支付原期间欠费",["period"]],
+  SUBSCRIBE_SHARES: ["用本人现金认购普通股",["meetingId","shares"]],
   BEGIN_EXTRACTION: ["安排开采", ["jobId", "seamId", "quantityKg"]],
   SELL_COAL: ["交付外售煤炭", ["deliveryId", "quantityKg", "receivableId"]],
   TRANSFER_TO_PLANT: ["煤炭转入电厂", ["transferId", "quantityKg"]],
@@ -28,6 +30,10 @@ const OPERATIONS_LABELS = { approvalId:"客户技术准入编号", quantityUnits
 
 function clearOperationsDom() {
   state.operationsView = null;
+  renderIntake({ companies: [] });
+  renderUpgrade({ companies: [] });
+  renderLoanPromotion(null);
+  state.operationsRequestedCompany = "";
   for (const id of ["operations-company", "operations-action", "operations-fields", "operations-financial", "operations-records"]) {
     if ($(id)) $(id).replaceChildren();
   }
@@ -59,21 +65,143 @@ function operationsOption(label, value) {
   const option = document.createElement("option"); option.textContent = label; option.value = value; return option;
 }
 function operationsCompany() {
-  return state.operationsView?.companies?.find(c => c.companyId === $("operations-company").value)
-    || state.operationsView?.companies?.[0];
+  return state.operationsView?.companies?.find(c => c.companyId === $("operations-company").value);
 }
 function renderOperations(view) {
-  const selected = $("operations-company").value;
+  const requested = state.operationsRequestedCompany;
+  const selected = requested || $("operations-company").value;
+  state.operationsRequestedCompany = "";
   state.operationsView = view;
   const panel = document.querySelector('[data-panel="operations"]');
   const host = state.mode === "person" ? $("person") : $("admin");
   if (panel && host && panel.parentElement !== host) host.appendChild(panel);
   if (panel) panel.hidden = state.mode === "person" ? !view.enabled : state.page !== "operations";
   $("operations-note").textContent = view.note || "";
-  $("operations-cut").textContent = "记录 " + view.position + " · 世界时点 " + view.timeMillis;
-  $("operations-company").replaceChildren(...(view.companies || []).map(c => operationsOption(c.name, c.companyId)));
-  if ((view.companies || []).some(c => c.companyId === selected)) $("operations-company").value = selected;
+  $("operations-cut").textContent = (view.position == null ? "" : "记录 " + view.position + " · ") + "世界时点 " + view.timeMillis + " 毫秒";
+  const companies = view.companies || [];
+  const select = $("operations-company");
+  select.replaceChildren(...companies.map(c => operationsOption(c.name, c.companyId)));
+  const wanted = companies.find(c => c.companyId === selected);
+  select.value = wanted?.companyId || (requested ? "" : companies[0]?.companyId || "");
   renderOperationsCompany();
+  renderIntake(view);
+  renderUpgrade(view);
+  renderLoanPromotion(view.loanPromotion);
+}
+function renderLoanPromotion(loan) {
+  const section = $("operations-loan-promotion");
+  const visible = state.mode === "admin" && Boolean(loan);
+  section.hidden = !visible;
+  $("loan-promotion-record").textContent = visible
+    ? "合同 " + loan.loanId + " · 银行 " + loan.bankId + " · 借款人 " + loan.borrower
+      + " · 名义本金 " + loan.nominal + " 元 · 表内本金 " + loan.onBook + " 元 · " + loan.allowanceBucket + " 风险桶减值准备 " + loan.allowance + " 元"
+      + " · " + (loan.status === "DETAILED" ? "已列借款人明细" : "仍列汇总敞口") : "";
+  $("loan-promotion-source").textContent = visible ? "原始记录 " + loan.sourcePosition + " · 凭证摘要 " + loan.sourceDigest : "";
+  $("loan-promotion-apply").disabled = !visible || loan.status !== "AGGREGATE";
+  $("loan-promotion-result").textContent = "";
+}
+function renderUpgrade(view) {
+  const section = $("operations-upgrade"), choices = $("upgrade-companies"), batches = $("upgrade-batches");
+  section.hidden = state.mode !== "admin" || !view.manufacturingUpgrade;
+  choices.querySelectorAll("label").forEach(label => label.remove());
+  batches.replaceChildren();
+  $("upgrade-result").textContent = "";
+  $("upgrade-prepare").disabled = true;
+  state.upgradeDraft = null;
+  if (section.hidden) return;
+  const rules = view.manufacturingUpgrade;
+  for (const company of view.companies.filter(c => c.templateVersion)) {
+    const label = document.createElement("label"), input = document.createElement("input");
+    input.type = "checkbox"; input.value = company.companyId;
+    input.disabled = company.templateVersion !== rules.fromVersion;
+    label.append(input, company.name + (input.disabled ? "（已变更）" : ""));
+    choices.appendChild(label);
+  }
+  for (const batch of rules.batches) {
+    const line = document.createElement("p"), draft = batch.draft;
+    const applied = String(batch.appliedPosition) !== "0";
+    line.textContent = draft.companyIds.join("、") + " · " + (applied ? "已变更 · 记录 " + batch.appliedPosition : "已登记，等待应用");
+    if (!applied) {
+      const button = document.createElement("button");
+      button.type = "button"; button.textContent = "应用此批变更";
+      button.onclick = () => guard(submitUpgrade(view,"APPLY",draft));
+      line.appendChild(button);
+    }
+    batches.appendChild(line);
+  }
+}
+async function submitUpgrade(view, stage, draft) {
+  const generation = state.generation;
+  const active = () => isCurrent(generation) && state.mode === "admin" && state.page === "operations";
+  if (!active() || view !== state.operationsView || !draft) return;
+  const response = await request("POST","/api/admin/operations/manufacturing-upgrade",{
+    expectedPosition:view.position,stage,...draft
+  });
+  if (!active() || view !== state.operationsView) return;
+  if (response.status === 401 || response.status === 403) { sessionLost(); return; }
+  if (response.status !== 200) { $("upgrade-result").textContent = response.payload?.message || "变更未完成，请刷新核对。"; return; }
+  const result = response.payload;
+  if (stage === "PREVIEW" && state.upgradeDraft !== draft) return;
+  if (stage === "PREVIEW") $("upgrade-prepare").disabled = false;
+  else await loadOperations(generation,state.pageVersion);
+  if (!active()) return;
+  const phases = { VALIDATED:"已核对所选公司。", WAITING_SAFE_POINT:"仍有采购在途，须等待完结。", READY:"已登记，可应用此批变更。", APPLIED:"变更已生效。" };
+  $("upgrade-result").textContent = phases[result.phase] + (result.blockers.length ? " " + result.blockers.join("、") : "");
+}
+async function submitLoanPromotion() {
+  const view = state.operationsView;
+  if (state.mode !== "admin" || view?.loanPromotion?.status !== "AGGREGATE") return;
+  const generation = state.generation, version = state.pageVersion;
+  $("loan-promotion-apply").disabled = true;
+  try {
+    const response = await request("POST", "/api/admin/operations/loan-promotion", {
+      loanId: view.loanPromotion.loanId, expectedPosition: view.position
+    });
+    if (!isCurrent(generation) || state.mode !== "admin" || state.pageVersion !== version) return;
+    if (response.status !== 200) {
+      $("loan-promotion-result").textContent = response.payload?.message || "登记未完成，请刷新后核对。";
+      return;
+    }
+    await loadOperations(generation, version);
+  } catch (error) {
+    if (isCurrent(generation) && state.mode === "admin" && state.pageVersion === version)
+      $("loan-promotion-result").textContent = error.message;
+  }
+}
+function renderIntake(view) {
+  const section = $("operations-intake");
+  section.hidden = state.mode !== "admin" || !view.intakeLifecycle;
+  const fieldset = $("intake-companies");
+  fieldset.querySelectorAll("label").forEach(label => label.remove());
+  $("intake-apply").disabled = true;
+  $("intake-result").textContent = "";
+  if (section.hidden) return;
+  for (const company of view.companies.filter(c => c.intakeVersion)) {
+    const label = document.createElement("label"), input = document.createElement("input");
+    input.type = "checkbox"; input.value = company.companyId;
+    input.disabled = company.intakeVersion !== view.intakeLifecycle.fromVersion;
+    label.append(input, company.name + (input.disabled ? "（已停止新签）" : ""));
+    fieldset.append(label);
+  }
+}
+async function submitIntake(apply) {
+  const view = state.operationsView, generation = state.generation, fieldset = $("intake-companies");
+  const companies = () => Array.from(fieldset.querySelectorAll("input:checked"), input => input.value);
+  const ids = companies();
+  if (state.mode !== "admin" || !view?.intakeLifecycle || !ids.length) return;
+  $("intake-apply").disabled = true;
+  const body = { ...view.intakeLifecycle, expectedPosition: view.position, companyIds: ids, apply };
+  const result = await request("POST", "/api/admin/operations/intake", body);
+  if (!isCurrent(generation) || state.mode !== "admin" || state.operationsView !== view) return;
+  if (result.status === 401 || result.status === 403) { sessionLost(); return; }
+  if (result.status !== 200) { $("intake-result").textContent = result.payload?.message || "操作失败"; return; }
+  if (apply) {
+    await loadOperations(generation, null);
+    if (isCurrent(generation) && state.mode === "admin") $("intake-result").textContent = "已停止所选公司的新签业务。记录 " + result.payload.position;
+  } else if (JSON.stringify(ids) === JSON.stringify(companies())) {
+    $("intake-apply").disabled = false;
+    $("intake-result").textContent = "已校验 " + ids.length + " 家公司，请核对后确认。";
+  }
 }
 function operationsTable(parent, title, rows, columns) {
   const details = document.createElement("details"), summary = document.createElement("summary");
@@ -84,8 +212,9 @@ function operationsTable(parent, title, rows, columns) {
   head.appendChild(tr); table.appendChild(head);
   const body = document.createElement("tbody");
   for (const row of rows) { const line = document.createElement("tr"); for (const [key] of columns) {
-    const cell = document.createElement("td"); const statuses = { ORDERED:"待到货", RECEIVED:"已到货", FAILED_NO_CASH:"资金不足", IN_PROGRESS:"进行中", COMPLETED:"已完成", RUNNING:"进行中", ABORTED:"已终止", BUILDING:"建设中", ONLINE:"已投产", ACTIVE:"有效", PASSED:"通过", FAILED:"未通过", DELIVERED:"已交付", PAID:"已回款", WRITTEN_OFF:"已核销", CANCELLED:"已取消", OVERDUE:"已逾期" };
+    const cell = document.createElement("td"); const statuses = { FULFILLED:"已履约", COLLECTED:"已收款", FINISHED:"已完工", ORDERED:"待到货", RECEIVED:"已到货", FAILED_NO_CASH:"资金不足", IN_PROGRESS:"进行中", COMPLETED:"已完成", RUNNING:"进行中", ABORTED:"已终止", BUILDING:"建设中", ONLINE:"已投产", ACTIVE:"有效", PASSED:"通过", FAILED:"未通过", DELIVERED:"已交付", PAID:"已回款", WRITTEN_OFF:"已核销", CANCELLED:"已取消", OVERDUE:"已逾期" };
     const value = row[key];
+    if (key === "status" && value === "OPEN" && row.receivableId) statuses.OPEN = "待收款";
     cell.textContent = key === "status" ? (statuses[value] || String(value ?? "—")) : key === "accepted" ? (value ? "是" : "否") : key === "action" ? (OPERATIONS_ACTIONS[value]?.[0] || String(value ?? "—")) : String(value ?? "—"); line.appendChild(cell);
   } body.appendChild(line); }
   table.appendChild(body); wrap.appendChild(table); details.appendChild(wrap); parent.appendChild(details);
@@ -94,6 +223,12 @@ function renderOperationsCompany() {
   const company = operationsCompany(), financial = $("operations-financial"), records = $("operations-records");
   financial.replaceChildren(); records.replaceChildren();
   if (!company) { $("operations-form").hidden = true; return; }
+  if (company.templateVersion) operationsLine(financial,"采购模板 " + company.templateVersion + " · 新单交期 " + Number(company.newProcurementLeadMillis)/86400000 + " 天");
+  if (company.primaryOffer) {
+    operationsLine(financial,company.primaryOffer.terms);
+    operationsLine(financial,"有效决议 " + company.primaryOffer.meetingIds.join("、") + "，剩余 " + company.primaryOffer.remainingShares + " 股。");
+  }
+  if (company.financial) {
   operationsLine(financial, company.name + " · 完整公司报表");
   for (const [key, label] of [["assets", "资产"], ["liabilities", "负债"], ["equity", "权益"]]) {
     operationsLine(financial, label + "：" + Object.entries(company.financial[key] || {}).map(([name, amount]) => name + " " + amount + " 元").join("；"));
@@ -104,9 +239,18 @@ function renderOperationsCompany() {
     operationsLine(financial,"本期生产预算 " + (plan.remainingBudget == null ? "未批准" : plan.remainingBudget+" 元") + "；现金、应收与负债见完整报表。");
     operationsLine(records,company.kind === "DIGITAL" ? "试点计入费用，客户验证投入先记在研。商用准入不产生收入；实际交付才确认收入，未赚预收仍需退款。" : "采购到货才付款，生产后须等待成熟。发货只是寄售；终端购买才产生收入，渠道回款另行记录。到货期末仍未付款的采购会失效并保留记录。");
     if(company.kind === "DIGITAL") {
+      if (plan.cessationTerms) operationsLine(records, plan.cessationTerms);
+      if (plan.cessation) operationsLine(records, "已停止新增业务，执行决议 " + plan.cessation.meetingId + "，世界时点 " + plan.cessation.timeMillis + " 毫秒。");
+      else if (plan.cessationDecisions?.length) operationsLine(records, "已通过的停业决议 " + plan.cessationDecisions.join("、"));
       operationsLine(records,"客户商用准入 " + (plan.commercialApproved ? "已确认":"未确认") + "；准入编号 " + (plan.commercialPermit || "—") + "；服务容量 " + plan.serviceCapacityUnitsPerPeriod + " /期。");
       operationsTable(records,"实际试验阶段",entries(plan.stages),[["id","阶段"],["status","状态"],["beganAt","开始时点"],["completesAt","完成时点"]]);
-      operationsTable(records,"服务合同",entries(plan.contracts),[["id","合同"],["status","状态"],["quantity","数量"],["delivered","已交付"]]);
+      const contracts = entries(plan.contracts);
+      const columns = [["id","合同"],["status","状态"],["quantity","数量"],["delivered","已交付"]];
+      if (plan.unearnedByContract) {
+        for (const contract of contracts) contract.unearned = plan.unearnedByContract[contract.id];
+        columns.push(["unearned", "未赚预收（元）"]);
+      }
+      operationsTable(records, "服务合同", contracts, columns);
       operationsTable(records,"应收服务款",entries(plan.receivables),[["id","编号"],["amount","金额"],["dueAt","到期时点"],["status","状态"]]);
     } else {
       operationsLine(records,"原料 " + plan.rawUnitCost + " 元/单位；转产 " + plan.conversionPerUnit + " 元/单位；成熟需 " + plan.agingPeriods + " 期。发货只是寄售，终端售出才确认收入。");
@@ -123,6 +267,9 @@ function renderOperationsCompany() {
     operationsLine(records,"检修报价 " + plan.maintenanceOffer.cost + " 元、停机 " + plan.maintenanceOffer.durationMillis + " 毫秒。所有调度需15分钟工作，未来来水不属于经理已知信息。");
   } else if (company.kind === "RESOURCE") {
     const plan = company.plan;
+    if (plan.cessation) operationsLine(records,"已停止生产，董事决议 " + plan.cessation.meetingId + "，确认于 " + plan.cessation.timeMillis + " 毫秒。");
+    else if (plan.cessationDecisions?.length) operationsLine(records,"可执行的停业决议 " + plan.cessationDecisions.join("、"));
+    if (plan.expenseBills) operationsTable(records,"原期间费用",Object.values(plan.expenseBills),[["period","期间"],["amount","应计金额（元）"],["paid","已付金额（元）"]]);
     operationsLine(financial, "本期基础能力：开采 " + plan.mineCapacityKg + " 千克，运输 " + plan.transportCapacityKg + " 千克，发电 " + plan.generatorCapacityMwh + " 兆瓦时；经营预算 " + (plan.remainingBudget == null ? "未批准" : plan.remainingBudget + " 元"));
     operationsLine(records, "矿端库存 " + plan.mineCoal.quantity + " 千克；厂内燃料 " + plan.plantFuel.quantity + " 千克。内部转运不确认外部收入。");
     operationsLine(records, "矿脉：" + (plan.seams || []).map(seam => seam.seamId + "，开采成本 " + seam.extractionCostPerKg + " 元/千克").join("；"));
@@ -139,14 +286,28 @@ function renderOperationsCompany() {
   operationsLine(records, "可见材料报价：" + (company.plan.visibleQuotes || []).map(q => q.materialId + " " + q.price + " 元").join("，"));
   operationsTable(records, "原材料库存", entries(company.materials), [["id", "材料"], ["quantity", "数量"], ["amount", "成本（元）"]]);
   operationsTable(records, "采购单", entries(company.purchases), [["id", "编号"], ["materialId", "材料"], ["quantity", "数量"], ["status", "状态"], ["arrivalAt", "到货时点"]]);
-  operationsTable(records, "生产批次", entries(company.batches), [["id", "编号"], ["productId", "产品"], ["quantity", "数量"], ["status", "状态"], ["completesAt", "完工时点"]]);
-  operationsTable(records, "销售合同", entries(company.contracts), [["id", "编号"], ["customerId", "客户"], ["quantity", "数量"], ["status", "状态"]]);
-  operationsTable(records, "应收货款", entries(company.receivables), [["id", "编号"], ["customerId", "客户"], ["amount", "金额"], ["dueAt", "到期时点"], ["status", "状态"]]);
+  operationsLine(records, "生产按产品和代际入库。交付凭证通过合同编号关联应收。");
+  operationsTable(records, "生产批次（按产品入库）", entries(company.batches), [["id", "批次编号"], ["productId", "产品"], ["generation", "代际"], ["quantity", "数量"], ["startedAt", "开工时点"], ["completesAt", "完工时点"], ["status", "状态"]]);
+  const contracts = entries(company.contracts).map(contract => {
+    if (contract.status === "OVERDUE") return { ...contract, status: "已登记逾期" };
+    if (contract.status === "ACTIVE" && /^\d+$/.test(contract.expiresAt)
+        && BigInt(state.operationsView.timeMillis) > BigInt(contract.expiresAt)) {
+      return { ...contract, status: "账载有效，已过最迟交付时点（待登记逾期）" };
+    }
+    return contract;
+  });
+  operationsTable(records, "销售合同", contracts, [["id", "合同编号"], ["customerId", "客户"], ["productId", "产品"], ["generation", "代际"], ["quantity", "签约数量"], ["unitPrice", "单价（元）"], ["signedAt", "签约时点"], ["promisedAt", "承诺交付时点"], ["expiresAt", "最迟交付时点"], ["delivered", "已交数量"], ["status", "状态"]]);
+  operationsTable(records, "应收货款", entries(company.receivables), [["id", "应收编号"], ["contractId", "合同编号"], ["quantity", "交付数量"], ["recognizedAt", "交付确认时点"], ["amount", "确认金额（元）"], ["outstanding", "未收（元）"], ["dueAt", "到期时点"], ["status", "状态"]]);
   operationsTable(records, "认证与扩产", [...entries(company.trials), ...entries(company.expansions)], [["id", "编号"], ["status", "状态"], ["finishAt", "认证时点"], ["completesAt", "扩产时点"]]);
   }
-  operationsTable(records, "实际执行回报", company.reports || [], [["action", "动作"], ["accepted", "是否受理"], ["reason", "结果"], ["amount", "资金变化（元）"]]);
+  }
+  const privateReceipts = state.operationsView.observationToken != null;
+  const reports = (company.reports || []).slice();
+  if (privateReceipts) reports.reverse();
+  else reports.sort((a,b) => b.position-a.position || b.timeMillis-a.timeMillis);
+  operationsTable(records, "实际执行回报", reports, [...(privateReceipts ? [] : [["position", "确认记录"]]), ["timeMillis", "执行时点"], ["action", "动作"], ["businessId", "业务单号"], ["accepted", "是否受理"], ["reason", "结果"], ["amount", "实际划款额（元）"]]);
   const actions = company.actions || [], selected = $("operations-action").value;
-  $("operations-action").replaceChildren(...actions.filter(a => OPERATIONS_ACTIONS[a]).map(a => operationsOption(OPERATIONS_ACTIONS[a][0], a)));
+  $("operations-action").replaceChildren(...actions.filter(a => OPERATIONS_ACTIONS[a]).map(a => operationsOption(company.kind === "DIGITAL" && a === "EXIT_BUSINESS" ? "按董事会决议停止新增数字业务" : OPERATIONS_ACTIONS[a][0], a)));
   if (actions.includes(selected)) $("operations-action").value = selected;
   $("operations-form").hidden = state.mode !== "person" || actions.length === 0;
   $("operations-duration").value = company.kind === "HYDRO" ? "900000" : "1000";
@@ -178,7 +339,7 @@ async function submitOperations(event) {
   const action = $("operations-action").value, fields = {};
   for (const name of (["RESOURCE","HYDRO","DIGITAL","AGED"].includes(company?.kind) ? company.plan?.actionFields?.[action]?.split(/,\s*/).filter(Boolean) : OPERATIONS_ACTIONS[action]?.[1]) || []) fields[name] = operationsInputValue(name,$("operations-field-" + name).value.trim());
   const id = "web-ops-" + crypto.randomUUID();
-  const command = { expectedPosition: view.position, commandId: id, taskId: id + "-task", companyId: company.companyId,
+  const command = { expectedPosition: view.observationToken ?? view.position, commandId: id, taskId: id + "-task", companyId: company.companyId,
     action, fields, dueTimeMillis: $("operations-due").value.trim(), durationMillis: $("operations-duration").value.trim() };
   $("operations-submit").disabled = true;
   try {
@@ -190,6 +351,23 @@ async function submitOperations(event) {
   } finally { if (isCurrent(generation) && state.mode === "person") $("operations-submit").disabled = false; }
 }
 document.addEventListener("DOMContentLoaded", () => {
+  $("upgrade-companies").addEventListener("change", () => {
+    state.upgradeDraft = null; $("upgrade-prepare").disabled = true; $("upgrade-result").textContent = "";
+  });
+  $("upgrade-check").addEventListener("click", () => {
+    const view = state.operationsView, rules = view?.manufacturingUpgrade;
+    if (!rules) return;
+    const companyIds = Array.from($("upgrade-companies").querySelectorAll("input:checked"), el => el.value);
+    if (!companyIds.length) { $("upgrade-result").textContent = "请先选择制造公司。"; return; }
+    state.upgradeDraft = { batchId:"web-" + crypto.randomUUID(),fromVersion:rules.fromVersion,toVersion:rules.toVersion,companyIds };
+    guard(submitUpgrade(view,"PREVIEW",state.upgradeDraft));
+  });
+  $("upgrade-prepare").addEventListener("click", () => guard(submitUpgrade(state.operationsView,"PREPARE",state.upgradeDraft)));
+  $("loan-promotion-apply").addEventListener("click", submitLoanPromotion);
+  $("intake-companies").addEventListener("change", () => { $("intake-apply").disabled = true; $("intake-result").textContent = ""; });
+  for (const id of ["intake-check", "intake-apply"]) $(id).addEventListener("click", () => {
+    submitIntake(id === "intake-apply").catch(error => { if (state.mode === "admin") $("intake-result").textContent = error.message; });
+  });
   $("operations-company").addEventListener("change", renderOperationsCompany);
   $("operations-action").addEventListener("change", operationsFields);
   $("operations-form").addEventListener("submit", event => {

@@ -164,13 +164,14 @@ final class ResearchRuntime {
     static Applied result(long seed, ResearchRun run, BoardRun board, InformationRun information,
             String projectId, ResearchModel.Stage stage, long now,
             Map<String, CashLedger.CashAccount> accounts) {
-        return result(seed, run, board, information, projectId, stage, now, accounts, false);
+        return result(seed, run, board, information, projectId, stage, now, accounts, false, false);
     }
 
     /** 显式新档的经营结果受众包含现任经理；旧档继续仅向董事会发布。 */
     static Applied result(long seed, ResearchRun run, BoardRun board, InformationRun information,
             String projectId, ResearchModel.Stage stage, long now,
-            Map<String, CashLedger.CashAccount> accounts, boolean operationalEvidence) {
+            Map<String, CashLedger.CashAccount> accounts, boolean operationalEvidence,
+            boolean readerGatedEvidence) {
         if (run == null || information == null) {
             return Applied.rejected(run, board, information, accounts, "NOT_READY");
         }
@@ -195,7 +196,8 @@ final class ResearchRuntime {
                         board.periodEvidence());
             }
         }
-        String docId = evidenceDocId(company, projectId, stage, success);
+        String docId = evidenceDocId(company, projectId, stage,
+                readerGatedEvidence ? "report" : success ? "SUCCESS" : "FAILURE");
         String title = "研发阶段结果 " + projectId + " " + stage.name();
         String body = "项目=" + projectId + "\n阶段=" + stage.name() + "\n结果="
                 + (success ? "SUCCESS" : "FAILURE") + "\n成本=" + cost.toPlainString()
@@ -250,9 +252,8 @@ final class ResearchRuntime {
         return "research:" + projectId;
     }
 
-    static String evidenceDocId(String company, String projectId, ResearchModel.Stage stage,
-            boolean success) {
-        return "research:" + company + ":" + projectId + ":" + stage.name() + ":"
-                + (success ? "SUCCESS" : "FAILURE");
+    private static String evidenceDocId(String company, String projectId, ResearchModel.Stage stage,
+            String suffix) {
+        return "research:" + company + ":" + projectId + ":" + stage.name() + ":" + suffix;
     }
 }

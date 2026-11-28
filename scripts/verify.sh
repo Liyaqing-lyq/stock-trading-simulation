@@ -122,13 +122,28 @@ else
   bad "黑盒复算未通过"; cat "$LOG/csv.log"
 fi
 
+if PYTHONIOENCODING=utf-8 python -B -m unittest discover -s scripts -p 'test_ten_company*.py' > "$LOG/ten-company-audit.log" 2>&1; then
+  ok "十公司原生账本审计回归"
+else
+  bad "十公司原生账本审计回归失败"
+  cat "$LOG/ten-company-audit.log"
+fi
+
 echo "== 3/4 Web 图表、采访身份隔离与页面结构 =="
 if node --check src/main/resources/web/app.js > "$LOG/web-chart.log" 2>&1 \
+    && node --check src/main/resources/web/person-takeover.js >> "$LOG/web-chart.log" 2>&1 \
+    && node --check src/main/resources/web/person-library.js >> "$LOG/web-chart.log" 2>&1 \
+    && node --check src/main/resources/web/research.js >> "$LOG/web-chart.log" 2>&1 \
+    && node --check src/main/resources/web/newsletters.js >> "$LOG/web-chart.log" 2>&1 \
+    && node --check src/main/resources/web/person-orders.js >> "$LOG/web-chart.log" 2>&1 \
+    && node --check src/main/resources/web/interview-coordination.js >> "$LOG/web-chart.log" 2>&1 \
     && node --check src/main/resources/web/world-home.js >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/world-home-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node scripts/test-market-chart.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node scripts/test-performance-chart.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node scripts/test-interview-view.cjs >> "$LOG/web-chart.log" 2>&1 \
+    && node scripts/test-thinking-routes.cjs >> "$LOG/web-chart.log" 2>&1 \
+    && node src/test/js/person-takeover-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/engineering-form-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/governance-live-scene-check.cjs >> "$LOG/web-chart.log" 2>&1 \
     && node src/test/js/history-page-check.cjs >> "$LOG/web-chart.log" 2>&1 \

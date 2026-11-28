@@ -25,6 +25,7 @@ const state = {
   marketRequest: 0,
   market: null,
   performanceRequest: 0,
+  performanceOwnerPage: 1,
   performanceHistory: null,
   mediaRequest: 0,
   capabilities: null,
@@ -38,9 +39,13 @@ const state = {
   personEvidence: null,
   engineering: null,
   engineeringCompany: "",
+  operationsRequestedCompany: "",
   engineeringRequest: 0,
   history: null,
   branch: null,
+  personRelations: null,
+  personChart: null,
+  personRefresh: 0,
   personEngineering: null
 };
 
@@ -58,7 +63,7 @@ const DETAIL_TABLES = ["company-report", "company-inventory", "company-orders",
   "company-batches", "company-contracts", "company-receivables", "company-bills",
   "company-seats", "company-meetings", "company-budgets", "company-commitments",
   "company-reviews", "company-evidence", "company-reports", "performance-accounts",
-  "performance-owners", "performance-holdings", "performance-flows",
+  "performance-owners", "performance-bank-lines", "performance-holdings", "performance-flows",
   "performance-points", "performance-history-flows", "org-parties", "org-prototypes", "org-experiment-companies", "org-experiment-days",
   "org-owners", "org-appointments", "org-mandates", "org-reports",
   "information-documents", "information-active", "information-closed",
@@ -72,6 +77,10 @@ const DETAIL_TABLES = ["company-report", "company-inventory", "company-orders",
   "bank-summary", "bank-deposits", "bank-loans", "bank-loans-raw", "bank-equity",
   "bank-glraw", "bank-gates", "bank-metrics", "bank-custody-pools",
   "bank-custody-beneficial", "bank-actions"];
+const sessionLabels = { OPEN: "撮合开放", PREOPEN: "尚未开盘", LUNCH_BREAK: "午间休市", AFTER_CLOSE: "当日已收盘",
+  WEEKEND: "周末休市", SECURITY_HALTED: "该证券暂停交易", PERMANENTLY_CLOSED: "交易所已关闭",
+  ISSUER_RESOLUTION_HALTED: "发行人已进入处置，暂停交易" };
+
 const PERSON_TABLES = ["person-accounts", "person-holdings", "person-market",
   "person-bank-deposits", "person-bank-actions"];
 
@@ -115,6 +124,14 @@ function setStatus(message) {
   $("status").textContent = message || "";
 }
 
+function setAccountContext(ids) {
+  const box = $("context-account");
+  box.title = ids?.join("、") || "";
+  if (ids == null) box.textContent = state.mode === "admin" ? "账户未单选（全局）" : "";
+  else if (ids.length === 1) box.textContent = "可见交易账户 " + ids[0];
+  else box.textContent = ids.length ? "可见 " + ids.length + " 个交易账户 · 未单选" : "交易账户未单选（无逐户记录）";
+}
+
 function nextGeneration() {
   state.generation += 1;
   return state.generation;
@@ -125,6 +142,9 @@ function isCurrent(generation) {
 }
 
 async function request(method, url, body) {
+  if (globalThis.PersonTakeover?.blocks(method, url)) {
+    return {status: 403, payload: {code: "PERSON_TAKEOVER_REQUIRED", message: "当前为父档只读观察，请先接管此人。"}};
+  }
   const headers = {};
   if (method !== "GET") {
     headers["Content-Type"] = "application/json";
@@ -147,7 +167,7 @@ async function request(method, url, body) {
   } catch (ignored) {
     payload = null;
   }
-  return { status: response.status, payload };
+  return { status: response.status, payload, headers: response.headers };
 }
 
 function clearSecrets() {
@@ -162,6 +182,7 @@ function clearSecrets() {
 }
 
 function clearAdminDom() {
+  globalThis.WorldExposure?.clear();
   globalThis.WorldHome?.clear();
   state.capabilities = null;
   $("live-persons").replaceChildren();
@@ -191,6 +212,30 @@ function clearAdminDom() {
 }
 
 function clearPersonDom() {
+  globalThis.PersonOrders?.clear();
+  globalThis.Newsletters?.clear();
+  globalThis.PersonLibrary?.clear();
+  state.personChart = null;
+  $("person-chart-symbol").replaceChildren();
+  $("person-chart-period").value = "day";
+  show("person-chart-card", false);
+  clearPersonChart();
+  renderFundUnits(null);
+  renderPersonPortfolios([]);
+  $("person-research-timeline").replaceChildren();
+  $("person-research-card").hidden = true;
+  state.personRelations = null;
+  $("relation-history").replaceChildren();
+  $("relation-history-label").hidden = true;
+  $("relation-search").value = "";
+  $("relation-layer").value = "";
+  $("relation-focus").replaceChildren();
+  $("relation-depth").value = "2";
+  $("relation-graph").replaceChildren();
+  $("relation-cut").textContent = "";
+  $("person-relations").hidden = true;
+  fillTable("relation-edges", [], () => undefined);
+  clearPersonalBank();
   clearPersonalMedia();
   clearPersonalInterview();
   clearPersonalEvidence();
@@ -202,27 +247,33 @@ function clearPersonDom() {
     fillTable(id, [], () => undefined);
   }
   $("person-catalog").textContent = "";
+  $("person-public-reports").hidden = true;
+  $("person-report-versions").replaceChildren();
+  $("person-report-feedback").textContent = "";
   setMessage("person-error", "");
 }
 
-function showMode(mode) {
+function showMode(mode, forgetBookmark = true) {
   clearGroupsDom();
   clearResearchDom();
   clearOperationsDom();
   clearManufacturingDom();
   state.mode = mode;
+  globalThis.PersonTakeover?.reset();
   document.body.dataset.mode = mode;
+  $("context-identity").textContent = mode === "admin" ? "实时 · 管理员" : mode === "person" ? "实时 · 正在确认人物" : "";
+  setAccountContext(null);
   $("navigation").hidden = mode !== "admin";
   $("refresh").hidden = mode === "login";
   $("context-time").textContent = mode === "login" ? "本机实验环境" : "读取确认状态…";
   nextGeneration();
   if (mode !== "admin") {
+    if (forgetBookmark) writeHistoryBookmark(null);
+    state.adminRun = null;
     clearAdminDom();
     clearHistoryDom();
   }
-  if (mode !== "person") {
-    clearPersonDom();
-  }
+  clearPersonDom();
   show("login", mode === "login");
   show("admin", mode === "admin");
   show("person", mode === "person");
@@ -259,17 +310,20 @@ function providerLabel(kind) {
 
 // ---------------------------------------------------------------- 管理员
 
-async function enterAdmin() {
+async function enterAdmin(resume = false, focusHeading = false) {
+  if (!resume) writeHistoryBookmark(null);
   showMode("admin");
   selectPage("overview", false);
+  if (focusHeading) $("page-title").focus();
   setStatus("管理员视角");
-  await refreshAdmin();
+  await refreshAdmin(resume);
+  await globalThis.PersonTakeover?.admin();
 }
 
-async function refreshAdmin() {
+async function refreshAdmin(resume = false) {
   stopLivePoll();
   const generation = state.generation;
-  const pageVersion = ++state.pageVersion;
+  let pageVersion = ++state.pageVersion;
   const current = () => isCurrent(generation) && state.mode === "admin" && pageVersion === state.pageVersion;
   let result;
   try {
@@ -277,6 +331,7 @@ async function refreshAdmin() {
   } catch (failure) {
     if (current()) {
       setMessage("admin-error", failure.message);
+      setStatus(state.position == null ? "尚未取得世界数据" : "连接失败 · 显示上次确认数据");
     }
     return;
   }
@@ -289,14 +344,37 @@ async function refreshAdmin() {
   }
   if (result.status !== 200 || !result.payload) {
     setMessage("admin-error", "读取世界快照失败（" + result.status + "），请稍后重试。");
+    setStatus(state.position == null ? "尚未取得世界数据" : "读取失败 · 显示上次确认数据");
     return;
   }
   setMessage("admin-error", "");
+  const runId = result.payload.runId;
+  const saved = resume === true ? globalThis.history?.state?.worldHistory : null;
+  if ((state.adminRun && state.adminRun !== runId) || (saved && saved.runId !== runId)) {
+    writeHistoryBookmark(null);
+    if (state.page === "history") selectPage("overview", false);
+    pageVersion = state.pageVersion;
+  }
+  state.adminRun = runId;
+  const restore = saved && saved.runId === runId && Number.isSafeInteger(saved.after) && saved.after >= 0
+    && Number.isSafeInteger(saved.limit) && saved.limit > 0 && saved.limit <= 200;
+  if (restore) {
+    selectPage("history", false);
+    pageVersion = state.pageVersion;
+    $("history-after").value = String(saved.after);
+    $("history-limit").value = String(saved.limit);
+    if (Number.isSafeInteger(saved.selected) && saved.selected > 0 && saved.selected <= Number(result.payload.position)) {
+      historyState().resumePosition = saved.selected;
+    }
+  }
   renderAdmin(result.payload);
+  renderHistoryHeader();
   if (globalThis.WorldHome) {
     const overview = await request("GET", "/api/admin/world");
     if (!current()) return;
-    if (overview.status === 200) globalThis.WorldHome.render(overview.payload);
+    if (overview.status === 200) {
+      globalThis.WorldHome.render(overview.payload);
+    }
     else setMessage("admin-error", "首页与报表读取失败（" + overview.status + "），请刷新重试。");
   }
   await refreshKeys(generation, current);
@@ -307,6 +385,12 @@ async function refreshAdmin() {
   if (DETAIL_PAGES[state.page]) {
     state.details[state.page] = null;
     await loadDetail(state.page);
+  }
+  if (state.page === "world-exposure" && current()) {
+    const exposure = await request("GET", "/api/admin/world-exposure");
+    if (!current()) return;
+    if (exposure.status === 401 || exposure.status === 403) { sessionLost(); return; }
+    globalThis.WorldExposure?.render(exposure.status === 200 ? exposure.payload : null);
   }
   if (state.page === "market" && current()) {
     await loadMarketHistory(generation, pageVersion);
@@ -331,26 +415,31 @@ async function refreshAdmin() {
     await loadEngineering(generation, pageVersion);
   }
   if (state.page === "history" && current()) {
-    await loadHistoryIndex();
+    await loadHistoryIndex(historyState().cursor !== null);
+    if (restore && current() && historyState().request === 0 && historyState().resumePosition)
+      await openHistoryPosition(historyState().resumePosition);
+    if (!current()) return;
     await loadBranchRuns();
   }
   return current();
 }
 
 function renderAdminCut(view) {
-  $("context-time").textContent = (view.runId ? view.runId + " · " : "") + view.timeMillis + " 毫秒";
-  setStatus("管理员视角 · 已确认记录 " + view.position);
+  const run = view.runId || state.adminRun;
+  $("context-time").textContent = (run ? run + " · " : "") + view.timeMillis + " 毫秒";
+  $("context-identity").textContent = "实时 · 管理员";
+  setAccountContext(null);
+  setStatus("已确认记录 " + view.position);
 }
 
 function renderAdmin(view) {
   state.position = view.position;
-  $("context-time").textContent = view.runId + " · " + view.timeMillis + " 毫秒";
+  renderAdminCut(view);
   $("metric-accounts").textContent = String(view.accounts.length);
   $("metric-pending").textContent = String(view.pendingCount);
   $("metric-trades").textContent = String(view.trades.length);
   $("metric-position").textContent = view.position;
   if (!$("advance-target").value) $("advance-target").value = String(BigInt(view.timeMillis) + 1000n);
-  setStatus("管理员视角 · 已确认记录 " + view.position);
 
   const snapshot = $("snapshot");
   snapshot.replaceChildren();
@@ -374,10 +463,10 @@ function renderAdmin(view) {
 
   const startup = view.startup || {};
   const companies = startup.companies || [];
-  $("startup-status").textContent = "当前登记 " + companies.length + " 家发行人 · 确认记录 "
+  $("startup-status").textContent = "当前登记 " + companies.length + " 家公司 · 确认记录 "
     + text(startup.position) + " · 进行中阅读 " + text(startup.activeReadings);
   fillTable("startup-companies", companies, (tr, row) => {
-    cell(tr, text(row.name) + " / " + text(row.symbol));
+    cell(tr, text(row.name) + " / " + (row.symbol || "未上市"));
     cell(tr, row.cash, "num");
     cell(tr, (row.managers || []).join("、") || "空缺");
     cell(tr, row.hasCharter ? row.boardSeats : "未建立");
@@ -535,9 +624,10 @@ async function advance() {
 
 // ---------------------------------------------------------------- 个人
 
-async function enterPerson(personId) {
+async function enterPerson(personId, focusHeading = false) {
   showMode("person");
   $("person-name").textContent = "正在读取人物…";
+  if (focusHeading) $("person-title").focus();
   setStatus("个人视角");
   await refreshPerson();
 }
@@ -547,43 +637,59 @@ async function refreshPerson() {
   clearPersonalInterview();
   clearPersonalBank();
   const generation = state.generation;
+  const revision = ++state.personRefresh;
+  const current = () => revision === state.personRefresh && isCurrent(generation) && state.mode === "person";
   let result;
   try {
-    result = await request("GET", "/api/me/view");
+    result = state.personChart
+      ? await request("POST", "/api/me/view", state.personChart)
+      : await request("GET", "/api/me/view");
   } catch (failure) {
-    if (isCurrent(generation) && state.mode === "person") {
+    if (current()) {
       setMessage("person-error", failure.message);
+      setStatus($("context-account").textContent ? "连接失败 · 显示上次本人资料" : "尚未取得本人资料");
     }
     return;
   }
-  if (!isCurrent(generation) || state.mode !== "person") {
+  if (!current()) {
     return;
   }
-  if (result.status === 401) {
+  if (result.status === 401 || result.status === 403) {
     sessionLost();
     return;
   }
   if (result.status !== 200 || !result.payload) {
     setMessage("person-error", "读取个人视图失败（" + result.status + "）。");
+    setStatus($("context-account").textContent ? "读取失败 · 显示上次本人资料" : "尚未取得本人资料");
     return;
   }
   setMessage("person-error", "");
   const view = result.payload;
+  const runId = result.headers?.get("X-World-Run-Id");
+  globalThis.PersonTakeover?.person(result.headers?.get("X-Person-Action-Mode"), view.personPartyId,
+    result.headers?.get("X-Person-Takeover-Available"));
+  $("context-time").textContent = (runId ? decodeURIComponent(runId) + " · " : "") + view.timeMillis + " 毫秒";
+  const person = view.displayName && !view.displayName.includes(view.personPartyId)
+    ? view.displayName + "（" + view.personPartyId + "）" : view.displayName || view.personPartyId;
+  $("context-identity").textContent = "实时 · " + person;
+  setAccountContext([...new Set((view.accounts || []).map(row => row.accountId))]);
+  setStatus("本人资料已确认");
+  renderPersonRelations(view);
+  renderPersonResearch(view.personalResearch);
   renderPersonalMedia(view.media);
   await loadGroups(generation, null);
-  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (!current()) return;
   await loadOperations(generation, null);
-  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (!current()) return;
   await loadResearch(generation, null);
-  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (!current()) return;
   await loadManufacturing(generation, null);
-  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (!current()) return;
   await renderPersonalInterview((view.media && view.media.tools) || view.tools, generation);
-  if (!isCurrent(generation) || state.mode !== "person") return;
-  $("context-time").textContent = "人物观察 · " + view.timeMillis + " 毫秒";
+  if (!current()) return;
   $("person-name").textContent = view.displayName || view.personPartyId;
   await loadPersonalBank(generation);
-  if (!isCurrent(generation) || state.mode !== "person") return;
+  if (!current()) return;
 
   const summary = $("person-summary");
   summary.replaceChildren();
@@ -595,6 +701,7 @@ async function refreshPerson() {
     ["观察", view.observations],
     ["可用工具", (view.tools || []).join("、")]
   ];
+  if (typeof view.decisionPaused === "boolean") pairs.push(["我的新决定",view.decisionPaused ? "已暂停，已排程事务继续" : "已启用"]);
   for (const [label, value] of pairs) {
     const dt = document.createElement("dt");
     dt.textContent = label;
@@ -603,33 +710,439 @@ async function refreshPerson() {
     summary.append(dt, dd);
   }
 
+  renderPersonPortfolios(view.portfolios || [], view.portfolioReturns || {});
+  renderFundUnits(view.fundUnits, generation);
+  const ownSettlement = (view.accounts || []).some(row => row.settlement);
+  if ($("person-settlement-heading")) $("person-settlement-heading").hidden = !ownSettlement;
   fillTable("person-accounts", view.accounts, (tr, row) => {
     cell(tr, row.accountId);
     cell(tr, row.kind);
     cell(tr, row.cash, "num");
     cell(tr, row.availableCash, "num");
+    if (ownSettlement) renderSettlementCell(tr,row.settlement);
   });
+  const showHoldingWeights = (view.holdings || []).some(row => Object.hasOwn(row, "issuedSharePercent"));
+  $("person-holding-nav-heading").hidden = !showHoldingWeights;
+  $("person-holding-issue-heading").hidden = !showHoldingWeights;
+  $("person-holding-basis").hidden = !showHoldingWeights;
   fillTable("person-holdings", view.holdings, (tr, row) => {
     cell(tr, row.accountId);
     cell(tr, row.symbol);
     cell(tr, row.quantity, "num");
     cell(tr, row.available, "num");
+    if (showHoldingWeights) {
+      cell(tr, row.ownerNavPercent == null ? "—" : row.ownerNavPercent + "%", "num");
+      cell(tr, row.issuedSharePercent == null ? "—" : row.issuedSharePercent + "%", "num");
+    }
   });
   fillTable("person-market", view.market, (tr, row) => {
     cell(tr, row.symbol);
+    const policy = view.personalResearch?.materialTrading;
+    const own = policy?.restrictions.filter(item => item.symbol === row.symbol) || [];
+    if (own.length) {
+      const detail = document.createElement("details");
+      const title = document.createElement("summary");
+      title.textContent = "本人新单受限 · 等待正式披露";
+      detail.append(title, document.createTextNode(policy.rule + " 本人涉及的报告：" +
+        own.map(item => item.document + " v" + item.version).join("、")));
+      tr.firstElementChild.appendChild(detail);
+    }
+    if (row.issuerResolution) {
+      const detail = document.createElement("details");
+      const title = document.createElement("summary");
+      title.textContent = row.issuerResolution.openedAtMillis == null ? "银行处置规则" : "发行人待处置，已停牌";
+      detail.append(title, document.createTextNode(row.issuerResolution.rule));
+      tr.firstElementChild.appendChild(detail);
+    }
     cell(tr, row.lastPrice, "num");
     cell(tr, row.referencePrice, "num");
-    cell(tr, ({ OPENING_REFERENCE: "开局参考", EX_DIVIDEND_REFERENCE: "除息参考", LAST_TRADE: "实际成交" })[row.referenceSource] || row.referenceSource || "暂无");
+    cell(tr, ({ OPENING_REFERENCE: "开局参考", EX_DIVIDEND_REFERENCE: "除息参考", TRADE: "实际成交", MISSING: "缺少估值依据" })[row.referenceSource] || row.referenceSource || "暂无");
+    cell(tr, row.referenceAtMillis, "num");
+    cell(tr, row.referenceAgeMillis, "num");
     cell(tr, row.lastTradeQuantity, "num");
     cell(tr, row.bestBid, "num");
+    if (row.bestBidQuantity != null) cell(tr, row.bestBidQuantity, "num");
     cell(tr, row.bestAsk, "num");
+    if (row.bestAskQuantity != null) cell(tr, row.bestAskQuantity, "num");
+    if (row.priceBand) {
+      const b = row.priceBand;
+      const source = { PREVIOUS_TRADED_CLOSE: "前次收盘", OPENING_REFERENCE: "开局参考", EX_DIVIDEND_REFERENCE: "除息参考" };
+      cell(tr, b.lower == null ? "缺少有效基准，暂停申报" : b.lower + " – " + b.upper + "（" + source[b.source] + " " + b.basis + "）");
+    }
+    if (row.sessionStatus) cell(tr, sessionLabels[row.sessionStatus] || row.sessionStatus);
   });
+  renderPersonChart(view);
+  const personMode = result.headers?.get("X-Person-Action-Mode");
+  await Promise.all([globalThis.PersonOrders?.load(personMode, generation), globalThis.Newsletters?.load(personMode, generation)]);
+  if (!current()) return;
+  const depthVisible = (view.market || []).some(row => row.bestBidQuantity != null);
+  $("person-best-bid-quantity").hidden = !depthVisible;
+  $("person-best-ask-quantity").hidden = !depthVisible;
+  $("person-session-status-heading").hidden = !(view.market || []).some(row => row.sessionStatus);
+  $("person-price-band-heading").hidden = !(view.market || []).some(row => row.priceBand);
   $("person-catalog").textContent = view.catalog === 0
     ? "当前没有可见资料。" : "共 " + view.catalog + " 条可见目录项。";
   await renderPersonalDialogue(generation);
   await renderPersonalEvidence(generation);
   await renderPersonalSocial(generation);
   await renderPersonalEngineering(generation);
+  if (current()) {
+    renderPersonalReports(view.publicReports || []);
+    await globalThis.PersonLibrary?.refresh(view.personPartyId, generation);
+  }
+}
+
+const fundClaimFields = [
+  ["units","基金份额（份）"],["marketValue","份额市值（元）"],["subscriptionAdvance","申购预付款（元）"],
+  ["redemptionReceivable","赎回应收款（元）"],["productLiability","产品预收及赎回应付款（元）"]
+];
+
+function clearPersonChart() {
+  $("person-chart-svg").replaceChildren();
+  $("person-chart-svg").setAttribute("hidden", "");
+  $("person-chart-caption").textContent = "";
+  fillTable("person-chart-bars", [], () => {});
+  show("person-chart-output", false);
+}
+
+function renderPersonChart(view) {
+  const select = $("person-chart-symbol");
+  const quotes = view.market || [];
+  show("person-chart-card", quotes.length > 0);
+  select.replaceChildren();
+  for (const symbol of ["", ...quotes.map(row => row.symbol)]) {
+    const option = document.createElement("option");
+    option.value = symbol;
+    option.textContent = symbol || "选择证券";
+    select.appendChild(option);
+  }
+  select.value = state.personChart?.symbol || "";
+  clearPersonChart();
+  const chart = view.publicMarketBars;
+  if (!chart) return;
+  show("person-chart-output", true);
+  $("person-chart-period").value = chart.period;
+  const caption = $("person-chart-caption");
+  if (chart.bars.length) renderCandleChart(chart, $("person-chart-svg"), caption);
+  else caption.textContent = chart.available ? "本期尚无公开成交。" : "本运行未启用撮合。";
+  caption.textContent += " 截止 " + chart.timeMillis + " 模拟毫秒。";
+  fillTable("person-chart-bars", chart.bars, (tr, row) => {
+    cell(tr, row.startMillis); cell(tr, row.endMillis); cell(tr, row.complete ? "已完成" : "进行中");
+    for (const key of ["open", "high", "low", "close"]) cell(tr, row[key], "num");
+    cell(tr, row.volume == null ? volumeStatusLabel(row.volumeStatus) : row.volume, "num");
+    cell(tr, row.amount, "num");
+  });
+}
+
+function renderPersonPortfolios(portfolios, returns = {}) {
+  const container = $("person-owner-value-rows");
+  container.replaceChildren();
+  $("person-owner-valuations").hidden = portfolios.length === 0;
+  for (const row of portfolios) {
+    const heading = document.createElement("h3");
+    heading.textContent = (row.kind === "PERSONAL" ? "本人财产" : "受托产品") + " · " + row.ownerId;
+    container.appendChild(heading);
+    const bank = row.bankClaims;
+    periodicDl(container, [
+      ["净资产", row.netWorth ?? label("valuation", row.valuationStatus)], ["现金（含冻结）", row.cash],
+      ["持仓市值", row.holdings], ["存款本金", bank.deposits], ["存款应收利息", bank.depositInterestReceivable],
+      ["托管受益额", bank.custodyBeneficial], ["应收股息", row.dividendReceivable], ["应付股息", row.dividendPayable],
+      ["未偿借款本金", bank.loanPrincipal], ["借款应付利息", bank.loanInterestPayable],
+      ...(row.fundClaims ? fundClaimFields.map(([key,label]) => [label,row.fundClaims[key]]) : [])
+    ]);
+    const period = returns[row.ownerId];
+    if (period) periodicDl(container, [
+      ["开局至今表现", label("performance",period.status)], ["时间加权收益率",period.returnRate],
+      ["净值指数（开局为 1）",period.index], ["最大回撤",period.maxDrawdown]
+    ]);
+  }
+}
+
+function renderSettlementCell(tr, settlement) {
+  if (!settlement) { cell(tr, null); return; }
+  const td = document.createElement("td");
+  tr.appendChild(td);
+  const details = document.createElement("details"), summary = document.createElement("summary");
+  summary.textContent = "可转出 " + settlement.withdrawableCash + " 元";
+  details.appendChild(summary);
+  periodicDl(details,[["可买入（元）",settlement.tradingAvailable],["买单冻结（元）",settlement.orderFrozen],
+    ["卖出待交收（元）",settlement.unsettledSaleCash],["可转出（元）",settlement.withdrawableCash],
+    ["已付交易费（元）",settlement.transactionFees]]);
+  td.appendChild(details);
+}
+
+function renderFundUnits(book, generation) {
+  const card = $("person-fund-units");
+  if (!card) return;
+  card.hidden = !book;
+  const summary = $("fund-units-summary"), controls = $("fund-units-controls"), orders = $("fund-units-orders");
+  summary.replaceChildren(); controls.replaceChildren(); orders.replaceChildren();
+  $("fund-units-status").textContent = "";
+  if (!book) return;
+  const pairs = [["产品",book.productId],["单位净值（元）",book.unitNav ?? "当前无法完整估值"],
+    ["已登记份额",book.totalUnits],["产品净资产（元）",book.netAssets ?? "当前无法完整估值"],["申赎费用（元）","0.00"],
+    ["下次确认（世界毫秒）",book.nextCutoffMillis ?? "—"],["下次支付（世界毫秒）",book.nextPaymentMillis ?? "—"]];
+  if (book.manager) pairs.push(["待确认申购款（元）",book.totalPendingSubscriptions],["待确认赎回（份）",book.totalPendingRedemptions],
+    ["已确认应付款（元）",book.totalPayables],["结算专户（元）",book.settlementCash],["投资账户现金（元）",book.operatingCash]);
+  if (book.holder) pairs.push(["本人份额",book.ownUnits],["本人可赎回份额",book.availableUnits],
+    ["本人待确认申购款（元）",book.pendingSubscription],["本人待确认赎回（份）",book.pendingRedemption],["本人应收赎回款（元）",book.receivable]);
+  periodicDl(summary,pairs);
+  if (!book.holder) return;
+  for (const [action, label, step] of [["SUBSCRIBE","申购金额（元）","0.01"],["REDEEM","赎回份额（份）","0.0001"]]) {
+    const form = document.createElement("form"), field = document.createElement("label"), input = document.createElement("input");
+    const button = document.createElement("button");
+    field.textContent = label; input.type = "number"; input.step = step; input.min = step; input.required = true;
+    button.type = "submit"; button.textContent = action === "SUBSCRIBE" ? "提交申购" : "提交赎回";
+    field.appendChild(input); form.append(field,button); controls.appendChild(form);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      guard(submitFundUnits(book, action, "web-" + crypto.randomUUID(), input.value, button, generation));
+    });
+  }
+  for (const order of book.orders || []) {
+    const line = document.createElement("div"), description = document.createElement("p");
+    line.appendChild(description);
+    const unit = order.kind === "SUBSCRIBE" ? "元" : "份";
+    description.textContent = order.id + " · " + (order.kind === "SUBSCRIBE" ? "申购 " : "赎回 ") + order.requested + unit
+      + "，待确认 " + order.remaining + unit + "，已确认 " + order.confirmedUnits + "份 / " + order.confirmedAmount + "元"
+      + (order.cancelledAt == null ? "" : "，已撤回 " + order.cancelledRemainder + unit)
+      + (order.kind === "REDEEM" ? "，已付 " + order.paidAmount + "元，待付 " + order.receivable + "元" : "，尾差退款 " + order.roundingRefund + "元");
+    if (order.confirmations?.length) {
+      const details = document.createElement("details"), title = document.createElement("summary");
+      title.textContent = "查看逐批确认"; details.appendChild(title);
+      for (const fill of order.confirmations) {
+        const entry = document.createElement("p");
+        entry.textContent = "确认时点 " + fill.cutoff + "，单位净值 " + fill.unitNav + " 元，确认 " + fill.units + " 份 / " + fill.amount + " 元"
+          + (fill.payableAt == null ? "，尾差退款 " + fill.refund + " 元" : fill.paidAt == null ? "，预计支付时点 " + fill.payableAt : "，实际支付时点 " + fill.paidAt);
+        details.appendChild(entry);
+      }
+      line.appendChild(details);
+    }
+    if (/[1-9]/.test(String(order.remaining))) {
+      const cancel = document.createElement("button"); cancel.type="button"; cancel.textContent="撤回申请";
+      cancel.setAttribute("aria-label","撤回申请 " + order.id);
+      cancel.dataset.personWrite = "true";
+      cancel.addEventListener("click", () => guard(submitFundUnits(book,"CANCEL",order.id,null,cancel,generation)));
+      line.appendChild(cancel);
+    }
+    orders.appendChild(line);
+  }
+}
+
+async function submitFundUnits(book, action, requestId, amount, button, generation) {
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  button.disabled = true;
+  const payload = { revision: book.revision, requestId, action };
+  if (amount !== null) payload.amount=amount;
+  try {
+    const result = await request("POST","/api/me/fund-units",payload);
+    if (!isCurrent(generation) || state.mode !== "person") return;
+    if (result.status === 401) { sessionLost(); return; }
+    if (result.status === 200 && result.payload?.person === book.person && result.payload.orders?.some(o => o.id === requestId)) {
+      const receipt = (action === "CANCEL" ? "已撤回尚未确认的申请余额。" : "已受理，等待交易日统一确认。") + " 申请编号 " + requestId;
+      renderFundUnits(result.payload, generation);
+      $("fund-units-status").textContent = receipt;
+      let refreshFailed = false;
+      try { await refreshPerson(); }
+      catch (failed) { refreshFailed = true; }
+      if (!isCurrent(generation) || state.mode !== "person") return;
+      $("fund-units-status").textContent = receipt + (refreshFailed || !$("person-error").hidden ? " 其余资料刷新失败，请稍后重试。" : "");
+    } else {
+      $("fund-units-status").textContent = result.payload?.message || "未能受理，刷新后可核对本人申请。";
+    }
+  } catch (failure) {
+    if (isCurrent(generation) && state.mode === "person") $("fund-units-status").textContent="尚未取得回执，请刷新核对申请编号 " + requestId;
+  } finally { button.disabled=false; }
+}
+
+function renderPersonResearch(research) {
+  const timeline = $("person-research-timeline");
+  timeline.replaceChildren();
+  $("person-research-card").hidden = !research;
+  if (!research) return;
+  function add(label, value) {
+    if (value === undefined || value === null || value === "") return;
+    const term = document.createElement("dt");
+    const detail = document.createElement("dd");
+    term.textContent = label;
+    detail.textContent = value;
+    timeline.append(term, detail);
+  }
+  if (research.goal) {
+    const plan = research.goal.personalPlan;
+    add("开局经历（实验设定）", plan.initialExperience);
+    add("个人目标", research.goal.purpose);
+    add("取舍", research.goal.tradeoff);
+    add("何时复查个人安排", plan.reviewCondition);
+    add("我想查证的问题", plan.worldQuestion);
+    if (plan.targetLiquidCash !== undefined) add("资金安排", "希望保留 " + plan.targetLiquidCash + " 元，当前可用 " + plan.availableCash + " 元");
+  }
+  for (const [label, entry] of [["先前判断", research.previous], ["当前判断", research.current]]) {
+    if (!entry) continue;
+    add(label, entry.note.judgment);
+    add("判断时点", entry.observedAt + " 毫秒");
+    add("依据", entry.note.evidence.map(ref => ref.docId + " v" + ref.version).join("、"));
+    add("修正原因", entry.note.changeReason);
+    add("再次评估的条件", entry.note.reviewCondition);
+  }
+  if (research.decision) {
+    const row = research.decision;
+    add("引用判断的决定", row.tool + " · " + (row.ownStatement?.basis || ""));
+    add("执行回报", row.businessReject || row.orderStatus || row.execution || row.outcome);
+  }
+  for (const item of research.contactAssessments || []) {
+    add("我对 " + item.assessment.personPartyId + " 的判断", item.assessment.judgment);
+    add("交往依据", item.assessment.docId + " v" + item.assessment.version);
+  }
+}
+
+function renderPersonRelations(view, historical = false) {
+  const person = view.personPartyId;
+  if (!historical) {
+    const cuts = view.personalResearch?.portfolioHistory || [];
+    const selector = $("relation-history");
+    selector.replaceChildren();
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "当前关系";
+    selector.appendChild(option);
+    for (const cut of cuts) {
+      const entry = document.createElement("option");
+      entry.value = cut.digest;
+      entry.textContent = "本人资产观察 · " + cut.timeMillis + " 毫秒";
+      selector.appendChild(entry);
+    }
+    selector.value = "";
+    $("relation-history-label").hidden = cuts.length === 0;
+  }
+  const roles = { RESEARCHER: "研究员", PORTFOLIO_MANAGER: "基金经理", RISK_OFFICER: "风控",
+    EXECUTION_TRADER: "交易员", JOURNALIST: "记者", EDITOR: "编辑", COMPANY_MANAGER: "公司经理" };
+  const rows = [
+    ...(view.activeAppointments || []).map(a => ({ from: person, layer: "任职", relation: roles[a.role] || a.role,
+      to: a.organization, validFrom: a.startsAt, validUntil: a.endsAt, basis: "任期 " + a.startsAt + " 至 " + a.endsAt + " 毫秒" })),
+    ...view.accounts.map(a => ({ from: person, layer: "账户", relation: a.kind === "PERSONAL" ? "本人所有" : "获授权查看",
+      to: a.accountId, quantity: a.availableCash, unit: "元", timeMillis: view.timeMillis, basis: "账户属主 " + a.ownerId + " · 可用余额" })),
+    ...view.holdings.map(h => ({ from: h.accountId, layer: "持仓", relation: "持有",
+      to: h.symbol, quantity: h.quantity, unit: "股", timeMillis: view.timeMillis, basis: "可卖 " + h.available + " 股" +
+        (h.issuedSharePercent == null ? "" : " · 占当时已发行股份 " + h.issuedSharePercent + "%") })),
+    ...(!historical ? view.businessRelations || [] : []),
+    ...(view.media?.documents?.rows || []).map(d => ({ from: person, layer: "阅读", relation: "读完",
+      to: d.docId + " v" + d.version, basis: d.title + " · 完成于 " + d.completedAtMillis + " 毫秒" })),
+    ...(view.personalResearch?.namedReadings || []).map(d => ({ from: d.personPartyId, layer: "交往",
+      relation: ({DIRECT_MESSAGE: "来信", INTERVIEW_TURN: "采访发言", NAMED_FORECAST: "具名预测"})[d.kind],
+      to: person, basis: d.docId + " v" + d.version }))
+  ];
+  state.personRelations = { person, timeMillis: view.timeMillis, rows, historical };
+  const focus = $("relation-focus");
+  const hasBusiness = !historical && view.businessRelations?.length > 0;
+  const previous = focus.children.length ? focus.value : (hasBusiness ? "" : person);
+  const nodes = new Set([person, ...rows.flatMap(row => [row.from, row.to])]);
+  focus.replaceChildren(...Array.from(hasBusiness ? ["", ...nodes] : nodes, node => {
+    const option = document.createElement("option");
+    option.value = node;
+    option.textContent = node || "全部可见对象";
+    return option;
+  }));
+  focus.value = nodes.has(previous) || (hasBusiness && previous === "") ? previous : person;
+  $("person-relations").hidden = false;
+  filterPersonRelations();
+}
+
+function visiblePersonRelations() {
+  const query = $("relation-search").value.trim().toLowerCase();
+  const layer = $("relation-layer").value;
+  const { rows } = state.personRelations;
+  const focus = $("relation-focus").value;
+  const near = new Set([focus]);
+  if ($("relation-depth").value === "2") {
+    for (const row of rows) {
+      if (row.from === focus) near.add(row.to);
+      if (row.to === focus) near.add(row.from);
+    }
+  }
+  return rows.filter(row => (!focus || near.has(row.from) || near.has(row.to)) && (!layer || row.layer === layer)
+    && [row.from, row.to, row.relation, row.basis].some(value => value.toLowerCase().includes(query)));
+}
+
+function relationMeasure(row) {
+  if (row.quantity == null) return "";
+  return row.quantity + " " + row.unit + (row.timeMillis == null ? "" : " · " + row.timeMillis + " 毫秒");
+}
+
+function filterPersonRelations() {
+  if (state.mode !== "person" || !state.personRelations) return;
+  const rows = visiblePersonRelations();
+  fillTable("relation-edges", rows, (tr, row) => {
+    for (const value of [row.from, row.relation, row.to, [row.basis, relationMeasure(row)].filter(Boolean).join(" · ")]) cell(tr, value);
+  });
+  const graph = $("relation-graph");
+  graph.replaceChildren();
+  const branches = new Map();
+  function nodeButton(node) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = node;
+    button.setAttribute("aria-label", "查看 " + node + " 的关系");
+    button.onclick = () => { $("relation-focus").value = node; filterPersonRelations(); };
+    return button;
+  }
+  for (const row of rows) {
+    if (!branches.has(row.from)) {
+      const path = document.createElement("div");
+      path.className = "relation-path";
+      const ends = document.createElement("ul");
+      path.append(nodeButton(row.from), ends);
+      branches.set(row.from, ends);
+      graph.append(path);
+    }
+    const link = document.createElement("li");
+    link.append(document.createTextNode("→ " + row.relation + " → "), nodeButton(row.to));
+    if (row.layer === "经营" || row.layer === "资金") link.append(" · " + relationMeasure(row) + " · " + row.basis);
+    branches.get(row.from).append(link);
+  }
+  $("relation-cut").textContent = (state.personRelations.historical ? "本人当时所见资产 " : "当前世界时点 ")
+    + state.personRelations.timeMillis + " 毫秒 · " + rows.length + " 条可见关系";
+  $("relation-export").disabled = rows.length === 0;
+}
+
+
+
+function renderPersonalReports(reports) {
+  const list = $("person-report-versions");
+  list.replaceChildren();
+  $("person-public-reports").hidden = !reports.length;
+  for (const report of reports) {
+    const row = document.createElement("details");
+    const summary = document.createElement("summary");
+    const read = report.lastReadAt !== undefined;
+    summary.textContent = report.companyName + " · 第" + report.period + "期 · 公开 v" + report.version
+      + (read ? " · 已读" : " · 未读");
+    const source = document.createElement("p");
+    source.textContent = report.title + " · " + report.docId + " · 签发人 " + report.publisherName
+      + "（" + report.publisherPersonId + "） · 发布时间 " + worldTimeText(report.publishedAt);
+    if (report.readDurationMillis !== undefined) source.textContent += " · 阅读工时 " + report.readDurationMillis + " 毫秒";
+    row.append(summary, source);
+    if (read) {
+      const receipt = document.createElement("p");
+      receipt.textContent = "本人最后读完 " + worldTimeText(report.lastReadAt)
+        + (report.body === undefined ? " · 当前无法回忆正文" : "");
+      row.appendChild(receipt);
+    }
+    if (report.body !== undefined) {
+      const body = document.createElement("pre");
+      body.textContent = report.body;
+      row.appendChild(body);
+    } else {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = read ? "重新阅读此版本" : "阅读此版本";
+      button.dataset.personWrite = "true";
+      button.addEventListener("click", () => guard(scheduleDocumentReading(report.companyId,
+        report.docId, report.version, report.title, "person-report-feedback")));
+      row.appendChild(button);
+    }
+    list.appendChild(row);
+  }
 }
 
 async function switchPerson(personId) {
@@ -643,7 +1156,7 @@ async function switchPerson(personId) {
     show("login", true);
     return;
   }
-  await enterPerson(result.payload.personId);
+  await enterPerson(result.payload.personId, true);
 }
 
 // ---------------------------------------------------------------- 会话
@@ -678,31 +1191,33 @@ async function logout() {
 
 async function backToAdmin() {
   await logout();
-  await boot();
+  await boot(true);
 }
 
-async function boot() {
+async function boot(focusHeading = false) {
   try {
     const session = await request("GET", "/api/session");
     if (session.status === 200 && session.payload && session.payload.role === "ADMIN") {
       state.localAccess = session.payload.localAccess === true;
-      await enterAdmin();
+      if (await globalThis.PersonTakeover?.enterMarkedChild()) return;
+      await enterAdmin(true, focusHeading);
       return;
     }
     if (session.status === 200 && session.payload && session.payload.role === "PERSON") {
-      await enterPerson(session.payload.personId);
+      await enterPerson(session.payload.personId, focusHeading);
       return;
     }
     const local = await request("POST", "/api/session/local", {});
     if (local.status === 200 && local.payload?.role === "ADMIN") {
       state.localAccess = true;
-      await enterAdmin();
+      await enterAdmin(false, focusHeading);
       return;
     }
     showMode("login");
+    if (focusHeading) $("bootstrap").focus();
     setStatus("请先登录");
   } catch (failure) {
-    showMode("login");
+    showMode("login", false);
     setStatus(failure.message);
   }
 }
@@ -711,6 +1226,7 @@ async function boot() {
 // ---------------------------------------------------------------- 页面与非秘密场景配置
 const pages = {
   overview: ["世界首页", "从公司经营、股票行情和人物开始观察世界。"],
+  "world-exposure": ["世界关系", "按财产登记查看持有人与发行人的价格暴露。"],
   "world-market": ["股票行情", "查看当前世界的实际成交价格、成交量与委托。"],
   "world-companies": ["公司报表", "十家公司的资产、负债、利润与现金变化。"],
   "world-people": ["世界人物", "认识世界里的董事、经理、投资者与媒体人。"],
@@ -750,7 +1266,10 @@ function selectPage(page, refresh = true) {
   if (state.page === "groups" && page !== "groups") clearGroupsDom();
   if (state.page === "engineering" && page !== "engineering") clearEngineeringDom();
   if (state.page === "performance" && page !== "performance") clearPerformanceHistoryDom();
-  if (state.page === "history" && page !== "history") clearHistoryDom();
+  if (state.page === "history" && page !== "history") {
+    writeHistoryBookmark(null);
+    clearHistoryDom();
+  }
   state.page = page;
   state.pageVersion += 1;
   $("page-title").textContent = pages[page][0];
@@ -764,11 +1283,12 @@ function selectPage(page, refresh = true) {
     else node.removeAttribute("aria-current");
   });
   if (refresh) {
+    $("page-title").focus();
     setStatus("正在读取本页确认状态…");
     guard(refreshAdmin());
   }
 }
-function routeField(container, scene, name, labelText, value, choices) {
+function routeField(container, scene, name, labelText, value, choices, budgetPolicy) {
   const group = document.createElement("div");
   const label = document.createElement("label");
   const id = "route-" + scene + "-" + name;
@@ -781,14 +1301,16 @@ function routeField(container, scene, name, labelText, value, choices) {
     for (const item of choices) {
       const option = document.createElement("option");
       option.value = item;
-      option.textContent = item;
+      option.textContent = name === "providerPolicy" ? (item ? "开启 (high)" : "关闭") : item;
       control.appendChild(option);
     }
   } else {
     control.type = "number";
     control.step = "1";
     control.min = name === "maxOutputTokens" ? "128" : name === "maxTotalTokens" ? "256" : "1";
-    control.max = ({ maxCalls: 100, maxTotalTokens: 1000000, maxOutputTokens: 8192, maxConcurrency: 4 })[name];
+    control.max = ({ maxCalls: budgetPolicy === "long-horizon-v1" ? 2147483647 : budgetPolicy === "lifecycle-v1" ? 5000 : 100,
+      maxTotalTokens: budgetPolicy === "long-horizon-v1" ? Number.MAX_SAFE_INTEGER : budgetPolicy === "lifecycle-v1" ? 100000000 : 1000000,
+      maxOutputTokens: 8192, maxConcurrency: 4 })[name];
     control.required = true;
   }
   control.value = String(value);
@@ -817,6 +1339,7 @@ async function refreshRoutes(generation, current = () => true) {
     const card = document.createElement("section");
     card.className = "route-card";
     card.dataset.scene = route.scene;
+    if (route.budgetPolicy) card.dataset.budgetPolicy = route.budgetPolicy;
     const head = document.createElement("div"); head.className = "route-head";
     const title = document.createElement("h3");
     title.textContent = route.sceneLabel || route.scene;
@@ -828,8 +1351,9 @@ async function refreshRoutes(generation, current = () => true) {
     const fields = document.createElement("div"); fields.className = "route-fields";
     routeField(fields, route.scene, "slotId", "Key 槽位", route.slotId, ["key-1", "key-2", "key-3", "key-4", "key-5"]);
     routeField(fields, route.scene, "model", "模型", route.model, ["deepseek-flash", "deepseek-v4-pro"]);
-    routeField(fields, route.scene, "maxCalls", "调用上限", route.maxCalls);
-    routeField(fields, route.scene, "maxTotalTokens", "总 token 上限", route.maxTotalTokens);
+    routeField(fields, route.scene, "providerPolicy", "思考模式", route.providerPolicy || "", ["", "deepseek-thinking-high-v1"]);
+    routeField(fields, route.scene, "maxCalls", "累计调用上限", route.maxCalls, undefined, route.budgetPolicy);
+    routeField(fields, route.scene, "maxTotalTokens", "累计 token 上限", route.maxTotalTokens, undefined, route.budgetPolicy);
     routeField(fields, route.scene, "maxOutputTokens", "单次输出上限", route.maxOutputTokens);
     routeField(fields, route.scene, "maxConcurrency", "并发上限", route.maxConcurrency);
     card.append(head, fields); $("routes-list").appendChild(card);
@@ -841,9 +1365,11 @@ async function saveRoutes(event) {
   const generation = state.generation;
   const routes = Array.from($("routes-list").children, card => {
     const route = { scene: card.dataset.scene };
+    if (card.dataset.budgetPolicy) route.budgetPolicy = card.dataset.budgetPolicy;
     card.querySelectorAll("[data-field]").forEach(input => {
       const name = input.dataset.field;
-      if (name === "enabled") route[name] = input.checked;
+      if (name === "providerPolicy") { if (input.value) route[name] = input.value; }
+      else if (name === "enabled") route[name] = input.checked;
       else if (name.startsWith("max")) {
         const value = Number(input.value);
         if (!Number.isSafeInteger(value) || !/^[1-9][0-9]*$/.test(input.value)) throw new Error("预算必须填写正整数。");
@@ -926,11 +1452,12 @@ async function loadMarketHistory(generation = state.generation,
 function renderMarketHistory(view) {
   $("market-cut").textContent = view.runId + " · 记录 " + view.position
     + " · " + view.timeMillis + " 毫秒";
-  const statusText = view.available ? (view.marketClosed ? "撮合已收盘" : "撮合开放")
-    : "未启用撮合";
+  const statusText = view.issuerResolution?.openedAtMillis != null ? "发行人已进入处置，暂停交易" : sessionLabels[view.selectedSessionStatus] || (view.available
+    ? (view.marketClosed ? "撮合已收盘" : "撮合开放") : "未启用撮合");
   $("market-summary").textContent = statusText + " · 口径 " + basisLabel(view.basis)
     + " · 有成交桶 " + view.totalBars
-    + (view.truncated ? "（仅显示最近 500 根）" : "");
+    + (view.truncated ? "（仅显示最近 500 根）" : "")
+    + (view.issuerResolution ? " · " + view.issuerResolution.rule : "");
   $("market-bars-count").textContent = String(view.bars.length) + " / " + view.totalBars;
 
   const symbols = Array.isArray(view.symbols) ? view.symbols : [];
@@ -1029,9 +1556,8 @@ function volumeStatusLabel(value) {
   return ({ OK: "正常", OVERFLOW: "数量超出整数范围" })[value] || String(value || "—");
 }
 
-function renderCandleChart(view) {
+function renderCandleChart(view, svg = $("candle-chart"), caption = $("chart-caption")) {
   const bars = view.bars || [];
-  const svg = $("candle-chart");
   svg.replaceChildren();
   svg.setAttribute("hidden", "");
   if (!bars.length) return;
@@ -1046,7 +1572,7 @@ function renderCandleChart(view) {
     const low = priceToHundredths(bar.low);
     const close = priceToHundredths(bar.close);
     if (open === null || high === null || low === null || close === null) {
-      $("chart-caption").textContent = "价格字符串无法解析，请查看下表精确值。";
+      caption.textContent = "价格字符串无法解析，请查看下表精确值。";
       return;
     }
     const volume = volumeToBigInt(bar.volume);
@@ -1138,7 +1664,7 @@ function renderCandleChart(view) {
   svg.setAttribute("aria-label", (view.selectedSymbol || "证券") + " "
     + view.period + " 真实成交 OHLC 与成交量，共 " + bars.length + " 根；精确值见下方表格");
   svg.removeAttribute("hidden");
-  $("chart-caption").textContent = (view.selectedSymbol || "证券") + " · "
+  caption.textContent = (view.selectedSymbol || "证券") + " · "
     + ({ minute: "分钟", day: "模拟日", week: "模拟周" }[view.period] || view.period)
     + " · 显示最近 " + bars.length + " / 共 " + view.totalBars
     + " 个有成交桶 · 纵轴：元；横轴：模拟毫秒（近似坐标）";
@@ -1165,16 +1691,49 @@ function guard(promise) {
 /** 历史回看的本地状态；离开页面时整体清空。 */
 function historyState() {
   if (!state.history) {
-    state.history = { after: 0, limit: 50, cut: null, entries: [], selected: null,
-      request: 0, exportRequest: 0 };
+    state.history = { cursor: null, entries: [], selected: null, stale: false,
+      indexRequest: 0, request: 0, exportRequest: 0 };
   }
   return state.history;
 }
 
+/** 只随当前标签的浏览记录保存页码和位置。资格与数据在刷新后重新向服务端取得。 */
+function writeHistoryBookmark(bookmark) {
+  const navigation = globalThis.history;
+  if (!navigation || (!bookmark && !navigation.state?.worldHistory)) return;
+  const next = { ...navigation.state };
+  if (bookmark) next.worldHistory = bookmark;
+  else delete next.worldHistory;
+  navigation.replaceState(next, "");
+}
+
+function saveHistorySelection() {
+  const h = historyState();
+  if (state.mode === "admin" && state.page === "history" && state.adminRun && h.pageAfter != null) {
+    writeHistoryBookmark({ runId: state.adminRun, after: h.pageAfter, limit: h.pageLimit, selected: h.selected ?? h.resumePosition ?? null });
+  }
+}
+
+function renderHistoryHeader() {
+  const h = state.history;
+  if (state.mode !== "admin" || state.page !== "history" || h?.selected == null || !h.frameRun) return;
+  $("context-time").textContent = h.frameRun + " · 回看已确认位置 " + h.selected + " · " + h.frameTime + " 毫秒";
+  $("context-identity").textContent = "回看 · 管理员";
+  const latest = [state.position, h.indexCut, h.frameCut].reduce((last, cut) =>
+    cut != null && BigInt(cut) > BigInt(last) ? cut : last, "0");
+  $("status").textContent = "实时已确认至 " + latest
+    + (h.stale ? " · 索引待重连" : "");
+}
+
 /** 清空历史页 DOM 与本地状态（切页、切身份、退出时调用）。 */
 function clearHistoryDom() {
-  state.history = { after: 0, limit: 50, cut: null, entries: [], selected: null,
-    request: 0, exportRequest: 0 };
+  state.history = null;
+  historyState();
+  $("history-after").value = "0";
+  $("history-limit").value = "50";
+  $("history-position-input").value = "";
+  $("history-next").disabled = true;
+  $("history-index-status").textContent = "";
   ["history-run", "history-cut", "history-run-pos", "history-position", "history-position-cut",
     "history-time", "history-phase"].forEach(id => { $(id).textContent = "—"; });
   ["history-count", "history-checkpoint-status", "history-verify-result", "history-note",
@@ -1215,25 +1774,35 @@ function historyPositionValue() {
   return historyIntField("history-position-input", 1, "确认位置必须是大于 0 的整数。");
 }
 
-/** 读取历史索引页（只读）。 */
-async function loadHistoryIndex() {
-  const after = historyIntField("history-after", 0, "起始位置必须是非负整数。");
+/** 索引失败时保留最后成功收到的页和确认位置。 */
+function markHistoryStale(reason) {
+  const history = historyState();
+  history.stale = true;
+  renderHistoryHeader();
+  $("history-index-status").textContent = reason + (history.cursor === null ? " 尚未收到索引记录。" :
+    " 当前显示上次读取的记录，已读至位置 " + history.cursor + "。");
+}
+
+/** 从指定起点读索引，或按上一份非空回包的 nextAfter 获取后续。 */
+async function loadHistoryIndex(continueReading = false) {
+  if (state.mode !== "admin" || state.page !== "history") return;
+  const history = historyState();
+  const requestId = ++history.indexRequest;
+  const after = continueReading && history.cursor !== null ? history.cursor
+    : historyIntField("history-after", 0, "起始位置必须是非负整数。");
   if (after === null) return;
   const limit = historyIntField("history-limit", 1, "每页条数必须是正整数。");
   if (limit === null) return;
-  const history = historyState();
-  history.after = after;
-  history.limit = Math.min(limit, 200);
   const generation = state.generation;
   const pageVersion = state.pageVersion;
   const current = () => isCurrent(generation) && state.mode === "admin"
-    && state.page === "history" && pageVersion === state.pageVersion;
+    && state.page === "history" && pageVersion === state.pageVersion && history === state.history
+    && requestId === history.indexRequest;
   let result;
   try {
-    result = await request("GET",
-      "/api/admin/history?after=" + history.after + "&limit=" + history.limit);
+    result = await request("GET", "/api/admin/history?after=" + after + "&limit=" + Math.min(limit, 200));
   } catch (failure) {
-    if (current()) setMessage("history-error", failure.message);
+    if (current()) markHistoryStale("读取历史索引失败。");
     return;
   }
   if (!current()) return;
@@ -1242,18 +1811,32 @@ async function loadHistoryIndex() {
     return;
   }
   if (result.status !== 200 || !result.payload) {
-    setMessage("history-error", "读取历史索引失败（" + result.status + "）。");
+    markHistoryStale("读取历史索引失败（" + result.status + "）。");
     return;
   }
   setMessage("history-error", "");
-  renderHistoryIndex(result.payload);
+  const view = result.payload;
+  history.stale = false;
+  history.indexCut = view.cutPosition;
+  if (view.entries.length) history.cursor = view.nextAfter;
+  else if (!continueReading) history.cursor = null;
+  $("history-next").disabled = history.cursor === null;
+  const progress = history.cursor === null ? "尚未收到索引记录" : "已读至位置 " + history.cursor;
+  $("history-index-status").textContent = progress + "，读取时确认至 " + view.cutPosition + "。"
+    + (continueReading && !view.entries.length ? " 暂无后续记录。" : "");
+  if (!continueReading || view.entries.length) {
+    history.entries = view.entries;
+    history.pageAfter = Number(after);
+    history.pageLimit = Math.min(limit, 200);
+    saveHistorySelection();
+  }
+  renderHistoryIndex(view);
+  renderHistoryHeader();
 }
 
 /** 渲染历史索引（位置为精确字符串）。 */
 function renderHistoryIndex(view) {
   const history = historyState();
-  history.cut = Number(view.cutPosition);
-  history.entries = view.entries || [];
   $("history-run").textContent = view.runId || "—";
   $("history-cut").textContent = view.cutPosition;
   $("history-count").textContent = history.entries.length + " 条（每页上限 200）";
@@ -1275,6 +1858,7 @@ function renderHistoryIndex(view) {
 
 /** 打开某个确认位置的只读历史视图。 */
 async function openHistoryPosition(position) {
+  if (state.mode !== "admin" || state.page !== "history") return;
   if (!Number.isSafeInteger(position) || position < 1) {
     setMessage("history-error", "请先选择一个有效的确认位置。");
     return;
@@ -1306,7 +1890,14 @@ async function openHistoryPosition(position) {
   }
   setMessage("history-error", "");
   history.selected = position;
+  history.resumePosition = null;
+  $("history-position-input").value = String(position);
+  history.frameRun = result.payload.runId;
+  history.frameTime = result.payload.timeMillis;
+  history.frameCut = result.payload.cutPosition;
   renderHistoryView(result.payload);
+  renderHistoryHeader();
+  saveHistorySelection();
 }
 
 /** 历史总览字段顺序（固定，避免对象键序漂移）。 */
@@ -1794,6 +2385,39 @@ $("person-form").addEventListener("submit", (event) => {
   guard(switchPerson(personId));
 });
 $("logout").addEventListener("click", () => guard(logout()));
+$("relation-search").addEventListener("input", filterPersonRelations);
+$("relation-layer").addEventListener("change", filterPersonRelations);
+$("relation-focus").addEventListener("change", filterPersonRelations);
+$("relation-depth").addEventListener("change", filterPersonRelations);
+$("relation-history").addEventListener("change", () => guard(showRelationHistory()));
+async function showRelationHistory() {
+  const digest = $("relation-history").value;
+  const generation = state.generation;
+  state.personRelations = null;
+  $("relation-graph").replaceChildren();
+  $("relation-focus").replaceChildren();
+  fillTable("relation-edges", [], () => undefined);
+  $("relation-export").disabled = true;
+  $("relation-cut").textContent = "正在读取…";
+  const result = await request("GET", digest ? "/api/me/portfolio-history?digest=" + encodeURIComponent(digest) : "/api/me/view");
+  if (!isCurrent(generation) || state.mode !== "person" || $("relation-history").value !== digest) return;
+  if (result.status === 401) { sessionLost(); return; }
+  if (result.status !== 200) { $("relation-cut").textContent = "这份观察当前不可用。"; return; }
+  renderPersonRelations(result.payload, Boolean(digest));
+}
+$("relation-export").addEventListener("click", () => {
+  if (state.mode !== "person" || !state.personRelations) return;
+  const { person, timeMillis } = state.personRelations;
+  const payload = JSON.stringify({ person, timeMillis, observation: state.personRelations.historical ? "本人历史资产" : "当前关系", focus: $("relation-focus").value,
+    depth: Number($("relation-depth").value), layer: $("relation-layer").value,
+    search: $("relation-search").value, relations: visiblePersonRelations() }, null, 2);
+  const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "relations-" + person + "-" + timeMillis + ".json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 $("back-admin").addEventListener("click", () => guard(backToAdmin()));
 
 document.querySelectorAll("[data-page]").forEach(button => {
@@ -1801,6 +2425,15 @@ document.querySelectorAll("[data-page]").forEach(button => {
 });
 $("routes-form").addEventListener("submit", event => guard(saveRoutes(event)));
 $("history-load").addEventListener("click", () => guard(loadHistoryIndex()));
+$("history-next").addEventListener("click", () => guard(loadHistoryIndex(true)));
+globalThis.addEventListener?.("offline", () => {
+  if (state.mode !== "admin" || state.page !== "history") return;
+  historyState().indexRequest++;
+  markHistoryStale("连接中断。");
+});
+globalThis.addEventListener?.("online", () => {
+  if (state.mode === "admin" && state.page === "history" && historyState().stale) guard(loadHistoryIndex(true));
+});
 $("history-open").addEventListener("click", () => guard(openHistoryPosition(historyPositionValue())));
 $("history-live").addEventListener("click", () => selectPage("overview"));
 $("history-checkpoint").addEventListener("click", () => guard(downloadHistoryCheckpoint()));
@@ -1808,6 +2441,15 @@ $("history-verify").addEventListener("click",
   () => guard(verifyHistoryCheckpointText($("history-checkpoint-text").value)));
 $("branch-check").addEventListener("click", () => guard(checkBranchSupport()));
 $("branch-create").addEventListener("click", () => guard(createBranchRun()));
+for (const id of ["person-chart-symbol", "person-chart-period"]) {
+  $(id).addEventListener("change", () => {
+    if (state.mode !== "person") return;
+    const symbol = $("person-chart-symbol").value;
+    state.personChart = symbol ? {symbol, period: $("person-chart-period").value} : null;
+    clearPersonChart();
+    guard(refreshPerson());
+  });
+}
 $("refresh").addEventListener("click", () => guard(state.mode === "admin" ? refreshAdmin() : refreshPerson()));
 $("market-symbol").addEventListener("change", () => guard(loadMarketHistory()));
 $("market-period").addEventListener("change", () => guard(loadMarketHistory()));
@@ -1815,7 +2457,7 @@ $("market-refresh").addEventListener("click", () => guard(loadMarketHistory()));
 // ---------------------------------------------------------------- 管理详情页（公司 / 表现 / 人物任职 / 信息阅读）
 
 const LABELS = {
-  topic: { BUDGET: "预算授权", OPERATING_REVIEW: "经营考核", DIVIDEND_AUTHORIZATION: "分红授权" },
+  topic: { MANAGER_APPOINTMENT: "经理任免", BUDGET: "预算授权", OPERATING_REVIEW: "经营考核", DIVIDEND_AUTHORIZATION: "分红授权", DIGITAL_CESSATION: "数字服务停业决议", RESOURCE_CESSATION: "资源公司停业决议", RESOURCE_PRIMARY_OFFER: "资源公司普通股认购要约" },
   meeting: { CONVENED: "已召集", MATERIALS_FROZEN: "材料已冻结", REVIEWED: "已评分", VOTING: "表决中",
     ADOPTED: "已通过", REJECTED: "未通过", ADJOURNED_NO_QUORUM: "不足法定人数",
     IMPLEMENTED: "已实施", IMPLEMENTATION_FAILED: "实施失败" },
@@ -1847,6 +2489,10 @@ function label(group, value) {
 }
 
 function clearDetailDom() {
+  state.performanceOwnerPage = 1;
+  $("performance-prev").hidden = true;
+  $("performance-next").hidden = true;
+  $("performance-bank-claims").hidden = true;
   if ($("org-experiment-card")) $("org-experiment-card").hidden = true;
   for (const id of ["org-experiment-summary", "org-experiment-note", "org-experiment-checks"]) {
     if ($(id)) $(id).replaceChildren();
@@ -1892,7 +2538,8 @@ function clearDetailDom() {
 
 async function loadDetail(page) {
   if (page === "media") clearMediaDom();
-  const url = DETAIL_PAGES[page];
+  const url = page === "performance" && state.performanceOwnerPage > 1
+    ? DETAIL_PAGES.performance + "?ownerPage=" + state.performanceOwnerPage : DETAIL_PAGES[page];
   if (!url || state.mode !== "admin") return;
   const generation = state.generation;
   const pageVersion = state.pageVersion;
@@ -2209,7 +2856,9 @@ async function loadPersonalBank(generation) {
     cell(tr, row.kindLabel || row.kind);
     cell(tr, row.stageLabel || row.stage);
     cell(tr, frameResult(row));
-    cell(tr, row.reason);
+    const loanReceipt = ["LOAN_IMPAIR", "LOAN_WRITE_OFF"].includes(row.kind)
+      || (row.kind === "LOAN_REPAY" && /(?:recovery|provisionReleased)=/.test(row.receipt || ""));
+    cell(tr, loanReceipt && row.receipt ? row.reason + " · " + row.receipt : row.reason);
     cell(tr, row.atMillis);
   });
   const tools = (view.tools || []).join("、") || "无";
@@ -2221,12 +2870,18 @@ async function loadPersonalBank(generation) {
 const BANK_KIND_LABELS = {
   DEPOSIT: "存入", WITHDRAW: "取出", PAY: "支付",
   LOAN_REQUEST: "贷款申请", LOAN_ACCEPT: "接受冻结条款", LOAN_APPROVE: "批准本行合同",
-  LOAN_DRAW: "提款放款", LOAN_REPAY: "还本", LOAN_PAY_INTEREST: "付息"
+  LOAN_DRAW: "提款放款", LOAN_REPAY: "还本", LOAN_PAY_INTEREST: "付息",
+  LOAN_IMPAIR: "计提贷款减值", LOAN_WRITE_OFF: "核销贷款本金",
+  FACILITY_AUTHORIZE: "授权应急额度", FACILITY_DRAW: "提取应急资金", FACILITY_PAY: "偿还应急融资",
+  RESOLUTION_OPEN: "开始银行处置", RESOLUTION_DISTRIBUTE: "依顺位分配准备金"
 };
 
 function renderPersonalBankOps(view) {
   state.personalBank = view;
   const kinds = (view && view.entitlements) || [];
+  $("person-bank-facility-note").textContent = view?.facilityTerms
+    ? [view.facilityTerms, ...(view.facilities || []).map(f => f.id + " · 额度 " + f.limit + " 元，未偿本金 " + f.outstanding + " 元")].join(" ")
+    : "";
   show("person-bank-ops", Boolean(view && view.available) && kinds.length > 0);
   const kindSel = $("person-bank-kind");
   const previous = kindSel.value;
@@ -2251,7 +2906,7 @@ function renderPersonalBankOps(view) {
   const options = (view && view.options) || {};
   fill("person-bank-subject", options.subjects || [{ token: "", label: "本人" }]);
   $("person-bank-subject").value = ((options.subjects || [])[0] || {}).token || "";
-  fill("person-bank-source", (options.cash || []).concat(options.deposits || []));
+  fill("person-bank-source", (options.cash || []).concat(options.deposits || [], options.custody || []));
   fill("person-bank-payee", options.payees || []);
   const loanSel = $("person-bank-loan");
   loanSel.replaceChildren();
@@ -2278,13 +2933,60 @@ function renderPersonalBankOps(view) {
 
 /** 按动作显示/隐藏字段：资金类要账户，生命周期要合同，申请要条款。 */
 function togglePersonalBankRows() {
-  const kind = $("person-bank-kind").value;
   const view = state.personalBank || {};
   const options = view.options || {};
   const party = $("person-bank-subject").value || view.personPartyId;
+  const products = new Set((options.subjects || []).filter(subject => subject.internalOnly).map(subject => subject.token));
+  const kindSelect = $("person-bank-kind");
+  if (options.custody) {
+    for (const option of kindSelect.options) {
+      option.hidden = option.disabled = products.has(party)
+        && !["DEPOSIT", "WITHDRAW", "PAY", "LOAN_IMPAIR", "LOAN_WRITE_OFF"].includes(option.value);
+    }
+    if (kindSelect.selectedOptions[0]?.disabled) kindSelect.value = "PAY";
+    const payees = (options.payees || []).filter(row => products.has(party)
+      ? row.partyKey === party : !products.has(row.partyKey));
+    const payee = $("person-bank-payee");
+    const previous = payee.value;
+    payee.replaceChildren();
+    for (const row of payees) payee.add(new Option(row.label, row.token));
+    if (payees.some(row => row.token === previous)) payee.value = previous;
+  }
+  const kind = kindSelect.value;
+  const loss = kind === "LOAN_IMPAIR" || kind === "LOAN_WRITE_OFF";
+  const lossRow = $("person-bank-loss-row");
+  if (lossRow) {
+    lossRow.hidden = !loss;
+    $("person-bank-subject").hidden = loss;
+    document.querySelector('label[for="person-bank-subject"]').hidden = loss;
+    const work = $("person-bank-work");
+    if (work.dataset.lossWork !== undefined) {
+      work.value = work.dataset.lossWork;
+      delete work.dataset.lossWork;
+      work.disabled = false;
+    }
+    if (loss) {
+      work.dataset.lossWork = work.value;
+      work.value = "60000";
+      work.disabled = true;
+      const selector = $("person-bank-loss-loan"), selectedLoan = selector.value;
+      selector.replaceChildren();
+      for (const row of view.lossExposures || []) {
+        const limit = kind === "LOAN_IMPAIR" ? row.maxImpair : row.maxWriteOff;
+        selector.add(new Option(row.bank + " · " + row.loanId + " · " + row.borrower + " · 表内 " + row.onbook
+          + " · 组合拨备 " + row.portfolioAllowance + " · 已核销 " + row.writtenOff
+          + " · " + (row.overdue === "true" ? "逾期" : "未逾期") + " · 本次上限 " + limit + " 元", row.loanId));
+      }
+      if ([...selector.options].some(option => option.value === selectedLoan)) selector.value = selectedLoan;
+      $("person-bank-loss-terms").textContent = view.lossTerms;
+    } else {
+      $("person-bank-loss-loan").replaceChildren();
+      $("person-bank-loss-terms").textContent = "";
+    }
+  }
   const sources = kind === "DEPOSIT" ? (options.cash || [])
     : kind === "WITHDRAW" ? (options.deposits || [])
-    : (options.cash || []).concat(options.deposits || []);
+    : (options.cash || []).concat(options.deposits || [], options.custody || []);
   const source = $("person-bank-source");
   const selected = source.value;
   const allowed = sources.filter(row => !row.partyKey || row.partyKey === party);
@@ -2301,7 +3003,9 @@ function togglePersonalBankRows() {
     || kind === "LOAN_REPAY" || kind === "LOAN_PAY_INTEREST";
   show("person-bank-source-row", funds);
   show("person-bank-payee-row", kind === "PAY");
-  show("person-bank-amount-row", funds || lifecycle || kind === "LOAN_REQUEST");
+  const facility = kind.startsWith("FACILITY_");
+  show("person-bank-facility-row", facility);
+  show("person-bank-amount-row", funds || lifecycle || loss || kind === "LOAN_REQUEST" || facility);
   show("person-bank-loan-row", lifecycle);
   show("person-bank-terms-row", kind === "LOAN_REQUEST");
 }
@@ -2347,6 +3051,13 @@ async function submitPersonalBankAction() {
     if (kind === "PAY") {
       body.payeeToken = $("person-bank-payee").value;
     }
+    if (kind === "LOAN_IMPAIR" || kind === "LOAN_WRITE_OFF") {
+      body.loanId = $("person-bank-loss-loan").value;
+      delete body.organizationPartyId;
+    }
+    if (kind.startsWith("FACILITY_")) body.loanId = $("person-bank-facility-id").value.trim();
+    if (kind.startsWith("RESOLUTION_")) body.amount = "0";
+    if (kind.startsWith("FACILITY_") || kind.startsWith("RESOLUTION_")) delete body.organizationPartyId;
     if (kind === "LOAN_REQUEST") {
       body.rateU = rateUnits($("person-bank-rate").value);
       body.tenorMs = tenorMillis($("person-bank-tenor").value);
@@ -2389,6 +3100,14 @@ async function submitPersonalBankAction() {
 
 /** 切换身份/离开人物视角时清空本人银行卡片，避免旧身份的存款留在页面上。 */
 function clearPersonalBank() {
+  if ($("person-bank-loss-row")) {
+    $("person-bank-loss-row").hidden = true;
+    $("person-bank-loss-terms").textContent = "";
+    $("person-bank-loss-loan").replaceChildren();
+  }
+  $("person-bank-facility-note").textContent = "";
+  $("person-bank-facility-id").value = "";
+  show("person-bank-facility-row", false);
   state.personalBank = null;
   if (!$("person-bank-owners")) return;
   $("person-bank-owners").replaceChildren();
@@ -2580,7 +3299,7 @@ function renderCompany(view) {
     cell(tr, (row.ballots || "").split(";").filter(Boolean)
       .map(item => { const [seat, vote] = item.split("="); return seat + "=" + label("vote", vote); })
       .join("；"));
-    cell(tr, row.proposedLines);
+    cell(tr, meetingProposalText(row));
     cell(tr, row.failureReason || row.dividendSchemeId);
   });
   fillSection("company-meetings-empty", "company-meetings-count", view.meetings);
@@ -2658,12 +3377,16 @@ function renderCompanyReports() {
 function renderPerformance(view) {
   $("performance-cut").textContent = cutText(view, view.performanceAvailable
     ? "期间表现按 PerformanceModel 计算" : "确认帧过长，本期未计算期间表现");
-  fillTable("performance-accounts", (view.accounts || {}).rows, (tr, row) => {
+  const accounts = (view.accounts || {}).rows || [];
+  const showSettlement = accounts.some(row => row.settlement);
+  if ($("performance-settlement-heading")) $("performance-settlement-heading").hidden = !showSettlement;
+  fillTable("performance-accounts", accounts, (tr, row) => {
     cell(tr, row.accountId);
     cell(tr, row.ownerId);
     cell(tr, row.ownerName);
     cell(tr, row.cash, "num");
     cell(tr, row.source);
+    if (showSettlement) renderSettlementCell(tr,row.settlement);
   });
   fillSection("performance-accounts-empty", null, view.accounts);
   renderPerformanceOwners();
@@ -2673,6 +3396,8 @@ function renderPerformance(view) {
     cell(tr, row.symbol);
     cell(tr, row.quantity, "num");
     cell(tr, label("priceSource", row.priceSource));
+    cell(tr, row.priceAsOfMillis, "num");
+    cell(tr, row.priceAgeMillis, "num");
     cell(tr, row.price, "num");
     cell(tr, row.value, "num");
   });
@@ -2699,6 +3424,8 @@ function renderPerformanceOwners() {
   const view = state.details.performance;
   if (!view) return;
   const section = view.owners || { total: 0, rows: [] };
+  const showRank = (section.rows || []).some(row => Object.hasOwn(row, "periodReturnRank"));
+  $("performance-return-rank").hidden = !showRank;
   const mode = $("performance-filter").value;
   const rows = (section.rows || []).filter(row => mode === "ALL" || row.valuationStatus === mode);
   fillTable("performance-owners", rows, (tr, row) => {
@@ -2712,12 +3439,31 @@ function renderPerformanceOwners() {
     cell(tr, row.dividendPayable, "num");
     cell(tr, label("performance", row.performanceStatus) + (row.performanceNote ? "（" + row.performanceNote + "）" : ""));
     cell(tr, row.returnRate, "num");
+    if (showRank) cell(tr, row.periodReturnRank, "num");
     cell(tr, row.index, "num");
     cell(tr, row.maxDrawdown, "num");
     cell(tr, row.capitalFlowCount, "num");
   });
+  const bankRows = rows.filter(row => row.bankClaims && row.netWorth != null);
+  $("performance-bank-claims").hidden = bankRows.length === 0;
+  fillTable("performance-bank-lines", bankRows, (tr, row) => {
+    cell(tr, row.ownerId);
+    for (const key of ["deposits", "depositInterestReceivable", "custodyBeneficial", "loanPrincipal", "loanInterestPayable"]) {
+      cell(tr, row.bankClaims[key], "num");
+    }
+  });
+  const fundOwners = rows.filter(row => row.fundClaims);
+  $("performance-fund-claims").hidden = fundOwners.length === 0;
+  fillTable("performance-fund-lines", fundOwners, (tr,row) => {
+    cell(tr,row.ownerId);
+    for (const [key] of fundClaimFields) cell(tr,row.fundClaims[key],"num");
+  });
   $("performance-owners-empty").hidden = rows.length !== 0;
-  $("performance-owners-count").textContent = "显示 " + rows.length + " / 本页 " + (section.rows || []).length
+  state.performanceOwnerPage = view.ownerPage || 1;
+  $("performance-prev").hidden = state.performanceOwnerPage <= 1;
+  $("performance-next").hidden = state.performanceOwnerPage >= (view.ownerPages || 1);
+  $("performance-owners-count").textContent = "第 " + state.performanceOwnerPage + " / " + (view.ownerPages || 1)
+    + " 页，显示 " + rows.length + " / 本页 " + (section.rows || []).length
     + " 条（总计 " + section.total + " 条）";
 }
 
@@ -3094,6 +3840,7 @@ function renderPeopleAdmin(view) {
     cell(tr, row.productName);
     cell(tr, row.organizationPartyId);
     cell(tr, row.accountIds);
+    cell(tr, row.capitalPolicy || "本档未登记");
   });
   fillSection("org-mandates-empty", null, view.mandates);
   fillTable("org-reports", (view.managementReports || {}).rows, (tr, row) => {
@@ -3375,6 +4122,17 @@ for (const [id, render] of [["company-report-filter", renderCompanyReports],
   $(id).addEventListener("change", () => render());
 }
 
+for (const [id, step] of [["performance-prev", -1], ["performance-next", 1]]) {
+  $(id).addEventListener("click", () => {
+    const current = state.details.performance;
+    if (!current || state.mode !== "admin") return;
+    state.performanceOwnerPage = Math.min(current.ownerPages, Math.max(1, current.ownerPage + step));
+    $("performance-prev").hidden = true;
+    $("performance-next").hidden = true;
+    selectPage("performance");
+  });
+}
+
 for (const id of ["performance-history-owner", "performance-history-start",
   "performance-history-end"]) {
   $(id).addEventListener("change", () => clearPerformanceHistoryDom());
@@ -3396,19 +4154,21 @@ $("performance-history-recent").addEventListener("click", () => {
 // 采编观察：管理员原件与个人真实经历分别由服务器投影，正文始终作为文字显示。
 const MEDIA_TABLES = ["media-organizations", "media-stories", "media-works", "media-reports", "media-pending", "media-citations", "media-roots"];
 const MEDIA_LABELS = { WIRE: "快讯", INVESTIGATIVE: "调查", DRAFT: "编辑中", SUBMITTED: "待审阅",
-  RETURNED: "已退回", APPROVED: "待发布", PUBLISHED: "已发布", PUBLIC: "公开成稿",
+  RETURNED: "已退回", APPROVED: "待发布", PUBLISHED: "已发布", WITHDRAWN: "已撤稿", PUBLIC: "公开成稿",
   COMPLETED: "已完成", CANCELED: "已取消", NOT_AUTHORIZED: "当前任职无权操作",
   BUDGET: "工时不足", BUSY: "已有专注工作", VERSION: "版本已变化",
   EVIDENCE_NOT_READ: "证据尚未读完", EVIDENCE_NOT_RECALLABLE: "证据当前不可回忆",
   DRAFT_NOT_READ: "草稿尚未读完", DRAFT_NOT_RECALLABLE: "草稿当前不可回忆",
   MEDIA_STORY_PROPOSE_V1: "提出选题", MEDIA_STORY_SUBMIT_V1: "提交草稿",
   MEDIA_STORY_REVIEW_V1: "编辑审阅", MEDIA_STORY_PUBLISH_V1: "发布",
-  MEDIA_STORY_CORRECTION_V1: "开启更正", MEDIA_WORK_CANCEL_V1: "取消工作" };
+  MEDIA_STORY_CORRECTION_V1: "开启更正", MEDIA_WORK_CANCEL_V1: "取消工作", MEDIA_STORY_WITHDRAW_V1: "签发撤稿公告" };
 function mediaLabel(value) { return MEDIA_LABELS[value] || text(value); }
 function mediaTable(id, section, columns) {
   fillTable(id, (section || {}).rows, (tr, row) => {
     for (const key of columns) {
       const value = key === "accepted" ? (row[key] ? "通过" : "拒绝")
+        : key === "reason" && row.reason === "INSUFFICIENT_SOURCES" && row.countedIndependentSources != null && row.requiredIndependentSources != null
+          ? "原始来源不足：计得 " + row.countedIndependentSources + " 组，需 " + row.requiredIndependentSources + " 组"
         : key === "templates" ? Object.entries(row[key] || {}).map(([name, count]) => mediaLabel(name) + " · 至少 " + count + " 组原始来源").join("；")
         : ["kind", "template", "status", "outcome", "reason"].includes(key) ? mediaLabel(row[key]) : row[key];
       cell(tr, value);
@@ -3457,7 +4217,8 @@ function renderMediaDocuments(id, section) {
     summary.textContent = (item.kind ? (item.kind === "DRAFT" ? "组织草稿" : mediaLabel(item.kind)) + " · " : "") + item.title + " · v" + item.version;
     const meta = document.createElement("p"); meta.className = "hint";
     meta.textContent = item.docId + " · 发布 " + item.publishedAtMillis + " 毫秒"
-      + (item.completedAtMillis ? " · 本人读完 " + item.completedAtMillis + " 毫秒" : "");
+      + (item.completedAtMillis ? " · 本人读完 " + item.completedAtMillis + " 毫秒" : "")
+      + (item.withdrawalNoticeVersion ? " · 本版为历史已读，当前公开目录列有撤稿公告 v" + item.withdrawalNoticeVersion : "");
     const source = document.createElement("p"); source.textContent = item.sourceDescription || "未提供自由文字来源描述";
     const body = document.createElement("pre"); body.className = "media-body"; body.textContent = item.body;
     detail.append(summary, meta, source, body); list.appendChild(detail);
@@ -3491,6 +4252,12 @@ async function loadMediaStory() {
 }
 function clearPersonalMedia() {
   $("person-media").hidden = true;
+  $("person-media-reviews").hidden = true;
+  $("person-media-review-list").replaceChildren();
+  setMessage("person-media-review-feedback", "");
+  $("person-media-withdrawals").hidden = true;
+  $("person-media-withdraw-list").replaceChildren();
+  setMessage("person-media-withdraw-feedback", "");
   for (const id of ["person-media-stories", "person-media-reports"]) mediaTable(id, null, []);
   $("person-media-documents").replaceChildren(); $("person-media-tools").textContent = "";
 }
@@ -3501,6 +4268,60 @@ function renderPersonalMedia(media) {
   mediaTable("person-media-stories", media.stories, ["storyId", "template", "topic", "authorPartyId", "status", "revisionNo", "sourceGroups"]);
   mediaTable("person-media-reports", media.reports, ["kind", "storyId", "accepted", "reason", "timeMillis"]);
   renderMediaDocuments("person-media-documents", media.documents);
+  const list = $("person-media-review-list");
+  for (const story of media.stories?.rows || []) {
+    for (const note of story.reviewNotes || []) {
+      const row = document.createElement("div"), title = document.createElement("p");
+      const label = story.topic + "（" + story.storyId + "）第" + note.revisionNo + "稿审阅意见";
+      title.textContent = label + " · 意见 v" + note.version + (note.read ? " · 本人已读" : " · 本人未读");
+      row.appendChild(title);
+      if (note.read && note.body !== undefined) {
+        const body = document.createElement("pre");
+        body.className = "media-body"; body.textContent = note.body; row.appendChild(body);
+      } else {
+        const button = document.createElement("button");
+        button.type = "button"; button.textContent = note.read ? "重读审阅意见" : "阅读审阅意见";
+        button.dataset.personWrite = "true";
+        button.addEventListener("click", () => guard(scheduleDocumentReading(null,
+          note.docId, note.version, label, "person-media-review-feedback")));
+        row.appendChild(button);
+      }
+      list.appendChild(row);
+    }
+  }
+  $("person-media-reviews").hidden = !list.childElementCount;
+  const withdrawals = media.withdrawal;
+  for (const story of withdrawals?.stories || []) {
+    const row = document.createElement("div"), title = document.createElement("p");
+    title.textContent = story.topic + " · " + story.publicDocId + " v" + story.publicVersion;
+    const reasons = document.createElement("select");
+    reasons.dataset.personWrite = "true";
+    reasons.setAttribute("aria-label", "公开撤稿原因");
+    reasons.add(new Option("选择公开撤稿原因", ""));
+    for (const [code, label] of Object.entries(withdrawals.reasons)) reasons.add(new Option(label, code));
+    const button = document.createElement("button");
+    button.type = "button"; button.dataset.personWrite = "true"; button.textContent = "签发撤稿公告";
+    button.addEventListener("click", () => guard(submitMediaWithdrawal(withdrawals, story, reasons.value, button)));
+    row.append(title, reasons, button);
+    $("person-media-withdraw-list").appendChild(row);
+    $("person-media-withdrawals").hidden = false;
+  }
+}
+async function submitMediaWithdrawal(page, story, reason, button) {
+  const feedback = "person-media-withdraw-feedback", generation = state.generation;
+  if (!reason) { setMessage(feedback, "请选择将向读者公开的撤稿原因。"); return; }
+  button.disabled = true;
+  try {
+    const result = await request("POST", "/api/me/media/withdraw", {observationToken: page.observationToken,
+      commandId: "web-withdraw-" + crypto.randomUUID(), storyId: story.storyId,
+      expectedPublicVersion: story.publicVersion, publicReason: reason});
+    if (!isCurrent(generation)) return;
+    if (result.status === 401) { sessionLost(); return; }
+    setMessage(feedback, result.status === 200 ? "已排程签发撤稿公告，完成时点 " + result.payload.dueTimeMillis
+      : (result.payload?.message || "撤稿排程未被受理，请刷新后核对。"));
+  } finally {
+    if (isCurrent(generation)) button.disabled = false;
+  }
 }
 async function refreshCapabilities(generation, current) {
   const result = await request("GET", "/api/admin/capabilities");
@@ -3526,7 +4347,49 @@ $("media-story-select").addEventListener("change", () => guard(loadMediaStory())
 
 if (globalThis.WorldHome) {
   globalThis.WorldHome.onPage = selectPage;
+  globalThis.WorldHome.onMarketHistory = symbol => {
+    if (state.mode !== "admin" || state.page !== "world-market") return;
+    const option = document.createElement("option");
+    option.value = symbol;
+    option.textContent = symbol;
+    $("market-symbol").replaceChildren(option);
+    $("market-symbol").value = symbol;
+    selectPage("market");
+  };
+  globalThis.WorldHome.onOperations = companyId => {
+    state.operationsRequestedCompany = companyId;
+    selectPage("operations");
+  };
+  globalThis.WorldHome.onGovernance = companyId => {
+    state.engineeringCompany = companyId;
+    selectPage("engineering");
+  };
+  globalThis.WorldHome.onOverview = async () => {
+    if (state.mode !== "admin" || !["overview","world-market","world-companies","world-people"].includes(state.page)) return null;
+    const generation = state.generation;
+    const result = await request("GET", "/api/admin/world");
+    if (!isCurrent(generation) || state.mode !== "admin") return null;
+    if (result.status === 401 || result.status === 403) { sessionLost(); return null; }
+    if (result.status !== 200) throw new Error("首页读取失败（" + result.status + "）");
+    return result.payload;
+  };
+  globalThis.WorldHome.onPeriodStatement = async (companyId, period) => {
+    if(state.mode!=="admin")throw new Error("期末采样需要管理员会话");
+    const generation=state.generation;
+    const result=await request("POST","/api/admin/period-statement",{companyId,period:String(period)});
+    if(!isCurrent(generation)||state.mode!=="admin")return null;
+    if(result.status===401||result.status===403){sessionLost();return null;}
+    if(result.status!==200)throw new Error(result.payload?.message||"期末报表读取失败，请重试");
+    return result.payload;
+  };
   globalThis.WorldHome.onPerson = personId => guard(switchPerson(personId));
+  globalThis.WorldHome.onTakeover = (personId, position) => guard(globalThis.PersonTakeover?.start(personId, position));
+  globalThis.WorldHome.onPersonPause = async (person, paused, expectedPosition) => {
+    if (state.mode !== "admin") throw new Error("需要管理员身份");
+    const result = await request("POST","/api/admin/person-decision-pause",{person,paused,expectedPosition});
+    if (result.status !== 200) throw new Error(result.payload?.message || "操作失败，请刷新后重试");
+    if (state.mode === "admin") await refreshAdmin();
+  };
   globalThis.WorldHome.onRefresh = refreshAdmin;
   globalThis.WorldHome.onAutonomy = async (action, days) => {
     if (state.mode !== "admin") throw new Error("请返回上帝视角操作");
@@ -3799,6 +4662,22 @@ function renderLive(v) {
       + " / 输出 " + text(item.declaredOutputTokens) + " · 费用 " + text(item.costStatus)
       + (item.reason ? " · 原因 " + item.reason : "");
     detail.appendChild(meta);
+    if (!item.replyTruncated && item.replyPreview) {
+      try {
+        const statement = JSON.parse(item.replyPreview).decision;
+        if (statement && typeof statement.basis === "string") {
+          const grounds = document.createElement("p");
+          grounds.textContent = "角色陈述的依据：" + statement.basis;
+          const review = document.createElement("p"); review.className = "hint";
+          const relative = Object.prototype.hasOwnProperty.call(statement, "reviewAfterMillis");
+          review.textContent = "目标 " + text(statement.objective)
+            + (relative ? " · 从本次观察起复查间隔（模拟毫秒） " + text(statement.reviewAfterMillis)
+              : " · 下次复查（模拟毫秒） " + text(statement.nextReviewAt))
+            + " · 意图和理由不等于动作已执行。";
+          detail.append(grounds, review);
+        }
+      } catch (_) { /* 截断或不合法回执仍保留原文和协议拒绝原因。 */ }
+    }
     for (const [label, prefix] of [["实际输入", "input"], ["模型回执", "reply"]]) {
       const heading = document.createElement("h3");
       heading.textContent = label + "（" + item[prefix + "Length"] + " 字符"
@@ -4030,7 +4909,16 @@ async function renderPersonalEvidence(generation) {
     cell(tr, row.storyId);
     cell(tr, row.publicDocId);
     cell(tr, row.publicVersion, "num");
-    cell(tr, row.publicLabel);
+    const td = cell(tr, row.publicLabel);
+    if (row.publicTitle) {
+      const details = document.createElement("details"), summary = document.createElement("summary");
+      summary.textContent = "查看已读公开稿 · " + row.publicTitle;
+      const body = document.createElement("p"), source = document.createElement("p");
+      body.textContent = row.publicBody;
+      source.textContent = row.publicSourceDescription;
+      details.append(summary,body,source);
+      td.appendChild(details);
+    }
   });
   fillTable("person-evidence-shares", shares, (tr, row) => {
     cell(tr, row.title);
@@ -4247,8 +5135,15 @@ function renderInterviewAudit(view) {
 }
 
 function clearPersonalInterview() {
+  clearInterviewCoordination();
   const panel = $("person-interview");
   if (panel) panel.hidden = true;
+  renderOfficeWorkBudgets(null);
+  if ($("person-site-visits")) {
+    $("person-site-visits").hidden = true;
+    fillTable("person-site-visit-table", [], () => {});
+    $("person-site-visit-result").textContent = "";
+  }
   for (const id of ["person-interview-invites", "person-interview-contacts",
     "person-dialogue-sessions", "person-dialogue-turns"]) {
     fillTable(id, [], () => undefined);
@@ -4319,7 +5214,11 @@ async function renderPersonalInterview(tools, generation) {
   const view = result.payload;
   const invites = view.invites || [];
   const contacts = view.contacts || [];
-  panel.hidden = !(invites.length || contacts.length || actions.length);
+  renderInterviewCoordination(view, generation, tools);
+  panel.hidden = !(invites.length || contacts.length || actions.length || view.siteVisits?.appointments?.length
+    || view.officeWorkBudgets?.offices?.length);
+  renderOfficeWorkBudgets(view.officeWorkBudgets);
+  renderSiteVisits(view, generation);
   fillTable("person-interview-invites", invites, (tr, row) => {
     const other = row.fromPartyId === view.personPartyId ? row.toPartyId : row.fromPartyId;
     cell(tr, row.requestId);
@@ -4341,6 +5240,76 @@ async function renderPersonalInterview(tools, generation) {
     ? "" : "本人尚未通过实际阅读取得可私信的联系入口。";
 }
 
+function renderOfficeWorkBudgets(budgets) {
+  const section = $("person-office-work-budgets");
+  if (!section) return;
+  const offices = budgets?.offices || [];
+  section.hidden = offices.length === 0;
+  $("person-office-work-terms").textContent = budgets?.terms || "";
+  fillTable("person-office-work-table", offices, (tr, row) => {
+    cell(tr, row.organizationPartyId);
+    for (const value of [row.totalMillis, row.spentMillis, row.mediaReservedMillis,
+      row.interviewReservedMillis, row.availableMillis]) cell(tr, researchDuration(value), "num");
+    const schedule = row.schedule;
+    const allocation = schedule ? "每个营业日 " + researchDuration(schedule.millisPerShift)
+      + "，已释放 " + schedule.releasedShifts + "/" + schedule.contractedShifts + " 份，合同共 "
+      + researchDuration(schedule.contractedMillis) + "。 " : "";
+    cell(tr, allocation + "单次最长 " + researchDuration(row.maxDurationMillis) + "，至少提前 " + researchDuration(row.minLeadMillis)
+      + "，邀请有效期 " + researchDuration(row.inviteTtlMillis));
+  });
+}
+
+function renderSiteVisits(view, generation) {
+  const panel = $("person-site-visits");
+  if (!panel) return;
+  const rows = view.siteVisits?.appointments || [];
+  panel.hidden = rows.length === 0;
+  const stages = { APPOINTMENT: "已预约", CONSENTED: "已同意出票", BOOKED: "已安排出发，尚未出票", OUTBOUND: "前往接待点",
+    ONSITE: "已到访", RETURNING: "返程中", HOME: "已返回", REVOKED: "出发前已撤回" };
+  fillTable("person-site-visit-table", rows, (tr, row) => {
+    cell(tr, row.requestId);
+    cell(tr, row.reporter + " ／ " + row.host);
+    cell(tr, stages[row.stage] || row.stage);
+    cell(tr, windowText(row.startMillis, row.endMillis));
+    cell(tr, [row.departMillis, row.returnMillis].map(t => t >= 0 ? t : "—").join(" ／ "));
+    cell(tr, row.farePaid, "num");
+    cell(tr, row.observed ? "已获准" : "尚无");
+    const controls = cell(tr, "");
+    const labels = { HOST_CONSENT: "同意接待并承担往返车费 " + row.fare + " 元", REVOKE: "撤回现场访问许可",
+      DEPART: "安排出发", RETURN: "开始返程" };
+    for (const action of row.actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = labels[action] || action;
+      button.dataset.personWrite = "true";
+      button.addEventListener("click", () => guard(submitSiteVisit(view, row, action, button, generation)));
+      controls.appendChild(button);
+    }
+  });
+}
+
+async function submitSiteVisit(view, row, action, button, generation) {
+  if (!isCurrent(generation) || state.mode !== "person") return;
+  button.disabled = true;
+  const feedback = $("person-site-visit-result");
+  try {
+    const result = await request("POST", "/api/me/interview/site-visit", {
+      observedMillis: view.timeMillis, expectedStage: row.stage, commandId: "web-visit-" + crypto.randomUUID(),
+      requestId: row.requestId, action
+    });
+    if (!isCurrent(generation) || state.mode !== "person") return;
+    if (result.status === 401) { sessionLost(); return; }
+    feedback.textContent = result.status === 200
+      ? "已排程。将在世界时点 " + result.payload.dueTimeMillis + " 毫秒复核，推进后可查看结果。"
+      : (result.payload?.message || "此动作未获受理。");
+  } catch (failure) {
+    if (isCurrent(generation) && state.mode === "person")
+      feedback.textContent = "暂未收到回执。刷新本人行程可核对最新状态。";
+  } finally {
+    if (isCurrent(generation) && state.mode === "person") button.disabled = false;
+  }
+}
+
 // ---------------------------------------------------------------- 工程经营与回款（18c 第一切片）
 
 // ---------------------------------------------------------------- 工程动作字段目录
@@ -4348,6 +5317,17 @@ async function renderPersonalInterview(tools, generation) {
 // 页面上不出现的字段绝不会被发送出去（防止旧值混入新请求）。
 
 const ENGINEERING_FIELD_SPECS = {
+  schemeId: { id: "eng-dividend-scheme", label: "分红方案编号" },
+  expectedVersion: { id: "eng-dividend-version", label: "待更正的公告版本" },
+  operation: {
+    id: "eng-dividend-operation", label: "更正方式", kind: "select",
+    options: [{ value: "", label: "请选择" }, { value: "CANCEL", label: "撤销方案" }, { value: "REPLACE", label: "替换条款" }]
+  },
+  reason: { id: "eng-dividend-reason", label: "更正原因" },
+  perShare: { id: "eng-dividend-per-share", label: "每股现金股息（元）" },
+  recordAt: { id: "eng-dividend-record", label: "股权登记时点（世界毫秒）" },
+  exAt: { id: "eng-dividend-ex", label: "除息时点（世界毫秒）" },
+  payAt: { id: "eng-dividend-pay", label: "派息时点（世界毫秒）" },
   contractId: {
     id: "eng-contract", label: "合同标识", hint: "例如 B-1；必须是本人实际读过机会后签下的合同。"
   },
@@ -4475,6 +5455,25 @@ const ENGINEERING_FIELD_SPECS = {
 };
 
 const ENGINEERING_TOOL_FIELDS = {
+  "issuer.dividend.convene": {
+    fields: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    required: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    note: "主席召集本发行人的分红会议。董事须分别到会、阅读材料和投票。"
+  },
+  "issuer.dividend.propose": {
+    fields: ["meetingId", "schemeId", "perShare", "recordAt", "exAt", "payAt"],
+    required: ["meetingId", "schemeId", "perShare", "recordAt", "exAt", "payAt"],
+    note: "由出席的董事提交本公司方案。登记、除息和派息使用世界时点。"
+  },
+  "issuer.dividend.amend": {
+    fields: ["meetingId", "schemeId", "expectedVersion", "operation", "reason", "perShare", "recordAt", "exAt", "payAt"],
+    required: ["meetingId", "schemeId", "expectedVersion", "operation", "reason"],
+    note: "填写现行方案编号和公告版本。须在原方案登记前完成表决和签发。替换条款时须重新指定每股金额和三个时点。"
+  },
+  "issuer.dividend.authorize": {
+    fields: ["meetingId"], required: ["meetingId"],
+    note: "主席签发已通过的分红决议，系统在方案规定的时点登记和派付。"
+  },
   "engineering.sign": {
     fields: ["contractId"], required: ["contractId"],
     note: "签约只用到合同标识：合同条款来自冻结机会，不能在这里改价。"
@@ -4551,6 +5550,11 @@ const ENGINEERING_TOOL_FIELDS = {
     required: ["periodicPeriod", "draftId", "draftVersion"],
     note: "由被授权本人发布公开正文；发布后不可回填旧版本，逾期会记为迟报。"
   },
+  "board.conveneDigitalCessation": {
+    fields: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    required: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
+    note: "五席中至少四席赞成后，在任经理可按会议号停止接纳新业务。既有合同继续履约、收款或退款。"
+  },
   "board.conveneAppointment": {
     fields: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
     required: ["meetingId", "materialDeadline", "opensAt", "closesAt"],
@@ -4602,6 +5606,10 @@ const ENGINEERING_TOOL_FIELDS = {
 };
 
 const ENGINEERING_TOOL_LABELS = {
+  "issuer.dividend.convene": "召集分红会议",
+  "issuer.dividend.propose": "提出每股股息方案",
+  "issuer.dividend.authorize": "签发已通过的分红决议",
+  "issuer.dividend.amend": "提出撤销或更正分红方案",
   "board.convene": "召集会议",
   "board.conveneWaiver": "召集豁免会议",
   "board.attend": "参与登记",
@@ -4624,6 +5632,7 @@ const ENGINEERING_TOOL_LABELS = {
   "engineering.requestRetention": "请求质保金",
   "engineering.waive": "执行董事会豁免",
   "board.conveneAppointment": "召集经理任免会议",
+  "board.conveneDigitalCessation": "召集数字服务停业会议",
   "periodic.attend": "登记周期会议出席",
   "periodic.prepare": "准备周期财报",
   "periodic.score": "提交本席评分",
@@ -4824,6 +5833,24 @@ const ENGINEERING_KIND_TEXT = {
   PROPOSE_APPOINTMENT: "任免提案", VOTE: "表决", IMPLEMENT: "实施",
   CONVENE_WAIVER: "召集豁免会", PROPOSE_WAIVER: "豁免提案"
 };
+
+function meetingProposalText(row) {
+  const dividend = row.dividendRequest;
+  const change = row.dividendAmendment;
+  const subject = change ? change.schemeId + " · 公告第 " + change.expectedVersion + " 版 · " + change.reason : "";
+  if (change?.operation === "CANCEL") return "拟撤销分红方案 " + subject;
+  if (change?.operation === "REPLACE" && dividend) return "拟更正 " + subject + " · 每股 " + dividend.perShare
+    + " 元 · 登记 " + dividend.recordAt + " · 除息 " + dividend.exAt + " · 派息 " + dividend.payAt;
+  if (dividend) return dividend.schemeId + " · " + dividend.symbol + " 每股 " + dividend.perShare
+    + " 元 · 登记 " + dividend.recordAt + " · 除息 " + dividend.exAt + " · 派息 " + dividend.payAt;
+  const request = row.appointmentRequest;
+  if (!request) return row.proposedLines || "—";
+  if (request.action === "REVOKE") {
+    return "拟撤销 " + request.personPartyId + " 的任职，生效时点 " + worldTimeText(request.effectiveAt);
+  }
+  return "拟任命 " + request.personPartyId + "，任期从 " + worldTimeText(request.effectiveAt)
+    + " 至 " + worldTimeText(request.endsAt);
+}
 
 function engineeringToolLabel(value) {
   return ENGINEERING_TOOL_LABELS[value] || value || "—";
@@ -5100,6 +6127,12 @@ function renderPeriodicBlock(container, periodic, options) {
     const drafts = row.drafts || [];
     const latestDraft = row.latestDraft || null;
     const score = row.score || {};
+    const hiddenReview = score.resultVisible === false;
+    const reviewText = hiddenReview
+      ? (score.reviewDocId ? "已定稿，阅读本期考核结果后可查看"
+        : "已定稿，本人无权查看结论")
+      : (score.closed ? periodicReasonText(score.reason)
+        + (score.total != null ? " · 总分 " + score.total : " · 无总分") : "尚未关会汇总");
     const publication = row.publication || {};
     const approvals = latestDraft ? latestDraft.approvalCount + "/"
       + latestDraft.requiredApprovals : "—";
@@ -5110,15 +6143,14 @@ function renderPeriodicBlock(container, periodic, options) {
         + " · " + worldTimeText(meeting.opensAt) + " — " + worldTimeText(meeting.closesAt)) : "—"],
       ["真实出席", periodicPeople(meeting.attendees)],
       ["回避", periodicPeople(meeting.recused)],
-      ["本期材料", row.materialDocId + " v" + row.materialVersion
+      ["本期材料", row.materialReadable === false ? "尚无本人可读的版本" : row.materialDocId + " v" + row.materialVersion
         + (options && options.showReadState ? " · 本人已读完：" + (row.myReadMaterial ? "是" : "否")
           + (row.myReadMaterial === true && row.myRecallEligible === false
             ? " · 当前不可回忆（可重读）" : "") : "")],
       ["草稿版本", latestDraft ? ("v" + latestDraft.version + " · 由 " + (latestDraft.preparedByName || latestDraft.preparedBy)
         + " 于 " + worldTimeText(latestDraft.preparedAt) + " 准备") : "尚未准备"],
       ["3席批准进度", approvals],
-      ["评分汇总", (score.closed ? periodicReasonText(score.reason) : "尚未关会汇总")
-        + (score.closed && score.total !== null && score.total !== undefined ? " · 总分 " + score.total : " · 无总分")],
+      ["评分汇总", reviewText],
       ["公开版本", publication.released
         ? (publication.latestVersion
           ? ("v" + publication.latestVersion + " · " + worldTimeText(publication.latestPublishedAt) + " 发布")
@@ -5129,6 +6161,17 @@ function renderPeriodicBlock(container, periodic, options) {
         ? ("已记录 MISSED · " + worldTimeText(publication.missedAt)) : "未记录"]
     ];
     periodicDl(section, summary);
+    if (personView && score.reviewDocId && score.reviewVersion) {
+      const label = "第" + row.period + "期考核结果";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "quiet";
+      button.textContent = (hiddenReview ? "阅读" : "重读") + label + "（v" + score.reviewVersion + "）";
+      button.dataset.personWrite = "true";
+      button.addEventListener("click", () => guard(scheduleDocumentReading(periodic.companyPartyId,
+        score.reviewDocId, score.reviewVersion, label)));
+      section.appendChild(button);
+    }
 
     const unavailable = row.unavailableDimensions || [];
     const dimensionStates = row.dimensionStates || [];
@@ -5175,14 +6218,14 @@ function renderPeriodicBlock(container, periodic, options) {
         (ballot.metrics || []).map(metric => (PERIODIC_DIMENSION_TEXT[metric.dimension] || metric.dimension)
           + " " + metric.score).join("；") || "—", ballot.rationale || "—"]),
       "尚无有效评分。");
-    if (score.closed) {
+    if (score.closed && !hiddenReview) {
       const aggregate = document.createElement("p");
       aggregate.className = "hint";
       aggregate.textContent = "汇总结果：" + periodicReasonText(score.reason)
         + " · 参与聚合完整席 " + score.seatCount + " 席"
         + (score.total === null || score.total === undefined ? " · 无总分（缺维不补）" : " · 总分 " + score.total);
       section.appendChild(aggregate);
-    } else {
+    } else if (!score.closed) {
       const open = document.createElement("p");
       open.className = "hint";
       open.textContent = personView
@@ -5262,6 +6305,7 @@ function renderPeriodicBlock(container, periodic, options) {
         button.className = "quiet";
         button.textContent = (latest.forgotten ? "重新阅读公开财报 " : "阅读公开财报 ")
           + releaseVersionText(latest);
+        button.dataset.personWrite = "true";
         button.addEventListener("click", () => guard(schedulePeriodicReading(
           periodic.companyPartyId, row.period, latest.publicDocId, latest.publicVersion)));
         section.appendChild(button);
@@ -5389,7 +6433,7 @@ function renderEngineering(view) {
 
   fillTable("engineering-meetings", (view.meetings || {}).rows, (tr, row) => {
     cell(tr, row.meetingId);
-    cell(tr, engineeringTerm(row.topic, ENGINEERING_KIND_TEXT));
+    cell(tr, label("topic", row.topic));
     cell(tr, row.status);
     cell(tr, row.materialDeadline, "num");
     cell(tr, row.opensAt, "num");
@@ -5397,7 +6441,7 @@ function renderEngineering(view) {
     cell(tr, row.attendees);
     cell(tr, row.recused);
     cell(tr, row.ballots);
-    cell(tr, row.proposedLines);
+    cell(tr, meetingProposalText(row));
     cell(tr, row.failureReason);
   });
   fillSection("engineering-meetings-empty", "engineering-meetings-count", view.meetings);
@@ -5584,6 +6628,30 @@ function fillPersonalEngineeringCompanies(companies) {
     const head = document.createElement("h3");
     head.textContent = (company.companyName || company.companyId) + " · " + company.companyId;
     card.appendChild(head);
+    if (company.customerMandate) {
+      const mandate = company.customerMandate;
+      const facts = document.createElement("dl");
+      facts.className = "grid";
+      dlPairs(facts, [["授权代表", mandate.representative], ["承包方", mandate.contractor],
+        ["付款账户", mandate.account], ["账户余额", mandate.cash], ["可用现金", mandate.freeCash]]);
+      card.appendChild(facts);
+      for (const contractor of [mandate, ...(mandate.additionalInvitations || [])]) {
+        if (contractor !== mandate) {
+          const heading = document.createElement("h4");
+          heading.textContent = contractor.contractor + " · 邀请 " + contractor.opportunities.join("、");
+          card.appendChild(heading);
+        }
+        card.appendChild(engineeringTable("收到的合同申请", ["合同", "期次", "申请", "请求编号", "答复事件"],
+          contractor.requests.map(r => [r.contractId, r.trancheIndex, r.kind, r.requestId, r.answeredByEventId || "待复核"])));
+        card.appendChild(engineeringTable("复核及实际付款", ["合同", "期次", "请求编号", "结果", "实付", "进度未付", "质保未付"],
+          contractor.responses.map(r => [r.contractId, r.trancheIndex, r.requestId, r.outcome, r.amount, r.currentOutstanding, r.retentionOutstanding])));
+        if (contractor.invoices?.length) card.appendChild(engineeringTable("未清票据", ["合同", "期次", "进度款到期", "进度未付", "质保款到期", "质保未付"],
+          contractor.invoices.filter(r => Number(r.currentOutstanding) > 0 || Number(r.retentionOutstanding) > 0)
+            .map(r => [r.contractId, r.trancheIndex, r.dueAt, r.currentOutstanding, r.retentionDueAt, r.retentionOutstanding])));
+      }
+      container.appendChild(card);
+      continue;
+    }
     const roleBits = [];
     if (company.manager) roleBits.push("现任经理");
     if (company.seatId) roleBits.push("董事席位 " + company.seatId + (company.chair ? "（主席）" : ""));
@@ -5627,6 +6695,7 @@ function fillPersonalEngineeringCompanies(companies) {
         readButton.className = "quiet";
         readButton.textContent = (noteRead ? "重新阅读治理说明 v" : "开始阅读治理说明 v")
           + company.governanceDocVersion;
+        readButton.dataset.personWrite = "true";
         readButton.addEventListener("click", () => guard(scheduleDocumentReading(
           company.companyId, company.governanceDocId, company.governanceDocVersion,
           company.governanceDocTitle || "本公司治理说明")));
@@ -5711,12 +6780,26 @@ function fillPersonalEngineeringCompanies(companies) {
     }
 
     if (company.seatId) {
-      card.appendChild(engineeringTable("我参与或召集的会议（他人选票只给计数）",
-        ["会议", "议题", "状态", "我的角色", "我的票", "计数", "材料", "预算请求", "结果"],
-        (company.meetings || []).map(row => [row.meetingId,
-          engineeringTerm(row.topic, ENGINEERING_KIND_TEXT), row.status,
-          row.role === "CONVENER" ? "召集" : row.role === "RECUSED" ? "回避" : "到会",
-          row.myVote || "未投", row.tally, row.materials, row.proposedLines, row.failureReason])));
+      const reviews = new Map((company.periodic?.periods || []).filter(period =>
+        typeof period.materialReadable === "boolean" && period.meeting).map(period => [period.meeting.meetingId, period]));
+      const meetings = company.meetings || [];
+      const ordinary = meetings.filter(row => !reviews.has(row.meetingId));
+      if (ordinary.length || reviews.size === 0) card.appendChild(engineeringTable("本人与会或可出席的董事会会议",
+        ["会议", "议题", "状态", "我的角色", "我的票", "计数", "材料", "提案", "结果"],
+        ordinary.map(row => [row.meetingId,
+          label("topic", row.topic), row.status,
+          row.role === "CONVENER" ? "召集" : row.role === "RECUSED" ? "回避"
+            : row.role === "ELIGIBLE" ? "可出席" : "到会",
+          row.myVote || "未投", row.tally, row.materials, meetingProposalText(row), row.failureReason])));
+      const reviewRows = meetings.filter(row => reviews.has(row.meetingId)).map(row => {
+        const period = reviews.get(row.meetingId);
+        return [row.meetingId, period.period, period.materialReadable ? period.materialDocId + " v" + period.materialVersion : "待提供",
+          period.myRecallEligible ? "已读，可回忆" : period.myReadMaterial ? "已读，需重读" : "未读",
+          period.myBallotSubmitted ? "已提交" : "未提交",
+          period.latestDraft ? (period.myApproval ? "已批准" : "未批准") + " v" + period.latestDraft.version : "尚无稿件"];
+      });
+      if (reviewRows.length) card.appendChild(engineeringTable("本人参与的期末考核会议",
+        ["会议", "期间", "考核材料", "本人阅读", "本席评分", "本稿批准"], reviewRows));
     }
 
     const periodicHead = document.createElement("h4");
@@ -5727,6 +6810,25 @@ function fillPersonalEngineeringCompanies(companies) {
     let readButtons = 0;
     for (const row of (company.periodic && company.periodic.periods) || []) {
       if (!company.seatId) continue;
+      if (typeof row.materialReadable === "boolean") {
+        const choices = [];
+        if (row.materialReadable && !row.myRecallEligible)
+          choices.push([row.materialDocId, row.materialVersion, "考核材料", row.myReadMaterial]);
+        const draft = row.latestDraft;
+        if (draft && (draft.docId !== row.materialDocId || String(draft.version) !== String(row.materialVersion)) && !draft.myRecallEligible)
+          choices.push([draft.docId, draft.version, "待批准稿", draft.myRead]);
+        for (const [docId, version, name, read] of choices) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "quiet";
+          button.textContent = (read ? "重读" : "阅读") + "第" + row.period + "期" + name + "（v" + version + "）";
+          button.dataset.personWrite = "true";
+          button.addEventListener("click", () => guard(scheduleDocumentReading(company.companyId, docId, version, name)));
+          readBox.appendChild(button);
+          readButtons += 1;
+        }
+        continue;
+      }
       // 历史已读（myReadMaterial）与当前可回忆（myRecallEligible）分开看：遗忘后仍给重读入口。
       const forgotten = row.myReadMaterial === true && row.myRecallEligible === false;
       if (row.myReadMaterial === true && !forgotten) continue;
@@ -5737,6 +6839,7 @@ function fillPersonalEngineeringCompanies(companies) {
       button.className = "quiet";
       button.textContent = (forgotten ? "重新阅读第" : "阅读第") + row.period + "期材料（v"
         + draft.version + "）";
+      button.dataset.personWrite = "true";
       button.addEventListener("click", () => guard(schedulePeriodicReading(
         company.companyId, row.period, draft.docId, draft.version)));
       readBox.appendChild(button);
@@ -5819,7 +6922,7 @@ function engineeringToolDefaults(tool, now) {
   const defaults = {};
   if (now === null) return defaults;
   if (tool === "board.convene" || tool === "board.conveneWaiver"
-      || tool === "board.conveneAppointment") {
+      || tool === "board.conveneAppointment" || tool === "board.conveneDigitalCessation" || tool === "issuer.dividend.convene") {
     defaults.materialDeadline = String(now + 60_000);
     defaults.opensAt = String(now + 120_000);
     defaults.closesAt = String(now + 180_000);
@@ -5833,7 +6936,9 @@ function engineeringToolDefaults(tool, now) {
       defaults.docVersion = String(card.governanceDocVersion || "1");
     }
   }
-  if (tool === "board.proposeBudget") defaults.period = "0";
+  if (tool === "board.proposeBudget" && state.personEngineering?.roleToolArguments !== "conditional-fields-and-readable-errors-v1") {
+    defaults.period = "0";
+  }
   if (tool === "engineering.requestAcceptance" || tool === "engineering.requestPayment"
       || tool === "engineering.requestRetention") {
     defaults.trancheIndex = "0";
@@ -6031,7 +7136,7 @@ function renderPeriodicScoreFields(tool, spec, now) {
     const choices = [];
     for (const entry of (row && row.evidence) || []) {
       if ((entry.dimensions || []).includes(dimension)) {
-        choices.push({ ref: entry.ref, asOf: entry.asOf });
+        choices.push({ ref: entry.sourceRef ?? entry.ref, asOf: entry.asOf });
       }
     }
     appendOption(evidence, "", choices.length ? "请选择本期合格证据" : "本期无合格证据");
@@ -6061,6 +7166,12 @@ function renderPeriodicScoreFields(tool, spec, now) {
   }
 }
 
+function engineeringRequiredFields(tool) {
+  const fields = ENGINEERING_TOOL_FIELDS[tool].required;
+  return tool === "board.proposeBudget" && state.personEngineering?.roleToolArguments === "conditional-fields-and-readable-errors-v1"
+    ? [...fields, "period"] : fields;
+}
+
 /** 按所选工具重建字段：上一个工具的旧值随容器一起清掉，不会混进新请求。 */
 function renderEngineeringFields(tool) {
   state.engineeringTool = tool;
@@ -6086,6 +7197,7 @@ function renderEngineeringFields(tool) {
     return;
   }
   const periodicPeriod = periodicDefaultPeriod(currentPeriodicCard());
+  const replacementFields = [];
   for (const key of spec.fields) {
     const field = ENGINEERING_FIELD_SPECS[key];
     if (!field) continue;
@@ -6094,7 +7206,7 @@ function renderEngineeringFields(tool) {
     wrapper.dataset.field = key;
     const label = document.createElement("label");
     label.htmlFor = field.id;
-    label.textContent = field.label + (spec.required.includes(key) ? "（必填）" : "（可选）");
+    label.textContent = field.label + (engineeringRequiredFields(tool).includes(key) ? "（必填）" : "（可选）");
     let control;
     if (field.source) {
       control = document.createElement("select");
@@ -6119,23 +7231,55 @@ function renderEngineeringFields(tool) {
     const fallback = key === "periodicPeriod" ? periodicPeriod
       : (defaults[key] === undefined ? "" : defaults[key]);
     control.value = fallback;
-    control.required = spec.required.includes(key);
+    control.required = engineeringRequiredFields(tool).includes(key);
     wrapper.append(label, control);
+    if (tool === "issuer.dividend.amend" && DIVIDEND_TERMS.includes(key)) {
+      label.textContent = field.label + "（必填）";
+      replacementFields.push({ wrapper, control });
+    }
     if (field.hint) {
       const hint = document.createElement("p");
       hint.className = "hint";
       hint.textContent = key === "meetingId"
         && (tool === "board.convene" || tool === "board.conveneWaiver"
-          || tool === "board.conveneAppointment")
+          || tool === "board.conveneAppointment" || tool === "board.conveneDigitalCessation")
         ? field.conveneHint : field.hint;
       wrapper.appendChild(hint);
     }
     container.appendChild(wrapper);
     state.engineeringFieldIds.push(key);
   }
+  if (tool === "issuer.dividend.amend") {
+    const operation = $("eng-dividend-operation");
+    const showTerms = () => {
+      for (const { wrapper, control } of replacementFields) {
+        control.required = operation.value === "REPLACE";
+        control.disabled = !control.required;
+        wrapper.hidden = control.disabled;
+      }
+    };
+    operation.addEventListener("change", showTerms);
+    showTerms();
+  }
   if (spec.fields.includes("draftId")) syncDraftVersion();
   if (tool === "periodic.publish") applyPublishGrant();
-  if (note) note.textContent = spec.note || "";
+  if (note) {
+    const hasPeriodReview = (tool === "board.vote" || tool === "board.implement") && currentPeriodicCard()?.periods?.some(row =>
+      typeof row.materialReadable === "boolean");
+    note.textContent = hasPeriodReview
+      ? "预算、任免等议题使用普通表决与决议实施。期末考核会议通过提交本席评分与批准草稿分别登记。"
+      : spec.note || "";
+    if (tool === "issuer.dividend.amend") {
+      const plans = currentPersonCompany()?.amendableAnnouncements || [];
+      note.textContent += plans.length
+        ? " 当前可更正的方案：" + plans.map(plan => plan.schemeId + "（公告第 " + plan.expectedVersion + " 版）").join("、") + "。"
+        : " 当前没有已公告且仍可更正的方案。";
+    }
+    if ((tool === "issuer.dividend.propose" || tool === "issuer.dividend.amend")
+        && currentPersonCompany()?.tools?.includes("issuer.dividend.amend")) {
+      note.textContent += " 除息时点须在交易日当天 09:30 开市前。";
+    }
+  }
   if (toolNote) {
     toolNote.textContent = "将发起：" + engineeringToolLabel(tool) + "（" + tool + "）";
   }
@@ -6148,7 +7292,7 @@ function engineeringFieldValues() {
   for (const key of state.engineeringFieldIds || []) {
     const field = ENGINEERING_FIELD_SPECS[key];
     const node = field ? $(field.id) : null;
-    values[key] = node ? String(node.value == null ? "" : node.value).trim() : "";
+    values[key] = node && !node.disabled ? String(node.value == null ? "" : node.value).trim() : "";
   }
   if (state.engineeringTool === "periodic.score") {
     values.metrics = [];
@@ -6164,9 +7308,10 @@ function engineeringFieldValues() {
   return values;
 }
 
-const ENGINEERING_INT_FIELDS = ["trancheIndex", "units", "docVersion", "durationMillis",
-  "materialDeadline", "opensAt", "closesAt", "effectiveAt", "endsAt", "period"];
-const ENGINEERING_MONEY_FIELDS = ["amount", "laborLimit", "procurementLimit"];
+const DIVIDEND_TERMS = ["perShare", "recordAt", "exAt", "payAt"];
+const ENGINEERING_INT_FIELDS = ["expectedVersion", "trancheIndex", "units", "docVersion", "durationMillis",
+  "materialDeadline", "opensAt", "closesAt", "effectiveAt", "endsAt", "period", "recordAt", "exAt", "payAt"];
+const ENGINEERING_MONEY_FIELDS = ["amount", "laborLimit", "procurementLimit", "perShare"];
 
 /** 提交前校验：只针对当前工具可见字段；返回中文提示列表，空表示通过。 */
 function engineeringValidate(tool, values) {
@@ -6179,8 +7324,12 @@ function engineeringValidate(tool, values) {
   } else if (!/^\d+$/.test(values.dueTimeMillis)) {
     errors.push("「排程到期」必须是世界毫秒整数");
   }
-  for (const key of spec.required) {
+  for (const key of engineeringRequiredFields(tool)) {
     if (!values[key]) errors.push("「" + fieldLabel(key) + "」必须填写");
+  }
+  if ((tool === "board.vote" || tool === "board.implement") && currentPeriodicCard()?.periods?.some(row =>
+      typeof row.materialReadable === "boolean" && row.meeting?.meetingId === values.meetingId)) {
+    errors.push("这场期末会议通过「提交本席评分」和「批准草稿」分别登记。");
   }
   for (const key of spec.fields) {
     const value = values[key];
@@ -6197,6 +7346,19 @@ function engineeringValidate(tool, values) {
   }
   if (values.amount && /^\d+(\.\d{1,2})?$/.test(values.amount) && Number(values.amount) <= 0) {
     errors.push("「" + fieldLabel("amount") + "」必须大于 0");
+  }
+  const replacement = tool === "issuer.dividend.amend" && values.operation === "REPLACE";
+  if (tool === "issuer.dividend.amend" && values.expectedVersion && !/^[1-9]\d*$/.test(values.expectedVersion)) {
+    errors.push("公告版本须为正整数");
+  }
+  if (replacement) for (const key of DIVIDEND_TERMS) {
+    if (!values[key]) errors.push("替换条款须填写「" + fieldLabel(key) + "」");
+  }
+  if (tool === "issuer.dividend.propose" || replacement) {
+    if (values.perShare && Number(values.perShare) <= 0) errors.push("每股股息须大于 0");
+    if (values.recordAt && values.exAt && values.payAt
+        && !(Number(values.dueTimeMillis) <= Number(values.recordAt) && Number(values.recordAt) < Number(values.exAt)
+        && Number(values.exAt) <= Number(values.payAt))) errors.push("登记不能早于提案，除息须晚于登记，派息不能早于除息");
   }
   if (values.materialDeadline && values.opensAt
       && Number(values.opensAt) < Number(values.materialDeadline)) {
@@ -6275,7 +7437,7 @@ function engineeringValidate(tool, values) {
 function engineeringFocusFirstInvalid(tool, values) {
   const spec = ENGINEERING_TOOL_FIELDS[tool];
   if (!spec) return;
-  for (const key of spec.required) {
+  for (const key of engineeringRequiredFields(tool)) {
     if (values[key]) continue;
     const field = ENGINEERING_FIELD_SPECS[key];
     const node = field ? $(field.id) : null;
@@ -6309,11 +7471,12 @@ async function renderPersonalEngineering(generation) {
   if (result.status !== 200 || !result.payload) return;
   const view = result.payload;
   state.personEngineering = view;
+  globalThis.PersonTakeover?.cut(view.observationToken);
   const card = $("person-engineering-card");
   if (!card) return;
   card.hidden = false;
   $("person-engineering-note").textContent = view.enabled
-    ? "同一确认记录 " + view.position + " · 世界时点 " + view.timeMillis + " 毫秒；只显示本人岗位内容。"
+    ? (view.position == null ? "" : "同一确认记录 " + view.position + " · ") + "世界时点 " + view.timeMillis + " 毫秒；只显示本人岗位内容。"
     : (view.note || "此运行未启用工程经营。");
   fillPersonalEngineeringCompanies(view.companies || []);
   fillEngineeringSelectors(view.companies || []);
@@ -6326,7 +7489,7 @@ function engineeringActionBody(tool, values) {
   state.engineeringSubmitSeq = (state.engineeringSubmitSeq || 0) + 1;
   const stamp = Date.now() + "-" + state.engineeringSubmitSeq;
   const body = {
-    expectedPosition: String(view.position || ""),
+    expectedPosition: String(view.observationToken ?? view.position ?? ""),
     commandId: "web-eng-" + stamp,
     taskId: "web-eng-" + stamp + "-task",
     dueTimeMillis: values.dueTimeMillis,
@@ -6354,10 +7517,11 @@ function engineeringActionBody(tool, values) {
  * 排程一次真实阅读：只用于当前会话人物；读完与否仍由信息模块在到期时判定。
  * 传入的文档与版本必须来自本人卡片/本人投影，页面不代造标识。
  */
-async function scheduleDocumentReading(companyId, docId, version, label) {
+async function scheduleDocumentReading(companyId, docId, version, label, feedbackId) {
+  const generation = state.generation;
   const view = state.personEngineering || {};
-  if (!view.position) {
-    setMessage("engineering-action-error", "当前没有可用的世界位置，请刷新后再试。");
+  if (!(view.observationToken ?? view.position)) {
+    setMessage(feedbackId || "engineering-action-error", "请刷新本人资料后重试。");
     return;
   }
   state.engineeringSubmitSeq = (state.engineeringSubmitSeq || 0) + 1;
@@ -6365,7 +7529,7 @@ async function scheduleDocumentReading(companyId, docId, version, label) {
   let result;
   try {
     result = await request("POST", "/api/me/read", {
-      expectedPosition: String(view.position),
+      expectedPosition: String(view.observationToken ?? view.position),
       commandId: "web-read-" + stamp,
       taskId: "web-read-" + stamp + "-task",
       dueTimeMillis: String(Number(view.timeMillis) + 1000),
@@ -6373,21 +7537,22 @@ async function scheduleDocumentReading(companyId, docId, version, label) {
       version: String(version)
     });
   } catch (failure) {
-    setMessage("engineering-action-error", failure.message);
+    if (isCurrent(generation)) setMessage(feedbackId || "engineering-action-error", failure.message);
     return;
   }
+  if (!isCurrent(generation)) return;
   if (result.status === 401) { sessionLost(); return; }
   if (result.status === 409) {
-    setMessage("engineering-action-error", "世界已推进到新的确认位置，请刷新后再排程阅读。");
+    setMessage(feedbackId || "engineering-action-error", "世界已推进到新的确认位置，请刷新后再排程阅读。");
     return;
   }
   if (result.status !== 200 || !result.payload) {
     const reason = result.payload && result.payload.message ? result.payload.message
       : "服务返回 " + result.status;
-    setMessage("engineering-action-error", "阅读排程被拒绝：" + reason);
+    setMessage(feedbackId || "engineering-action-error", "阅读排程被拒绝：" + reason);
     return;
   }
-  setMessage("engineering-action-result", "已排程阅读：公司 " + companyId + " · " + label
+  setMessage(feedbackId || "engineering-action-result", "已排程阅读：" + (companyId ? "公司 " + companyId + " · " : "") + label
     + " v" + version + " · 命令 " + result.payload.receipt
     + "。世界推进到阅读完成后再刷新，才会显示“本人已读完”。");
   await renderPersonalEngineering(state.generation);
@@ -6418,7 +7583,8 @@ async function submitEngineeringAction(event) {
   const body = engineeringActionBody(tool, values);
   let result;
   try {
-    result = await request("POST", "/api/me/engineering/action", body);
+    const endpoint = tool.startsWith("issuer.dividend.") ? "/api/me/issuer-dividend" : "/api/me/engineering/action";
+    result = await request("POST", endpoint, body);
   } catch (failure) {
     setMessage("engineering-action-error", failure.message);
     return;

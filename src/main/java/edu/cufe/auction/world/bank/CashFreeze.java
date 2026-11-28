@@ -18,7 +18,12 @@ import java.util.TreeMap;
  *
  * @param frozenByBucket 资金桶规范文本 → 冻结金额（非负、两位小数）
  */
-public record CashFreeze(Map<String, BigDecimal> frozenByBucket) {
+public record CashFreeze(Map<String, BigDecimal> frozenByBucket,
+                         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_DEFAULT)
+                         boolean checkAllCashDebits) {
+
+    /** 历史档沿用原资金端口的扣款范围。 */
+    public CashFreeze(Map<String, BigDecimal> frozenByBucket) { this(frozenByBucket,false); }
 
     /** 校验并深拷贝快照。 */
     public CashFreeze {

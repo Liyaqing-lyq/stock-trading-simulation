@@ -38,6 +38,26 @@ class EngineeringModelTest {
     private static final Config CONFIG = new Config("company", "CO", "CUS", "SUP", "OPS",
             DAY, 6000, "实验参数：标准工日、人工比例，非行业事实");
 
+    @Test
+    void operatingReviewUsesNewAcceptanceAndKeepsUnpaidInvoicesAsExposure() {
+        Result r = new Result(opening("5000.00", "30000.00"), CONFIG);
+        r.sign("sign", "A-1", "120.00", "60.00", terms(0, 1000, 15, 60, 5, 5));
+        r.work("w", "A-1", 5, 0);
+        r.complete("w", 5 * DAY);
+        assertTrue(IssuerPeriodEvidence.engineering("eng-a", 1, r.state(), null).isEmpty());
+        State before = r.state();
+        r.accept("accept", "A-1", 5, "客户验收单", 31 * DAY);
+        var accepted = IssuerPeriodEvidence.engineering("eng-a", 2, r.state(), before);
+        assertEquals("本期获客户验收工程量（单位）=5", accepted.get("issuer-fact:ACCEPTED_WORK:eng-a:2"));
+        State end = r.state();
+        r.invoice("invoice", "A-1", 62 * DAY);
+        var next = IssuerPeriodEvidence.engineering("eng-a", 3, r.state(), end);
+        assertFalse(next.containsKey("issuer-fact:ACCEPTED_WORK:eng-a:3"));
+        assertEquals("期末未收贸易款（元）=600.00", next.get("issuer-fact:RECEIVABLES:eng-a:3"));
+        assertTrue(PeriodicWorldEngine.dimensionsFor("invoice:A-1:0", true).isEmpty());
+        assertTrue(PeriodicWorldEngine.dimensionsFor("invoice:A-1:0", false).contains("OPERATING_COMMITMENT"));
+    }
+
     // ------------------------------------------------------------------ 独立数例
 
     @Test

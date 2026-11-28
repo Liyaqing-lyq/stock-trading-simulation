@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import edu.cufe.auction.world.composed.OpeningEntityCopies;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +48,664 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** 现金 + 登记 + 证券 + 撮合 + 制造经营（M3a.2 新增的明确组合，model=none）。 */
     public static final String RULES_STOCK_COMPANY_EXPERIMENT_V1 = "stock-company-experiment-v1";
+
+    /** 三制造客户按签约执行时的未承诺现金承担新订单。 */
+    public static final String FUNDED_CONTRACT_POLICY = "available-customer-cash-v1";
+    /** 显式启用签约资金约束的思考经营运行标识。 */
+    public static final String FUNDED_THINKING_RUN_ID = "web-thinking-operating-v2";
+
+    /** 分开记录发行人公开资料与经理本人财务资料的新经营档标识。 */
+    public static final String COMPANY_INFORMATION_RUN_ID = "web-company-information-operating-v1";
+
+    /** 董事与在任经理可查本公司本期、下期已实施预算的经营档标识。 */
+    public static final String FORWARD_BUDGET_RUN_ID = "web-forward-budget-operating-v1";
+
+    /** 岚醴的董事与经理可查采购到货、付款及熟成时点的经营档标识。 */
+    public static final String AGED_ORDER_RUN_ID = "web-aged-order-operating-v1";
+
+    /** 董事会议共享相同议事规则的经营档标识。 */
+    public static final String BOARD_PROCEDURE_RUN_ID = "web-board-procedure-operating-v1";
+
+    /** 支持发行人署名及逐版公开更正的经营档。 */
+    public static final String ISSUER_REPORT_RUN_ID = "web-issuer-report-operating-v1";
+
+    /** 在冻结的角色输入超限时使用有列名的紧凑记录。 */
+    public static final String ROLE_TABLE_RUN_ID = "web-role-table-operating-v1";
+
+    /** 明确区分水电累计物量、已结电费与应收的经营档。 */
+    public static final String HYDRO_SETTLEMENT_RUN_ID = "web-hydro-settlement-operating-v1";
+
+    /** 明示本人自有账户空簿限价申报条件的经营档。 */
+    public static final String PERSONAL_LIMIT_RUN_ID = "web-personal-limit-operating-v1";
+
+    /** 同一十公司世界启用个人研究笔记、媒体采编视图与可选公开动态唤醒。 */
+    public static final String CONTINUING_ROLES_RUN_ID = "web-continuing-roles-operating-v1";
+
+    /** 同一十公司开局下的八家独立采编机构。 */
+    public static final String MEDIA_DESKS_RUN_ID = "web-media-desks-operating-v1";
+
+    /** 合并已登记的分项能力，供同一开局的受限角色检验使用。 */
+    public static final String INTEGRATED_RUN_ID = "web-integrated-operating-v1";
+
+    /** 制造公司成组停止承接新合同的实验档。 */
+    public static final String MANUFACTURING_LIFECYCLE_RUN_ID = "web-manufacturing-lifecycle-operating-v1";
+
+    /** 制造公司收单规则在本运行中的版本键。 */
+    public static final String MANUFACTURING_LIFECYCLE_KEY = "manufacturing-intake-lifecycle";
+
+    /** 三家公司在同一提交切换收单规则，继续履行旧合同。 */
+    public static final String MANUFACTURING_LIFECYCLE_VERSION = "atomic-wind-down-v1";
+
+    /** 固定资本基金的外部资金政策，证券买卖与分红仍按原有账务办理。 */
+    public static final String FIXED_FUND_CAPITAL = "fixed-capital-v1";
+
+    /** 本人行情在交易价格旁分别展示账户估值、市价来源和报价时间。 */
+    public static final String ROLE_MARKET_VALUATION = "as-of-reference-v1";
+
+    /** 有有限资金来源和独立处置职权的十公司危机档。 */
+    public static final String BANK_CRISIS_RUN_ID = "web-bank-crisis-operating-v1";
+
+    /** 冻结限价申报区间的实验档。 */
+    public static final String PRICE_BAND_RUN_ID = "web-price-band-operating-v1";
+
+    /** 指定工程发行人现金分红的实验档。 */
+    public static final String ISSUER_DIVIDEND_RUN_ID = "web-issuer-dividend-operating-v1";
+
+    /** 具名详细借款人承接已冻结聚合债权的实验档。 */
+    public static final String LOAN_PROMOTION_RUN_ID = "web-loan-promotion-operating-v1";
+
+    /** 同时启用工程分红、每日价格带及具名借款人登记的实验档。 */
+    public static final String BASELINE_PARTS_RUN_ID = "web-baseline-parts-operating-v1";
+
+    /** 允许以独立开局草稿创建零资产副本的组合实验档。 */
+    public static final String OPENING_COPIES_RUN_ID = "web-opening-copies-v1";
+
+    /** 对同一持有人的存款、托管净受益和债务按确认时点估值的实验档。 */
+    public static final String OWNER_BANK_VALUATION_RUN_ID = "web-owner-bank-valuation-v1";
+
+    /** 保留 HY1 原始配售成本但无可用开局行情的独立估值档。 */
+    public static final String UNPRICED_REFERENCE_RUN_ID = "web-unpriced-reference-v1";
+
+    /** 银行进入处置时暂停其证券申报并释放对应挂单。 */
+    public static final String ISSUER_RESOLUTION_RUN_ID = "web-issuer-resolution-v1";
+
+    /** 在银行处置档基础上启用单人决定暂停。 */
+    public static final String PERSON_PAUSE_RUN_ID = "web-person-pause-v1";
+
+    /** 正常参考价、十个发行人的自主运行开局。 */
+    public static final String TEN_COMPANY_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v2";
+
+    /** 普通十公司长程研究使用按正文计时的第三版开局。 */
+    public static final String STUDY_TEN_COMPANY_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v3";
+    /** 第四版普通十公司开局，可按各行业凭据考核当期经理。 */
+    public static final String GOVERNANCE_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v4";
+    /** 第五版普通档只在编辑部实际收到内稿后提供文档标识与版次。 */
+    public static final String READABLE_DRAFT_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v5";
+    /** 第六版把在任应急职责与本人的可用笔记引用列入实际决定输入。 */
+    public static final String PERSONAL_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v6";
+    /** 第七版把本人的采访决定与实际协调回执相连。 */
+    public static final String INTERVIEW_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v7";
+    /** 第八版提供董事本人可读取的期末会议材料。 */
+    public static final String MEETING_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v8";
+    /** 第九版允许数字服务公司依有效决议停止新增业务。 */
+    public static final String DIGITAL_WIND_DOWN_RUN_ID = "web-ten-company-autonomy-v9";
+    /** 数字服务公司停接新业务及继续清偿原合同的程序版本键。 */
+    public static final String DIGITAL_CESSATION = "digital-cessation";
+    /** 依据董事会决议停接，并保留原合同及资金义务。 */
+    public static final String BOARD_DIGITAL_WIND_DOWN = "board-wind-down-v1";
+    /** 十公司第十版，开启稿件审阅反馈和按执行时点计算的采访窗口。 */
+    public static final String EDITORIAL_FEEDBACK_RUN_ID = "web-ten-company-autonomy-v10";
+    /** 第十一版普通十公司，按本人阅读、订阅和等候安排提供新闻。 */
+    public static final String PERSONAL_NEWS_RUN_ID = "web-ten-company-autonomy-v11";
+    /** 常规调度允许在已开场采访内自主发言与阅读的十公司开局。 */
+    public static final String INTERVIEW_AUTONOMY_RUN_ID = "web-ten-company-autonomy-v12";
+    /** 已开场采访的自主决定政策键。 */
+    public static final String INTERVIEW_AUTONOMY_POLICY = "interview-autonomy";
+    /** 在当前会话的读权、正工时与发言顺序内决定。 */
+    public static final String INTERVIEW_AUTONOMY_VERSION = "active-session-turn-v1";
+    /** 在普通董事决定中提供章程允许的发行人现金分红。 */
+    public static final String ISSUER_DECISIONS_RUN_ID = "web-ten-company-autonomy-v13";
+    /** 董事自主办理发行人事项的政策键。 */
+    public static final String ISSUER_DECISIONS_POLICY = "issuer-decisions";
+    /** 工程发行人现金分红的角色决定政策。 */
+    public static final String ISSUER_DECISIONS_VERSION = "engineering-cash-dividend-v1";
+    /** 第十四版普通世界，启用正式撤稿、跨期采编工时以及股利债权后续。 */
+    public static final String MEDIA_WITHDRAWAL_RUN_ID = "web-ten-company-autonomy-v14";
+    /** 银行贷款损失及重大事项交易窗口的普通十公司版本。 */
+    public static final String BANK_LOAN_LOSS_RUN_ID = "web-ten-company-autonomy-v15";
+    /** 显示可核验公司订单指标与本人证据引用的普通十公司版本。 */
+    public static final String PERSONAL_BELIEF_RUN_ID = "web-ten-company-autonomy-v16";
+    /** 采访双方能查实际答复截止与阅读耗时下限的普通十公司版本。 */
+    public static final String INTERVIEW_TIME_RUN_ID = "web-ten-company-autonomy-v17";
+    /** 采访双方可见的会谈时间政策。 */
+    public static final String INTERVIEW_TIME_POLICY = "interview-time-contract";
+    /** 按实际答复时段及阅读耗时下限展示采访时间。 */
+    public static final String INTERVIEW_TIME_VERSION = "effective-window-reading-floor-v1";
+    /** 登记前可按董事会决议更正或撤销工程分红的普通十公司版本。 */
+    public static final String DIVIDEND_AMENDMENT_RUN_ID = "web-ten-company-autonomy-v18";
+    /** 工程发行人分红更正的开局政策。 */
+    public static final String DIVIDEND_AMENDMENT_POLICY = "issuer-dividend-amendments";
+    /** 登记前重新表决、公告并在交易日开市前办理除息。 */
+    public static final String DIVIDEND_AMENDMENT_VERSION = "board-correction-before-record-v1";
+    /** 现场接待按本人思考及办事的实际耗时列出选项的普通十公司版本。 */
+    public static final String ONSITE_DECISION_CLOCK_RUN_ID = "web-ten-company-autonomy-v19";
+    /** 普通十公司开局的应急融资和药企董事操作参数版本。 */
+    public static final String CRISIS_ARGUMENTS_STUDY_RUN_ID = "web-ten-company-autonomy-v20";
+    /** 向汇编岗位说明投稿证据类型的普通十公司开局。 */
+    public static final String AGGREGATOR_EVIDENCE_RUN_ID = "web-ten-company-autonomy-v21";
+    /** 普通岗位可见操作条件与可理解的参数错误提示的十公司开局。 */
+    public static final String ROLE_ARGUMENTS_RUN_ID = "web-ten-company-autonomy-v22";
+    /** 从原始 JSON 十进制数读取人物工具参数的普通十公司开局。 */
+    public static final String EXACT_DECIMAL_RUN_ID = "web-ten-company-autonomy-v23";
+    /** 人物决定参数的小数解析政策。 */
+    public static final String EXACT_DECIMAL_POLICY = "decision-argument-decimals";
+    /** 保留原始十进制数值，交给具体工具校验金额精度。 */
+    public static final String EXACT_DECIMAL_VERSION = "exact-json-decimal-v1";
+    /** 普通采编岗位按已核实的原始发布人统计独立来源的开局。 */
+    public static final String EDITORIAL_SOURCE_RUN_ID = "web-ten-company-autonomy-v24";
+    /** 编辑部向投稿人说明来源计算办法并返回不足数量的政策。 */
+    public static final String EDITORIAL_SOURCE_POLICY = "editorial-source-accounting";
+    /** 按登记来源归组，只向本人报告计得与所需的组数。 */
+    public static final String EDITORIAL_SOURCE_VERSION = "registered-origin-groups-v1";
+    /** 岗位工具条件参数和参数错误说明的政策。 */
+    public static final String ROLE_ARGUMENTS_POLICY = "role-tool-arguments";
+    /** 按操作说明条件字段并向本人返回可读错误。 */
+    public static final String ROLE_ARGUMENTS_VERSION = "conditional-fields-and-readable-errors-v1";
+    /** 本人选择到复查时再看陌生人广场帖时，识别同一批帖子对个人目录总数的影响。 */
+    public static final String PUBLIC_POST_REVIEW_WAKE_POLICY = "public-post-review-wake";
+    /** 只合并已逐项核实为广场新帖的目录增量。 */
+    public static final String PUBLIC_POST_REVIEW_WAKE_VERSION = "defer-catalog-count-with-post-v1";
+    /** 汇编岗位的证据说明政策。 */
+    public static final String AGGREGATOR_EVIDENCE_POLICY = "aggregator-evidence";
+    /** 引用本人已读的已刊媒体稿并保留原始出处。 */
+    public static final String AGGREGATOR_EVIDENCE_VERSION = "read-published-stories-only-v1";
+    /** 银行应急操作的金额和额度编号口径。 */
+    public static final String CRISIS_ARGUMENTS_POLICY = "crisis-action-arguments";
+    /** 逐项区分新设额度、已有额度与处置程序的参数。 */
+    public static final String CRISIS_ARGUMENTS_VERSION = "operation-specific-line-identity-v1";
+    /** 药企董事按已读材料提议商业化与执行既有决议的参数口径。 */
+    public static final String BOARD_RESEARCH_ARGUMENTS_POLICY = "board-research-arguments";
+    /** 展示当次动作与可由本人核对的版本证据。 */
+    public static final String BOARD_RESEARCH_ARGUMENTS_VERSION = "action-and-evidence-reference-v1";
+    /** 本人决定办理现场采访所用的时间政策键。 */
+    public static final String ONSITE_DECISION_CLOCK_POLICY = "onsite-decision-clock";
+    /** 在冻结的观察时点计算现场动作最早完成时刻。 */
+    public static final String ONSITE_DECISION_CLOCK_VERSION = "observed-action-completion-v1";
+    /** 本人发现资料目录的呈现与检索政策。 */
+    public static final String DISCOVERY_CATALOG_POLICY = "personal-discovery-catalog";
+    /** 默认显示有限条目，可按本人原有权限通过检索和翻页查看其余条目。 */
+    public static final String DISCOVERY_CATALOG_VERSION = "bounded-catalog-search-pages-v1";
+    /** 已结束的本人事务与仍待办理的活动分别呈现。 */
+    public static final String PARTICIPANT_HISTORY_POLICY = "personal-participant-history";
+    /** 按本人原有权限查阅往期采访、稿件、业务回报及往来信件。 */
+    public static final String PARTICIPANT_HISTORY_VERSION = "bounded-personal-history-v1";
+    /** 本人查阅已结束事务的普通角色工具。 */
+    public static final String PARTICIPANT_HISTORY_TOOL = "role.history.lookup";
+    /** 本人预测工具合同的开局政策。 */
+    public static final String PERSONAL_BELIEF_POLICY = "personal-belief-contract";
+    /** 公司订单预测采用本人已读证据与明确的核验时点。 */
+    public static final String PERSONAL_BELIEF_VERSION = "visible-orders-evidence-v1";
+    /** 银行经理办理贷款减值、核销及收回的开局政策。 */
+    public static final String BANK_LOAN_LOSS_POLICY = "bank-loan-loss";
+    /** 沿用原合同和银行自有账的贷款损失办理规则。 */
+    public static final String BANK_LOAN_LOSS_VERSION = "manager-impair-writeoff-v1";
+    /** 发行人重大事项在公开前的交易限制政策。 */
+    public static final String MATERIAL_TRADING_POLICY = "material-information-trading";
+    /** 按本人知悉、发行人及正式披露时点限制新委托。 */
+    public static final String MATERIAL_TRADING_VERSION = "issuer-disclosure-window-v1";
+    /** 工程业主代表作为自然人使用个人通信工具的政策。 */
+    public static final String CUSTOMER_PERSONAL_TOOLS = "customer-personal-tools";
+    /** 个人联系不代替业主组织按合同验收或付款。 */
+    public static final String PERSONAL_COMMUNICATION = "personal-communication-v1";
+    /** 有限个人活动时段与通信工时的政策键。 */
+    public static final String PERSONAL_ATTENTION_POLICY = "personal-attention";
+    /** 工作日普通注意力时段，已确认的约定可在时段外履行。 */
+    public static final String PERSONAL_ATTENTION_VERSION = "weekday-duty-windows-v1";
+    /** 已发表报道的撤稿政策。 */
+    public static final String MEDIA_WITHDRAWAL_POLICY = "media-withdrawal";
+    /** 按公开版本提交可追溯的撤稿公告。 */
+    public static final String MEDIA_WITHDRAWAL_VERSION = "published-version-notice-v1";
+    /** 编辑部跨期工时政策。 */
+    public static final String MEDIA_WORK_CALENDAR = "media-work-calendar";
+    /** 有限工作日排班。 */
+    public static final String FINITE_BUSINESS_SHIFTS = "finite-business-shifts-v1";
+    /** 未付股利的债权后续政策。 */
+    public static final String DIVIDEND_CLAIMS_POLICY = "dividend-claims";
+    /** 股东及发行人代表按各自权限办理股利债权。 */
+    public static final String DIVIDEND_CLAIMS_VERSION = "holder-and-issuer-followup-v1";
+    /** 本人已获显示资格的新闻排序口径。 */
+    public static final String PERSONAL_NEWS_RANKING = "personal-news-ranking";
+    /** 已读、兴趣和来源探索共同决定新闻展示次序。 */
+    public static final String VISIBLE_INTEREST_RANKING = "visible-interest-v1";
+    /** 陌生来源的展示位次，从一开始计数。 */
+    public static final String NEWS_EXPLORATION_SLOT = "news-exploration-slot";
+    /** 常规交易时段能否打断个人休息。 */
+    public static final String MARKET_SESSION_WAKE = "market-session-wake";
+    /** 默认按实际证券业务决定，等待者可另选。 */
+    public static final String ROLE_EXPOSURE_CHOICE = "role-exposure-choice-v1";
+    /** 新闻订阅和授权补充采访资料的交付政策。 */
+    public static final String MEDIA_SUBSCRIPTIONS = "media-subscriptions";
+    /** 采访原话只按发言人许可交付订户。 */
+    public static final String CONSENTED_INTERVIEW_DELIVERY = "consented-interview-delivery-v1";
+    /** 有限水文试验的来水路径。 */
+    public static final String HYDRO_INFLOW_PATH = "hydro-inflow-path";
+    /** 首年、偏干次年和偏湿第三年合计 1080 模拟日。 */
+    public static final String FINITE_1080_DAYS = "finite-1080d-v1";
+    /** 已获商业化批准的研发成果许可合同政策。 */
+    public static final String PHARMA_LICENSING = "pharma-licensing";
+    /** 按实际交付确认有限客户自用许可的收入与应收，实际收款单独入账。 */
+    public static final String APPROVED_USE_CONTRACT = "approved-use-contract-v1";
+    /** 跨市场稿件的时点换算和编译工时口径。 */
+    public static final String CROSS_BORDER_EDITING = "cross-border-editing";
+    /** 两地固定实验时区和编译所占用的写作时间。 */
+    public static final String DUAL_CLOCK_EDITING = "dual-clock-editing-v1";
+    /** 私有审阅意见的版本键。 */
+    public static final String EDITORIAL_REVIEW_FEEDBACK = "editorial-review-feedback";
+    /** 意见绑定被审原稿，获权人员读完后取得正文。 */
+    public static final String PRIVATE_REVISION_READING = "private-revision-reading-v1";
+    /** 采访窗口起算依据的版本键。 */
+    public static final String INTERVIEW_WINDOW_BASIS = "interview-window-basis";
+    /** 邀约在执行时检查本社要求的最短提前期。 */
+    public static final String EXECUTION_CLOCK_WINDOW = "execution-clock-v1";
+    /** 上帝视角切换后人工操作的隔离政策键。 */
+    public static final String PERSON_TAKEOVER_POLICY = "web-person-takeover";
+    /** 人工接管写入有来源记录的个人操作分支。 */
+    public static final String MARKED_TAKEOVER_BRANCH = "marked-branch-v1";
+    /** 董事期末会议材料的可读投影口径。 */
+    public static final String PERIODIC_MEETING_VIEW = "periodic-meeting-view";
+    /** 按董事的实际读权提供期末材料。 */
+    public static final String READABLE_PERIOD_MATERIAL = "readable-period-material-v1";
+    /** 采访人员看见回执、约定时间和本社工时的口径。 */
+    public static final String INTERVIEW_RECEIPTS = "interview-action-feedback";
+    /** 从本人决定绑定的协调任务读取业务结果。 */
+    public static final String ATTRIBUTED_INTERVIEW_RESULTS = "bound-coordination-v1";
+    /** 个人社交动作的完成与投递口径。 */
+    public static final String SOCIAL_RECEIPTS = "social-action-feedback";
+    /** 从本人决定和消息编号核对写信、投递及屏蔽动作。 */
+    public static final String ATTRIBUTED_SOCIAL_RESULTS = "bound-message-v1";
+    /** 董事期末评分、披露等动作如何向本人报告结算结果。 */
+    public static final String PERIODIC_RECEIPTS = "periodic-action-feedback";
+    /** 以本人已绑定的发行人期末任务及正式回执确认后果。 */
+    public static final String ATTRIBUTED_PERIOD_RESULTS = "bound-period-result-v1";
+    /** 决定目标是否覆盖当时有效的应急金融任职。 */
+    public static final String CRISIS_OFFICE_OBJECTIVES = "crisis-office-objectives";
+    /** 使用当时有效的任职编号生成职责目标。 */
+    public static final String ACTIVE_APPOINTMENT_GOALS = "active-appointments-v1";
+    /** 本人决定如何引用已有私人笔记。 */
+    public static final String PERSONAL_NOTE_CONTRACT = "personal-note-contract";
+    /** 明示本人笔记编号和新建、修订、撤回的条件。 */
+    public static final String EXPLICIT_NOTE_REFERENCE = "explicit-note-reference-v1";
+    /** 人物决定信封的字段说明版本。 */
+    public static final String DECISION_ENVELOPE_GUIDE = "decision-envelope-guide";
+    /** 列出目标来源、复查范围及等待专属字段的精确类型。 */
+    public static final String TYPED_REVIEW_FIELDS = "typed-review-fields-v1";
+    /** 本人可见的编辑部内稿阅读入口口径。 */
+    public static final String EDITORIAL_DRAFT_VISIBILITY = "editorial-draft-visibility";
+    /** 只有实际生成的内稿版本才有阅读入口。 */
+    public static final String SUBMITTED_DOCUMENT = "submitted-document-v1";
+    /** 冻结资料阅读计时口径的数据版本键。 */
+    public static final String DOCUMENT_READING_CLOCK = "document-reading-clock";
+    /** 第三版普通十公司冻结的正文阅读速度版本。 */
+    public static final String BODY_PACING_300 = "body-pacing-300-v1";
+    /** 编辑在本人岗位上看见的模板说明版本键。 */
+    public static final String EDITORIAL_TEMPLATE_GUIDE = "editorial-template-guide";
+    /** 根据本人编辑部的来源数映射列明可用模板。 */
+    public static final String OFFICE_TEMPLATE_KEYS = "office-source-map-keys-v1";
+    /** 发行人期末评分所采用的经营凭据版本键。 */
+    public static final String ISSUER_PERIOD_METRICS = "issuer-period-metrics";
+    /** 董事按本期经营和风险凭据评分的口径。 */
+    public static final String OPERATING_PERIOD_EVIDENCE = "operating-evidence-v1";
+
+    /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
+    public static java.util.List<String> standardTenCompanyRuns() {
+        return java.util.List.of(EDITORIAL_SOURCE_RUN_ID, EXACT_DECIMAL_RUN_ID, ROLE_ARGUMENTS_RUN_ID, AGGREGATOR_EVIDENCE_RUN_ID, CRISIS_ARGUMENTS_STUDY_RUN_ID, ONSITE_DECISION_CLOCK_RUN_ID, DIVIDEND_AMENDMENT_RUN_ID, INTERVIEW_TIME_RUN_ID, PERSONAL_BELIEF_RUN_ID, BANK_LOAN_LOSS_RUN_ID, MEDIA_WITHDRAWAL_RUN_ID, ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+                GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
+                TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
+    }
+
+    /** @param id 普通开局或分支继承的政策标识 @return 是否继承个人消息、有限水文与药企许可的开局规则 */
+    public static boolean usesPersonalNewsOpening(String id) {
+        return PERSONAL_NEWS_RUN_ID.equals(id) || INTERVIEW_AUTONOMY_RUN_ID.equals(id) || usesIssuerDecisionsOpening(id);
+    }
+
+    /** @param id 开局政策标识 @return 是否启用独立董事分红议题和个人市价委托 */
+    public static boolean usesIssuerDecisionsOpening(String id) {
+        return ISSUER_DECISIONS_RUN_ID.equals(id) || usesMediaFollowupOpening(id);
+    }
+
+    /** @param id 开局政策标识 @return 是否使用按日采编工时、个人时段和股利债权后续规则 */
+    public static boolean usesMediaFollowupOpening(String id) {
+        return MEDIA_WITHDRAWAL_RUN_ID.equals(id) || usesLoanLossOpening(id);
+    }
+
+    /** @param id 开局政策标识 @return 是否继承银行经理的贷款损失处理及重大事项交易限制 */
+    public static boolean usesLoanLossOpening(String id) {
+        return BANK_LOAN_LOSS_RUN_ID.equals(id) || usesPersonalBeliefOpening(id);
+    }
+
+    private static boolean usesPersonalBeliefOpening(String id) {
+        return PERSONAL_BELIEF_RUN_ID.equals(id) || usesInterviewTimeOpening(id);
+    }
+
+    private static boolean usesInterviewTimeOpening(String id) {
+        return INTERVIEW_TIME_RUN_ID.equals(id) || usesDividendAmendmentOpening(id);
+    }
+
+    /** @param id 开局政策标识 @return 是否启用登记前重新表决分红方案 */
+    public static boolean usesDividendAmendmentOpening(String id) {
+        return DIVIDEND_AMENDMENT_RUN_ID.equals(id) || usesOnsiteDecisionClockOpening(id);
+    }
+
+    /** @param id 开局政策标识 @return 是否按人物办结时间确定现场接待及启用个人历史查阅 */
+    public static boolean usesOnsiteDecisionClockOpening(String id) {
+        return ONSITE_DECISION_CLOCK_RUN_ID.equals(id) || usesCrisisArgumentsOpening(id);
+    }
+
+    private static boolean usesCrisisArgumentsOpening(String id) {
+        return CRISIS_ARGUMENTS_STUDY_RUN_ID.equals(id) || usesAggregatorEvidenceOpening(id);
+    }
+
+    private static boolean usesAggregatorEvidenceOpening(String id) {
+        return AGGREGATOR_EVIDENCE_RUN_ID.equals(id) || usesRoleArgumentsOpening(id);
+    }
+
+    private static boolean usesRoleArgumentsOpening(String id) {
+        return ROLE_ARGUMENTS_RUN_ID.equals(id) || EXACT_DECIMAL_RUN_ID.equals(id) || EDITORIAL_SOURCE_RUN_ID.equals(id);
+    }
+
+    /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
+    public static Map<String, String> tenCompanyStudyPolicies(String id) {
+        boolean personalNews = usesPersonalNewsOpening(id);
+        boolean editorialFeedback = EDITORIAL_FEEDBACK_RUN_ID.equals(id) || personalNews;
+        boolean digitalWindDown = DIGITAL_WIND_DOWN_RUN_ID.equals(id) || editorialFeedback;
+        boolean periodMeetings = MEETING_TEN_COMPANY_RUN_ID.equals(id) || digitalWindDown;
+        boolean interviewReceipts = INTERVIEW_TEN_COMPANY_RUN_ID.equals(id) || periodMeetings;
+        if (GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
+                || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || interviewReceipts) {
+            var policies = new java.util.TreeMap<>(Map.of(DOCUMENT_READING_CLOCK, BODY_PACING_300,
+                    EDITORIAL_TEMPLATE_GUIDE, OFFICE_TEMPLATE_KEYS, ISSUER_PERIOD_METRICS, OPERATING_PERIOD_EVIDENCE));
+            if (!GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id)) {
+                policies.put(EDITORIAL_DRAFT_VISIBILITY, SUBMITTED_DOCUMENT);
+            }
+            if (PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || interviewReceipts) {
+                policies.put(CRISIS_OFFICE_OBJECTIVES, ACTIVE_APPOINTMENT_GOALS);
+                policies.put(PERSONAL_NOTE_CONTRACT, EXPLICIT_NOTE_REFERENCE);
+                policies.put(DECISION_ENVELOPE_GUIDE, TYPED_REVIEW_FIELDS);
+            }
+            if (interviewReceipts) {
+                policies.put(INTERVIEW_RECEIPTS, ATTRIBUTED_INTERVIEW_RESULTS);
+                policies.put(SOCIAL_RECEIPTS, ATTRIBUTED_SOCIAL_RESULTS);
+                policies.put(PERIODIC_RECEIPTS, ATTRIBUTED_PERIOD_RESULTS);
+            }
+            if (periodMeetings) policies.put(PERIODIC_MEETING_VIEW, READABLE_PERIOD_MATERIAL);
+            if (digitalWindDown) policies.put(DIGITAL_CESSATION, BOARD_DIGITAL_WIND_DOWN);
+            if (editorialFeedback) {
+                policies.put(EDITORIAL_REVIEW_FEEDBACK, PRIVATE_REVISION_READING);
+                policies.put(INTERVIEW_WINDOW_BASIS, EXECUTION_CLOCK_WINDOW);
+                policies.put(PERSON_TAKEOVER_POLICY, MARKED_TAKEOVER_BRANCH);
+            }
+            if (personalNews) {
+                policies.put(PERSONAL_NEWS_RANKING, VISIBLE_INTEREST_RANKING);
+                policies.put(NEWS_EXPLORATION_SLOT, "4");
+                policies.put(MARKET_SESSION_WAKE, ROLE_EXPOSURE_CHOICE);
+                policies.put(MEDIA_SUBSCRIPTIONS, CONSENTED_INTERVIEW_DELIVERY);
+                policies.put(CROSS_BORDER_EDITING, DUAL_CLOCK_EDITING);
+                policies.put(PHARMA_LICENSING, APPROVED_USE_CONTRACT);
+                policies.put(HYDRO_INFLOW_PATH, FINITE_1080_DAYS);
+            }
+            if (INTERVIEW_AUTONOMY_RUN_ID.equals(id) || usesIssuerDecisionsOpening(id))
+                policies.put(INTERVIEW_AUTONOMY_POLICY, INTERVIEW_AUTONOMY_VERSION);
+            if (usesIssuerDecisionsOpening(id)) {
+                policies.put(ISSUER_DECISIONS_POLICY, ISSUER_DECISIONS_VERSION);
+                policies.put(PersonalMarket.MARKET_POLICY, PersonalMarket.MARKET_VERSION);
+            }
+            if (EXACT_DECIMAL_RUN_ID.equals(id) || EDITORIAL_SOURCE_RUN_ID.equals(id))
+                policies.put(EXACT_DECIMAL_POLICY, EXACT_DECIMAL_VERSION);
+            if (EDITORIAL_SOURCE_RUN_ID.equals(id)) policies.put(EDITORIAL_SOURCE_POLICY, EDITORIAL_SOURCE_VERSION);
+            if (usesRoleArgumentsOpening(id)) {
+                policies.put(ROLE_ARGUMENTS_POLICY, ROLE_ARGUMENTS_VERSION);
+                policies.put(PUBLIC_POST_REVIEW_WAKE_POLICY, PUBLIC_POST_REVIEW_WAKE_VERSION);
+            }
+            if (usesAggregatorEvidenceOpening(id)) policies.put(AGGREGATOR_EVIDENCE_POLICY, AGGREGATOR_EVIDENCE_VERSION);
+            if (usesCrisisArgumentsOpening(id)) {
+                policies.put(CRISIS_ARGUMENTS_POLICY, CRISIS_ARGUMENTS_VERSION);
+                policies.put(BOARD_RESEARCH_ARGUMENTS_POLICY, BOARD_RESEARCH_ARGUMENTS_VERSION);
+            }
+            if (usesOnsiteDecisionClockOpening(id)) {
+                policies.put(ONSITE_DECISION_CLOCK_POLICY, ONSITE_DECISION_CLOCK_VERSION);
+                policies.put(DISCOVERY_CATALOG_POLICY, DISCOVERY_CATALOG_VERSION);
+                policies.put(PARTICIPANT_HISTORY_POLICY, PARTICIPANT_HISTORY_VERSION);
+            }
+            if (usesDividendAmendmentOpening(id)) policies.put(DIVIDEND_AMENDMENT_POLICY, DIVIDEND_AMENDMENT_VERSION);
+            if (usesInterviewTimeOpening(id)) policies.put(INTERVIEW_TIME_POLICY, INTERVIEW_TIME_VERSION);
+            if (usesPersonalBeliefOpening(id)) policies.put(PERSONAL_BELIEF_POLICY, PERSONAL_BELIEF_VERSION);
+            if (usesLoanLossOpening(id)) {
+                policies.put(BANK_LOAN_LOSS_POLICY, BANK_LOAN_LOSS_VERSION);
+                policies.put(MATERIAL_TRADING_POLICY, MATERIAL_TRADING_VERSION);
+                policies.put(CUSTOMER_PERSONAL_TOOLS, PERSONAL_COMMUNICATION);
+            }
+            if (usesMediaFollowupOpening(id)) {
+                policies.put(MEDIA_WITHDRAWAL_POLICY, MEDIA_WITHDRAWAL_VERSION);
+                policies.put(PERSONAL_ATTENTION_POLICY, PERSONAL_ATTENTION_VERSION);
+                policies.put(MEDIA_WORK_CALENDAR, FINITE_BUSINESS_SHIFTS);
+                policies.put(DIVIDEND_CLAIMS_POLICY, DIVIDEND_CLAIMS_VERSION);
+            }
+            return Map.copyOf(policies);
+        }
+        return STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
+                ? Map.of(DOCUMENT_READING_CLOCK, BODY_PACING_300) : Map.of();
+    }
+
+    /** 旧十公司开局沿用最初的主体、采购与唤醒规则。 */
+    public static final String ORIGINAL_TEN_COMPANY_RUN_ID = "web-ten-company-autonomy-v1";
+
+    /** 可申赎产品的独立十公司档。 */
+    public static final String OPEN_FUND_RUN_ID = "web-open-fund-v1";
+
+    /** 制造采购模板可以显式按运行实例成组升级的档案。 */
+    public static final String MANUFACTURING_UPGRADE_RUN_ID = "web-manufacturing-upgrade-v1";
+
+    /** @return 是否使用普通十公司共同开局（含独立开放式基金档） */
+    public static boolean usesTenCompanyAutonomy(String id) {
+        return ORIGINAL_TEN_COMPANY_RUN_ID.equals(id) || usesCurrentTenCompany(id);
+    }
+
+    /** @return 是否采用第二版十公司开局及其显式衍生实验 */
+    public static boolean usesCurrentTenCompany(String id) {
+        return TEN_COMPANY_AUTONOMY_RUN_ID.equals(id) || STUDY_TEN_COMPANY_AUTONOMY_RUN_ID.equals(id)
+                || GOVERNANCE_TEN_COMPANY_RUN_ID.equals(id) || READABLE_DRAFT_TEN_COMPANY_RUN_ID.equals(id)
+                || PERSONAL_TEN_COMPANY_RUN_ID.equals(id) || INTERVIEW_TEN_COMPANY_RUN_ID.equals(id)
+                || MEETING_TEN_COMPANY_RUN_ID.equals(id) || DIGITAL_WIND_DOWN_RUN_ID.equals(id)
+                || EDITORIAL_FEEDBACK_RUN_ID.equals(id) || usesPersonalNewsOpening(id) || OPEN_FUND_RUN_ID.equals(id)
+                || MANUFACTURING_UPGRADE_RUN_ID.equals(id);
+    }
+
+    /** @return 是否允许暂停与恢复单个在册人物的决定 */
+    public static boolean usesPersonDecisionPause(String id) {
+        return PERSON_PAUSE_RUN_ID.equals(id) || usesTenCompanyAutonomy(id);
+    }
+
+    /** @return 是否继承银行处置联动停牌 */
+    public static boolean usesIssuerResolution(String id) {
+        return ISSUER_RESOLUTION_RUN_ID.equals(id) || usesPersonDecisionPause(id);
+    }
+
+    /** 本档或其继承档是否按确认帧计入主体银行权利。 */
+    public static boolean usesOwnerBankValuation(String id) {
+        return OWNER_BANK_VALUATION_RUN_ID.equals(id) || UNPRICED_REFERENCE_RUN_ID.equals(id) || usesIssuerResolution(id);
+    }
+
+    /** @return 模型是否使用逐工具声明参数及按已读版本展示的群帖引用 */
+    public static boolean usesDeclaredFields(String id) {
+        return OPENING_COPIES_RUN_ID.equals(id) || usesOwnerBankValuation(id);
+    }
+
+    private static boolean usesBaselineParts(String id) {
+        return BASELINE_PARTS_RUN_ID.equals(id) || usesDeclaredFields(id);
+    }
+
+    /** 是否冻结每日申报价格带。 */
+    public static boolean usesPriceBand(String id) {
+        return PRICE_BAND_RUN_ID.equals(id) || usesBaselineParts(id);
+    }
+
+    /** 是否启用工程发行人现金分红。 */
+    public static boolean usesIssuerDividend(String id) {
+        return ISSUER_DIVIDEND_RUN_ID.equals(id) || usesBaselineParts(id);
+    }
+
+    /** 是否包含有来源凭证的开局贷款。 */
+    public static boolean usesLoanPromotion(String id) {
+        return LOAN_PROMOTION_RUN_ID.equals(id) || usesBaselineParts(id);
+    }
+
+    /** 是否包含有真实有限资金及独立处置权限的银行开局。 */
+    public static boolean usesBankCrisis(String id) {
+        return BANK_CRISIS_RUN_ID.equals(id) || usesPriceBand(id) || usesIssuerDividend(id) || usesLoanPromotion(id);
+    }
+
+    /** 是否允许制造公司在安全点成组停止新签。 */
+    public static boolean usesManufacturingLifecycle(String id) {
+        return MANUFACTURING_LIFECYCLE_RUN_ID.equals(id) || usesBankCrisis(id);
+    }
+
+    private static boolean usesIntegratedOpening(String id) {
+        return INTEGRATED_RUN_ID.equals(id) || usesManufacturingLifecycle(id);
+    }
+
+    /** 是否开放借款人与银行经理的授信决定。 */
+    public static boolean usesCreditDecisions(String id) {
+        return CREDIT_DECISIONS_RUN_ID.equals(id) || usesIntegratedOpening(id);
+    }
+
+    /** 是否启用八家媒体的任职和采编规则。 */
+    public static boolean usesMediaDesks(String id) {
+        return MEDIA_DESKS_RUN_ID.equals(id) || usesIntegratedOpening(id);
+    }
+
+    /** 是否启用基金在岗人员工作地址。 */
+    public static boolean usesFundContacts(String id) {
+        return FUND_CONTACTS_RUN_ID.equals(id) || FUND_ROUTING_RUN_ID.equals(id) || usesIntegratedOpening(id);
+    }
+
+    /** 是否按实验交易时段受理申报。 */
+    public static boolean usesMarketSessions(String id) {
+        return MarketSessions.RUN_ID.equals(id) || usesIntegratedOpening(id);
+    }
+
+    /** 有本人开局自述和实际资产对照的经营档。 */
+    public static final String PERSONAL_PROFILES_RUN_ID = "web-personal-profiles-operating-v1";
+
+    /** 延续个人档并登记基金产品的实际受托账册与四岗程序。 */
+    public static final String FUND_MANDATE_RUN_ID = "web-fund-mandate-operating-v1";
+
+    /** 带按收发双方任职核验的基金内部工作地址。 */
+    public static final String FUND_CONTACTS_RUN_ID = "web-fund-office-contacts-operating-v1";
+
+    /** 以生效的产品任职决定研究和交易调度的实验档。 */
+    public static final String FUND_ROUTING_RUN_ID = "web-fund-office-routing-operating-v1";
+
+    /** 新档的机构调度来自真实在岗人员。 */
+    public static boolean usesFundOfficeRouting(String id) {
+        return FUND_ROUTING_RUN_ID.equals(id) || usesManufacturingLifecycle(id);
+    }
+
+    /** 是否发布机构产品的开局委托书。 */
+    public static boolean usesFundMandate(String runId) {
+        return FUND_MANDATE_RUN_ID.equals(runId) || usesFundContacts(runId);
+    }
+
+    /** 指定档是否继承个人档的资料、检索与互动。 */
+    public static boolean usesPersonalProfiles(String runId) {
+        return PERSONAL_PROFILES_RUN_ID.equals(runId) || usesFundMandate(runId);
+    }
+
+    /** 继承持续角色档、为九家非银行发行人分别登记授信科目的实验档。 */
+    public static final String ISSUER_CREDIT_RUN_ID = "web-issuer-credit-operating-v1";
+
+    /** 从发行人授信档继承，在决定合同内开放真实经理的贷款工作。 */
+    public static final String CREDIT_DECISIONS_RUN_ID = "web-issuer-credit-decisions-operating-v1";
+
+    /** 是否使用分发行人的授信账。 */
+    public static boolean usesIssuerCredit(String runId) {
+        return ISSUER_CREDIT_RUN_ID.equals(runId) || usesCreditDecisions(runId);
+    }
+
+    /** 判断运行是否采用三个独立投资者及持续角色输入。 */
+    public static boolean usesContinuingRoles(String runId) {
+        return CONTINUING_ROLES_RUN_ID.equals(runId) || usesIssuerCredit(runId)
+                || usesPersonalProfiles(runId) || usesMediaDesks(runId) || usesMarketSessions(runId);
+    }
+
+    /** 新经营档冻结的角色与账户配置版本。 */
+    public static final Map<String, String> CONTINUING_ROLE_POLICIES = Map.of(
+            "investor-opening", "three-households-v1",
+            "personal-research-notes", "v1",
+            "media-editorial-view", "office-policy-v1",
+            "public-post-wake", "role-choice-v1");
+
+    /** 此档的初始自述指纹、互动和检索规则，均随首帧固定。 */
+    public static Map<String, String> personalProfilePolicies() {
+        return Map.of("personal-opening-profiles", PersonalOpeningProfiles.VERSION,
+                "personal-opening-profiles-sha256", PersonalOpeningProfiles.fingerprint(),
+                "personal-contact-history", "answered-contacts-v1",
+                "person-library-search", "visible-index-v1");
+    }
+
+    /** 判断本档是否沿用个人账户空簿限价申报规则。 */
+    public static boolean usesPersonalLimitRules(String runId) {
+        return PERSONAL_LIMIT_RUN_ID.equals(runId) || usesContinuingRoles(runId);
+    }
+
+    /** 判断本档是否区分水电累计物量与已结电费。 */
+    public static boolean usesHydroSettlementView(String runId) {
+        return HYDRO_SETTLEMENT_RUN_ID.equals(runId) || usesPersonalLimitRules(runId);
+    }
+
+    /** 判断本档是否沿用超限时的角色输入紧凑表格。 */
+    public static boolean usesRoleTables(String runId) {
+        return ROLE_TABLE_RUN_ID.equals(runId) || usesHydroSettlementView(runId);
+    }
+
+    /** 判断该档是否公开带发行人及实际签发人的财报版本。 */
+    public static boolean usesIssuerReportRules(String runId) {
+        return ISSUER_REPORT_RUN_ID.equals(runId) || usesRoleTables(runId);
+    }
+
+    /** 判断本档是否共用董事议事规则并登记经理任期边界。 */
+    public static boolean usesBoardProcedureRules(String runId) {
+        return BOARD_PROCEDURE_RUN_ID.equals(runId) || usesIssuerReportRules(runId);
+    }
+
+    /** 判断本档是否向陈酿公司董事和经理展示原料履约期。 */
+    public static boolean usesAgedOrderRules(String runId) {
+        return AGED_ORDER_RUN_ID.equals(runId) || usesBoardProcedureRules(runId);
+    }
+
+    /** 判断运行是否沿用本期及下期预算、本人阅读和基金岗位投影。 */
+    public static boolean usesForwardBudgetRules(String runId) {
+        return FORWARD_BUDGET_RUN_ID.equals(runId) || usesAgedOrderRules(runId);
+    }
+
+    /** 判断开局是否继承发行人登记资料及研发资料可见范围。 */
+    public static boolean usesCompanyInformationRules(String runId) {
+        return COMPANY_INFORMATION_RUN_ID.equals(runId) || usesForwardBudgetRules(runId);
+    }
+
+    /** 判断运行是否使用同一套工程客户、数字履约和研发可用现金规则。 */
+    public static boolean usesEngineeringCustomerRules(String runId) {
+        return EngineeringCustomerPolicy.RUN_ID.equals(runId) || usesCompanyInformationRules(runId);
+    }
+
+    /** 判断运行是否继承客户签约资金约束、董事权限及披露资料合同。 */
+    public static boolean usesFundedOperatingRules(String runId) {
+        return FUNDED_THINKING_RUN_ID.equals(runId) || usesPersonalMarketRules(runId);
+    }
+
+    /** 继承本人限价交易、公司事实归属和药研经理进度投影的档案。 */
+    public static boolean usesPersonalMarketRules(String runId) {
+        return PersonalMarket.RUN_ID.equals(runId) || usesEngineeringCustomerRules(runId);
+    }
 
     /** 现金 + 登记 + 证券 + 撮合 + 制造 + 治理（M3b.2 新增的明确组合，model=none）。 */
     public static final String RULES_GOVERNED_STOCK_COMPANY_EXPERIMENT_V1 =
@@ -662,6 +1321,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
         return moduleVersions.containsKey("manufacturing-funding");
     }
 
+    /** 同一实验的策略来源；显式分支沿用父档已登记的策略。 */
+    public String policyRunId() { return dataVersions.getOrDefault("branch-profile-run", runId); }
+
+    /** 是否支持从已校验的紧凑存档前缀派生。 */
+    public boolean supportsCompactBranch() { return "sealed-index-v1".equals(dataVersions.get("compact-branch")); }
+
     /** 校验并冻结清单；不可变、可稳定序列化。 */
     public RunManifest {
         if (runId == null || runId.isBlank()) {
@@ -931,8 +1596,57 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             // 制造五段显式资金腿由显式模块冻结；与 engineering/manufacturing 互不隐含。
             expected.put("manufacturing-funding", 1);
         }
+        String policyId = dataVersions == null ? runId : dataVersions.getOrDefault("branch-profile-run", runId);
+        if (!runId.equals(policyId) && (!usesCurrentTenCompany(policyId) || usesFundedOperatingRules(runId)))
+            throw new IllegalArgumentException("分支来源必须绑定已登记的十公司实验");
+        boolean engineeringCustomer = usesEngineeringCustomerRules(policyId);
+        if ((engineeringCustomer || dataVersions != null && dataVersions.containsKey(EngineeringCustomerPolicy.KEY))
+                && (!engineeringCustomer || dataVersions == null || !EngineeringCustomerPolicy.VERSION.equals(dataVersions.get(EngineeringCustomerPolicy.KEY))))
+            throw new IllegalArgumentException("工程客户复核必须显式绑定独立经营档及版本");
+        boolean personalMarket = usesPersonalMarketRules(policyId);
+        if ((personalMarket || dataVersions != null && (dataVersions.containsKey(PersonalMarket.POLICY)
+                || dataVersions.containsKey("belief-company-scope") || dataVersions.containsKey("research-manager-view")))
+                && (!personalMarket || dataVersions == null || !PersonalMarket.VERSION.equals(dataVersions.get(PersonalMarket.POLICY))
+                    || !"manufacturing-orders-v1".equals(dataVersions.get("belief-company-scope"))
+                    || !"project-state-v1".equals(dataVersions.get("research-manager-view"))))
+            throw new IllegalArgumentException("个人交易工具必须绑定独立经营档与明确版本");
+        boolean fundedThinking = usesFundedOperatingRules(policyId);
+        if ((fundedThinking || dataVersions != null && (dataVersions.containsKey("customer-contract-policy")
+                || dataVersions.containsKey("board-tool-scope")))
+                && (!fundedThinking || dataVersions == null || !FUNDED_CONTRACT_POLICY.equals(dataVersions.get("customer-contract-policy"))
+                || !"charter-chair-v1".equals(dataVersions.get("board-tool-scope"))))
+            throw new IllegalArgumentException("客户签约资金和董事会工具权限规则必须与经营档版本一致");
+        if ((fundedThinking || "web-thinking-operating-v1".equals(policyId) || dataVersions != null && dataVersions.containsKey("provider-policy"))
+                && (dataVersions == null || !"deepseek-thinking-high-v1".equals(dataVersions.get("provider-policy"))
+                    || !(fundedThinking || "web-thinking-operating-v1".equals(policyId))
+                    || !RoleDeliberation.CONTEXTUAL_VERSION.equals(dataVersions.get("role-context"))
+                    || !"manager-v1".equals(dataVersions.get("operating-information"))
+                    || !"bounded-history-v1".equals(dataVersions.get("role-input-policy"))
+                    || !"local-input-v1".equals(dataVersions.get("dispatch-policy"))))
+            throw new IllegalArgumentException("提供方策略必须显式绑定思考经营新档与v5经营输入");
+        if (dataVersions != null && (dataVersions.containsKey("role-input-policy") || dataVersions.containsKey("dispatch-policy"))
+                && (!"bounded-history-v1".equals(dataVersions.get("role-input-policy"))
+                    || !"local-input-v1".equals(dataVersions.get("dispatch-policy"))
+                    || !"position-v1".equals(dataVersions.get("operating-report-order"))
+                    || !"manager-v1".equals(dataVersions.get("operating-information"))))
+            throw new IllegalArgumentException("有界输入必须显式配对 bounded-history-v1 / local-input-v1 / position-v1 / manager-v1");
+        if (dataVersions != null && dataVersions.containsKey("operating-report-order")
+                && (!"position-v1".equals(dataVersions.get("operating-report-order"))
+                    || !"manager-v1".equals(dataVersions.get("operating-information"))))
+            throw new IllegalArgumentException("经营报告顺序必须显式配对 position-v1 / manager-v1");
+        if (dataVersions != null && dataVersions.containsKey("operating-information")
+                && (!RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion)
+                    || !"industry-prototype-v1".equals(dataVersions.get(DATA_PROFILE))
+                    || !"manager-v1".equals(dataVersions.get("operating-information"))
+                    || !RoleDeliberation.isPlanning(dataVersions.get("role-context"))
+                    || !StateDeltaCodec.VERSION.equals(dataVersions.get("state-storage"))
+                    || !"v1".equals(dataVersions.get("external-demand"))
+                    || !"role-events-v2".equals(dataVersions.get("autonomy-driver"))
+                    || dataVersions.containsKey("behavior-policy")))
+            throw new IllegalArgumentException("经理经营信息必须显式使用 manager-v1 / deliberation-v4 / delta-v1 / external-demand=v1，且不得混用固定行为策略");
         if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion) && dataVersions!=null && List.of("industry-baseline-v1", "industry-prototype-v1").contains(dataVersions.get(DATA_PROFILE))) {
             expected.keySet().removeAll(List.of("manufacturing","governance","dividend","manufacturing-funding"));
+            if (usesIssuerDividend(policyId)) expected.put("dividend", 1);
         }
         if (!expected.equals(modules)) {
             throw new IllegalArgumentException("规则档案 " + rulesVersion + " 需要模块 "
@@ -949,6 +1663,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 data.put(name, version);
             });
         }
+        if (data.containsKey("state-storage") && !RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion))
+            throw new IllegalArgumentException("旧规则不支持增量状态存储");
         dataVersions = Collections.unmodifiableMap(data);
 
         if (RULES_COMPOSED_MANUFACTURING_THREE_V1.equals(rulesVersion)) {
@@ -994,6 +1710,130 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 expectedData.put("autonomy-driver", "role-events-v2".equals(data.get("autonomy-driver"))
                         ? "role-events-v2" : "role-windows-v1");
                 expectedData.put("composed-governance-intent", "v2");
+                if ("role-events-v2".equals(data.get("autonomy-driver")) && data.containsKey("role-context")) {
+                    String context = data.get("role-context");
+                    if (!List.of("authority-v1", "evidence-v1", RoleDeliberation.VERSION, RoleDeliberation.ACCOUNTABLE_VERSION, RoleDeliberation.PLANNING_VERSION, RoleDeliberation.CONTEXTUAL_VERSION).contains(context)) {
+                        throw new IllegalArgumentException("未知角色依据版本：" + context);
+                    }
+                    expectedData.put("role-context", context);
+                    if (data.containsKey("state-storage")) {
+                        if (!RoleDeliberation.isAccountable(context) || !StateDeltaCodec.VERSION.equals(data.get("state-storage")))
+                            throw new IllegalArgumentException("增量状态必须显式使用 accountable v3/v4 / delta-v1");
+                        expectedData.put("state-storage", StateDeltaCodec.VERSION);
+                    }
+                    if (data.containsKey("external-demand")) {
+                        if (!RoleDeliberation.isDeliberative(context) || !"v1".equals(data.get("external-demand")))
+                            throw new IllegalArgumentException("外部需求必须显式使用 deliberation-v2/v3/v4 / external-demand=v1");
+                        expectedData.put("external-demand", "v1");
+                    }
+                }
+            }
+            if (data.containsKey("operating-information")) expectedData.put("operating-information", "manager-v1");
+            if (data.containsKey("operating-report-order")) expectedData.put("operating-report-order", "position-v1");
+            if (data.containsKey("role-input-policy")) expectedData.put("role-input-policy", "bounded-history-v1");
+            if (data.containsKey("dispatch-policy")) expectedData.put("dispatch-policy", "local-input-v1");
+            if (data.containsKey("provider-policy")) expectedData.put("provider-policy", "deepseek-thinking-high-v1");
+            if (usesPersonalProfiles(policyId)) expectedData.putAll(personalProfilePolicies());
+            if (usesFundOfficeRouting(policyId)) expectedData.put("fund-office-routing", "active-appointments-v1");
+            if (usesFundContacts(policyId)) expectedData.put("fund-office-contacts", "appointment-pair-v1");
+            if (usesFundMandate(policyId)) {
+                expectedData.put("fund-mandate-document", "opening-register-v1");
+                expectedData.put("wait-empty-args", "allow-empty-object-v1");
+            }
+            if (usesMediaDesks(policyId)) expectedData.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (UNPRICED_REFERENCE_RUN_ID.equals(policyId)) expectedData.put("unpriced-opening-reference", "HY1-cost-only-v1");
+            if (usesIssuerResolution(policyId)) expectedData.put("issuer-failure", "bank-resolution-halt-v1");
+            expectedData.putAll(tenCompanyStudyPolicies(policyId));
+            if (usesPersonDecisionPause(policyId)) expectedData.put("person-decision-pause", "confirmed-person-v1");
+            if (usesOwnerBankValuation(policyId)) {
+                expectedData.put("owner-bank-valuation", "owner-claims-v1");
+                expectedData.put("owner-bank-decisions", "owner-cash-v1");
+            }
+            if (usesDeclaredFields(policyId)) {
+                if (usesTenCompanyAutonomy(policyId)) {
+                    expectedData.put("opening-population", "ten-issuers-v1");
+                    expectedData.put("model-budget", "long-horizon-v1");
+                    expectedData.put("board-material-source", "published-visible-v1");
+                } else OpeningEntityCopies.fromManifest(data, policyId).freeze(expectedData);
+                if (usesCurrentTenCompany(policyId)) {
+                    expectedData.put(BestQuoteDepth.KEY, BestQuoteDepth.VERSION);
+                    expectedData.put("role-input-limit", DecisionModel.EXTENDED_ROLE_INPUT);
+                    expectedData.put("fund-execution-view", "authorized-review-v1");
+                    expectedData.put("compact-branch", "sealed-index-v1");
+                    expectedData.put(SettlementCash.KEY, SettlementCash.VERSION);
+                    expectedData.put("branch-profile-run", policyId);
+                    expectedData.put("wake-clock", "dated-facts-v1");
+                    expectedData.put("role-report-privacy","business-receipts-v1");
+                    expectedData.put("publication-origins","confirmed-media-v1");
+                    expectedData.put("onsite-interview", "host-fare-v1");
+                    expectedData.put("resource-cessation", "board-wind-down-v1");
+                    expectedData.put("resource-primary-equity", "named-subscription-v1");
+                }
+                expectedData.put("group-readable-refs", "edition-visible-v1");
+                expectedData.put("tool-argument-guide", "declared-fields-v1");
+            }
+            if (usesPriceBand(policyId)) expectedData.put("limit-band", "previous-close-10pct-exp-v1");
+            if (usesIssuerDividend(policyId)) expectedData.put("issuer-dividend", "engineering-eng-a-v1");
+            if (usesLoanPromotion(policyId)) expectedData.put("loan-promotion", "contract-bound-v1");
+            if (usesBankCrisis(policyId)) {
+                expectedData.put("bank-crisis-authority", "finite-provider-v1");
+                expectedData.put("role-sellable-holdings", "settled-lots-v1");
+            }
+            if (usesManufacturingLifecycle(policyId)) {
+                expectedData.put(MANUFACTURING_LIFECYCLE_KEY, MANUFACTURING_LIFECYCLE_VERSION);
+                expectedData.put("fund-capital-policy", OPEN_FUND_RUN_ID.equals(policyId) ? OpenFundUnits.CAPITAL_POLICY : FIXED_FUND_CAPITAL);
+                if (OPEN_FUND_RUN_ID.equals(policyId)) expectedData.put(OpenFundUnits.KEY, OpenFundUnits.VERSION);
+                if (MANUFACTURING_UPGRADE_RUN_ID.equals(policyId)) expectedData.put(ManufacturingUpgrade.KEY, ManufacturingUpgrade.VERSION);
+                expectedData.put("role-market-valuation", ROLE_MARKET_VALUATION);
+            }
+            if (usesMarketSessions(policyId)) expectedData.put(MarketSessions.KEY, MarketSessions.VERSION);
+            if (usesCreditDecisions(policyId)) expectedData.put("issuer-credit-decisions", "manager-loan-v1");
+            if (usesIssuerCredit(policyId)) expectedData.put("issuer-credit", "separate-loan-ledgers-v1");
+            if (usesContinuingRoles(policyId)) {
+                expectedData.putAll(CONTINUING_ROLE_POLICIES);
+            }
+            if (usesPersonalLimitRules(policyId)) {
+                expectedData.put(PersonalMarket.LIMIT_RULES, PersonalMarket.LIMIT_RULES_VERSION);
+            }
+            if (usesHydroSettlementView(policyId)) {
+                expectedData.put(HydroDecisionTools.SETTLEMENT_POLICY, HydroDecisionTools.SETTLEMENT_VERSION);
+            }
+            if (usesRoleTables(policyId)) {
+                expectedData.put(RoleInputTables.POLICY, usesTenCompanyAutonomy(policyId) ? RoleInputTables.BOARD_VERSION : RoleInputTables.VERSION);
+            }
+            if (usesIssuerReportRules(policyId)) {
+                expectedData.put("issuer-period-reports", "versioned-v1");
+            }
+            if (usesBoardProcedureRules(policyId)) {
+                expectedData.put("board-procedure-view", "shared-rules-v1");
+                expectedData.put("manager-term-clock", "registered-boundaries-v1");
+            }
+            if (usesAgedOrderRules(policyId)) {
+                expectedData.put("aged-order-terms", "next-period-v1");
+            }
+            if (usesForwardBudgetRules(policyId)) {
+                expectedData.put("forward-budget-view", "period-window-v1");
+                expectedData.put("institutional-objectives", "product-office-v1");
+                expectedData.put("catalog-read-receipts", "visible-version-v1");
+            }
+            if (usesCompanyInformationRules(policyId)) {
+                expectedData.put("listing-disclosure", "opening-register-v1");
+                expectedData.put("research-evidence", "reader-gated-v1");
+                expectedData.put("research-cash-view", "available-v1");
+            }
+            if (engineeringCustomer) {
+                expectedData.put(EngineeringCustomerPolicy.KEY, EngineeringCustomerPolicy.VERSION);
+                expectedData.put("digital-delivery-view", "shared-period-limits-v1");
+                expectedData.put("research-funding", "free-cash-v1");
+            }
+            if (personalMarket) {
+                expectedData.put(PersonalMarket.POLICY, PersonalMarket.VERSION);
+                expectedData.put("belief-company-scope", "manufacturing-orders-v1");
+                expectedData.put("research-manager-view", "project-state-v1");
+            }
+            if (fundedThinking) {
+                expectedData.put("customer-contract-policy", FUNDED_CONTRACT_POLICY);
+                expectedData.put("board-tool-scope", "charter-chair-v1");
             }
             if (!expectedData.equals(data)) {
                 throw new IllegalArgumentException("三公司经营档案需要资料版本 " + expectedData

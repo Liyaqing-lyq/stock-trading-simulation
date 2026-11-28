@@ -35,7 +35,12 @@ import java.util.TreeMap;
 public record InterviewRun(Config config, List<InterviewModel.State> states,
                            Map<String, Coordination> coordinations,
                            @JsonInclude(JsonInclude.Include.NON_NULL)
-                           Map<String, InterviewDialogue.State> dialogues) {
+                           Map<String, InterviewDialogue.State> dialogues,
+                           @JsonInclude(JsonInclude.Include.NON_EMPTY) Map<String,OnsiteVisit.Trip> visits) {
+
+    /** 兼容旧采访档案。 */
+    public InterviewRun(Config config,List<InterviewModel.State> states,Map<String,Coordination> coordinations,
+                        Map<String,InterviewDialogue.State> dialogues) { this(config,states,coordinations,dialogues,Map.of()); }
 
     /** 旧 14 档案构造：没有逐轮对话状态。 */
     public InterviewRun(Config config, List<InterviewModel.State> states,
@@ -47,7 +52,7 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
     public static final Set<String> KINDS = Set.of(
             PendingTask.INTERVIEW_INVITE_V1, PendingTask.INTERVIEW_RESPOND_V1,
             PendingTask.INTERVIEW_CANCEL_V1, PendingTask.INTERVIEW_END_V1,
-            PendingTask.INTERVIEW_SPEAK_V1,
+            PendingTask.INTERVIEW_SPEAK_V1, PendingTask.ONSITE_ACTION_V1, PendingTask.ONSITE_GATE_V1,
             PendingTask.INTERVIEW_START_GATE_V1, PendingTask.INTERVIEW_MISS_GATE_V1,
             PendingTask.INTERVIEW_END_GATE_V1, PendingTask.INTERVIEW_TTL_GATE_V1,
             PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1);
@@ -56,13 +61,13 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
     public static final Set<String> COMMAND_KINDS = Set.of(
             PendingTask.INTERVIEW_INVITE_V1, PendingTask.INTERVIEW_RESPOND_V1,
             PendingTask.INTERVIEW_CANCEL_V1, PendingTask.INTERVIEW_END_V1,
-            PendingTask.INTERVIEW_SPEAK_V1);
+            PendingTask.INTERVIEW_SPEAK_V1, PendingTask.ONSITE_ACTION_V1);
 
     /** 由真实先前状态派生的系统门任务。 */
     public static final Set<String> GATE_KINDS = Set.of(
             PendingTask.INTERVIEW_START_GATE_V1, PendingTask.INTERVIEW_MISS_GATE_V1,
             PendingTask.INTERVIEW_END_GATE_V1, PendingTask.INTERVIEW_TTL_GATE_V1,
-            PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1);
+            PendingTask.INTERVIEW_DIALOGUE_DEADLINE_V1, PendingTask.ONSITE_GATE_V1);
 
     /**
      * 冻结配置：每机构纯核策略、四个动作的模拟耗时与有出处的联系入口。
@@ -174,7 +179,8 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
      * @param position      提交位置
      */
     public record Coordination(String taskId, String personPartyId, String kind, boolean accepted,
-                               String reason, String requestId, long timeMillis, long position) {
+                               String reason, String requestId, long timeMillis, long position,
+                               @JsonInclude(JsonInclude.Include.NON_NULL) WindowFailure windowTiming) {
 
         /** 校验字段与种类。 */
         public Coordination {
@@ -190,11 +196,18 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
             if (timeMillis < 0 || position < 1) {
                 throw new IllegalArgumentException("协调结果时点或位置非法：" + taskId);
             }
+            if (windowTiming != null && (accepted || !InterviewModel.REASON_WINDOW.equals(reason)
+                    || windowTiming.executionMillis() != timeMillis)) throw new IllegalArgumentException("窗口回执与完成动作不符");
         }
     }
 
+    /** 窗口拒绝时按当时执行时钟与原生邀请条件计算的双方可核对数据；仅向本次执行人投影。 */
+    public record WindowFailure(long executionMillis, long requestedStartMillis, long earliestStartMillis,
+                                long latestStartMillis, long outsideByMillis, String reasonDetail) { }
+
     /** 深拷贝、排序并校验配置与状态的一一对应、结果索引一致性。 */
     public InterviewRun {
+        visits = visits == null ? Map.of() : java.util.Collections.unmodifiableMap(new TreeMap<>(visits));
         Objects.requireNonNull(config, "采访配置");
         List<InterviewModel.State> stateList = new ArrayList<>(
                 Objects.requireNonNull(states, "采访状态"));
@@ -284,7 +297,7 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
         for (int index = 0; index < copy.size(); index++) {
             if (copy.get(index).policy().mediaOrganizationPartyId().equals(organizationPartyId)) {
                 copy.set(index, next);
-                return new InterviewRun(config, copy, coordinations, dialogues);
+                return new InterviewRun(config, copy, coordinations, dialogues,visits);
             }
         }
         throw new IllegalArgumentException("未配置的媒体组织：" + organizationPartyId);
@@ -308,7 +321,7 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
         }
         Map<String, Coordination> copy = new TreeMap<>(coordinations);
         copy.put(result.taskId(), result);
-        return new InterviewRun(config, states, copy, dialogues);
+        return new InterviewRun(config, states, copy, dialogues,visits);
     }
 
     /** 替换某组织的对话状态；未配置组织拒绝。 */
@@ -320,7 +333,13 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
         Map<String, InterviewDialogue.State> copy = new TreeMap<>(
                 dialogues == null ? Map.of() : dialogues);
         copy.put(organizationPartyId, next);
-        return new InterviewRun(config, states, coordinations, copy);
+        return new InterviewRun(config, states, coordinations, copy,visits);
+    }
+
+    InterviewRun withVisit(OnsiteVisit.Trip trip) {
+        var next = new TreeMap<>(visits);
+        next.put(trip.requestId(),trip);
+        return new InterviewRun(config,states,coordinations,dialogues,next);
     }
 
     /** @param organizationPartyId 媒体组织 @return 该组织对话状态；没有返回空状态 */
@@ -378,6 +397,7 @@ public record InterviewRun(Config config, List<InterviewModel.State> states,
      * @throws IllegalArgumentException 未登记种类
      */
     public long actionMillis(String kind) {
+        if (PendingTask.ONSITE_ACTION_V1.equals(kind)) return OnsiteVisit.ACTION;
         if (PendingTask.INTERVIEW_INVITE_V1.equals(kind)) {
             return config.inviteMillis();
         }

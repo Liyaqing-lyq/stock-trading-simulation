@@ -8,6 +8,7 @@ import edu.cufe.auction.world.BranchRunIndex;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PrintStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.URI;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 
 /**
@@ -55,6 +57,7 @@ public final class RunLauncher implements AutoCloseable {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final String HANDOFF_PATH = "/api/session/handoff";
     private static final int MAX_CHILD_OUTPUT = 8 * 1024;
+    private static final String REPLAY_PREFIX = "BRANCH_VERIFIED ";
     /** 关闭子进程时的单段等待上限：先等它读到 EOF 自行收尾，再考虑终止。 */
     private static final long STOP_GRACE_MILLIS = 5_000L;
 
@@ -67,7 +70,7 @@ public final class RunLauncher implements AutoCloseable {
      * @param portFrom            端口区间下界（含）
      * @param portTo              端口区间上界（含）
      * @param maxRuns             同时运行的子进程上限
-     * @param startupTimeoutMillis 启动健康检查超时
+     * @param startupTimeoutMillis 等待启动健康检查时，连续没有新的严格重放进度的时限
      * @param classpath           子进程 classpath（由宿主进程给出）
      */
     public record Config(Path workDir, Path runsDir, Path keyFile, int portFrom, int portTo,
@@ -157,6 +160,7 @@ public final class RunLauncher implements AutoCloseable {
         final long firstPosition;
         final String kind;
         final String note;
+        final ReplayProgress replay = new ReplayProgress();
         Process process;
         int port;
         String status = "CREATED";
@@ -348,7 +352,7 @@ public final class RunLauncher implements AutoCloseable {
                 launchFailure = new Rejected("START_FAILED", own.reason);
             }
             if (launchFailure == null) {
-                drain(own.process);
+                drain(own);
             }
         }
         if (launchFailure != null) {
@@ -463,19 +467,24 @@ public final class RunLauncher implements AutoCloseable {
      * @throws Rejected 未运行、凭据失效或子进程拒绝
      */
     public Entry enter(String runId) throws Rejected {
+        return enter(runId, null);
+    }
+
+    /** 向已启动的子档交换指定人物的会话；角色和人名来自已认证的父档。 */
+    Entry enter(String runId, String person) throws Rejected {
         Managed own;
         synchronized (lock) {
             own = managed.get(runId);
             if (own != null) {
                 refresh(own);
             }
-            if (own == null || !own.active() || own.cancelled) {
+            if (own == null || !"RUNNING".equals(own.status) || own.cancelled) {
                 throw new Rejected("RUN_NOT_RUNNING", "该运行没有在运行中");
             }
         }
         HttpResponse<String> response;
         try {
-            response = handoff(own, false);
+            response = handoff(own, false, person);
         } catch (IOException interrupted) {
             throw new Rejected("HANDOFF_UNAVAILABLE", "子进程没有响应：" + interrupted.getMessage());
         }
@@ -630,8 +639,7 @@ public final class RunLauncher implements AutoCloseable {
         command.add("--keys");
         command.add(config.keyFile().toAbsolutePath().toString());
         ProcessBuilder builder = new ProcessBuilder(command)
-                .directory(config.workDir().toAbsolutePath().toFile())
-                .redirectErrorStream(true);
+                .directory(config.workDir().toAbsolutePath().toFile());
         Process process = builder.start();
         own.process = process; // 从创建成功起即归属本次启动，后续写管道失败也能回收。
 
@@ -667,12 +675,88 @@ public final class RunLauncher implements AutoCloseable {
         return Path.of(System.getProperty("java.home"), "bin", "java").toString();
     }
 
-    /** 持续读空子进程输出（否则管道写满会卡住子进程），只保留有界尾部用于失败说明。 */
-    private void drain(Process process) {
+    /** 严格恢复的子进程只向其父的 stdout 管道报告位置。 */
+    static LongConsumer replayReporter(PrintStream output) {
+        return new LongConsumer() {
+            private boolean sent;
+            private long lastSent;
+
+            @Override public void accept(long position) {
+                long now = System.nanoTime();
+                if (sent && now - lastSent < TimeUnit.MILLISECONDS.toNanos(250)) return;
+                output.println(REPLAY_PREFIX + position);
+                output.flush();
+                lastSent = now;
+                sent = true;
+            }
+        };
+    }
+
+    /** 单个在启进程的管道读者独占写入。只有完整且位置前进的行才更新时间。 */
+    static final class ReplayProgress {
+        private long position;
+        private volatile long lastAdvance = System.nanoTime();
+
+        void observe(String line, long now) {
+            if (!line.startsWith(REPLAY_PREFIX)) return;
+            String value = line.substring(REPLAY_PREFIX.length());
+            try {
+                long next = Long.parseLong(value);
+                if (next > position && Long.toString(next).equals(value)) {
+                    position = next;
+                    lastAdvance = now;
+                }
+            } catch (NumberFormatException ignored) {
+                // 非数字或超出合法帧位置。
+            }
+        }
+
+        long idleNanos(long started, long now) {
+            return Math.min(now - started, now - lastAdvance);
+        }
+
+        void read(InputStream input) throws IOException {
+            byte[] buffer = new byte[1024];
+            StringBuilder line = new StringBuilder();
+            boolean oversized = false;
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                for (int i = 0; i < count; i++) {
+                    char c = (char) (buffer[i] & 255);
+                    if (c == '\n') {
+                        if (!oversized) {
+                            int length = line.length();
+                            if (length > 0 && line.charAt(length - 1) == '\r') line.setLength(length - 1);
+                            observe(line.toString(), System.nanoTime());
+                        }
+                        line.setLength(0);
+                        oversized = false;
+                    } else if (line.length() < REPLAY_PREFIX.length() + 20) {
+                        line.append(c);
+                    } else {
+                        oversized = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /** stdout 是各进程独立的进度信道；stderr 的自由文本只保留有界诊断尾部。 */
+    private void drain(Managed own) {
+        Process process = own.process;
+        Thread progress = new Thread(() -> {
+            try (InputStream output = process.getInputStream()) {
+                own.replay.read(output);
+            } catch (IOException ignored) {
+                // 关闭管道时由健康检查处理退出或停滞。
+            }
+        }, "branch-replay-progress-" + process.pid());
+        progress.setDaemon(true);
+        progress.start();
         StringBuilder tail = new StringBuilder();
         Thread reader = new Thread(() -> {
             byte[] buffer = new byte[1024];
-            try (InputStream input = process.getInputStream()) {
+            try (InputStream input = process.getErrorStream()) {
                 int read;
                 while ((read = input.read(buffer)) >= 0) {
                     synchronized (tail) {
@@ -706,17 +790,17 @@ public final class RunLauncher implements AutoCloseable {
 
     /** 健康核验：身份、父来源、切点、首帧位置全部与索引一致才算启动成功。 */
     private void verifyHealthy(Managed own) throws Rejected {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
-                config.startupTimeoutMillis());
+        long started = System.nanoTime();
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(config.startupTimeoutMillis());
         String lastFailure = "子进程没有在超时内就绪";
-        while (System.nanoTime() < deadline) {
+        while (own.replay.idleNanos(started, System.nanoTime()) < timeoutNanos) {
             if (!own.process.isAlive()) {
                 String tail = tailOf(own.process);
                 throw new Rejected("CHILD_EXITED", "子进程提前退出（退出码 "
                         + own.process.exitValue() + "）" + (tail.isEmpty() ? "" : "：" + tail));
             }
             try {
-                HttpResponse<String> response = handoff(own, true);
+                HttpResponse<String> response = handoff(own, true, null);
                 if (response.statusCode() == 200) {
                     JsonNode body = MAPPER.readTree(response.body());
                     String identity = checkIdentity(own, body);
@@ -758,10 +842,11 @@ public final class RunLauncher implements AutoCloseable {
         return null;
     }
 
-    private HttpResponse<String> handoff(Managed own, boolean probe) throws IOException {
+    private HttpResponse<String> handoff(Managed own, boolean probe, String person) throws IOException {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("token", own.handoff);
         body.put("probe", probe);
+        if (person != null) body.put("personId", person);
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("http://127.0.0.1:" + own.port + HANDOFF_PATH))
                 .timeout(Duration.ofMillis(probe ? 1_500L : 4_000L))

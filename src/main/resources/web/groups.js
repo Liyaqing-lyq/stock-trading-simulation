@@ -27,6 +27,7 @@ function clearGroupsDom() {
   for (const id of ["groups-title", "groups-body", "groups-cites", "groups-doc-id",
     "groups-invite-id", "groups-invitee", "groups-group-id", "groups-based-on"]) $(id).value = "";
   $("groups-accept").checked = false;
+  $("groups-answer").value = "";
 }
 
 /** 群组页：管理员读审计，人物只读本人有权限的投影。 */
@@ -64,6 +65,9 @@ async function loadGroups(generation, pageVersion) {
 }
 
 function renderGroupPerson(view) {
+  const explicit = view.roleToolArguments === "conditional-fields-and-readable-errors-v1";
+  $("groups-legacy-answer").hidden = explicit;
+  $("groups-explicit-answer").hidden = !explicit;
   $("groups-person").hidden = false;
   $("groups-admin").hidden = true;
   const groups = view.groups || [];
@@ -94,6 +98,7 @@ function renderGroupPerson(view) {
     cell(tr, row.docId); cell(tr, row.version, "num"); cell(tr, row.groupId);
     cell(tr, row.author); cell(tr, row.title);
     cell(tr, row.read ? row.body : "未读完（正文需真实读完且可回忆）");
+    cell(tr, row.read && row.refs.length ? row.refs.join("、") : "—");
     const td = document.createElement("td");
     const read = document.createElement("button");
     read.type = "button";
@@ -103,8 +108,16 @@ function renderGroupPerson(view) {
     tr.appendChild(td);
   });
   $("groups-posts-empty").hidden = posts.length > 0;
+  let rank = 0;
   fillTable("groups-feed", view.feed || [], (tr, row) => {
-    cell(tr, row.docId); cell(tr, row.version, "num"); cell(tr, row.title);
+    cell(tr, ++rank, "num"); cell(tr, row.docId); cell(tr, row.version, "num");
+    const title = cell(tr, row.rankingReason ? row.title + "（" + row.rankingReason + "）" : row.title);
+    if (row.rankingReason && globalThis.PersonTakeover?.canAct()) {
+      const read = document.createElement("button");
+      read.type = "button"; read.dataset.personWrite = "true"; read.textContent = "开始阅读";
+      read.addEventListener("click", () => startGroupRead(row.docId, row.version));
+      title.append(" ", read);
+    }
     cell(tr, row.publisher); cell(tr, row.publishedAt, "num"); cell(tr, row.kind);
   });
   $("groups-note").textContent = view.enabled
@@ -156,11 +169,15 @@ function renderGroupAudit(view) {
     : "当前档案未启用群组与平台模块。";
 }
 
+function groupRequestInteger(value) {
+  return state.personGroups?.observationToken ? String(value) : Number(value);
+}
+
 function groupActionDue(action) {
   const view = state.personGroups || {};
   const millis = (view.actionMillis || {})[action];
   const now = BigInt(view.timeMillis || "0");
-  return Number(now + BigInt(millis || "0"));
+  return groupRequestInteger(now + BigInt(millis || "0"));
 }
 
 /** 一次真实动作：due = 当前时点 + 冻结工时；回执只表示已排程。 */
@@ -169,16 +186,40 @@ async function submitGroupAction(extra) {
   if (!view || state.mode !== "person") return;
   const generation = state.generation;
   const action = extra.action || $("groups-action").value;
+  const explicit = view.roleToolArguments === "conditional-fields-and-readable-errors-v1";
+  let answer = extra.accept;
+  if (explicit) {
+    if (action === "RESPOND" && typeof answer !== "boolean") {
+      const selected = $("groups-answer").value;
+      if (selected !== "true" && selected !== "false") {
+        $("groups-result").hidden = false;
+        $("groups-result").textContent = "请先选择接受或拒绝邀请。";
+        $("groups-answer").focus();
+        return;
+      }
+      answer = selected === "true";
+    }
+  } else if (answer === undefined) {
+    answer = $("groups-accept").checked;
+  }
   const stamp = String(Date.now());
   const cites = [];
-  for (const item of ($("groups-cites").value || "").split(",")) {
+  const publishing = ["POST", "CORRECTION", "PLATFORM_POST", "PLATFORM_CORRECTION"].includes(action);
+  const rawCites = publishing || !explicit ? $("groups-cites").value || "" : "";
+  for (const item of rawCites.split(",")) {
     const text = item.trim();
     if (!text) continue;
     const parts = text.split("#");
-    cites.push({ docId: parts[0], version: Number(parts[1]) });
+    if (explicit && (parts.length !== 2 || !parts[0].trim() || !/^[1-9][0-9]*$/.test(parts[1]))) {
+      $("groups-result").hidden = false;
+      $("groups-result").textContent = "请按 docId#version 填写每项引用，版本从 1 开始。";
+      $("groups-cites").focus();
+      return;
+    }
+    cites.push({ docId: parts[0], version: groupRequestInteger(parts[1]) });
   }
   const payload = {
-    expectedPosition: Number(view.position),
+    expectedPosition: view.observationToken ?? view.position,
     commandId: "web-g-" + stamp,
     taskId: "web-g-task-" + stamp,
     dueTimeMillis: groupActionDue(action),
@@ -186,9 +227,9 @@ async function submitGroupAction(extra) {
     groupId: extra.groupId || $("groups-group-id").value || "",
     inviteePartyId: extra.inviteePartyId || $("groups-invitee").value || "",
     inviteId: extra.inviteId || $("groups-invite-id").value || "",
-    accept: extra.accept !== undefined ? extra.accept : $("groups-accept").checked,
+    accept: answer,
     docId: extra.docId || $("groups-doc-id").value || "",
-    basedOnVersion: Number(extra.basedOnVersion || $("groups-based-on").value || 0),
+    basedOnVersion: groupRequestInteger(extra.basedOnVersion || $("groups-based-on").value || "0"),
     title: extra.title || $("groups-title").value || "",
     body: extra.body || $("groups-body").value || "",
     cites: cites
@@ -215,6 +256,7 @@ async function submitGroupAction(extra) {
     $("groups-result").textContent = "动作未被接受（" + result.status + "）。";
     return;
   }
+  $("groups-answer").value = "";
   $("groups-result").textContent = "已排程：" + (result.payload.receipt || "—")
     + "（完成与阅读以世界记录为准）";
   await loadGroups(state.generation, null);
@@ -227,12 +269,12 @@ async function startGroupRead(docId, version) {
   const generation = state.generation;
   const stamp = String(Date.now());
   const result = await request("POST", "/api/me/read", {
-    expectedPosition: Number(view.position),
+    expectedPosition: view.observationToken ?? view.position,
     commandId: "web-read-g-" + stamp,
     taskId: "web-read-g-task-" + stamp,
-    dueTimeMillis: Number(view.timeMillis || "0") + 1,
+    dueTimeMillis: groupRequestInteger(BigInt(view.timeMillis || "0") + 1n),
     docId: docId,
-    version: Number(version)
+    version: groupRequestInteger(version)
   });
   if (!isCurrent(generation) || state.mode !== "person") return;
   if (result.status === 401 || result.status === 403) { sessionLost(); return; }

@@ -114,6 +114,8 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     public static final String TOOL_MEDIA_REVIEW = "media.story.review";
     /** 媒体工具：发布已批准版本。 */
     public static final String TOOL_MEDIA_PUBLISH = "media.story.publish";
+    /** 编辑撤回已刊的指定公开版本。 */
+    public static final String TOOL_MEDIA_WITHDRAW = "media.story.withdraw";
     /** 媒体工具：开启更正轮。 */
     public static final String TOOL_MEDIA_CORRECTION = "media.story.correction";
     /** 媒体工具：取消本人未完成的媒体工作。 */
@@ -160,6 +162,14 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     public static final String TOOL_INTERVIEW_SPEAK = "interview.speak";
     /** schema18b 董事工具。 */
     public static final String TOOL_BOARD_CONVENE = "board.convene";
+    /** 工程发行人主席召集现金分红议题。 */
+    public static final String TOOL_ISSUER_DIVIDEND_CONVENE = "issuer.dividend.convene";
+    /** 工程发行人董事提交现金分红方案。 */
+    public static final String TOOL_ISSUER_DIVIDEND_PROPOSE = "issuer.dividend.propose";
+    /** 工程发行人董事提请在登记前撤销或更正已公告的指定版本。 */
+    public static final String TOOL_ISSUER_DIVIDEND_AMEND = "issuer.dividend.amend";
+    /** 工程发行人主席实施已通过的分红决议。 */
+    public static final String TOOL_ISSUER_DIVIDEND_AUTHORIZE = "issuer.dividend.authorize";
     public static final String TOOL_BOARD_ATTEND = "board.attend";
     public static final String TOOL_BOARD_MATERIAL = "board.addMaterial";
     public static final String TOOL_BOARD_VOTE = "board.vote";
@@ -223,12 +233,38 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
      * @param canPublish   本岗位此刻能否发布（仅编辑且稿件已批准）
      * @param sourceGroups 独立来源组数
      * @param updatedAtMillis 最近变化时刻
+     * @param draftDocId 本社可读的内稿文档，新口径下尚未投稿时为空
+     * @param draftVersion 对应内稿版次，新口径下尚未投稿时为空
+     * @param reviewNotes  本人有权读取的历次退稿意见索引，旧档为空
+     * @param withdrawWorkMillis 有权对这份公开稿签发撤稿公告时须用的工时，其余为空
      */
     public record MediaStory(String storyId, String template, String status, int revisionNo,
                              String topic, String authorPartyId, boolean own, boolean canReview,
                              boolean canPublish, int sourceGroups, long updatedAtMillis,
-                             String draftDocId, long draftVersion, String publicDocId,
-                             long publicVersion) {
+                             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                             String draftDocId,
+                             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                             Long draftVersion, String publicDocId,
+                             long publicVersion,
+                             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                             List<ReviewNote> reviewNotes,
+                             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                             Long withdrawWorkMillis) {
+
+        /** 固定本次观察中本人仍有阅读权的退稿目录。 */
+        public MediaStory {
+            if (reviewNotes != null) reviewNotes = List.copyOf(reviewNotes);
+        }
+
+        /** 兼容没有审阅意见资料的旧观察。 */
+        public MediaStory(String storyId, String template, String status, int revisionNo,
+                          String topic, String authorPartyId, boolean own, boolean canReview,
+                          boolean canPublish, int sourceGroups, long updatedAtMillis,
+                          String draftDocId, Long draftVersion, String publicDocId, long publicVersion) {
+            this(storyId, template, status, revisionNo, topic, authorPartyId, own, canReview,
+                    canPublish, sourceGroups, updatedAtMillis, draftDocId, draftVersion,
+                    publicDocId, publicVersion, null, null);
+        }
 
         /** 旧十参构造：没有实际可读标识（旧档案与新模型输入都不使用）。 */
         public MediaStory(String storyId, String template, String status, int revisionNo,
@@ -238,6 +274,9 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
                     canPublish, sourceGroups, updatedAtMillis, null, 0L, null, 0L);
         }
     }
+
+    /** 指向某次正式退稿意见的确切资料版本；read 表示本人确曾完成阅读。 */
+    public record ReviewNote(int revisionNo, String docId, long version, boolean read) { }
 
     /**
      * 本次观察固定的任职。
@@ -279,9 +318,17 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
      * @param side           方向；已达到目标为空
      * @param priceLimit     价格边界
      * @param deadlineMillis 截止
+     * @param sourceResearchId 新档授权账户能看见的目标来源报告标识
      */
     public record Version(int version, long absoluteTarget, long baseQuantity, long changeQuantity,
-                          Side side, BigDecimal priceLimit, long deadlineMillis) {
+                          Side side, BigDecimal priceLimit, long deadlineMillis,
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                          String sourceResearchId) {
+        /** 兼容未投影报告来源和风控执行边界的历史版本。 */
+        public Version(int version, long absoluteTarget, long baseQuantity, long changeQuantity,
+                       Side side, BigDecimal priceLimit, long deadlineMillis) {
+            this(version, absoluteTarget, baseQuantity, changeQuantity, side, priceLimit, deadlineMillis, null);
+        }
     }
 
     /**

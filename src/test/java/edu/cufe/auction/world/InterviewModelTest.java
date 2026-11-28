@@ -103,6 +103,22 @@ class InterviewModelTest {
     }
 
     @Test
+    void inclusiveLeadAtZeroAndPositiveClocksStillRequiresReachableTarget() {
+        for (long now : List.of(0L, 194401L)) {
+            for (long lead : List.of(0L, 60000L)) {
+                var state=InterviewModel.open(new InterviewModel.Policy(MEDIA,600000,lead,3600000),registry());
+                long first=now+lead;
+                var args=request("clock",first,first+DURATION,DURATION);
+                assertTrue(InterviewModel.invite(state,context(journalist()),RITA,args,now).accepted());
+                var hidden=new InterviewModel.Context(journalist(),Map.of(),Map.of());
+                assertEquals(InterviewModel.REASON_UNREACHABLE,InterviewModel.invite(state,hidden,RITA,args,now).reason());
+                if (first>0) assertEquals(InterviewModel.REASON_WINDOW,
+                        InterviewModel.invite(state,context(journalist()),RITA,request("early",first-1,first+DURATION,DURATION),now).reason());
+            }
+        }
+    }
+
+    @Test
     void fullChainInviteAcceptStartEarlyEnd() {
         InterviewModel.State state = invite(opened(), "R1", 1_000L);
         assertEquals(InterviewModel.Status.PROPOSED, state.invites().get(0).status());

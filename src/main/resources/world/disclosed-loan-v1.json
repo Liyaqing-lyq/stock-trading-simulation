@@ -1,0 +1,105 @@
+{
+  "sourceRun": "web-issuer-credit-decisions-operating-v1",
+  "sourcePosition": 185,
+  "originDigest": "8827f64a58f89d81fac12dc006b4b43eb7c6de0fc4f3240fe06c9cd7c9e6eb7e",
+  "contract": {
+    "loanId": "working-capital",
+    "bankKey": "north",
+    "borrowerKey": "mfg-tech",
+    "amount": 200.0,
+    "rateU": 20000,
+    "tenorMs": 2592000000,
+    "purpose": "补充材料采购周转资金",
+    "status": "DRAWN",
+    "accepted": true,
+    "approvedBy": "erin",
+    "drawn": 200.0,
+    "trancheId": "L-1"
+  },
+  "draw": {
+    "trancheId": "L-1",
+    "source": "LOAN",
+    "contract": 200.0,
+    "onbook": 200.0,
+    "writtenOff": 0.0,
+    "terms": {
+      "rateU": 20000,
+      "startMs": 126097,
+      "maturityMs": 2592126097,
+      "numerator": 0,
+      "postedCents": 0,
+      "paidCents": 0,
+      "lastAccruedMs": 126097,
+      "status": "CURRENT",
+      "overdue": false
+    },
+    "nonAccrualReason": null
+  },
+  "acceptedReceipts": [
+    {
+      "taskId": "roleT:11:mfgtech-mgr:seed-LOAN_REQUEST:finish",
+      "commandId": "roleT:11:mfgtech-mgr:seed-LOAN_REQUEST",
+      "personPartyId": "mfgtech-mgr",
+      "kind": "LOAN_REQUEST",
+      "bankKey": "north",
+      "customerKey": "mfg-tech",
+      "accepted": true,
+      "reason": "LOAN_PROPOSED",
+      "receipt": "accepted=true;reason=LOAN_PROPOSED;loan=working-capital",
+      "atMillis": 91,
+      "position": 162
+    },
+    {
+      "taskId": "roleT:11:mfgtech-mgr:seed-LOAN_ACCEPT:finish",
+      "commandId": "roleT:11:mfgtech-mgr:seed-LOAN_ACCEPT",
+      "personPartyId": "mfgtech-mgr",
+      "kind": "LOAN_ACCEPT",
+      "bankKey": "north",
+      "customerKey": "mfg-tech",
+      "accepted": true,
+      "reason": "LOAN_ACCEPTED",
+      "receipt": "accepted=true;reason=LOAN_ACCEPTED;loan=working-capital",
+      "atMillis": 93,
+      "position": 165
+    },
+    {
+      "taskId": "roleT:4:erin:proof-LOAN_APPROVE:finish",
+      "commandId": "roleT:4:erin:proof-LOAN_APPROVE",
+      "personPartyId": "erin",
+      "kind": "LOAN_APPROVE",
+      "bankKey": "north",
+      "customerKey": "mfg-tech",
+      "accepted": true,
+      "reason": "LOAN_APPROVED",
+      "receipt": "accepted=true;reason=LOAN_APPROVED;loan=working-capital",
+      "atMillis": 126095,
+      "position": 182
+    },
+    {
+      "taskId": "roleT:11:mfgtech-mgr:proof-LOAN_DRAW:finish",
+      "commandId": "roleT:11:mfgtech-mgr:proof-LOAN_DRAW",
+      "personPartyId": "mfgtech-mgr",
+      "kind": "LOAN_DRAW",
+      "bankKey": "north",
+      "customerKey": "mfg-tech",
+      "accepted": true,
+      "reason": "LOAN_DRAWN",
+      "receipt": "accepted=true;reason=LOAN_DRAWN;loan=working-capital;tranche=L-1",
+      "atMillis": 126097,
+      "position": 185
+    }
+  ],
+  "depositTerms": {
+    "offerId": "OFF-north",
+    "rateU": 20000,
+    "startMs": 126097,
+    "maturityMs": 31536126097,
+    "numerator": 0,
+    "postedCents": 0,
+    "paidCents": 0,
+    "lastAccruedMs": 126097,
+    "excludedCents": 0,
+    "excludedReason": null,
+    "nonAccrualReason": null
+  }
+}

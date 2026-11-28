@@ -85,6 +85,17 @@ class WorldWebPerformanceHistoryTest {
         assertEquals(1, host.call(() -> world.snapshot().exchange().orElseThrow().trades().size()),
                 "20 股在 12 元一次性成交");
 
+        var prices = http.send(HttpRequest.newBuilder(java.net.URI.create(base + "/api/admin/performance"))
+                .header("Cookie", cookie).GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, prices.statusCode());
+        var holdings = JSON.readTree(prices.body()).required("holdings").required("rows");
+        var mark = java.util.stream.StreamSupport.stream(holdings.spliterator(), false)
+                .filter(row -> OWNER.equals(row.path("ownerId").asText())).findFirst().orElseThrow();
+        assertEquals("TRADE", mark.required("priceSource").asText());
+        assertEquals("12.00", mark.required("price").asText());
+        assertEquals("1021", mark.required("priceAsOfMillis").asText());
+        assertEquals("0", mark.required("priceAgeMillis").asText());
+
         var response = post(PATH, body(OWNER, "1", before.position()), true);
         assertEquals(200, response.statusCode(), response.body());
         assertEquals("no-store", response.headers().firstValue("cache-control").orElseThrow());

@@ -1,9 +1,11 @@
 package edu.cufe.auction.web;
 
 import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import edu.cufe.auction.world.DecisionModel;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -29,7 +31,7 @@ import java.util.UUID;
  * <ul>
  *   <li>只保存场景、槽位 ID、模型名、启用状态与预算整数；不保存凭据、key 文件路径、
  *       提示词或输出正文，也不保存任意地址（provider 与 baseUrl 是固定常量）。</li>
- *   <li>配置不是世界经济状态；它属于运行目录，重启后仍可见，但不进入 WorldJournal。</li>
+ *   <li>当前配置属于运行目录；人工接管可在子档来源中冻结父配置的非机密参数，子档此后独立设置。</li>
  *   <li>这里的预算只是配置值；本类不发起请求，也不声称已经约束任何真实调用；
  *       未来每次 attempt 必须自行冻结当时的配置，改 route 不影响已启动的请求。</li>
  *   <li>写入采用同目录唯一临时文件 + 原子替换；失败不发布半配置，只清理自己的临时文件。</li>
@@ -101,14 +103,33 @@ public final class SceneRoutes implements AutoCloseable {
      * @param slotId          固定槽位 key-1..key-5
      * @param model           deepseek-flash 或 deepseek-v4-pro
      * @param enabled         是否启用
-     * @param maxCalls        调用上限 1..100
-     * @param maxTotalTokens  总 token 上限 256..1000000
+     * @param maxCalls        调用次数上限，范围随本路预算策略确定
+     * @param maxTotalTokens  累计 token 上限，长期策略允许浏览器可精确表示的正整数
      * @param maxOutputTokens 单次输出上限 128..8192 且不超过总上限
      * @param maxConcurrency  并发上限 1..4 且不超过调用上限
+     * @param providerPolicy  空值保留关闭思考；deepseek-thinking-high-v1 显式启用思考
+     * @param budgetPolicy    空值保留旧上限，lifecycle-v1 与 long-horizon-v1 分别用于有限跨期与长期预算
      */
     public record Route(Scene scene, String slotId, String model, boolean enabled,
-                        int maxCalls, int maxTotalTokens, int maxOutputTokens,
-                        int maxConcurrency) {
+                        int maxCalls, long maxTotalTokens, int maxOutputTokens,
+                        int maxConcurrency,
+                        @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy,
+                        @JsonInclude(JsonInclude.Include.NON_NULL) String providerPolicy) {
+
+        /** 旧配置继续使用原有单场景上限。 */
+        public Route(Scene scene, String slotId, String model, boolean enabled,
+                     int maxCalls, long maxTotalTokens, int maxOutputTokens, int maxConcurrency) {
+            this(scene, slotId, model, enabled, maxCalls, maxTotalTokens, maxOutputTokens,
+                    maxConcurrency, null);
+        }
+
+        /** 旧九参路由保留关闭思考策略。 */
+        public Route(Scene scene, String slotId, String model, boolean enabled,
+                     int maxCalls, long maxTotalTokens, int maxOutputTokens, int maxConcurrency,
+                     String budgetPolicy) {
+            this(scene, slotId, model, enabled, maxCalls, maxTotalTokens, maxOutputTokens,
+                    maxConcurrency, budgetPolicy, null);
+        }
 
         /** 逐项校验；不合法时抛 IllegalArgumentException（文案不回显输入）。 */
         public Route {
@@ -119,10 +140,16 @@ public final class SceneRoutes implements AutoCloseable {
             if (!MODEL_FLASH.equals(model) && !MODEL_PRO.equals(model)) {
                 throw new IllegalArgumentException("模型不在允许列表");
             }
-            if (maxCalls < 1 || maxCalls > 100) {
+            if (providerPolicy != null && !"deepseek-thinking-high-v1".equals(providerPolicy)) {
+                throw new IllegalArgumentException("未知提供方策略");
+            }
+            if (budgetPolicy != null && !"lifecycle-v1".equals(budgetPolicy) && !DecisionModel.Route.LONG_HORIZON.equals(budgetPolicy)) {
+                throw new IllegalArgumentException("未知预算策略");
+            }
+            if (maxCalls < 1 || maxCalls > DecisionModel.Route.callCeiling(budgetPolicy)) {
                 throw new IllegalArgumentException("调用上限超出范围");
             }
-            if (maxTotalTokens < 256 || maxTotalTokens > 1_000_000) {
+            if (maxTotalTokens < 256 || maxTotalTokens > DecisionModel.Route.tokenCeiling(budgetPolicy)) {
                 throw new IllegalArgumentException("总 token 上限超出范围");
             }
             if (maxOutputTokens < 128 || maxOutputTokens > 8192
@@ -184,8 +211,10 @@ public final class SceneRoutes implements AutoCloseable {
 
     /** 持久化形态：只含非秘密字段。 */
     private record RouteDto(String scene, String slotId, String model, boolean enabled,
-                            int maxCalls, int maxTotalTokens, int maxOutputTokens,
-                            int maxConcurrency) {
+                            int maxCalls, long maxTotalTokens, int maxOutputTokens,
+                            int maxConcurrency,
+                            @JsonInclude(JsonInclude.Include.NON_NULL) String budgetPolicy,
+                            @JsonInclude(JsonInclude.Include.NON_NULL) String providerPolicy) {
     }
 
     private record Persisted(long revision, List<RouteDto> routes) {
@@ -212,12 +241,25 @@ public final class SceneRoutes implements AutoCloseable {
      * @throws IOException 目录/文件不可用或内容不合法
      */
     public static SceneRoutes open(Path directory) throws IOException {
+        return open(directory, defaultSnapshot());
+    }
+
+    /** 从已核验的分支来源初始化子配置；已有文件总以其持久设置为准。调用方持有子档锁。 */
+    static SceneRoutes openBranch(Path directory, edu.cufe.auction.world.BranchOrigin origin) throws IOException {
+        if (origin.takeoverRoutes() == null) return open(directory);
+        var disabled = origin.takeoverRoutes().stream().map(r -> new Route(
+                Scene.fromId(r.sceneId()), r.slotId(), r.model(), false, r.maxCalls(), r.maxTotalTokens(),
+                r.maxOutputTokens(), r.maxConcurrency(), r.budgetPolicy(), r.providerPolicy())).toList();
+        return open(directory, new Snapshot(0, disabled));
+    }
+
+    private static SceneRoutes open(Path directory, Snapshot initial) throws IOException {
         Objects.requireNonNull(directory, "运行目录");
         Path root = directory.toAbsolutePath().normalize();
         Files.createDirectories(root);
         ObjectMapper mapper = strictMapper();
         Path file = root.resolve(FILE_NAME);
-        SceneRoutes routes = new SceneRoutes(root, mapper, defaultSnapshot());
+        SceneRoutes routes = new SceneRoutes(root, mapper, initial);
         if (!Files.exists(file)) {
             routes.persist(routes.snapshot);
             return routes;
@@ -240,7 +282,7 @@ public final class SceneRoutes implements AutoCloseable {
             try {
                 parsed.add(new Route(Scene.fromId(dto.scene()), dto.slotId(), dto.model(),
                         dto.enabled(), dto.maxCalls(), dto.maxTotalTokens(),
-                        dto.maxOutputTokens(), dto.maxConcurrency()));
+                        dto.maxOutputTokens(), dto.maxConcurrency(), dto.budgetPolicy(), dto.providerPolicy()));
             } catch (RuntimeException invalid) {
                 throw new IOException("场景路由配置不合法");
             }
@@ -305,7 +347,7 @@ public final class SceneRoutes implements AutoCloseable {
         for (Route route : target.routes()) {
             dtos.add(new RouteDto(route.scene().id(), route.slotId(), route.model(),
                     route.enabled(), route.maxCalls(), route.maxTotalTokens(),
-                    route.maxOutputTokens(), route.maxConcurrency()));
+                    route.maxOutputTokens(), route.maxConcurrency(), route.budgetPolicy(), route.providerPolicy()));
         }
         byte[] bytes;
         try {

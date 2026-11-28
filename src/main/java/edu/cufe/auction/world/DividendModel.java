@@ -141,7 +141,98 @@ public final class DividendModel {
      */
     public record SchemeRequest(String schemeId, String symbol, String issuerOwnerId,
                                 String companyAccountId, BigDecimal perShare,
-                                long recordAtMillis, long exAtMillis, long payAtMillis) {
+                                long recordAtMillis, long exAtMillis, long payAtMillis,
+                                @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                Amendment amendment) {
+        /** 创建首次提案；历史档保持原经济字段。 */
+        public SchemeRequest(String schemeId, String symbol, String issuerOwnerId, String companyAccountId,
+                             BigDecimal perShare, long recordAtMillis, long exAtMillis, long payAtMillis) {
+            this(schemeId, symbol, issuerOwnerId, companyAccountId, perShare, recordAtMillis, exAtMillis, payAtMillis, null);
+        }
+    }
+
+    /** 董事提请变更的已公告方案、该版及公开理由。 */
+    public record Amendment(String currentSchemeId, int expectedVersion, String operation, String reason) {
+        /** 仅接受明确的撤销或替换。 */
+        public Amendment {
+            requireText(currentSchemeId, "原方案");
+            requireText(reason, "更正理由");
+            if (expectedVersion < 1 || expectedVersion == Integer.MAX_VALUE
+                    || !("CANCEL".equals(operation) || "REPLACE".equals(operation)))
+                throw new IllegalArgumentException("公告版本或更正动作无效");
+        }
+    }
+
+    record AmendRecord(String currentSchemeId, int expectedVersion, String operation, String reason,
+                       String authorizationRef, SchemeRequest replacement) { }
+
+    static AmendRecord amendRecord(Receipt receipt) {
+        return read(receipt.requestJson(), AmendRecord.class);
+    }
+
+    static final String REVISION_PREFIX = "div-revision:";
+
+    /** 首案和后继方案均使用首案公告文号。 */
+    public static String rootSchemeId(State state, String schemeId) {
+        String current = schemeId;
+        while (true) {
+            AmendRecord source = amendmentCreating(state, current);
+            if (source == null) return current;
+            current = source.currentSchemeId();
+        }
+    }
+
+    /** 返回该经济方案发布时的版本，首案为一。 */
+    public static int versionOf(State state, String schemeId) {
+        AmendRecord source = amendmentCreating(state, schemeId);
+        return source == null ? 1 : source.expectedVersion() + 1;
+    }
+
+    private static AmendRecord amendmentCreating(State state, String schemeId) {
+        for (Receipt receipt : state.receipts().values()) {
+            if (!"AMEND".equals(receipt.action())) continue;
+            AmendRecord r = read(receipt.requestJson(), AmendRecord.class);
+            if (r.replacement() != null && schemeId.equals(r.replacement().schemeId())) return r;
+        }
+        return null;
+    }
+
+    static String revisionId(State state, Amendment amendment) {
+        String root = rootSchemeId(state, amendment.currentSchemeId());
+        return REVISION_PREFIX + root.length() + ":" + root + ":" + (amendment.expectedVersion() + 1);
+    }
+
+    static SchemeRequest economics(Scheme scheme) {
+        return new SchemeRequest(scheme.schemeId(), scheme.symbol(), scheme.issuerOwnerId(), scheme.companyAccountId(),
+                scheme.perShare(), scheme.recordAtMillis(), scheme.exAtMillis(), scheme.payAtMillis());
+    }
+
+    private static Scheme authorized(SchemeRequest r, String authorization) {
+        return new Scheme(r.schemeId(), r.symbol(), r.issuerOwnerId(), r.companyAccountId(), r.perShare(),
+                r.recordAtMillis(), r.exAtMillis(), r.payAtMillis(), Phase.AUTHORIZED, authorization, null);
+    }
+
+    static Result amend(State state, Event event, SchemeRequest request, String authorizationRef) {
+        Amendment a = request.amendment();
+        SchemeRequest replacement = "REPLACE".equals(a.operation()) ? new SchemeRequest(request.schemeId(), request.symbol(),
+                request.issuerOwnerId(), request.companyAccountId(), request.perShare(), request.recordAtMillis(),
+                request.exAtMillis(), request.payAtMillis()) : null;
+        String json = json(new AmendRecord(a.currentSchemeId(), a.expectedVersion(), a.operation(), a.reason(), authorizationRef, replacement));
+        Result replayed = replay(state, event, "AMEND", json);
+        if (replayed != null) return replayed;
+        String guard = guard(state, event);
+        if (guard != null) return reject(state, event, guard);
+        Scheme old = schemeOf(state, a.currentSchemeId());
+        if (old == null || old.phase() != Phase.AUTHORIZED || versionOf(state, old.schemeId()) != a.expectedVersion()
+                || !request.schemeId().equals(revisionId(state, a)) || state.schemes().containsKey(request.schemeId()))
+            return reject(state, event, REASON_INVALID_PHASE);
+        if (event.atMillis() >= old.recordAtMillis() || event.atMillis() >= request.recordAtMillis())
+            return reject(state, event, REASON_INVALID_TIMELINE);
+        Map<String, Scheme> schemes = new TreeMap<>(state.schemes());
+        schemes.put(old.schemeId(), new Scheme(old.schemeId(), old.symbol(), old.issuerOwnerId(), old.companyAccountId(),
+                old.perShare(), old.recordAtMillis(), old.exAtMillis(), old.payAtMillis(), Phase.CANCELLED, old.authorizationRef(), a.reason()));
+        if (replacement != null) schemes.put(request.schemeId(), authorized(replacement, authorizationRef));
+        return accept(state, event, "AMEND", json, schemes, state.snapshots(), state.claims(), state.payments(), state.impairments());
     }
 
     /**
@@ -513,7 +604,7 @@ public final class DividendModel {
         if (guard != null) {
             return reject(state, event, guard);
         }
-        if (request == null) {
+        if (request == null || request.amendment() != null) {
             return reject(state, event, REASON_INVALID_ARGUMENT);
         }
         if (blank(request.schemeId()) || blank(request.symbol())
@@ -1411,7 +1502,34 @@ public final class DividendModel {
     private static void checkReceipts(Map<String, Scheme> schemes, Map<String, Claim> claims,
                                       Map<String, Receipt> receipts) {
         Map<String, List<Receipt>> byScheme = new TreeMap<>();
-        for (Receipt receipt : receipts.values()) {
+        Map<String, Integer> versions = new TreeMap<>();
+        Map<String, String> roots = new TreeMap<>();
+        for (Receipt receipt : receipts.values().stream().sorted(Comparator.comparingLong(Receipt::position)).toList()) {
+            if ("AMEND".equals(receipt.action())) {
+                AmendRecord a = read(receipt.requestJson(), AmendRecord.class);
+                Amendment amendment = new Amendment(a.currentSchemeId(), a.expectedVersion(), a.operation(), a.reason());
+                requireText(a.authorizationRef(), "更正表决授权");
+                String current = amendment.currentSchemeId();
+                Scheme old = schemes.get(current);
+                if (old == null || a.expectedVersion() != versions.getOrDefault(current, 1)
+                        || (a.replacement() != null) != "REPLACE".equals(a.operation()))
+                    throw new IllegalArgumentException("更正来源或版本不合法");
+                if (a.replacement() != null) {
+                    SchemeRequest replacement = a.replacement();
+                    String id = replacement.schemeId(), root = roots.getOrDefault(current, current);
+                    Scheme revised = schemes.get(id);
+                    if (!id.equals(REVISION_PREFIX + root.length() + ":" + root + ":" + (a.expectedVersion() + 1))
+                            || revised == null || !old.symbol().equals(revised.symbol())
+                            || !old.issuerOwnerId().equals(revised.issuerOwnerId())
+                            || !old.companyAccountId().equals(revised.companyAccountId()) || !replacement.equals(economics(revised)))
+                        throw new IllegalArgumentException("更正经济条款与新方案不一致");
+                    versions.put(id, a.expectedVersion() + 1);
+                    roots.put(id, root);
+                    byScheme.computeIfAbsent(id, key -> new ArrayList<>()).add(receipt);
+                }
+                byScheme.computeIfAbsent(current, key -> new ArrayList<>()).add(receipt);
+                continue;
+            }
             String schemeId = receiptSchemeId(receipt.action(), receipt.requestJson(), claims);
             if (!schemes.containsKey(schemeId)) {
                 throw new IllegalArgumentException("事件回报引用未知方案：" + receipt.eventId());
@@ -1429,7 +1547,7 @@ public final class DividendModel {
                 switch (receipt.action()) {
                     case ACTION_PROPOSE -> {
                         SchemeRequest request = read(receipt.requestJson(), SchemeRequest.class);
-                        if (phase != null || receipt.atMillis() > scheme.recordAtMillis()
+                        if (request.amendment() != null || phase != null || receipt.atMillis() > scheme.recordAtMillis()
                                 || !scheme.symbol().equals(request.symbol())
                                 || !scheme.issuerOwnerId().equals(request.issuerOwnerId())
                                 || !scheme.companyAccountId().equals(request.companyAccountId())
@@ -1449,6 +1567,20 @@ public final class DividendModel {
                         requireText(request.authorizationRef(), "原始授权引用");
                         authorization = request.authorizationRef();
                         phase = Phase.AUTHORIZED;
+                    }
+                    case "AMEND" -> {
+                        AmendRecord a = read(receipt.requestJson(), AmendRecord.class);
+                        if (receipt.atMillis() >= scheme.recordAtMillis())
+                            throw new IllegalArgumentException("登记时点后更正");
+                        if (scheme.schemeId().equals(a.currentSchemeId())) {
+                            if (phase != Phase.AUTHORIZED) throw new IllegalArgumentException("更正的原方案未获授权");
+                            cancellation = a.reason();
+                            phase = Phase.CANCELLED;
+                        } else {
+                            if (phase != null) throw new IllegalArgumentException("更正后的方案标识已被占用");
+                            authorization = a.authorizationRef();
+                            phase = Phase.AUTHORIZED;
+                        }
                     }
                     case ACTION_CANCEL -> {
                         CancelRequest request = read(receipt.requestJson(), CancelRequest.class);
@@ -1553,7 +1685,11 @@ public final class DividendModel {
 
     private static <T> T read(String json, Class<T> type) {
         try {
-            T value = MAPPER.readValue(json, type);
+            var reader = MAPPER.readerFor(type);
+            // 首案八项及替换回执中的经济条款都不写 amendment。下方逐字回编仍校验所有必需字段。
+            if (type == SchemeRequest.class || type == AmendRecord.class)
+                reader = reader.without(DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES);
+            T value = reader.readValue(json);
             if (value == null || !json(value).equals(json)) {
                 throw new IllegalArgumentException("原始请求不是完整规范内容");
             }

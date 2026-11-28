@@ -193,6 +193,16 @@ public record BankingProfile(
         }
     }
 
+    /** 判断规范现金、存款或托管桶是否登记于指定客户名下。 */
+    public boolean ownsCashBucket(String party, String token) {
+        var ref = parties.get(party);
+        if (ref == null || token == null) return false;
+        if (token.equals("CASH|" + ref.cashAccountId())) return true;
+        if (ref.depositGl() != null && banks.keySet().stream()
+                .anyMatch(bank -> token.equals("DEPOSIT|" + bank + "|" + party))) return true;
+        return custodians.keySet().stream().anyMatch(custodian -> token.equals("CUSTODY|" + custodian + "|" + party));
+    }
+
     /** 校验档案自洽性：唯一主体、唯一账户、桶与科目闭合。 */
     public BankingProfile {
         banks = Map.copyOf(Objects.requireNonNull(banks, "banks"));

@@ -78,6 +78,45 @@ class BaselineIndustryWebHttpTest {
         }
     }
 
+    @Test void currentDigitalChairCanCallCessationFromOwnWebPageAndOtherDirectorCannot() throws Exception {
+        Path journal = dir.resolve("digital-web.journal");
+        try (var world = ComposedIndustryScenario.openDigitalWindDownTenCompanyStudy(journal)) {
+            assertTrue(world.digitalCessation(DigitalIndustryConfig.COMPANY));
+        }
+        Path keys = dir.resolve("test-keys.txt");
+        Files.writeString(keys, String.join("\n", java.util.stream.IntStream.rangeClosed(1, 5).mapToObj(i -> "sk-digital-test-00000" + i).toList()));
+        try (var host = new WorldWebHost(() -> {
+                var world = ComposedIndustryScenario.openDigitalWindDownTenCompanyStudy(journal);
+                return new WorldWebHost.Opened(world, world.profile().manifest().runId());
+            }); var server = new WorldWebServer(host, KeySlots.load(keys), SceneRoutes.open(dir), 0,
+                    "research-bootstrap", null, console::add)) {
+            host.peopleView();
+            server.start();
+            base = server.baseUrl();
+            var directors = BaselineIndustryConfig.directors(DigitalIndustryConfig.COMPANY);
+            String tool = "board.conveneDigitalCessation";
+            long due = 20_000L;
+            for (int member : List.of(1, 0)) {
+                admin();
+                person(directors.get(member));
+                var view = JSON.readTree(request("GET", "/api/me/engineering", null).body());
+                assertEquals(member == 0, view.path("companies").toString().contains(tool));
+                var command = JSON.createObjectNode().put("expectedPosition", view.required("observationToken").asText())
+                        .put("commandId", "web-digital-" + member).put("taskId", "web-digital-" + member)
+                        .put("dueTimeMillis", Long.toString(due)).put("companyId", DigitalIndustryConfig.COMPANY).put("tool", tool)
+                        .put("meetingId", "web-close").put("materialDeadline", "30000").put("opensAt", "40000").put("closesAt", "50000");
+                var result = request("POST", "/api/me/engineering/action", command.toString());
+                assertEquals(member == 0 ? 200 : 400, result.statusCode(), result.body());
+            }
+        }
+        try (var world = ComposedIndustryScenario.openDigitalWindDownTenCompanyStudy(journal)) {
+            world.advanceTo(20_000);
+            var board = world.boardOfCompany(DigitalIndustryConfig.COMPANY).orElseThrow().board();
+            assertEquals(BoardModel.Topic.DIGITAL_CESSATION, board.meeting("web-close").topic());
+            assertNull(world.operationsRun().orElseThrow().digital().cessation());
+        }
+    }
+
     private void admin() throws Exception {
         String bootstrap = "research-bootstrap";
         for (String line : console) {

@@ -55,9 +55,18 @@ public final class PublicationRun {
      * @param publisherPartyId 发布者
      * @param publishedAt      发布时刻
      * @param kind             来源种类
+     * @param rankingReason    个人推荐的依据；旧目录无此字段
      */
     public record FeedEntry(int rank, String docId, long version, String title,
-                            String publisherPartyId, long publishedAt, FeedKind kind) {
+                            String publisherPartyId, long publishedAt, FeedKind kind,
+                            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                            String rankingReason) {
+
+        /** 原公开时间目录不携带个人推荐依据。 */
+        public FeedEntry(int rank, String docId, long version, String title,
+                         String publisherPartyId, long publishedAt, FeedKind kind) {
+            this(rank, docId, version, title, publisherPartyId, publishedAt, kind, null);
+        }
 
         /** 校验字段。 */
         public FeedEntry {
@@ -176,6 +185,18 @@ public final class PublicationRun {
      */
     public static List<FeedEntry> feed(PlatformPostModel.State platform, MediaModel.State media,
                                        InformationModel.State info, long at, int limit) {
+        return feedForOutlets(platform, media == null ? List.of() : List.of(media), info, at, limit);
+    }
+
+    /** 按各家媒体自己的版本历史取得已发布稿件，与公开帖子一起排序并截取目录上限。 */
+    public static List<FeedEntry> feedForOutlets(PlatformPostModel.State platform, List<MediaModel.State> outlets,
+                                                InformationModel.State info, long at, int limit) {
+        return feedForOutlets(platform, outlets, info, at, limit, null, 0);
+    }
+
+    static List<FeedEntry> feedForOutlets(PlatformPostModel.State platform, List<MediaModel.State> outlets,
+                                         InformationModel.State info, long at, int limit,
+                                         PersonalNewsFeed reader, int explorationSlot) {
         Objects.requireNonNull(platform, "平台状态");
         Objects.requireNonNull(info, "信息状态");
         if (at < 0) {
@@ -188,22 +209,23 @@ public final class PublicationRun {
         for (PlatformPostModel.Post post : platform.posts()) {
             if (post.status() == PlatformPostModel.PostStatus.PUBLISHED
                     && post.publishedAt() <= at) {
-                addCandidate(candidates, post.docId(), post.version(), FeedKind.PLATFORM_POST, info);
+                addCandidate(candidates, post.docId(), post.version(), FeedKind.PLATFORM_POST, info, null);
             }
         }
-        if (media != null) {
+        for (MediaModel.State media : outlets) {
             for (MediaModel.Story story : media.stories()) {
                 if (story.publicDocId().isEmpty()) {
                     continue;
                 }
-                long version = mediaVersionAt(media, story, at);
-                if (version > 0) {
-                    addCandidate(candidates, story.publicDocId(), version,
-                            FeedKind.MEDIA_STORY, info);
+                var revision = mediaVersionAt(media, story, at);
+                if (revision != null) {
+                    addCandidate(candidates, story.publicDocId(), revision.docVersion(),
+                            FeedKind.MEDIA_STORY, info, revision.status() == MediaModel.Status.WITHDRAWN ? revision.actorPartyId() : null);
                 }
             }
         }
-        return rank(selectCurrent(candidates, at), limit);
+        var current = selectCurrent(candidates, at);
+        return reader == null ? rank(current, limit) : reader.rank(rank(current, current.size()), limit, explorationSlot);
     }
 
     /**
@@ -320,30 +342,30 @@ public final class PublicationRun {
      * @param media 媒体状态
      * @param story 稿件
      * @param at    观察截止时刻
-     * @return 版本号；该时点尚无任何已发表版本返回 0
+     * @return 当时最新的正式发行或撤稿记录，尚未对外发表时为空
      */
-    private static long mediaVersionAt(MediaModel.State media, MediaModel.Story story, long at) {
-        long best = 0L;
+    private static MediaModel.Revision mediaVersionAt(MediaModel.State media, MediaModel.Story story, long at) {
+        MediaModel.Revision best = null;
         for (MediaModel.Revision revision : media.revisions()) {
             if (!revision.storyId().equals(story.storyId())
-                    || revision.status() != MediaModel.Status.PUBLISHED
+                    || (revision.status() != MediaModel.Status.PUBLISHED && revision.status() != MediaModel.Status.WITHDRAWN)
                     || !story.publicDocId().equals(revision.docId())
                     || revision.docVersion() < 1
                     || revision.atMillis() > at) {
                 continue;
             }
-            best = Math.max(best, revision.docVersion());
+            if (best == null || best.docVersion() < revision.docVersion()) best = revision;
         }
         return best;
     }
 
     private static void addCandidate(List<Candidate> candidates, String docId, long version,
-                                     FeedKind kind, InformationModel.State info) {
+                                     FeedKind kind, InformationModel.State info, String noticeSigner) {
         PublicationBinding.fromInformation(info, docId, version).ifPresent(doc -> {
             if (!"PUBLIC".equals(doc.audienceKind())) {
                 return;
             }
-            candidates.add(new Candidate(docId, version, doc.title(), doc.publisherPartyId(),
+            candidates.add(new Candidate(docId, version, doc.title(), noticeSigner == null ? doc.publisherPartyId() : noticeSigner,
                     doc.publishedAt(), kind));
         });
     }

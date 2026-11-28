@@ -44,6 +44,10 @@ public final class ManufacturingTemplateModel {
     public static final long DAY_MILLIS = 86_400_000L;
     /** 一个实验期间毫秒数（30 日）。 */
     public static final long PERIOD_MILLIS = 30L * DAY_MILLIS;
+    /** 当前采购合同的固定到货提前期；执行与经理公开条款共用。 */
+    public static final long MATERIAL_LEAD_MILLIS = DAY_MILLIS;
+    /** 当前销售合同从实际交付起计算的应收账期；不表示付款保证。 */
+    public static final long PAYMENT_TERM_MILLIS = 15L * DAY_MILLIS;
 
     /** 结果：成功（无具体业务码时的通用成功）。 */
     public static final String OK = "OK";
@@ -1016,8 +1020,13 @@ public final class ManufacturingTemplateModel {
     public static Outcome orderMaterial(State state, long now, String actor, String commandId,
                                         String poId, String materialId, long quantity,
                                         Map<String, CashAccount> cash) {
+        return orderMaterial(state, now, actor, commandId, poId, materialId, quantity, cash, MATERIAL_LEAD_MILLIS);
+    }
+
+    static Outcome orderMaterial(State state, long now, String actor, String commandId, String poId,
+                                 String materialId, long quantity, Map<String, CashAccount> cash, long leadMillis) {
         Settlement s = orderMaterialCore(state, now, actor, commandId, poId, materialId,
-                quantity, new Leg(cash, null, null));
+                quantity, new Leg(cash, null, null), leadMillis);
         return new Outcome(s.accepted(), s.reason(), s.state(), s.accounts());
     }
 
@@ -1026,13 +1035,13 @@ public final class ManufacturingTemplateModel {
                                             String poId, String materialId, long quantity,
                                             FundState funds, FundPayer payer) {
         Settlement s = orderMaterialCore(state, now, actor, commandId, poId, materialId,
-                quantity, new Leg(null, funds, payer));
+                quantity, new Leg(null, funds, payer), MATERIAL_LEAD_MILLIS);
         return new FundOutcome(s.accepted(), s.reason(), s.state(), s.funds());
     }
 
     private static Settlement orderMaterialCore(State state, long now, String actor,
                                                 String commandId, String poId, String materialId,
-                                                long quantity, Leg leg) {
+                                                long quantity, Leg leg, long leadMillis) {
         String content = "ORDER|" + poId + "|" + materialId + "|" + quantity;
         Settlement replay = replay(state, commandId, content, leg);
         if (replay != null) {
@@ -1067,7 +1076,7 @@ public final class ManufacturingTemplateModel {
         }
         Draft draft = new Draft(state, now);
         draft.purchases.put(poId, new PurchaseOrder(poId, materialId, quote.supplierId(), quantity,
-                quote.price(), now, now + DAY_MILLIS, PurchaseStatus.ORDERED));
+                quote.price(), now, Math.addExact(now, leadMillis), PurchaseStatus.ORDERED));
         draft.usedIds.add(poId);
         return accept(draft, REASON_ORDERED, leg, commandId, content);
     }
@@ -1574,7 +1583,7 @@ public final class ManufacturingTemplateModel {
                 contract.unitPrice(), contract.signedAt(), contract.promisedAt(),
                 contract.expiresAt(), contract.period(), status, contract.released()));
         draft.receivables.put(receivableId, new Receivable(receivableId, contractId,
-                contract.customerId(), quantity, amount, cost, now, now + 15 * DAY_MILLIS,
+                contract.customerId(), quantity, amount, cost, now, now + PAYMENT_TERM_MILLIS,
                 amount, ReceivableStatus.OPEN));
         draft.usedIds.add(receivableId);
         return accept(draft, REASON_DELIVERED, leg, commandId, content);

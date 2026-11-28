@@ -90,6 +90,12 @@ class MediaPendingIntegrityTest {
     @Test void pendingObservationCannotChange() throws Exception {
         rejected(state -> changeBody(state, body -> body.put("observedPosition", body.path("observedPosition").asLong() + 1)));
     }
+    @Test void pendingObservationTimeCannotChange() throws Exception {
+        rejected(state -> changeBody(state, body -> body.put("observedAtMillis", body.path("observedAtMillis").asLong() + 1)));
+    }
+    @Test void pendingObservationCannotBeMissing() throws Exception {
+        rejected(state -> changeBody(state, body -> body.put("observedPosition", 0)));
+    }
     @Test void pendingOrganizationCannotChange() throws Exception {
         rejected(state -> changeBody(state, body -> body.put("organizationPartyId", "media-b")));
     }

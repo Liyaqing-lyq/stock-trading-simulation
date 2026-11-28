@@ -21,7 +21,7 @@ td.preview{white-space:normal;min-width:240px;max-width:380px;color:#5c6a80}
 .section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
 .section-head h2{margin-bottom:6px}
 .section-head p{margin:0 0 18px;color:#8a95a6;font-size:12px}
-#candle-chart{width:100%;height:auto;min-height:180px;max-height:380px;overflow:visible}
+#candle-chart,#person-chart-svg{width:100%;height:auto;min-height:180px;max-height:380px;overflow:visible}
 .chart-wick{stroke-width:1.5}
 .chart-body{stroke-width:1}
 .chart-up{stroke:#2f7d5c;fill:#dff0e6}
@@ -102,3 +102,29 @@ td.preview{white-space:normal;min-width:240px;max-width:380px;color:#5c6a80}
 #research-financial dt{color:#6c7990;overflow-wrap:anywhere}
 #research-financial dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}
 @media(max-width:900px){#research-projects,#research-financial{grid-template-columns:1fr}}
+
+.relation-graph { display: grid; gap: .75rem; margin-bottom: 1rem; }
+.relation-path { display: flex; align-items: center; gap: .75rem; }
+.relation-path ul { border-left: 1px solid var(--line); list-style: none; margin: 0; padding: .25rem .75rem; }
+.relation-path li + li { margin-top: .3rem; }
+.relation-path button { max-width: 100%; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .relation-path { align-items: flex-start; flex-direction: column; }
+  .relation-path ul { margin-left: .5rem; }
+}
+
+#context-intervention { font-weight: 700; }
+.world-person-takeover { display: none; }
+.admin-can-takeover .world-person-takeover { display: inline-flex; }
+.person-observing [data-person-write],
+.person-observing #person-bank-ops,
+.person-observing #person #engineering-action-form,
+.person-observing #groups-form,
+.person-observing #groups-invites button,
+.person-observing #groups-posts button,
+.person-observing #research-form,
+.person-observing #manufacturing-form,
+.person-observing #operations-form,
+.person-observing #fund-units-controls,
+.person-observing #person-interview-coordination [data-invite],
+.person-observing #person-interview-coordination [data-respond] { display: none !important; }

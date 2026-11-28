@@ -86,7 +86,10 @@ function flush(times = 14) {
 }
 
 const timers = [];
+const connectionEvents = new Map();
 const context = vm.createContext({
+  history: { state: null, replaceState(value) { this.state = value; } },
+  addEventListener: (name, handler) => connectionEvents.set(name, handler),
   document, console, BigInt, Number, String, Boolean, Object, Array, Map, Set, JSON,
   Math, Date, Promise, Error, RegExp,
   setTimeout(fn) { timers.push(fn); return timers.length; },
@@ -94,7 +97,7 @@ const context = vm.createContext({
   fetch: fakeFetch, URL, Blob,
   nextGeneration: () => 0
 });
-for (const file of ["operations.js", "research.js", "manufacturing.js"]) {
+for (const file of ["operations.js", "research.js", "manufacturing.js", "interview-coordination.js"]) {
   vm.runInContext(fs.readFileSync(path.join(webDir, file), "utf8"), context);
 }
 vm.runInContext(source, context);
@@ -269,6 +272,117 @@ async function main() {
     api.selectPage("overview", false);
     assert.equal(document.getElementById("history-checkpoint-text").value, "",
       "离开历史页必须清空已导出的检查点文本");
+  });
+
+  await check("index-newest-page-wins-including-late-auth-failure", async () => {
+    resetState();
+    const requests = [];
+    responder = url => {
+      const held = deferred();
+      requests.push({ url, held });
+      return held.promise;
+    };
+    const after = document.getElementById("history-after");
+    document.getElementById("history-limit").value = "2";
+    after.value = "0";
+    const first = api.loadHistoryIndex();
+    after.value = "2";
+    const second = api.loadHistoryIndex();
+    after.value = "4";
+    const last = api.loadHistoryIndex();
+    const page = (start, end) => ({ runId: "old", cutPosition: "20", nextAfter: String(end),
+      entries: [{position: String(start)}, {position: String(end)}] });
+    requests[2].held.resolve(await respond(200, page(5,6)));
+    await last;
+    requests[1].held.resolve(await respond(200, page(3,4)));
+    requests[0].held.resolve(await respond(401, {}));
+    await Promise.all([first,second]);
+    assert.equal(api.state.mode, "admin");
+    assert.equal(api.historyState().cursor, "6");
+    assert.deepEqual(Array.from(api.historyState().entries, row => row.position), ["5","6"]);
+    assert.match(document.getElementById("history-index-status").textContent, /已读至位置 6/);
+  });
+
+  await check("empty-page-offline-and-retry-keep-last-delivered-position", async () => {
+    resetState();
+    const after = document.getElementById("history-after");
+    after.value = "0";
+    document.getElementById("history-limit").value = "2";
+    const requests = [];
+    const answer = (positions, cut) => respond(200, { runId: "old", cutPosition: String(cut),
+      entries: positions.map(p => ({position:String(p)})), nextAfter: positions.length ? String(positions.at(-1)) : "-1" });
+    let reply = () => answer([1,2],2);
+    responder = url => {
+      if (url.includes("/view?")) return respond(200, viewPayload(1,2));
+      requests.push(url);
+      return reply();
+    };
+    await api.loadHistoryIndex();
+    await api.openHistoryPosition(1);
+    after.value = "45";
+    reply = () => answer([],2);
+    await api.loadHistoryIndex(true);
+    assert.equal(api.historyState().cursor, "2");
+    assert.deepEqual(Array.from(api.historyState().entries, row => row.position), ["1","2"]);
+    const late = deferred();
+    reply = () => late.promise;
+    const inflight = api.loadHistoryIndex(true);
+    connectionEvents.get("offline")();
+    late.resolve(await answer([3,4],4));
+    await inflight;
+    assert.match(document.getElementById("history-index-status").textContent, /连接中断.*已读至位置 2/);
+    reply = () => Promise.reject(new Error("offline"));
+    await api.loadHistoryIndex(true);
+    assert.equal(api.historyState().cursor,"2");
+    reply = () => answer([3,4],8);
+    connectionEvents.get("online")();
+    await flush();
+    assert.equal(requests.slice(1).every(url => url.endsWith("after=2&limit=2")),true);
+    assert.equal(api.historyState().cursor,"4");
+    assert.equal(api.historyState().selected,1);
+    assert.equal(document.getElementById("history-position").textContent,"1");
+    reply = () => answer([5,6],8);
+    await api.loadHistoryIndex(true);
+    assert.ok(requests.at(-1).endsWith("after=4&limit=2"));
+    const pending = deferred();
+    reply = () => pending.promise;
+    const lateAdmin = api.loadHistoryIndex(true);
+    api.showMode("person");
+    pending.resolve(await answer([7,8],8));
+    await lateAdmin;
+    const observed = requests.length;
+    connectionEvents.get("online")();
+    await flush();
+    assert.equal(requests.length,observed);
+    assert.equal(api.historyState().cursor,null);
+    assert.equal(api.historyState().selected,null);
+    assert.equal(document.getElementById("history-position-input").value,"");
+    assert.equal(after.value,"0");
+    assert.equal(document.getElementById("history-next").disabled,true);
+    assert.equal(document.getElementById("history-index-status").textContent,"");
+  });
+
+  await check("remember-confirmed-page-and-cut-only-within-admin-context", async () => {
+    resetState();
+    api.state.adminRun = "web-groups";
+    api.state.position = "10";
+    document.getElementById("history-after").value = "2";
+    document.getElementById("history-limit").value = "2";
+    responder = url => url.includes("/history/view") ? respond(200, viewPayload(4, 10))
+      : respond(200, { runId: "web-groups", cutPosition: "10", entries: [{position:"3"},{position:"4"}], nextAfter:"4" });
+    await api.loadHistoryIndex();
+    await api.openHistoryPosition(4);
+    assert.equal(JSON.stringify(context.history.state.worldHistory),
+      JSON.stringify({runId:"web-groups",after:2,limit:2,selected:4}));
+    assert.match(document.getElementById("context-time").textContent, /回看已确认位置 4 · 1004 毫秒/);
+    assert.match(document.getElementById("status").textContent, /实时已确认至 10/);
+    await api.loadHistoryIndex(true);
+    assert.equal(context.history.state.worldHistory.after, 4);
+    api.showMode("person");
+    assert.equal(context.history.state.worldHistory, undefined);
+    const count = fetchLog.length;
+    await api.openHistoryPosition(4);
+    assert.equal(fetchLog.length, count);
   });
 
   await check("history-page-no-business-writes", async () => {

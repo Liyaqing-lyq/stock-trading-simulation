@@ -199,7 +199,13 @@ public final class BoardModel {
         /** 具体债权豁免授权（只产生授权引用，不抹账；schema18 起使用）。 */
         DEBT_WAIVER,
         /** 研发出资成果商业化授权（只产生授权引用，不转资产；商业化实验档使用）。 */
-        COMMERCIALIZATION_APPROVAL
+        COMMERCIALIZATION_APPROVAL,
+        /** 固定资源发行人停止生产并继续清偿债权债务，须四席同意。 */
+        RESOURCE_CESSATION,
+        /** 向已具名投资者发出有价认购要约，须四席同意。 */
+        RESOURCE_PRIMARY_OFFER,
+        /** 数字服务发行人停止新试点和新签约，已签合同继续结算，须四席同意。 */
+        DIGITAL_CESSATION
     }
 
     /** 预算类别，对应未来制造新承诺。 */
@@ -1667,7 +1673,7 @@ public final class BoardModel {
      * 异步参与登记：本人在会务窗口内确认参加本次会议，不表示整场连续在场。
      *
      * <p>只允许 {@code CONVENED} 且 {@code createdAt <= now < opensAt} 的会议；登记加入
-     * attendee，{@code selfRecused} 只增不减。任免候选人/被撤人或任免、分红提案
+     * attendee，{@code selfRecused} 只增不减。任免候选人/被撤人占席，或任免、分红、商业化提案的
      * {@code relatedSeatIds} 命中该席时强制回避，自主不回避不能覆盖；重复登记不重复席位、
      * 不清除既有回避，也不改材料、选票、提案/授权或其它字段。</p>
      *
@@ -1736,8 +1742,11 @@ public final class BoardModel {
                 return true;
             }
         }
-        return meeting.dividendProposal() != null
-                && meeting.dividendProposal().relatedSeatIds().contains(seatId);
+        if (meeting.dividendProposal() != null) {
+            return meeting.dividendProposal().relatedSeatIds().contains(seatId);
+        }
+        return meeting.commercializationProposal() != null
+                && meeting.commercializationProposal().relatedSeatIds().contains(seatId);
     }
 
     /**
@@ -1915,7 +1924,7 @@ public final class BoardModel {
                                 : meeting.topic() == Topic.COMMERCIALIZATION_APPROVAL
                                         ? meeting.commercializationProposal() != null
                                         : meeting.appointmentProposal() != null;
-        if (!hasProposal) {
+        if (!hasProposal && !fixedSpecialTopic(meeting.topic())) {
             return rejected(state, REASON_EMPTY_PROPOSAL);
         }
         Draft draft = new Draft(state);
@@ -2201,7 +2210,7 @@ public final class BoardModel {
         DividendModel.SchemeRequest normalized = new DividendModel.SchemeRequest(
                 request.schemeId(), request.symbol(), request.issuerOwnerId(),
                 request.companyAccountId(), perShare, request.recordAtMillis(),
-                request.exAtMillis(), request.payAtMillis());
+                request.exAtMillis(), request.payAtMillis(), request.amendment());
         for (Meeting other : state.meetings().values()) {
             if (other.topic() != Topic.DIVIDEND_AUTHORIZATION
                     || other.dividendProposal() == null) {
@@ -2214,7 +2223,8 @@ public final class BoardModel {
             if (other.status() == MeetingStatus.IMPLEMENTED) {
                 return rejected(state, REASON_INVALID_STATE);
             }
-            if (!sameEconomics(existing, normalized)) {
+            if (!sameEconomics(existing, normalized) && !(existing.amendment() != null && normalized.amendment() != null
+                    && !isActiveDividend(other.status()))) {
                 return rejected(state, REASON_INVALID_ARGUMENT);
             }
             if (isActiveDividend(other.status())) {
@@ -2811,6 +2821,10 @@ public final class BoardModel {
         return true;
     }
 
+    private static boolean fixedSpecialTopic(Topic topic) {
+        return topic == Topic.RESOURCE_CESSATION || topic == Topic.RESOURCE_PRIMARY_OFFER || topic == Topic.DIGITAL_CESSATION;
+    }
+
     // ------------------------------------------------------------------ 具体债权豁免授权
 
     /**
@@ -2822,6 +2836,7 @@ public final class BoardModel {
      */
     public static int requiredYesVotes(List<DebtWaiver> waivers, Meeting meeting) {
         Objects.requireNonNull(meeting, "会议");
+        if (fixedSpecialTopic(meeting.topic())) return SPECIAL_YES_VOTES;
         if (meeting.topic() == Topic.BUDGET
                 && meeting.requestedTotal().compareTo(SPECIAL_BUDGET_THRESHOLD) > 0) {
             return SPECIAL_YES_VOTES;
@@ -3684,7 +3699,7 @@ public final class BoardModel {
         }
         return new DividendModel.SchemeRequest(raw.schemeId(), raw.symbol(), raw.issuerOwnerId(),
                 raw.companyAccountId(), perShare, raw.recordAtMillis(), raw.exAtMillis(),
-                raw.payAtMillis());
+                raw.payAtMillis(), raw.amendment());
     }
 
     private static boolean sameEconomics(DividendModel.SchemeRequest first,
@@ -3696,7 +3711,8 @@ public final class BoardModel {
                 && first.perShare().compareTo(second.perShare()) == 0
                 && first.recordAtMillis() == second.recordAtMillis()
                 && first.exAtMillis() == second.exAtMillis()
-                && first.payAtMillis() == second.payAtMillis();
+                && first.payAtMillis() == second.payAtMillis()
+                && Objects.equals(first.amendment(), second.amendment());
     }
 
     private static boolean isActiveDividend(MeetingStatus status) {
@@ -3876,7 +3892,8 @@ public final class BoardModel {
             String schemeId = proposal.request().schemeId();
             DividendModel.SchemeRequest seen = economics.putIfAbsent(schemeId,
                     proposal.request());
-            if (seen != null && !sameEconomics(seen, proposal.request())) {
+            if (seen != null && !sameEconomics(seen, proposal.request())
+                    && (seen.amendment() == null || proposal.request().amendment() == null)) {
                 throw new IllegalArgumentException("同一方案经济内容不一致：" + schemeId);
             }
             if (isActiveDividend(meeting.status()) && !active.add(schemeId)) {
@@ -3927,6 +3944,7 @@ public final class BoardModel {
         request.put("recordAtMillis", value.recordAtMillis());
         request.put("exAtMillis", value.exAtMillis());
         request.put("payAtMillis", value.payAtMillis());
+        if (value.amendment() != null) request.put("amendment", value.amendment());
         source.put("request", request);
 
         Map<String, Object> charterSource = new TreeMap<>();

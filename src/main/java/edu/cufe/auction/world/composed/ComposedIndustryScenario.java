@@ -54,10 +54,14 @@ public final class ComposedIndustryScenario {
 
     /** 新资源档提供固定技术许可与报价，不预批董事预算。 */
     public static ResourceCompanyRun.Config resourceConfig(boolean expansion) {
+        return resourceConfig(expansion, false);
+    }
+
+    private static ResourceCompanyRun.Config resourceConfig(boolean expansion, boolean namedSubscription) {
         var model = new IntegratedResourcesModel.Config(RESOURCE, CASH, "RES-OPS",
                 "resource-customer", "RES-COAL-CUSTOMER", "resource-grid", "RES-GRID",
                 "resource-converter", "RES-CONVERTER", "resource-contractor", "RES-CONTRACTOR",
-                "resource-disposal", "RES-DISPOSAL", "resource-sponsor", "RES-SPONSOR",
+                "resource-disposal", "RES-DISPOSAL", namedSubscription ? "investor" : "resource-sponsor", namedSubscription ? "INV" : "RES-SPONSOR",
                 money("20000.00"), money("2.00"), money("3.00"), money("800.00"), 200L, money("50.00"),
                 1000L, 5L, 1000L, 600L, money("1800.00"), 5L, money("4000.00"),
                 money("100.00"), money("50.00"), new BigDecimal("0.25"),
@@ -153,7 +157,658 @@ public final class ComposedIndustryScenario {
         return open(journal, true, true, true, true, false, false, true, true);
     }
 
+    /** 角色依据对照新档；authorityOnly只调整权限语义，不追加经营材料。 */
+    public static WorldRuntime openEvidenceAutonomous(Path journal, boolean authorityOnly) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                authorityOnly ? "authority-v1" : "evidence-v1");
+    }
+
+    /** 显式决策依据与接续实验档；旧依据版本保持冻结。 */
+    public static WorldRuntime openDeliberativeAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.VERSION);
+    }
+
+    /** 权威本人动作反馈与单人故障隔离的新自主档；旧v2工厂不变。 */
+    public static WorldRuntime openAccountableAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION);
+    }
+
+    /** 有限外部需求的新自主经营档案。 */
+    public static WorldRuntime openOperatingAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION, true);
+    }
+
+    /** 相对复查与实际时延规划新档，显式使用增量存储。 */
+    public static WorldRuntime openPlanningAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION, false, true);
+    }
+
+    /** 规划合同加有限外部需求，显式使用增量存储。 */
+    public static WorldRuntime openPlanningOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION, true, true);
+    }
+
+    /** 经理当前经营信息新档；冻结v4规划、有限需求与增量存储，不启用固定行为策略。 */
+    public static WorldRuntime openInformedOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION, true, true, true);
+    }
+
+    /** 显式v5治理结果上下文新档；旧informed工厂及其日志保持冻结。 */
+    public static WorldRuntime openContextualInformedOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true);
+    }
+
     private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, null);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, roleContext, false);
+    }
+
+    /** v3 自主世界增量档；每笔提交只保留状态变化，旧工厂与档案不迁移。 */
+    public static WorldRuntime openCompactAccountableAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION, false, true);
+    }
+
+    /** v3 外部需求世界增量档；与普通增量档使用独立运行身份。 */
+    public static WorldRuntime openCompactOperatingAutonomous(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.ACCOUNTABLE_VERSION, true, true);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, roleContext, operating, false);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous, eventDriven, roleContext, operating, compact, false);
+    }
+
+    /** 显式思考经营新档；只增加调用策略和60秒墙钟，保留v5经营与角色合同。
+     * @param journal 新档日志路径
+     * @return 已严格恢复或创建的世界
+     * @throws Exception 开局或冻结合同不匹配
+     */
+    public static WorldRuntime openThinkingInformedOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, "web-thinking-operating-v1");
+    }
+
+    /** 打开在签约时复核制造客户可承诺现金的思考经营档。
+     * @param journal 新版运行日志
+     * @return 严格恢复或新建的世界
+     * @throws Exception 档案与冻结规则不符或开局失败
+     */
+    public static WorldRuntime openFundedThinkingOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, RunManifest.FUNDED_THINKING_RUN_ID);
+    }
+
+    /**
+     * 打开继承制造资金约束并允许本人限价交易的独立经营档。
+     * @param journal 新版运行日志
+     * @return 严格恢复或新建的世界
+     * @throws Exception 档案与冻结规则不符或开局失败
+     */
+    public static WorldRuntime openPersonalMarketOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, PersonalMarket.RUN_ID);
+    }
+
+    /**
+     * 打开按经理申请与工程客户到期义务复核的经营档。
+     * @param journal 新版工程经营日志
+     * @return 新建或严格重开的世界
+     * @throws Exception 开局、日志或版本核验失败
+     */
+    public static WorldRuntime openEngineeringCustomerOperating(Path journal) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true, EngineeringCustomerPolicy.RUN_ID);
+    }
+
+    /** 打开在各发行人开局公开资料中披露证券登记事实的经营档。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 开局或冻结合同不匹配
+     */
+    public static WorldRuntime openCompanyInformationOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.COMPANY_INFORMATION_RUN_ID);
+    }
+
+    /** 打开董事与在任经理可查询跨期预算的经营档。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 开局或冻结合同不匹配
+     */
+    public static WorldRuntime openForwardBudgetOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.FORWARD_BUDGET_RUN_ID);
+    }
+
+    /**
+     * 打开在本公司经营资料中列示陈酿原料交期与付款时点的经营档。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 日志或冻结规则不匹配
+     */
+    public static WorldRuntime openAgedOrderOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.AGED_ORDER_RUN_ID);
+    }
+
+    /**
+     * 打开在同一董事输入中共享相同议事规则的经营档。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 运行档或日志不相容
+     */
+    public static WorldRuntime openBoardProcedureOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.BOARD_PROCEDURE_RUN_ID);
+    }
+
+    /**
+     * 打开发行人署名、按已批准正文逐版披露财报的经营世界。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 运行档或日志不相容
+     */
+    public static WorldRuntime openIssuerReportOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.ISSUER_REPORT_RUN_ID);
+    }
+
+    /**
+     * 打开在超限时用有列名的表展示本人目录、行情及持仓的经营世界。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 运行档或日志不相容
+     */
+    public static WorldRuntime openRoleTableOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.ROLE_TABLE_RUN_ID);
+    }
+
+    /** 开启保留角色紧凑表格并区分水电已结物量与电费的新经营档。 */
+    public static WorldRuntime openHydroSettlementOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.HYDRO_SETTLEMENT_RUN_ID);
+    }
+
+    /**
+     * 开启继承水电结算视图并向个人交易者说明限价申报资格的经营档。
+     * @param journal 世界日志路径
+     * @return 新建或严格恢复的世界
+     * @throws Exception 运行档或日志不相容
+     */
+    public static WorldRuntime openPersonalLimitOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.PERSONAL_LIMIT_RUN_ID);
+    }
+
+    /**
+     * 打开具有跨期研究笔记、两社采编资料和自选复查时机的十公司档。
+     * @param journal 独立世界日志
+     * @return 新建或严格恢复的世界
+     * @throws Exception 运行档或日志不相容
+     */
+    public static WorldRuntime openContinuingRolesOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.CONTINUING_ROLES_RUN_ID);
+    }
+
+    /**
+     * 开启含家庭现金安排与个人初始自述的实验档。
+     * @param journal 新建或同版本存档路径
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或存档不相容
+     */
+    public static WorldRuntime openPersonalProfilesOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.PERSONAL_PROFILES_RUN_ID);
+    }
+
+    /** 打开或恢复带有机构受托账册与四岗工作流程的个人经营档。 */
+    public static WorldRuntime openFundMandateOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.FUND_MANDATE_RUN_ID);
+    }
+
+    /** 打开或恢复按双方在岗任职复核联系地址的基金档。 */
+    public static WorldRuntime openFundOfficeContactsOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.FUND_CONTACTS_RUN_ID);
+    }
+
+    /**
+     * 在基金工作地址档基础上，按实际任职选择机构决策场景。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openFundOfficeRoutingOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.FUND_ROUTING_RUN_ID);
+    }
+
+    /** @param journal 独立八媒体档路径 @return 启用八类采编合同的世界 @throws Exception 无法建立或恢复时抛出 */
+    public static WorldRuntime openMediaDesksOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.MEDIA_DESKS_RUN_ID);
+    }
+
+    /** 打开使用同一开局的个人、机构、媒体、授信和时段规则；不启动模型调度。 */
+    public static WorldRuntime openIntegratedOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.INTEGRATED_RUN_ID);
+    }
+
+    /**
+     * 打开允许受控切换三家制造公司收单规则的组合经营档。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openManufacturingLifecycleOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.MANUFACTURING_LIFECYCLE_RUN_ID);
+    }
+
+    /**
+     * 打开组合经营世界中的银行危机实验档。
+     * @param journal 本档独立日志
+     * @return 已建立或恢复的世界
+     * @throws Exception 建立或恢复失败
+     */
+    public static WorldRuntime openBankCrisisOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.BANK_CRISIS_RUN_ID);
+    }
+
+    /**
+     * 冻结限价申报区间的实验档。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openPriceBandOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.PRICE_BAND_RUN_ID);
+    }
+
+    /**
+     * 指定工程发行人现金分红的实验档。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openIssuerDividendOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.ISSUER_DIVIDEND_RUN_ID);
+    }
+
+    /**
+     * 具名详细借款人承接已冻结聚合债权的实验档。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openLoanPromotionOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.LOAN_PROMOTION_RUN_ID);
+    }
+
+    /**
+     * 同时启用工程分红、日价格带与开局贷款明细，供跨模块核验。
+     * @param journal 独立组合实验日志
+     * @return 已建立或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openBaselinePartsOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.BASELINE_PARTS_RUN_ID);
+    }
+
+    /** @param journal 独立交易时段实验档 @return 严格恢复或首次建立的交易世界 @throws Exception 建立或恢复失败 */
+    public static WorldRuntime openMarketSessionsOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, MarketSessions.RUN_ID);
+    }
+
+    /**
+     * 开启为各非银行发行人单独核算贷款和减值的经营实验档。
+     * @param journal 新世界或同版本的日志
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化或校验失败
+     */
+    public static WorldRuntime openIssuerCreditOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.ISSUER_CREDIT_RUN_ID);
+    }
+
+    /**
+     * 开启向银行和借款人经理提供模型贷款工具的独立实验档。
+     * @param journal 同版本的存档或新建路径
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 初始化、恢复或校验失败
+     */
+    public static WorldRuntime openIssuerCreditDecisionsOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.CREDIT_DECISIONS_RUN_ID);
+    }
+
+    /**
+     * 首建 JSON 可只提供 investor、只提供 company 或同时提供两者。各副本零资产开局，重开采用首帧冻结的配置。
+     * @param journal 世界存档
+     * @param draft 首次创建的声明式 JSON
+     * @return 已初始化或严格恢复的世界
+     * @throws Exception 草稿不受支持或存档恢复失败
+     */
+    public static WorldRuntime openOpeningCopiesOperating(Path journal, Path draft) throws Exception {
+        return openConfiguredOperating(journal, draft, RunManifest.OPENING_COPIES_RUN_ID);
+    }
+
+    /**
+     * 将独立开局配置与同一财产主体的银行资产、负债估值合并。
+     * @param journal 用于建立或恢复世界的日志
+     * @param draft 首次建立时提供的配置文件
+     * @return 已建立或严格恢复的世界
+     * @throws Exception 配置或日志无法通过验证
+     */
+    public static WorldRuntime openOwnerBankValuationOperating(Path journal, Path draft) throws Exception {
+        return openConfiguredOperating(journal, draft, RunManifest.OWNER_BANK_VALUATION_RUN_ID);
+    }
+
+    /**
+     * 保留 HY1 的历史配售成本和发行量，并将市场开局参考估值登记为未知。
+     * @param journal 本档世界日志
+     * @param draft 首次建档的主体配置
+     * @return 新建或严格恢复后的世界
+     * @throws Exception 配置或日志不一致
+     */
+    public static WorldRuntime openUnpricedReferenceOperating(Path journal, Path draft) throws Exception {
+        return openConfiguredOperating(journal, draft, RunManifest.UNPRICED_REFERENCE_RUN_ID);
+    }
+
+    /**
+     * 建立或严格恢复银行处置联动停牌实验，沿用正常的开局参考价。
+     * @param journal 运行日志
+     * @param draft 首建主体配置
+     * @return 恢复到确认位置的运行
+     * @throws Exception 开局或日志不一致
+     */
+    public static WorldRuntime openIssuerResolutionOperating(Path journal, Path draft) throws Exception {
+        return openConfiguredOperating(journal, draft, RunManifest.ISSUER_RESOLUTION_RUN_ID);
+    }
+
+    /** 首建或恢复支持单人决定暂停的受控世界。
+     * @param journal 确认日志 @param draft 首建配置 @return 可继续的世界 @throws Exception 配置或日志无效 */
+    public static WorldRuntime openPersonPauseOperating(Path journal, Path draft) throws Exception {
+        return openConfiguredOperating(journal, draft, RunManifest.PERSON_PAUSE_RUN_ID);
+    }
+
+    /** 以原十家挂牌发行人和已登记人物首建或严格恢复正常经营世界。
+     * @param journal 确认日志
+     * @return 已建立或严格恢复的世界
+     * @throws Exception 开局或存档校验失败
+     */
+    public static WorldRuntime openTenCompanyAutonomy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.TEN_COMPANY_AUTONOMY_RUN_ID);
+    }
+
+    /**
+     * 首建正文计时的十公司研究档；已有普通十公司存档保留其冻结版本。
+     * @param journal 确认日志文件
+     * @return 新建或严格恢复的普通十公司世界
+     * @throws Exception 存档身份、开局或逐帧重演失败
+     */
+    public static WorldRuntime openStudyTenCompanyAutonomy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.STUDY_TEN_COMPANY_AUTONOMY_RUN_ID);
+    }
+
+    /**
+     * 新建按各行业经营凭据考核的普通十公司世界，或按存档原有规则严格恢复。
+     * @param journal 确认日志文件
+     * @return 可继续运行的世界
+     * @throws Exception 开局或逐帧重演失败
+     */
+    public static WorldRuntime openCurrentTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID);
+    }
+
+    /**
+     * 新建仅向本人提供真实内稿阅读入口的普通十公司世界，或按普通存档原规则严格恢复。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的世界
+     * @throws Exception 开局或逐帧重演失败
+     */
+    public static WorldRuntime openEditorialTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.READABLE_DRAFT_TEN_COMPANY_RUN_ID);
+    }
+
+    /**
+     * 新建按本人在任职责及笔记引用规则决定的十公司世界，已有世界按原版本恢复。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的普通世界
+     * @throws Exception 开局或逐帧重演失败
+     */
+    public static WorldRuntime openPersonalTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.PERSONAL_TEN_COMPANY_RUN_ID);
+    }
+
+    /**
+     * 新建能追溯本人采访回执的普通十公司世界，已有日志按其开局版本恢复。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的世界
+     * @throws Exception 开局或逐帧重演失败
+     */
+    public static WorldRuntime openInterviewTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.INTERVIEW_TEN_COMPANY_RUN_ID);
+    }
+
+    /**
+     * 新建董事可查阅期末会议材料的普通十公司世界，已有日志按开局版本恢复。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的世界
+     * @throws Exception 初始化或逐帧重演失败
+     */
+    public static WorldRuntime openMeetingTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.MEETING_TEN_COMPANY_RUN_ID);
+    }
+
+    /**
+     * 新建可由数字公司按决议停接新业务的普通世界，或按原版规则恢复已有世界。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的普通十公司世界
+     * @throws Exception 初始化或逐帧重演失败
+     */
+    public static WorldRuntime openDigitalWindDownTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.DIGITAL_WIND_DOWN_RUN_ID);
+    }
+
+    /**
+     * 新建支持私有审稿意见和采访执行时限的普通世界，已有存档按其原清单恢复。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的普通十公司世界
+     * @throws Exception 初始化或逐帧重演失败
+     */
+    public static WorldRuntime openEditorialFeedbackTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.EDITORIAL_FEEDBACK_RUN_ID);
+    }
+
+    /**
+     * 新建按个人兴趣、订阅及等待安排处理新闻的普通世界；已有档案沿用原有规则。
+     * @param journal 确认日志文件
+     * @return 新建或恢复的普通十公司世界
+     * @throws Exception 初始化或逐帧重演失败
+     */
+    public static WorldRuntime openPersonalNewsTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.PERSONAL_NEWS_RUN_ID);
+    }
+
+    /**
+     * 开始允许人物在本人实际采访时段内作决定的普通十公司世界。已有存档按原清单恢复。
+     * @param journal 世界日志路径
+     * @return 启用自身开局规则的世界
+     * @throws Exception 恢复或初始化失败
+     */
+    public static WorldRuntime openInterviewAutonomyTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.INTERVIEW_AUTONOMY_RUN_ID);
+    }
+
+    /**
+     * 打开普通董事可依章程提出并实施工程公司分红的十公司世界，已有日志按原版本恢复。
+     * @param journal 世界日志路径
+     * @return 对应版本的世界
+     * @throws Exception 恢复或初始化失败
+     */
+    public static WorldRuntime openIssuerDecisionsTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.ISSUER_DECISIONS_RUN_ID);
+    }
+
+    /**
+     * 打开含撤稿、按营业日释放采编工时和未付股利后续办理的十公司世界。
+     * @param journal 世界日志，已有档案沿用原规则
+     * @return 正常十公司世界
+     * @throws Exception 日志恢复或初始化失败
+     */
+    public static WorldRuntime openMediaWithdrawalTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.MEDIA_WITHDRAWAL_RUN_ID);
+    }
+
+    /**
+     * 打开由银行经理办理贷款损失且执行重大事项交易窗口的普通世界，已有存档沿用原规则。
+     * @param journal 世界日志路径
+     * @return 新建或按开局恢复的十公司世界
+     * @throws Exception 初始化或日志恢复失败
+     */
+    public static WorldRuntime openLoanLossTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.BANK_LOAN_LOSS_RUN_ID);
+    }
+
+    /**
+     * 打开具有本人订单预测工具合同的普通十公司世界，恢复时沿用存档版本。
+     * @param journal 普通十公司世界的原生日志
+     * @return 已恢复或新建的普通世界
+     * @throws Exception 初始化或恢复失败
+     */
+    public static WorldRuntime openPersonalBeliefTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.PERSONAL_BELIEF_RUN_ID);
+    }
+
+    /**
+     * 打开可查采访实际答复时段与阅读耗时下限的普通世界，恢复时沿用存档版本。
+     * @param journal 普通十公司世界的原生日志
+     * @return 已恢复或新建的普通世界
+     * @throws Exception 初始化或恢复失败
+     */
+    public static WorldRuntime openInterviewTimeTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.INTERVIEW_TIME_RUN_ID);
+    }
+
+    /**
+     * 打开可在登记前更正已公告分红的十公司世界，已有日志仍按原规则恢复。
+     * @param journal 普通十公司世界的原生日志
+     * @return 已恢复或新建的普通世界
+     * @throws Exception 初始化或恢复失败
+     */
+    public static WorldRuntime openDividendAmendmentTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.DIVIDEND_AMENDMENT_RUN_ID);
+    }
+
+    /**
+     * 打开按人物实际思考与办理时间展示现场接待选项的普通十公司世界。
+     * @param journal 普通十公司世界原生日志，已有日志按其开局版本恢复
+     * @return 已恢复或新建的普通世界
+     * @throws Exception 初始化或恢复失败
+     */
+    public static WorldRuntime openOnsiteDecisionClockTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.ONSITE_DECISION_CLOCK_RUN_ID);
+    }
+
+    /** 新建或恢复普通十公司世界，按开局版本向在岗者说明应急融资和药企董事提案所需的参数。
+     * @param journal 原生存档文件
+     * @return 由存档既有政策或新开局政策建立的世界
+     * @throws Exception 无法创建或恢复时抛出
+     */
+    public static WorldRuntime openCrisisArgumentsTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID);
+    }
+
+    /** 新建普通十公司世界，为汇编岗位展示已刊稿的引用要求，恢复时沿用原档政策。
+     * @param journal 原生存档文件
+     * @return 恢复或新建的十公司世界
+     * @throws Exception 无法初始化或恢复存档时抛出
+     */
+    public static WorldRuntime openAggregatorEvidenceTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.AGGREGATOR_EVIDENCE_RUN_ID);
+    }
+
+    /** 新建普通十公司世界，向本人说明岗位动作的条件参数；恢复时沿用原档政策。
+     * @param journal 世界原生存档
+     * @return 新建或恢复的十公司世界
+     * @throws Exception 无法初始化或恢复存档时抛出
+     */
+    public static WorldRuntime openRoleArgumentsTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.ROLE_ARGUMENTS_RUN_ID);
+    }
+
+    /** 新建按原始十进制数办理人物决定的十公司世界，恢复时按原档政策办理。
+     * @param journal 原生存档文件
+     * @return 新建或恢复的十公司世界
+     * @throws Exception 无法创建或恢复存档时抛出
+     */
+    public static WorldRuntime openExactDecimalTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.EXACT_DECIMAL_RUN_ID);
+    }
+
+    /** 新建向投稿人说明独立来源计数的十公司世界，恢复时使用原档的采编政策。
+     * @param journal 原生存档文件
+     * @return 新建或恢复的十公司世界
+     * @throws Exception 无法创建或恢复存档时抛出
+     */
+    public static WorldRuntime openEditorialSourceTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.EDITORIAL_SOURCE_RUN_ID);
+    }
+
+    private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
+        String runId = defaultRunId;
+        if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
+            var first = WorldJournalScanner.readPrefix(journal, 1, null).first();
+            if (first == null || !RunManifest.standardTenCompanyRuns().contains(first.runId())) throw new java.io.IOException("存档不是普通十公司世界");
+            runId = first.runId();
+        }
+        return openCompanyInformationOperating(journal, runId);
+    }
+
+    /** 使用首版十公司清单的主体、开局和输入上限，供历史运行的恢复与复验。 */
+    public static WorldRuntime openOriginalTenCompanyAutonomy(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal,RunManifest.ORIGINAL_TEN_COMPANY_RUN_ID);
+    }
+
+    /** @param journal 独立开放式产品运行日志 @return 含份额登记和工作日确认的十公司世界 @throws Exception 初始化或恢复失败 */
+    public static WorldRuntime openOpenFundOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.OPEN_FUND_RUN_ID);
+    }
+
+    /** @param journal 显式采购模板升级实验档 @return 普通十公司世界 @throws Exception 初始化或恢复失败 */
+    public static WorldRuntime openManufacturingUpgradeOperating(Path journal) throws Exception {
+        return openCompanyInformationOperating(journal, RunManifest.MANUFACTURING_UPGRADE_RUN_ID);
+    }
+
+    private static WorldRuntime openConfiguredOperating(Path journal, Path draft, String runId) throws Exception {
+        var copies = OpeningEntityCopies.forOpening(journal,draft,runId);
+        return open(journal,true,true,true,true,false,false,true,true,RoleDeliberation.CONTEXTUAL_VERSION,
+                true,true,true,runId,copies);
+    }
+
+    private static WorldRuntime openCompanyInformationOperating(Path journal, String runId) throws Exception {
+        return open(journal, true, true, true, true, false, false, true, true,
+                edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION, true, true, true,
+                runId);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating) throws Exception {
+        return open(journal, expansion, hydro, baseline, prototype, behavior, connected, autonomous,
+                eventDriven, roleContext, operating, compact, informedOperating, null);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating, String thinkingRunId) throws Exception {
+        return open(journal,expansion,hydro,baseline,prototype,behavior,connected,autonomous,eventDriven,roleContext,
+                operating,compact,informedOperating,thinkingRunId,null);
+    }
+
+    private static WorldRuntime open(Path journal, boolean expansion, boolean hydro, boolean baseline, boolean prototype, boolean behavior, boolean connected, boolean autonomous, boolean eventDriven, String roleContext, boolean operating, boolean compact, boolean informedOperating, String thinkingRunId, OpeningEntityCopies copies) throws Exception {
+        boolean thinking = thinkingRunId != null;
+        boolean tenCompany = RunManifest.usesTenCompanyAutonomy(thinkingRunId);
+        boolean currentTen = RunManifest.usesCurrentTenCompany(thinkingRunId);
+        boolean separateInvestorAccounts = connected || RunManifest.usesContinuingRoles(thinkingRunId);
         var original = ComposedManufacturingThreeScenario.bankOpening().config().profile();
         Map<String, BankingProfile.PartyRef> parties = new TreeMap<>(original.parties());
         List<String> deposits = new ArrayList<>(original.depositAccounts());
@@ -186,14 +841,51 @@ public final class ComposedIndustryScenario {
             buckets.keySet().retainAll(parties.keySet());
             deposits.removeIf(d->parties.values().stream().noneMatch(ref->d.equals(ref.depositGl())) && original.custodians().values().stream().noneMatch(ref->d.equals(ref.liabilityId())));
         }
-        if(connected) {
+        if (separateInvestorAccounts) {
             parties.put("nina",new BankingProfile.PartyRef("nina","nina","HOUSE-NINA",null));
             parties.put("omar",new BankingProfile.PartyRef("omar","omar","HOUSE-OMAR",null));
         }
+        if (operating) parties.put(ExternalDemandOpening.OWNER_ID, new BankingProfile.PartyRef(
+                ExternalDemandOpening.OWNER_ID, ExternalDemandOpening.OWNER_ID, ExternalDemandOpening.ACCOUNT_ID, null));
+        if (RunManifest.usesEngineeringCustomerRules(thinkingRunId)) {
+            var customer = parties.get(EngineeringCustomerPolicy.OWNER);
+            parties.put(customer.ownerId(), new BankingProfile.PartyRef(EngineeringCustomerPolicy.CUSTOMER,
+                    customer.ownerId(), customer.cashAccountId(), customer.depositGl()));
+        }
+        if (RunManifest.usesIssuerCredit(thinkingRunId)) {
+            for (String issuer : List.of(ComposedManufacturingThreeScenario.TECH, ComposedManufacturingThreeScenario.STRUCT,
+                    ComposedManufacturingThreeScenario.VERSA, ComposedPharmaScenario.PHARMA, RESOURCE,
+                    HydroIndustryConfig.COMPANY, DigitalIndustryConfig.COMPANY, AgedIndustryConfig.COMPANY)) {
+                buckets.put(issuer, new BankingProfile.RiskBucket("book-" + issuer, "issuer-" + issuer,
+                        "book-" + issuer, "impair-" + issuer));
+            }
+        }
+        boolean crisis = RunManifest.usesBankCrisis(thinkingRunId);
+        if (crisis) {
+            parties.put(BankCrisis.PROVIDER, new BankingProfile.PartyRef(BankCrisis.PROVIDER,BankCrisis.PROVIDER,BankCrisisOpening.PROVIDER_CASH,null));
+            parties.put(BankCrisis.AUTHORITY, new BankingProfile.PartyRef(BankCrisis.AUTHORITY,BankCrisis.AUTHORITY,BankCrisisOpening.AUTHORITY_CASH,null));
+        }
+        if (copies != null) {
+            var refs = new ArrayList<BankingProfile.PartyRef>();
+            if (copies.investor() != null) refs.add(new BankingProfile.PartyRef(copies.investor().id(),copies.investor().id(),copies.investorAccount(),null));
+            if (copies.company() != null) refs.add(new BankingProfile.PartyRef(copies.company().id(),copies.company().id(),copies.companyAccount(),null));
+            for (var ref : refs)
+                if (parties.putIfAbsent(ref.partyId(),ref)!=null) throw new IllegalArgumentException("配置副本占用原主体账户："+ref.partyId());
+        }
+        if (currentTen) parties.put("visit-carrier", new BankingProfile.PartyRef("visit-carrier", "visit-carrier", "VISIT-CARRIER", null));
         var profile = new BankingProfile(original.banks(), parties, original.custodians(), buckets, original.groups(),
                 baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::loanGl).distinct().sorted().toList() : original.loanAccounts(),
-                baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
-        var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile), ComposedWorldScenario.endowment(), Map.of(), Map.of());
+                baseline ? buckets.values().stream().map(BankingProfile.RiskBucket::llpGl).distinct().sorted().toList() : original.llpAccounts(), deposits, crisis ? BankCrisis.PROVIDER : original.providerKey(), original.subordinatedOwnerKey(), original.backgroundBorrowerKey());
+        boolean promotion = RunManifest.usesLoanPromotion(thinkingRunId);
+        var endowment = crisis ? BankCrisisOpening.endowment() : ComposedWorldScenario.endowment();
+        if (promotion) {
+            profile = BankLoanPromotionOpening.profile(profile);
+            endowment = BankLoanPromotionOpening.endowment(endowment);
+        }
+        boolean ownerBankValuation = RunManifest.usesOwnerBankValuation(thinkingRunId);
+        if (ownerBankValuation) profile = OwnerBankValuationOpening.profile(profile, copies == null || copies.investor() == null ? null : copies.investor().id());
+        var banking = BankOpeningRequest.of(ComposedWorldScenario.config(profile, RunManifest.usesIssuerCredit(thinkingRunId)),
+                endowment, Map.of(), Map.of());
         var charters = new TreeMap<>(ComposedManufacturingThreeScenario.charters());
         List<BoardModel.Seat> seats = new ArrayList<>();
         for (int i = 0; i < 5; i++) seats.add(new BoardModel.Seat("resource-seat-" + i, DIRECTORS.get(i)));
@@ -211,15 +903,100 @@ public final class ComposedIndustryScenario {
             charters.put(company,new BoardModel.Charter(company,companySeats,company+"-seat-0",BoardModel.QUORUM));
             readers.addAll(people);readers.add(company.equals(DigitalIndustryConfig.COMPANY)?DigitalIndustryConfig.MANAGER_PERSON:AgedIndustryConfig.MANAGER_PERSON);
         }
-        var decisions = ResourceDecisionTools.config(CompanyOperationsDecisionTools.config(ComposedPharmaScenario.debugDecisions(), readers));
+        if (copies != null && copies.investor() != null) readers.add(copies.investor().id());
+        var decisionPeople = new ArrayList<>(readers);
+        if (tenCompany) decisionPeople.add(EngineeringCustomerPolicy.REPRESENTATIVE);
+        var decisions = ResourceDecisionTools.config(CompanyOperationsDecisionTools.config(ComposedPharmaScenario.debugDecisions(), decisionPeople));
         if (hydro) decisions = HydroDecisionTools.config(decisions);
         if(baseline) decisions=AgedDecisionTools.config(DigitalDecisionTools.config(decisions));
         if(prototype) decisions=PrototypeCompanies.decisions(decisions);
+        if(edu.cufe.auction.world.RoleDeliberation.isDeliberative(roleContext))
+            decisions=edu.cufe.auction.world.RoleDeliberation.lifecycleBudget(decisions);
+        if (thinking) {
+            var limits = decisions.limits();
+            var timings = new TreeMap<>(decisions.actionMillisByTool());
+            if (currentTen) timings.put(OnsiteVisit.TOOL,1_000L);
+            if (RunManifest.usesOnsiteDecisionClockOpening(thinkingRunId)) timings.put(RunManifest.PARTICIPANT_HISTORY_TOOL, 1_000L);
+            if (RunManifest.OPEN_FUND_RUN_ID.equals(thinkingRunId))
+                edu.cufe.auction.world.OpenFundTools.TOOLS.forEach(tool -> timings.put(tool,1_000L));
+            if (RunManifest.usesCreditDecisions(thinkingRunId)) IssuerCreditDecisions.addTimings(timings);
+            if (ownerBankValuation) IssuerCreditDecisions.addOwnerTimings(timings);
+            if (currentTen) timings.put(ResourcePrimaryEquity.TOOL, ResourceDecisionTools.ACTION_MILLIS);
+            if (crisis) timings.put("bank.crisis.act",60_000L);
+            if (RunManifest.usesPersonalProfiles(thinkingRunId)) timings.put("role.library.search", 1000L);
+            if (RunManifest.usesPersonalNewsOpening(thinkingRunId)) {
+                timings.put(edu.cufe.auction.world.ResearchLicensing.TOOL, ResearchDecisionTools.ACTION_MILLIS);
+                for (String tool : List.of("media.subscription.join", "media.subscription.leave", "media.subscription.releaseTurn"))
+                    timings.put(tool, 1000L);
+            }
+            if (RunManifest.usesLoanLossOpening(thinkingRunId)) IssuerCreditDecisions.addLossTimings(timings);
+            if (RunManifest.usesMediaFollowupOpening(thinkingRunId)) {
+                timings.put(RoleTradingView.TOOL_MEDIA_WITHDRAW, timings.get(RoleTradingView.TOOL_MEDIA_PUBLISH));
+                for (String tool : List.of(RoleTradingView.TOOL_SOCIAL_SEND, RoleTradingView.TOOL_GROUP_POST,
+                        RoleTradingView.TOOL_GROUP_CORRECT, RoleTradingView.TOOL_PLATFORM_POST, RoleTradingView.TOOL_PLATFORM_CORRECT))
+                    timings.put(tool, WorldWebScenario.PERSONAL_MESSAGE_WRITE_MILLIS);
+                timings.put("dividend.claim.impair", 1_000L);
+                timings.put("issuer.dividend.retryPayment", 1_000L);
+            }
+            if (RunManifest.usesIssuerDecisionsOpening(thinkingRunId)) {
+                timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_CONVENE, timings.get(RoleTradingView.TOOL_BOARD_CONVENE));
+                timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE, timings.get(RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET));
+                timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE, timings.get(RoleTradingView.TOOL_BOARD_IMPLEMENT));
+                if (RunManifest.usesDividendAmendmentOpening(thinkingRunId)) {
+                    timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND, timings.get(RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE));
+                }
+                timings.put(PersonalMarket.MARKET, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
+            }
+            if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
+                timings.put(PersonalMarket.SUBMIT, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
+                timings.put(PersonalMarket.CANCEL, timings.get(RoleTradingView.TOOL_CHILD_CANCEL));
+            }
+            decisions = new DecisionModel.Config(decisions.providerKind(), decisions.providerId(), decisions.pricingVersion(),
+                    decisions.thinkMillisByWake(), timings,
+                    new DecisionModel.Limits(limits.maxAttemptsPerDecision(), currentTen ? DecisionModel.EXTENDED_INPUT_CHARS : limits.maxInputChars(),
+                            limits.maxReplyChars(), currentTen ? DecisionModel.EXTENDED_INPUT_BYTES + DecisionModel.ESTIMATE_MARGIN_TOKENS : limits.perCallInputTokens(),
+                            limits.perCallOutputTokens(), limits.queueCapacity(), limits.maxInFlight(), 60_000L,
+                            currentTen ? DecisionModel.EXTENDED_ROLE_INPUT : null),
+                    decisions.budget(), decisions.profile());
+        }
+        if (tenCompany) decisions = RoleDeliberation.longHorizonBudget(decisions);
         var openingAccounts = new ArrayList<>(openings());
         if (hydro) openingAccounts.addAll(HydroIndustryConfig.ACCOUNTS);
         var openingRegistry = hydro ? hydroRegistry(registry()) : registry();
         if(baseline) { openingAccounts=new ArrayList<>(BaselineIndustryConfig.openings(openingAccounts));openingRegistry=BaselineIndustryConfig.registry(openingRegistry,openingAccounts); }
-        if(connected) { openingAccounts=new ArrayList<>(ConnectedWorldOpening.accounts(openingAccounts));openingRegistry=ConnectedWorldOpening.registry(openingRegistry); }
+        if (separateInvestorAccounts) {
+            openingAccounts = new ArrayList<>(ConnectedWorldOpening.accounts(openingAccounts));
+            openingRegistry = ConnectedWorldOpening.registry(openingRegistry);
+        }
+        if (operating) {
+            openingAccounts.add(ExternalDemandOpening.account());
+            var externalParties = new ArrayList<>(openingRegistry.parties());
+            externalParties.add(new OpeningRegistry.Party(ExternalDemandOpening.OWNER_ID, OpeningRegistry.PartyKind.ORGANIZATION, "EXP 外部最终需求聚合主体"));
+            var externalOwners = new ArrayList<>(openingRegistry.owners());
+            externalOwners.add(new OpeningRegistry.PropertyOwner(ExternalDemandOpening.OWNER_ID, OpeningRegistry.OwnerKind.ORGANIZATION, ExternalDemandOpening.OWNER_ID));
+            openingRegistry = new OpeningRegistry(externalParties, externalOwners, openingRegistry.securities(), openingRegistry.allocations());
+        }
+        if (RunManifest.usesEngineeringCustomerRules(thinkingRunId)) openingRegistry = EngineeringCustomerPolicy.register(openingRegistry);
+        if (RunManifest.usesMediaDesks(thinkingRunId)) openingRegistry = MediaDesks.register(openingRegistry);
+        if (crisis) openingRegistry = BankCrisisOpening.allocate(openingAccounts, openingRegistry);
+        if (promotion) openingRegistry = BankLoanPromotionOpening.register(openingAccounts, openingRegistry);
+        if (copies != null) openingRegistry = copies.register(openingAccounts,openingRegistry);
+        if (ownerBankValuation) openingRegistry = OwnerBankValuationOpening.register(openingAccounts, openingRegistry);
+        if (RunManifest.OPEN_FUND_RUN_ID.equals(thinkingRunId)) openingRegistry = OpenFundUnits.registerOpening(openingAccounts, openingRegistry);
+        if (currentTen) {
+            var carrierParties = new ArrayList<>(openingRegistry.parties());
+            carrierParties.add(new OpeningRegistry.Party("visit-carrier", OpeningRegistry.PartyKind.ORGANIZATION, "现场采访交通承运机构"));
+            var carrierOwners = new ArrayList<>(openingRegistry.owners());
+            carrierOwners.add(new OpeningRegistry.PropertyOwner("visit-carrier", OpeningRegistry.OwnerKind.ORGANIZATION, "visit-carrier"));
+            openingAccounts.add(new CashLedger.OpeningAccount("VISIT-CARRIER", "visit-carrier", money("0.00"), "EXP承运人自有收款账户"));
+            openingRegistry = new OpeningRegistry(carrierParties, carrierOwners, openingRegistry.securities(), openingRegistry.allocations());
+        }
+        if (RunManifest.UNPRICED_REFERENCE_RUN_ID.equals(thinkingRunId)) {
+            var securities = openingRegistry.securities().stream().map(s -> "HY1".equals(s.symbol())
+                    ? new OpeningRegistry.Security(s.symbol(), s.issuerOrganizationId(), s.issuedShares(), null, s.initialReferencePrice())
+                    : s).toList();
+            openingRegistry = new OpeningRegistry(openingRegistry.parties(), openingRegistry.owners(), securities, openingRegistry.allocations());
+        }
         boolean fresh = !Files.exists(journal) || Files.size(journal) == 0;
         var runManifest = manifest(expansion, hydro, baseline);
         if (prototype) {
@@ -249,6 +1026,144 @@ public final class ComposedIndustryScenario {
             runManifest = new RunManifest(eventDriven ? "web-autonomous-world-v2" : "web-autonomous-world-v1", runManifest.seed(), runManifest.rulesVersion(),
                     runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
         }
+        if (roleContext != null) {
+            var data = new TreeMap<>(runManifest.dataVersions());
+            data.put("role-context", roleContext);
+            runManifest = new RunManifest("web-autonomous-" + roleContext, runManifest.seed(), runManifest.rulesVersion(),
+                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (operating) {
+            var data = new TreeMap<>(runManifest.dataVersions());
+            data.put("external-demand", "v1");
+            runManifest = new RunManifest("web-operating-autonomous-v1", runManifest.seed(), runManifest.rulesVersion(),
+                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (compact) {
+            var data = new TreeMap<>(runManifest.dataVersions()); data.put("state-storage", "delta-v1");
+            runManifest = new RunManifest(edu.cufe.auction.world.RoleDeliberation.PLANNING_VERSION.equals(roleContext)
+                    ? (operating ? "web-planning-operating-v4" : "web-planning-autonomous-v4")
+                    : (operating ? "web-compact-operating-v1" : "web-compact-accountable-v1"),
+                    runManifest.seed(), runManifest.rulesVersion(), runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (informedOperating) {
+            var data = new TreeMap<>(runManifest.dataVersions()); data.put("operating-information", "manager-v1");
+            data.put("operating-report-order", "position-v1");
+            data.put("role-input-policy", "bounded-history-v1");
+            data.put("dispatch-policy", "local-input-v1");
+            runManifest = new RunManifest(edu.cufe.auction.world.RoleDeliberation.CONTEXTUAL_VERSION.equals(roleContext)
+                    ? "web-informed-operating-v2" : "web-informed-operating-v1", runManifest.seed(), runManifest.rulesVersion(),
+                    runManifest.moduleVersions(), data, runManifest.modelConfigVersion());
+        }
+        if (thinking) {
+            var data = new TreeMap<>(runManifest.dataVersions()); data.put("provider-policy", "deepseek-thinking-high-v1");
+            if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
+                data.put(PersonalMarket.POLICY, PersonalMarket.VERSION);
+                data.put("belief-company-scope", "manufacturing-orders-v1");
+                data.put("research-manager-view", "project-state-v1");
+            }
+            if (RunManifest.usesPersonalProfiles(thinkingRunId)) data.putAll(RunManifest.personalProfilePolicies());
+            if (RunManifest.usesFundOfficeRouting(thinkingRunId)) data.put("fund-office-routing", "active-appointments-v1");
+            if (RunManifest.usesFundContacts(thinkingRunId)) data.put("fund-office-contacts", "appointment-pair-v1");
+            if (RunManifest.usesFundMandate(thinkingRunId)) {
+                data.put("fund-mandate-document", "opening-register-v1");
+                data.put("wait-empty-args", "allow-empty-object-v1");
+            }
+            if (RunManifest.usesMediaDesks(thinkingRunId)) data.put("media-template-catalog", MediaModel.EIGHT_DESKS);
+            if (RunManifest.usesPriceBand(thinkingRunId)) data.put("limit-band", "previous-close-10pct-exp-v1");
+            if (RunManifest.usesIssuerDividend(thinkingRunId)) data.put("issuer-dividend", "engineering-eng-a-v1");
+            if (RunManifest.usesLoanPromotion(thinkingRunId)) data.put("loan-promotion", "contract-bound-v1");
+            if (RunManifest.usesBankCrisis(thinkingRunId)) {
+                data.put("bank-crisis-authority", "finite-provider-v1");
+                data.put("role-sellable-holdings", "settled-lots-v1");
+            }
+            if (RunManifest.usesManufacturingLifecycle(thinkingRunId)) {
+                data.put(RunManifest.MANUFACTURING_LIFECYCLE_KEY, RunManifest.MANUFACTURING_LIFECYCLE_VERSION);
+                data.put("fund-capital-policy", RunManifest.OPEN_FUND_RUN_ID.equals(thinkingRunId) ? OpenFundUnits.CAPITAL_POLICY : RunManifest.FIXED_FUND_CAPITAL);
+                if (RunManifest.OPEN_FUND_RUN_ID.equals(thinkingRunId)) data.put(OpenFundUnits.KEY, OpenFundUnits.VERSION);
+                if (RunManifest.MANUFACTURING_UPGRADE_RUN_ID.equals(thinkingRunId)) data.put(ManufacturingUpgrade.KEY, ManufacturingUpgrade.VERSION);
+                data.put("role-market-valuation", RunManifest.ROLE_MARKET_VALUATION);
+            }
+            if (RunManifest.usesMarketSessions(thinkingRunId)) data.put(MarketSessions.KEY, MarketSessions.VERSION);
+            if (RunManifest.usesCreditDecisions(thinkingRunId)) data.put("issuer-credit-decisions", "manager-loan-v1");
+            if (RunManifest.usesIssuerCredit(thinkingRunId)) data.put("issuer-credit", "separate-loan-ledgers-v1");
+            if (RunManifest.usesContinuingRoles(thinkingRunId)) {
+                data.putAll(RunManifest.CONTINUING_ROLE_POLICIES);
+            }
+            if (RunManifest.usesPersonalLimitRules(thinkingRunId)) {
+                data.put(PersonalMarket.LIMIT_RULES, PersonalMarket.LIMIT_RULES_VERSION);
+            }
+            if (RunManifest.usesHydroSettlementView(thinkingRunId)) {
+                data.put(HydroDecisionTools.SETTLEMENT_POLICY, HydroDecisionTools.SETTLEMENT_VERSION);
+            }
+            if (RunManifest.usesRoleTables(thinkingRunId)) {
+                data.put(RoleInputTables.POLICY, tenCompany ? RoleInputTables.BOARD_VERSION : RoleInputTables.VERSION);
+            }
+            if (RunManifest.usesIssuerReportRules(thinkingRunId)) {
+                data.put("issuer-period-reports", "versioned-v1");
+            }
+            if (RunManifest.usesBoardProcedureRules(thinkingRunId)) {
+                data.put("board-procedure-view", "shared-rules-v1");
+                data.put("manager-term-clock", "registered-boundaries-v1");
+            }
+            if (RunManifest.usesAgedOrderRules(thinkingRunId)) {
+                data.put("aged-order-terms", "next-period-v1");
+            }
+            if (RunManifest.usesForwardBudgetRules(thinkingRunId)) {
+                data.put("forward-budget-view", "period-window-v1");
+                data.put("institutional-objectives", "product-office-v1");
+                data.put("catalog-read-receipts", "visible-version-v1");
+            }
+            if (RunManifest.usesCompanyInformationRules(thinkingRunId)) {
+                data.put("listing-disclosure", "opening-register-v1");
+                data.put("research-evidence", "reader-gated-v1");
+                data.put("research-cash-view", "available-v1");
+            }
+            if (RunManifest.usesEngineeringCustomerRules(thinkingRunId)) {
+                data.put(EngineeringCustomerPolicy.KEY, EngineeringCustomerPolicy.VERSION);
+                data.put("digital-delivery-view", "shared-period-limits-v1");
+                data.put("research-funding", "free-cash-v1");
+            }
+            if (RunManifest.usesFundedOperatingRules(thinkingRunId)) {
+                data.put("customer-contract-policy", RunManifest.FUNDED_CONTRACT_POLICY);
+                data.put("board-tool-scope", "charter-chair-v1");
+            }
+            if (RunManifest.UNPRICED_REFERENCE_RUN_ID.equals(thinkingRunId)) data.put("unpriced-opening-reference", "HY1-cost-only-v1");
+            if (RunManifest.usesIssuerResolution(thinkingRunId)) data.put("issuer-failure", "bank-resolution-halt-v1");
+            data.putAll(RunManifest.tenCompanyStudyPolicies(thinkingRunId));
+            if (RunManifest.usesPersonDecisionPause(thinkingRunId)) data.put("person-decision-pause", "confirmed-person-v1");
+            if (ownerBankValuation) {
+                data.put("owner-bank-valuation", "owner-claims-v1");
+                data.put("owner-bank-decisions", "owner-cash-v1");
+            }
+            if (copies != null) copies.freeze(data);
+            if (tenCompany) {
+                data.put("opening-population", "ten-issuers-v1");
+                data.put("model-budget", "long-horizon-v1");
+                data.put("board-material-source", "published-visible-v1");
+            }
+            if (currentTen) {
+                data.put("role-market-depth", "best-level-remaining-v1");
+                data.put("role-input-limit", DecisionModel.EXTENDED_ROLE_INPUT);
+                data.put("fund-execution-view", "authorized-review-v1");
+                data.put("compact-branch", "sealed-index-v1");
+                data.put(SettlementCash.KEY, SettlementCash.VERSION);
+                data.put("branch-profile-run", thinkingRunId);
+                data.put("role-report-privacy", "business-receipts-v1");
+                data.put("publication-origins", "confirmed-media-v1");
+                data.put("wake-clock", "dated-facts-v1");
+                data.put("onsite-interview", "host-fare-v1");
+                data.put("resource-cessation", "board-wind-down-v1");
+                data.put("resource-primary-equity", "named-subscription-v1");
+            }
+            if (RunManifest.usesDeclaredFields(thinkingRunId)) {
+                data.put("group-readable-refs", "edition-visible-v1");
+                data.put("tool-argument-guide", "declared-fields-v1");
+            }
+            var modules = new TreeMap<>(runManifest.moduleVersions());
+            if (RunManifest.usesIssuerDividend(thinkingRunId)) modules.put("dividend", 1);
+            runManifest = new RunManifest(thinkingRunId, runManifest.seed(), runManifest.rulesVersion(),
+                    modules, data, runManifest.modelConfigVersion());
+        }
         WorldRuntime world = ComposedWorldScenario.open(journal, runManifest, openingAccounts, openingRegistry, banking, decisions,
                 new ComposedWorldScenario.Extras(charters, List.of(), readers));
         try {
@@ -256,7 +1171,10 @@ public final class ComposedIndustryScenario {
                 world.initializeResearch("bootstrap", ComposedPharmaScenario.PHARMA,
                         new ResearchModel.Config(ComposedPharmaScenario.PHARMA_OWNER, ComposedPharmaScenario.PHARMA_CASH, BigDecimal.ZERO),
                         prototype ? PrototypeCompanies.researchProjects() : WorldWebScenario.researchProjects(), 1);
-                world.initializeCompanyOperations("bootstrap", ComposedManufacturingThreeScenario.companies(), resourceConfig(expansion), baseline ? BaselineIndustryConfig.hydro() : hydro ? HydroIndustryConfig.config() : null, baseline ? BaselineIndustryConfig.digital():null, baseline ? BaselineIndustryConfig.aged():null);
+                var hydroOpening = baseline ? BaselineIndustryConfig.hydro() : hydro ? HydroIndustryConfig.config() : null;
+                if (RunManifest.FINITE_1080_DAYS.equals(world.profile().manifest().dataVersions().get(RunManifest.HYDRO_INFLOW_PATH)))
+                    hydroOpening = BaselineIndustryConfig.extendedHydro();
+                world.initializeCompanyOperations("bootstrap", ComposedManufacturingThreeScenario.companies(), resourceConfig(expansion, currentTen), hydroOpening, baseline ? BaselineIndustryConfig.digital():null, baseline ? BaselineIndustryConfig.aged():null);
                 Map<String,List<String>> candidates = new TreeMap<>(Map.of(RESOURCE, List.of(MANAGER), ComposedManufacturingThreeScenario.TECH,
                         List.of(ComposedManufacturingThreeScenario.TECH_MANAGER), ComposedManufacturingThreeScenario.STRUCT,
                         List.of(ComposedManufacturingThreeScenario.STRUCT_MANAGER), ComposedManufacturingThreeScenario.VERSA,

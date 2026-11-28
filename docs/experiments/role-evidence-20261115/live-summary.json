@@ -1,0 +1,137 @@
+{
+  "status": "NOT_ACCEPTED_AS_AUTONOMOUS_OPERATING_WORLD",
+  "model": "deepseek-flash",
+  "roles": 52,
+  "actualRequests": 113,
+  "systemSha256": "5b23d667d29b217913fb82f6f4922f207944c27d5e58be660e71db79ff64ea9a",
+  "autonomy": {
+    "available": true,
+    "running": false,
+    "reason": "BUDGET_EXHAUSTED",
+    "position": "489",
+    "timeMillis": "160000",
+    "targetMillis": "3600000",
+    "cycles": 7,
+    "calls": 13,
+    "failures": 0,
+    "companies": 10,
+    "persons": 52
+  },
+  "budget": {
+    "usedCalls": "113",
+    "reservedCalls": "0",
+    "capCalls": "240",
+    "usedInputTokens": "536624",
+    "reservedInputTokens": "0",
+    "capInputTokens": "2000000",
+    "usedOutputTokens": "6014",
+    "reservedOutputTokens": "0",
+    "capOutputTokens": "240000"
+  },
+  "scenes": [
+    {
+      "sceneId": "governance",
+      "slotId": "key-1",
+      "model": "deepseek-flash",
+      "revision": "2",
+      "enabled": true,
+      "usedCalls": "100",
+      "reservedCalls": "0",
+      "capCalls": "100",
+      "usedInputTokens": "487685",
+      "reservedInputTokens": "0",
+      "usedOutputTokens": "5892",
+      "reservedOutputTokens": "0",
+      "capTotalTokens": "1000000"
+    },
+    {
+      "sceneId": "research",
+      "slotId": "key-2",
+      "model": "deepseek-flash",
+      "revision": "2",
+      "enabled": true,
+      "usedCalls": "1",
+      "reservedCalls": "0",
+      "capCalls": "100",
+      "usedInputTokens": "4686",
+      "reservedInputTokens": "0",
+      "usedOutputTokens": "6",
+      "reservedOutputTokens": "0",
+      "capTotalTokens": "1000000"
+    },
+    {
+      "sceneId": "trading",
+      "slotId": "key-3",
+      "model": "deepseek-flash",
+      "revision": "2",
+      "enabled": true,
+      "usedCalls": "3",
+      "reservedCalls": "0",
+      "capCalls": "100",
+      "usedInputTokens": "14164",
+      "reservedInputTokens": "0",
+      "usedOutputTokens": "18",
+      "reservedOutputTokens": "0",
+      "capTotalTokens": "1000000"
+    },
+    {
+      "sceneId": "media",
+      "slotId": "key-4",
+      "model": "deepseek-flash",
+      "revision": "2",
+      "enabled": true,
+      "usedCalls": "9",
+      "reservedCalls": "0",
+      "capCalls": "100",
+      "usedInputTokens": "30089",
+      "reservedInputTokens": "0",
+      "usedOutputTokens": "98",
+      "reservedOutputTokens": "0",
+      "capTotalTokens": "1000000"
+    },
+    {
+      "sceneId": "evaluation",
+      "slotId": "key-5",
+      "model": "deepseek-flash",
+      "revision": "2",
+      "enabled": true,
+      "usedCalls": "0",
+      "reservedCalls": "0",
+      "capCalls": "100",
+      "usedInputTokens": "0",
+      "reservedInputTokens": "0",
+      "usedOutputTokens": "0",
+      "reservedOutputTokens": "0",
+      "capTotalTokens": "1000000"
+    }
+  ],
+  "meeting": {
+    "total": 1,
+    "rows": [
+      {
+        "meetingId": "mfgtech-d1-13001-budget-appt",
+        "topic": "MANAGER_APPOINTMENT",
+        "convenerSeatId": "t1",
+        "createdAt": "15001",
+        "materialDeadline": "150000",
+        "opensAt": "160000",
+        "closesAt": "400000",
+        "status": "MATERIALS_FROZEN",
+        "attendees": "t1,t3",
+        "recused": "",
+        "materialCount": "1",
+        "proposedLines": "",
+        "ballots": "",
+        "failureReason": null
+      }
+    ]
+  },
+  "knownInputTokens": 499771.0,
+  "knownOutputTokens": 1918.0,
+  "cost": "UNKNOWN",
+  "limitations": [
+    "First process interrupted after 92 responses; all responses present before explicit resume",
+    "Initial global probe cap 100; copied completed journal for remaining 13 governance calls with unchanged route cap 100",
+    "Unexecuted actions are not meetings, attendance, appointments or business outcomes"
+  ]
+}

@@ -1,0 +1,13 @@
+# 已核验历史帧时间复用设计
+
+Task16 的实际call486 writer栈确认：媒体排程接受回执前，requireMediaSchedulingRequest仅需核对observedPosition与observedAtMillis，却经frameAtOrNull重建完整历史WorldState。Task12信息缓存不在这条路径上。当前试跑再次为此停留多分钟；本切片只消除已完成权威核验的重复工作，不能代替经营验收。
+
+选择在现有严格准入、有限容量缓存条目中保存frame.timeMillis固定元数据；不增加全世界快照缓存、不放宽delta/audit验证、不跳过恢复检查。用户已授权持续修复及免再次确认，本技术选择由执行者负责。
+
+HistoricalInformationCache.Entry增加long frameTimeMillis；remember(Object sourceIdentity, WorldCommit commit, InformationModel.State information, long frameTimeMillis)只能从原rememberVerifiedInformation权威边界传入时间。新增Long findTime(Object sourceIdentity, WorldCommit commit)，缺失/身份不匹配/普通缓存故障返回null；命中仍核验真实目标commit全部字段与按序事件的完整指纹及source-lifetime/run/position键。没有信息投影、超限或被淘汰的条目也不另留时间侧表。64条/8MiB信息序列化载荷上限保持，最多64个long固定额外元数据，不保留世界或commit对象图。
+
+WorldRuntime仅对requireMediaSchedulingRequest的历史时点检查调用新的private Long verifiedFrameTimeAtOrNull(long position)。必须先读取真实目标提交、确认实际position，且仅compactState及目标<=verifiedInformationPosition时尝试缓存。命中只回答时点，不授权其他行为。任何未命中、未验证、身份变化、淘汰或超限均走完整原decoder；不得借同position旧cursor绕过目标身份核验，必要时清空同positioncursor。普通未解析仍null，原业务拒绝信息不变。frameAtOrNull的其他消费者不改。observedInformation的严验证和禁止fallback重新准入保持。
+
+准入仍仅durable commit成功后或完整顺序recovery的decode/validate/validateAudits/initial检查后；capturing和任意fallback不准入、不推进可信前沿。此缓存不序列化进journal，不改manifest/版本/角色输入/业务规则、时间或权限。有效原档必须严格重放、逐输出值一致。
+
+证明应是实际媒体提案接收时source读取序列不再回扫前缀，且语义/审计一致，不用毫秒性能阈值。缺失/错误时点、同毫秒不同position、真实目标身份变化、无效delta/前沿/捕获/淘汰/超限继续失败或完整回退。不能声称解决所有20分钟恢复成本。

@@ -22,8 +22,17 @@ interface CommitSource {
         return commits().stream().map(WorldJournal::withoutSnapshot).toList();
     }
 
+    default Optional<WorldCommit> nonSnapshotByCommand(String command) {
+        return nonSnapshotCommits().stream().filter(c -> c.commandId().equals(command)).findFirst();
+    }
+
     /** @param position 确认位置 @return 该位置批次；不存在时为空 */
     Optional<WorldCommit> commitAt(long position);
+
+    /** 精确位置的非快照事件，不解码历史状态。 */
+    default Optional<WorldCommit> nonSnapshotCommitAt(long position) {
+        return commitAt(position).map(WorldJournal::withoutSnapshot);
+    }
 
     /**
      * @param afterPosition 严格大于该位置
@@ -54,6 +63,12 @@ final class JournalCommitSource implements CommitSource {
 
     @Override
     public List<WorldCommit> nonSnapshotCommits() { return journal.nonSnapshotCommits(); }
+
+    @Override
+    public Optional<WorldCommit> nonSnapshotCommitAt(long position) { return journal.nonSnapshotCommitAt(position); }
+
+    @Override
+    public Optional<WorldCommit> nonSnapshotByCommand(String command) { return journal.nonSnapshotByCommand(command); }
 
     @Override
     public Optional<WorldCommit> commitAt(long position) {
@@ -130,6 +145,7 @@ final class ListCommitSource implements CommitSource {
  */
 final class BranchCommitSource implements CommitSource {
 
+    private final CommitSource parent;
     private final List<WorldCommit> prefix;
     private final WorldJournal journal;
 
@@ -138,7 +154,17 @@ final class BranchCommitSource implements CommitSource {
      * @param journal 子档自有日志，首帧位置必须是 {@code p+1}
      */
     BranchCommitSource(List<WorldCommit> prefix, WorldJournal journal) {
-        this.prefix = List.copyOf(prefix);
+        this(new ListCommitSource(prefix), journal);
+    }
+
+    /** 核对重放所得的月末帧确属本封存前缀与当前子档。 */
+    boolean readsFrom(CommitSource verifiedPrefix, WorldJournal child) {
+        return parent == verifiedPrefix && journal == child;
+    }
+
+    BranchCommitSource(CommitSource parent, WorldJournal journal) {
+        this.parent = parent;
+        this.prefix = parent.commits();
         this.journal = journal;
         List<WorldCommit> own = journal.commitView();
         long base = journal.base();
@@ -154,14 +180,7 @@ final class BranchCommitSource implements CommitSource {
             throw new IllegalArgumentException("子档首帧位置必须等于父位置加一："
                     + own.get(0).position());
         }
-        long expected = 1L;
-        for (WorldCommit commit : this.prefix) {
-            if (commit.position() != expected) {
-                throw new IllegalArgumentException("分支父前缀位置不连续：期望 " + expected
-                        + "，实际 " + commit.position());
-            }
-            expected++;
-        }
+
     }
 
     @Override
@@ -178,7 +197,7 @@ final class BranchCommitSource implements CommitSource {
 
     @Override
     public List<WorldCommit> nonSnapshotCommits() {
-        List<WorldCommit> result = new ArrayList<>(prefix.stream().map(WorldJournal::withoutSnapshot).toList());
+        List<WorldCommit> result = new ArrayList<>(parent.nonSnapshotCommits());
         result.addAll(journal.nonSnapshotCommits());
         return List.copyOf(result);
     }
@@ -193,16 +212,25 @@ final class BranchCommitSource implements CommitSource {
     }
 
     @Override
+    public Optional<WorldCommit> nonSnapshotCommitAt(long position) {
+        if (position >= 1 && position <= prefix.size()) {
+            return parent.nonSnapshotCommitAt(position);
+        }
+        return journal.nonSnapshotCommitAt(position);
+    }
+
+    @Override
+    public Optional<WorldCommit> nonSnapshotByCommand(String command) {
+        var inherited = parent.nonSnapshotByCommand(command);
+        return inherited.isPresent() ? inherited : journal.nonSnapshotByCommand(command);
+    }
+
+    @Override
     public List<WorldCommit> commitsAfter(long afterPosition, int limit) {
         if (limit <= 0) {
             throw new IllegalArgumentException("分页条数必须为正：" + limit);
         }
-        List<WorldCommit> page = new ArrayList<>();
-        for (WorldCommit commit : prefix) {
-            if (commit.position() > afterPosition && page.size() < limit) {
-                page.add(commit);
-            }
-        }
+        List<WorldCommit> page = new ArrayList<>(parent.commitsAfter(afterPosition,limit));
         if (page.size() < limit) {
             page.addAll(journal.commitsAfter(afterPosition, limit - page.size()));
         }

@@ -30,11 +30,38 @@ public final class DigitalDecisionTools {
     private DigitalDecisionTools() {
     }
 
+    /** 本档数字服务董事会可表决的停业条款。 */
+    public static final String CESSATION_TERMS = "DIGITAL_CESSATION：主席可召集数字服务停业会议，五席中至少四席同意，再由在任经理执行。"
+            + "执行后停止新试点、验证、商用准入和新签约。已有阶段按原期结束，原合同可交付、终止、退款、收款，欠款和股份保留。";
+
     /** 数字服务经营工具。 */
     public static final String ACT = "digital.act";
 
     /** 管理工时；阶段完成与关期另有真实到期时点。 */
     public static final long ACTION_MILLIS = 1_000;
+
+    /** 同一期间各合同共用的公司资源与公开需求，金额只使用可支配现金及获批预算。 */
+    static JsonNode deliveryRoom(DigitalServiceModel.State ledger, long now, BigDecimal freeCash,
+                                 BigDecimal remainingBudget) {
+        long period = now / DigitalServiceModel.PERIOD_MILLIS;
+        long delivered = ledger.deliveredIn(period);
+        long capacity = ledger.config().serviceCapacityUnitsPerPeriod() - delivered;
+        long demand = ledger.config().customerDemandUnitsPerPeriod() - delivered;
+        long uncommittedDemand = Math.max(0, demand - ledger.reservedIn(period));
+        BigDecimal unitCost = ledger.config().serviceUnitCost();
+        long covered = capacity;
+        if (unitCost.signum() > 0) {
+            BigDecimal spending = freeCash.min(remainingBudget == null ? BigDecimal.ZERO : remainingBudget);
+            covered = spending.max(BigDecimal.ZERO).divideToIntegralValue(unitCost)
+                    .min(BigDecimal.valueOf(capacity)).longValueExact();
+        }
+        return JSON.createObjectNode().put("freeCompanyCash", freeCash.toPlainString())
+                .put("remainingCapacityUnits", Long.toString(capacity))
+                .put("cashBudgetCapacityUnits", Long.toString(covered))
+                .put("uncommittedCurrentDemandUnits", Long.toString(uncommittedDemand))
+                .put("scope", "各合同共用以上额度。可按合同未交量分批履约，每批单独确认收入和应收。"
+                        + "往期合同还受本期未占用需求约束，每次执行按当时合同、预算、资金和客户条件重新核对。");
+    }
 
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
@@ -107,6 +134,13 @@ public final class DigitalDecisionTools {
     public static JsonNode observation(DigitalCompanyRun run, long now, BigDecimal cash,
                                        List<CompanyOperationsRun.ReportEntry> reports,
                                        BigDecimal remainingBudget) {
+        return observation(run, now, cash, reports, remainingBudget, null, false);
+    }
+
+    /** 为启用停业条款的本公司经理显示真实的已通过决议、执行记录及可用动作。 */
+    public static JsonNode observation(DigitalCompanyRun run, long now, BigDecimal cash,
+                                       List<CompanyOperationsRun.ReportEntry> reports, BigDecimal remainingBudget,
+                                       BoardModel.State board, boolean cessationEnabled) {
         DigitalServiceModel.State ledger = run.ledger();
         DigitalServiceModel.Config model = ledger.config();
         Map<String, Object> view = new TreeMap<>();
@@ -148,6 +182,18 @@ public final class DigitalDecisionTools {
         actions.put("REFUND", "contractId, refundCents");
         actions.put("COLLECT", "receivableId");
         actions.put("WRITE_OFF", "receivableId");
+        if (cessationEnabled) {
+            Map<String, BigDecimal> unearned = new TreeMap<>();
+            ledger.contracts().forEach((id, contract) -> unearned.put(id, contract.unearned()));
+            view.put("unearnedByContract", unearned);
+            view.put("cessationTerms", CESSATION_TERMS);
+            view.put("cessation", run.cessation());
+            view.put("cessationDecisions", board.meetings().values().stream()
+                    .filter(m -> m.topic() == BoardModel.Topic.DIGITAL_CESSATION && m.status() == BoardModel.MeetingStatus.ADOPTED)
+                    .map(BoardModel.Meeting::meetingId).sorted().toList());
+            if (run.cessation() == null) actions.put("EXIT_BUSINESS", "meetingId");
+            else actions.keySet().removeIf(name -> DigitalOperations.newBusiness(DigitalOperations.Action.valueOf(name)));
+        }
         view.put("actionFields", actions);
 
         view.put("rules", "arguments 所有值为文本，只填所选动作字段；金额字段用整数分文本"

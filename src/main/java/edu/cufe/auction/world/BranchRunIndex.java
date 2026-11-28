@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
@@ -50,10 +51,20 @@ public final class BranchRunIndex {
      * @param prefixBytes   封存父前缀字节数；普通开局为 0
      * @param profileDigest 可信画像摘要；普通开局为空串
      * @param profileVersion 画像摘要口径版本；普通开局为空串
+     * @param takeoverRoutesSha256 新版人工接管来源的场景配置摘要；其他索引项没有此字段
      */
     public record Entry(String runId, String parentRunId, long parentPosition, String file,
                         String kind, long createdAtEpochMillis, String note, String sealedPrefix,
-                        long prefixBytes, String profileDigest, String profileVersion) {
+                        long prefixBytes, String profileDigest, String profileVersion,
+                        @JsonInclude(JsonInclude.Include.NON_NULL) String takeoverRoutesSha256) {
+
+        /** 构造原协议的普通或未冻结路由分支索引。 */
+        public Entry(String runId, String parentRunId, long parentPosition, String file, String kind,
+                     long createdAtEpochMillis, String note, String sealedPrefix, long prefixBytes,
+                     String profileDigest, String profileVersion) {
+            this(runId, parentRunId, parentPosition, file, kind, createdAtEpochMillis, note, sealedPrefix,
+                    prefixBytes, profileDigest, profileVersion, null);
+        }
 
         /** 校验必填字段。 */
         public Entry {
@@ -69,6 +80,10 @@ public final class BranchRunIndex {
             sealedPrefix = sealedPrefix == null ? "" : sealedPrefix;
             profileDigest = profileDigest == null ? "" : profileDigest;
             profileVersion = profileVersion == null ? "" : profileVersion;
+            if (takeoverRoutesSha256 != null && (!BranchOrigin.Kind.GOD_TAKEOVER.name().equals(kind)
+                    || !takeoverRoutesSha256.matches("[0-9a-f]{64}"))) {
+                throw new IllegalArgumentException("接管场景配置摘要不合法");
+            }
             if (parentPosition < 0 || createdAtEpochMillis < 0 || prefixBytes < 0) {
                 throw new IllegalArgumentException("索引位置、创建时刻与封存字节数不能为负");
             }
@@ -87,8 +102,13 @@ public final class BranchRunIndex {
                     file.toAbsolutePath().toString(), origin.kind().name(),
                     origin.createdAtEpochMillis(), origin.note(),
                     sealFile.toAbsolutePath().toString(), origin.parentPrefixBytes(),
-                    origin.profileDigest(), origin.profileVersion());
+                    origin.profileDigest(), origin.profileVersion(), routesDigest(origin));
         }
+    }
+
+    static String routesDigest(BranchOrigin origin) {
+        return origin.takeoverRoutes() == null ? null
+                : WorldRuntime.sha256Hex(MAPPER.valueToTree(origin.takeoverRoutes()).toString());
     }
 
     /**
@@ -135,7 +155,9 @@ public final class BranchRunIndex {
                         text(node.get("sealedPrefix"), "sealedPrefix"),
                         number(node.get("prefixBytes"), "prefixBytes"),
                         text(node.get("profileDigest"), "profileDigest"),
-                        text(node.get("profileVersion"), "profileVersion")));
+                        text(node.get("profileVersion"), "profileVersion"),
+                        node.containsKey("takeoverRoutesSha256")
+                                ? text(node.get("takeoverRoutesSha256"), "takeoverRoutesSha256") : null));
             } catch (IllegalArgumentException invalid) {
                 throw new IOException("运行索引条目非法：" + invalid.getMessage(), invalid);
             }

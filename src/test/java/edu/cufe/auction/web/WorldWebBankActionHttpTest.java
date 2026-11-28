@@ -40,6 +40,7 @@ import java.util.TreeMap;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -107,11 +108,18 @@ class WorldWebBankActionHttpTest {
         assertTrue(receipt.path("receipt").asText().startsWith("SCHEDULED"),
                 "必须先返回已排程：" + receipt);
         assertEquals("SCHEDULED", receipt.path("status").asText());
+        assertFalse(getJson("/api/me/view").has("businessRelations"));
         // 到期前钱不动
         assertEquals("1000.00", ownerCash(getJson("/api/me/bank"), BORROWER),
                 "排程未到期不得瞬时扣款");
         advanceTo(receipt.path("dueTimeMillis").asLong());
         JsonNode after = getJson("/api/me/bank");
+        var depositEdge = getJson("/api/me/view").path("businessRelations").get(0);
+        assertNotNull(depositEdge);
+        assertEquals(BORROWER, depositEdge.path("from").asText());
+        assertEquals("持有存款", depositEdge.path("relation").asText());
+        assertEquals("north", depositEdge.path("to").asText());
+        assertEquals("100.00", depositEdge.path("quantity").asText());
         assertEquals("900.00", ownerCash(after, BORROWER), "到期后现金减少");
         assertEquals("100.00", depositAmount(after), "到期后存款增加");
 

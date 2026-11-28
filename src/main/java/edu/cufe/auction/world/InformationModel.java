@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -82,7 +83,9 @@ public final class InformationModel {
         /** 仅由注入的 {@link BoardAccess} 判定为该公司当时真实章程席位的读取者可见。 */
         BOARD,
         /** 本公司真实董事或当前获准读取本公司经营账的经理；不赋予董事资格。 */
-        COMPANY_OPERATING
+        COMPANY_OPERATING,
+        /** 本稿在任作者与本编辑部有审发权的在任编辑。 */
+        EDITORIAL_REVIEW
     }
 
     /**
@@ -92,19 +95,32 @@ public final class InformationModel {
      *
      * @param kind    受众种类
      * @param partyId 组织、人物、群组或公司标识；公开受众必须为空
+     * @param authorPartyId 仅编辑部审阅意见携带的稿件作者标识
      */
-    public record Audience(AudienceKind kind, String partyId) {
+    public record Audience(AudienceKind kind, String partyId,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+            String authorPartyId) {
+
+        /** 未指定稿件作者的原有受众。 */
+        public Audience(AudienceKind kind, String partyId) {
+            this(kind, partyId, null);
+        }
 
         /** 校验种类与对象的一致性。 */
         public Audience {
             Objects.requireNonNull(kind, "受众种类");
+            if (kind == AudienceKind.EDITORIAL_REVIEW) {
+                requireText(authorPartyId, "稿件作者");
+            } else if (authorPartyId != null) {
+                throw new IllegalArgumentException("该受众不携带稿件作者");
+            }
             if (kind == AudienceKind.PUBLIC) {
                 if (partyId != null) {
                     throw new IllegalArgumentException("公开资料不携带受众对象");
                 }
             } else {
                 String label = switch (kind) {
-                    case ORGANIZATION -> "受众组织";
+                    case ORGANIZATION, EDITORIAL_REVIEW -> "受众组织";
                     case DIRECT -> "受众人物";
                     case GROUP -> "受众群";
                     case BOARD, COMPANY_OPERATING -> "受众公司";
@@ -195,10 +211,30 @@ public final class InformationModel {
             internalSourceIds = internalIds(internalSourceIds);
         }
 
-        private DocumentVersion asVersion(long version) {
+        private DocumentVersion asVersion(long version, String readingClock) {
+            long duration = readingMillis(body, readDurationMillis, readingClock);
             return new DocumentVersion(version, title, body, publicSourceDescription, publishedAt,
-                    readDurationMillis, internalSourceIds);
+                    duration, internalSourceIds);
         }
+    }
+
+    static long readingMillis(String body, long minimumMillis, String readingClock) {
+        long duration = minimumMillis;
+        if (readingClock != null) {
+            // 汉字逐字计，连续的非汉字字母或数字作一单位。已有更长工时的材料保留原时长。
+            long units = 0;
+            boolean inWord = false;
+            for (int offset = 0; offset < body.length();) {
+                int codePoint = body.codePointAt(offset);
+                offset += Character.charCount(codePoint);
+                boolean ideograph = Character.isIdeographic(codePoint);
+                boolean word = !ideograph && Character.isLetterOrDigit(codePoint);
+                if (ideograph || (word && !inWord)) units++;
+                inWord = word;
+            }
+            duration = Math.max(duration, units * 200L); // 300 单位/分钟。
+        }
+        return duration;
     }
 
     /**
@@ -481,14 +517,23 @@ public final class InformationModel {
      * @param active           活动阅读，按阅读标识排序
      * @param closed           已终结阅读，按阅读标识排序
      * @param observations     个人经历，按读者/资料/版本排序
+     * @param readingClock 新档正文阅读工时版本，旧档缺省
      * @param nextReadSequence 下一个阅读序号，从 1 开始
      */
     public record State(List<String> persons, List<Document> documents, List<Reading> active,
                         List<ClosedReading> closed, List<ReadObservation> observations,
-                        long nextReadSequence) {
+                        long nextReadSequence, @JsonInclude(JsonInclude.Include.NON_NULL) String readingClock) {
+
+        /** 为原固定工时状态保留原来的构造入口。 */
+        public State(List<String> persons, List<Document> documents, List<Reading> active,
+                     List<ClosedReading> closed, List<ReadObservation> observations, long nextReadSequence) {
+            this(persons, documents, active, closed, observations, nextReadSequence, null);
+        }
 
         /** 深拷贝、排序并校验全部内部不变量。 */
         public State {
+            if (readingClock != null && !RunManifest.BODY_PACING_300.equals(readingClock))
+                throw new IllegalArgumentException("未知的资料阅读工时版本：" + readingClock);
             persons = sortedText(persons, "登记读者");
 
             List<Document> documentList = sorted(documents, Comparator.comparing(Document::docId));
@@ -503,6 +548,10 @@ public final class InformationModel {
                 if (document.audience().kind() == AudienceKind.DIRECT
                         && !persons.contains(document.audience().partyId())) {
                     throw new IllegalArgumentException("直投对象未登记：" + document.audience().partyId());
+                }
+                if (document.audience().kind() == AudienceKind.EDITORIAL_REVIEW
+                        && !persons.contains(document.audience().authorPartyId())) {
+                    throw new IllegalArgumentException("稿件作者未登记：" + document.audience().authorPartyId());
                 }
             }
 
@@ -621,6 +670,10 @@ public final class InformationModel {
      * @throws IllegalArgumentException 登记为空、人物未登记或不是人物、清单重复
      */
     public static State open(OpeningRegistry registry, List<String> participants) {
+        return open(registry, participants, null);
+    }
+
+    static State open(OpeningRegistry registry, List<String> participants, String readingClock) {
         if (registry == null) {
             throw new IllegalArgumentException("开局登记不能为空");
         }
@@ -631,7 +684,7 @@ public final class InformationModel {
                 throw new IllegalArgumentException("读者未登记或不是人物：" + partyId);
             }
         }
-        return new State(list, List.of(), List.of(), List.of(), List.of(), 1);
+        return new State(list, List.of(), List.of(), List.of(), List.of(), 1, readingClock);
     }
 
     /**
@@ -665,9 +718,9 @@ public final class InformationModel {
             throw new IllegalArgumentException("直投对象未登记：" + audience.partyId());
         }
         List<Document> documents = new ArrayList<>(state.documents());
-        documents.add(new Document(docId, publisherPartyId, audience, List.of(first.asVersion(1))));
+        documents.add(new Document(docId, publisherPartyId, audience, List.of(first.asVersion(1, state.readingClock()))));
         return new State(state.persons(), documents, state.active(), state.closed(), state.observations(),
-                state.nextReadSequence());
+                state.nextReadSequence(), state.readingClock());
     }
 
     /**
@@ -689,17 +742,20 @@ public final class InformationModel {
         if (document == null) {
             throw new IllegalArgumentException("资料不存在，不能追加版本：" + docId);
         }
+        if (document.audience().kind() == AudienceKind.EDITORIAL_REVIEW) {
+            throw new IllegalArgumentException("稿件某一版的正式退稿意见不可改写");
+        }
         DocumentVersion last = document.versions().get(document.versions().size() - 1);
         if (next.publishedAt() <= last.publishedAt()) {
             throw new IllegalArgumentException("新版本发布时间必须晚于上一版：" + docId);
         }
         List<DocumentVersion> versions = new ArrayList<>(document.versions());
-        versions.add(next.asVersion(last.version() + 1));
+        versions.add(next.asVersion(last.version() + 1, state.readingClock()));
         List<Document> documents = new ArrayList<>(state.documents());
         documents.set(documents.indexOf(document),
                 new Document(document.docId(), document.publisherPartyId(), document.audience(), versions));
         return new State(state.persons(), documents, state.active(), state.closed(), state.observations(),
-                state.nextReadSequence());
+                state.nextReadSequence(), state.readingClock());
     }
 
     /**
@@ -830,16 +886,8 @@ public final class InformationModel {
         if (!state.persons().contains(personPartyId)) {
             return new Outcome(Status.NOT_AVAILABLE, state, null);
         }
-        Document document = findDocument(state.documents(), docId);
-        if (document == null) {
-            return new Outcome(Status.NOT_AVAILABLE, state, null);
-        }
-        DocumentVersion target = document.at(version);
-        if (target == null || target.publishedAt() > now) {
-            return new Outcome(Status.NOT_AVAILABLE, state, null);
-        }
-        if (!visible(document.audience(), access, personPartyId, now,
-                target.publishedAt(), groupAccess, boardAccess)) {
+        DocumentVersion target = visibleVersion(state, access, personPartyId, docId, version, now, groupAccess, boardAccess);
+        if (target == null) {
             return new Outcome(Status.NOT_AVAILABLE, state, null);
         }
         for (Reading reading : state.active()) {
@@ -858,7 +906,7 @@ public final class InformationModel {
         List<Reading> active = new ArrayList<>(state.active());
         active.add(new Reading(readId, personPartyId, docId, version, now, due));
         State next = new State(state.persons(), state.documents(), active, state.closed(),
-                state.observations(), state.nextReadSequence() + 1);
+                state.observations(), state.nextReadSequence() + 1, state.readingClock());
         return new Outcome(Status.STARTED, next, null);
     }
 
@@ -958,7 +1006,7 @@ public final class InformationModel {
             closed.add(new ClosedReading(reading.readId(), personPartyId, reading.docId(), reading.version(),
                     reading.startedAt(), reading.dueAt(), completedAt, CloseReason.DENIED));
             State denied = new State(state.persons(), state.documents(), active, closed, observations,
-                    state.nextReadSequence());
+                    state.nextReadSequence(), state.readingClock());
             return new Outcome(Status.DENIED, denied, null);
         }
 
@@ -973,7 +1021,7 @@ public final class InformationModel {
             observations.add(observation);
         }
         State completed = new State(state.persons(), state.documents(), active, closed, observations,
-                state.nextReadSequence());
+                state.nextReadSequence(), state.readingClock());
         return new Outcome(Status.COMPLETED, completed, observation);
     }
 
@@ -1029,7 +1077,7 @@ public final class InformationModel {
         closed.add(new ClosedReading(reading.readId(), personPartyId, reading.docId(), reading.version(),
                 reading.startedAt(), reading.dueAt(), now, CloseReason.CANCELLED));
         State next = new State(state.persons(), state.documents(), active, closed, state.observations(),
-                state.nextReadSequence());
+                state.nextReadSequence(), state.readingClock());
         return new Outcome(Status.CANCELLED, next, null);
     }
 
@@ -1122,7 +1170,19 @@ public final class InformationModel {
 
     // ---------------------------------------------------------------- 内部
 
-    private static boolean visible(Audience audience, RoleAccess.State access, String personPartyId,
+    /** 对读取和董事登记使用同一确切版本、发布时间及受众资格。 */
+    static DocumentVersion visibleVersion(State state, RoleAccess.State access, String person,
+            String docId, long version, long now, GroupAccess groups, BoardAccess boards) {
+        Document document = findDocument(state.documents(), docId);
+        DocumentVersion target = document == null ? null : document.at(version);
+        if (target == null || target.publishedAt() > now
+                || !visible(document.audience(), access, person, now, target.publishedAt(), groups, boards)) {
+            return null;
+        }
+        return target;
+    }
+
+    static boolean visible(Audience audience, RoleAccess.State access, String personPartyId,
                                    long now, long docVersionPublishedAt, GroupAccess groups,
                                    BoardAccess boards) {
         switch (audience.kind()) {
@@ -1141,6 +1201,9 @@ public final class InformationModel {
                 return boards.canRead(audience.partyId(), personPartyId, now)
                         || RoleAccess.authorize(access, personPartyId, Action.READ_COMPANY_LEDGER,
                         Target.organization(audience.partyId()), now) == Decision.ALLOW;
+            case EDITORIAL_REVIEW:
+                return MediaModel.storyAccess(access, personPartyId, audience.partyId(), now)
+                        .canSee(personPartyId, audience.authorPartyId());
             default:
                 throw new IllegalStateException("未知受众种类：" + audience.kind());
         }

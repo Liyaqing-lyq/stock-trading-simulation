@@ -30,6 +30,22 @@ public final class AgedDecisionTools {
     private AgedDecisionTools() {
     }
 
+    static boolean showsOrderTerms(RunManifest manifest) {
+        return "next-period-v1".equals(manifest.dataVersions().get("aged-order-terms"));
+    }
+
+    /** 本行业固定的付款和熟成条款，供本公司预算材料及在任经理使用。 */
+    static JsonNode orderTerms(AgedInventoryModel.Config model) {
+        var terms = JSON.createObjectNode();
+        terms.put("orderPayment", "下单不付现");
+        terms.put("earliestReceiptAfterPeriods", AgedInventoryModel.RAW_ORDER_LEAD_PERIODS);
+        terms.put("receiptPayment", "收货时按实际收货期的 PROCUREMENT 授权向供应商支付原料价款");
+        terms.put("receiptDeadline", "到期期间关账时，尚未收货的订单失效");
+        terms.put("conversionPayment", "投产时按实际投产期的 PRODUCTION_LABOR 授权支付转产费");
+        terms.put("agingPeriodsBeforeShipment", model.agingPeriods());
+        return terms;
+    }
+
     /** 陈酿经营工具。 */
     public static final String ACT = "aged.act";
 
@@ -106,6 +122,21 @@ public final class AgedDecisionTools {
     public static JsonNode observation(AgedCompanyRun run, FundState funds, long now,
                                        List<CompanyOperationsRun.ReportEntry> reports,
                                        BigDecimal remainingBudget) {
+        return observation(run, funds, now, reports, remainingBudget, null);
+    }
+
+    /** 按运行档向在任经理及其网页经营页展示本公司能够获知的履约条款。
+     * @param run 本公司经营状态
+     * @param funds 当前账户与银行账簿
+     * @param now 模拟时刻
+     * @param reports 截至当前位置本公司的执行回报
+     * @param remainingBudget 本期剩余生产人工额度
+     * @param manifest 当前运行档；旧入口使用原观察格式
+     * @return 本公司经营观察
+     */
+    public static JsonNode observation(AgedCompanyRun run, FundState funds, long now,
+                                       List<CompanyOperationsRun.ReportEntry> reports,
+                                       BigDecimal remainingBudget, RunManifest manifest) {
         AgedInventoryModel.State ledger = run.ledger();
         AgedInventoryModel.Config model = ledger.config();
         AgedInventoryModel.Books books = AgedInventoryModel.books(ledger, funds.accounts());
@@ -115,6 +146,9 @@ public final class AgedDecisionTools {
         view.put("reports", reports);
         view.put("period", model.periodOf(now));
         view.put("closedPeriods", ledger.closedPeriods());
+        if (manifest != null && showsOrderTerms(manifest)) {
+            view.put("orderTerms", orderTerms(model));
+        }
         view.put("orders", ledger.orders());
         view.put("rawLots", ledger.rawLots());
         view.put("batches", ledger.batches());

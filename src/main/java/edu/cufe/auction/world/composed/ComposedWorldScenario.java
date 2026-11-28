@@ -3,13 +3,18 @@ package edu.cufe.auction.world.composed;
 import edu.cufe.auction.web.WorldWebScenario;
 import edu.cufe.auction.world.CashLedger;
 import edu.cufe.auction.world.EngineeringRun;
+import edu.cufe.auction.world.EngineeringCustomerPolicy;
 import edu.cufe.auction.world.InformationRun;
+import edu.cufe.auction.world.MediaDesks;
 import edu.cufe.auction.world.OpeningRegistry;
 import edu.cufe.auction.world.RoleAccess;
+import edu.cufe.auction.world.RoleEvidenceDocuments;
 import edu.cufe.auction.world.RoleRun;
 import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.WorldRuntime;
 import edu.cufe.auction.world.bank.BankConfig;
+import edu.cufe.auction.world.bank.BankChart;
+import edu.cufe.auction.world.bank.BankCrisis;
 import edu.cufe.auction.world.bank.BankOpening;
 import edu.cufe.auction.world.bank.BankOpeningRequest;
 import edu.cufe.auction.world.bank.BankRules;
@@ -168,22 +173,39 @@ public final class ComposedWorldScenario {
 
     /** 同一冻结银行规则用于显式的新主体集合；旧入口仍取原档案。 */
     static BankConfig config(BankingProfile profile) {
+        return config(profile, false);
+    }
+
+    static BankConfig config(BankingProfile profile, boolean issuerCredit) {
         Map<String, BankConfig.DepositOffer> offers = new LinkedHashMap<>();
         offers.put(BANK, new BankConfig.DepositOffer(BANK, "OFF-" + BANK,
                 InterestAccrual.rateU(new BigDecimal("0.02")), 365L * 86_400_000L,
                 BankRules.CREDIT_OFFER));
-        return new BankConfig.Builder(profile).version(24).archiveId("COMPOSED-BANK-EXP")
+        Map<String, String> groups = new java.util.TreeMap<>(profile.parties().containsKey("cufe")
+                ? Map.of("cufe", "G-CUFE", "eng-a", "G-ENGA", "eng-b", "G-ENGB") : Map.of("eng-a", "G-ENGA"));
+        if (issuerCredit) profile.buckets().forEach((borrower, bucket) -> {
+            if (bucket.group() != null) groups.put(borrower, bucket.group());
+        });
+        var builder = new BankConfig.Builder(profile).version(24).archiveId(issuerCredit ? BankConfig.ISSUER_CREDIT_ARCHIVE : "COMPOSED-BANK-EXP")
                 .label(RunManifest.RULES_COMPOSED_BANK_WORLD_V2)
                 .coverageRule("DECLARED_UNIVERSE_V1")
                 .interest(BankConfig.Interest.act365()).depositOffers(offers)
-                .groupMap(profile.parties().containsKey("cufe") ? Map.of("cufe", "G-CUFE", "eng-a", "G-ENGA", "eng-b", "G-ENGB") : Map.of("eng-a","G-ENGA"))
+                .groupMap(groups)
                 .thresholds(Map.of("cet1_min", money("0.01"), "cet1_buffer", money("0.01"),
                         "t1_min", money("0.01"), "tcr_min", money("0.01"),
                         "lev_min", money("0.01"), "single_name", money("9.90"),
                         "group_name", money("9.90"), "lcr_min", money("0.01"),
                         "maturity_gap_min", money("-0.90"),
-                        "impair_cover_min", money("0.01")))
-                .build();
+                        "impair_cover_min", money("0.01")));
+        if (BankLoanPromotionOpening.POOL.equals(profile.backgroundBorrowerKey()))
+            builder.includeInGroup(BankLoanPromotionOpening.POOL, groups.get(BankLoanPromotionOpening.POOL));
+        if (BankCrisis.PROVIDER.equals(profile.providerKey())) {
+            var first = new ArrayList<>(profile.depositAccounts());
+            first.add("INT.PAYABLE");
+            builder.facilityTerms(new BankConfig.FacilityTerms(BankRules.FACILITY_EXP,BankCrisis.AUTHORITY,List.of(),
+                    List.of(first, List.of(BankChart.FACILITY_DEBT,BankChart.FACILITY_INTEREST_PAYABLE),List.of("SUBT2"))));
+        }
+        return builder.build();
     }
 
     /** @return 历史禀赋：只有 north 的实收资本来源，无存款、无贷款、无房产 */
@@ -289,27 +311,64 @@ public final class ComposedWorldScenario {
                     i % 2 == 0 ? RoleAccess.Role.JOURNALIST : RoleAccess.Role.EDITOR,
                     0L, end, null));
         }
+        boolean eightDesks = RunManifest.usesMediaDesks(manifest.policyRunId());
+        if (eightDesks) MediaDesks.appoint(appointments, end);
+        if (RunManifest.usesBankCrisis(manifest.policyRunId())) {
+            appointments.add(new RoleAccess.Appointment("rescue-representative","aged-manager",BankCrisis.PROVIDER,
+                    RoleAccess.Role.COMPANY_MANAGER,0L,end,null));
+            appointments.add(new RoleAccess.Appointment("resolution-officer","kate",BankCrisis.AUTHORITY,
+                    RoleAccess.Role.COMPANY_MANAGER,0L,end,null));
+        }
         List<String> readers = new ArrayList<>(List.of("alice", "bob", "carol", "dave", "erin",
                 WorldWebScenario.INVESTOR));
         readers.addAll(WorldWebScenario.MEDIA_PERSONS);
         readers.addAll(WorldWebScenario.SOCIAL_PERSONS);
         readers.addAll(extras.readers());
+        if (RunManifest.usesEngineeringCustomerRules(manifest.policyRunId())) readers.add(EngineeringCustomerPolicy.REPRESENTATIVE);
         if (manifest.hasResearch()) {
             readers.add(WorldWebScenario.RESEARCH_SYSTEM_PUBLISHER);
         }
         InformationRun.Config info = new InformationRun.Config(readers,
                 WorldWebScenario.COGNITION_POLICY,
                 new edu.cufe.auction.world.BeliefModel.Policy(200, 8, end, 20, 200, 3, end));
+        EngineeringRun.Config engineering = PrototypeCompanies.PROFILE.equals(
+                manifest.dataVersions().get("profile")) ? PrototypeCompanies.engineering()
+                : baseline ? baselineEngineering() : engineeringConfigWithAcceptance();
+        if (RunManifest.usesEngineeringCustomerRules(manifest.policyRunId())) engineering = new EngineeringRun.Config(engineering.paramSource(), engineering.companies(), Map.of(), EngineeringCustomerPolicy.MANDATE);
+        if (OpeningEntityCopies.enabled(manifest.dataVersions()))
+            engineering = OpeningEntityCopies.fromManifest(manifest.dataVersions()).engineering(engineering);
+        Map<String, edu.cufe.auction.world.BoardModel.Charter> governed =
+                extras.charters().isEmpty() ? charters()
+                        : new TreeMap<>(extras.charters());
         List<edu.cufe.auction.world.InterviewRun.ContactEntry> contacts =
                 new ArrayList<>(WorldWebScenario.interviewConfig().contacts());
         for (String person : WorldWebScenario.SOCIAL_PERSONS) {
             contacts.add(new edu.cufe.auction.world.InterviewRun.ContactEntry("私信", person,
                     "公开联系说明：可一对一私人消息", WorldWebScenario.SOCIAL_CONTACT_DOC, 1L));
         }
-        Map<String, edu.cufe.auction.world.BoardModel.Charter> governed =
-                extras.charters().isEmpty() ? charters()
-                        : new TreeMap<>(extras.charters());
+        // 只在冻结的核验客户资金的思考经营新档登记主席工作联系入口：入口与角色依据正文同源于真实章程，
+        // 未真实读完不可用；旧档不获得新渠道。
+        if (RunManifest.usesFundedOperatingRules(manifest.policyRunId())) {
+            contacts.addAll(RoleEvidenceDocuments.fundedChairContacts(engineering, governed,
+                    registry));
+            // 与 SocialRun 的冻结顺序一致：冻结字段逐字相等才允许开局与重开。
+            contacts.sort(java.util.Comparator
+                    .comparing(edu.cufe.auction.world.InterviewRun.ContactEntry::targetPartyId)
+                    .thenComparing(edu.cufe.auction.world.InterviewRun.ContactEntry::channel)
+                    .thenComparing(edu.cufe.auction.world.InterviewRun.ContactEntry::docId)
+                    .thenComparingLong(edu.cufe.auction.world.InterviewRun.ContactEntry::version));
+        }
         appointments.addAll(extras.appointments());
+        boolean personalHours = RunManifest.PERSONAL_ATTENTION_VERSION.equals(
+                manifest.dataVersions().get(RunManifest.PERSONAL_ATTENTION_POLICY));
+        var social = personalHours ? new edu.cufe.auction.world.SocialMessageModel.Config(
+                WorldWebScenario.PERSONAL_MESSAGE_WRITE_MILLIS, WorldWebScenario.SOCIAL_DELIVERY_MILLIS,
+                WorldWebScenario.PERSONAL_MESSAGE_READ_MILLIS) : WorldWebScenario.socialConfig();
+        var groups = personalHours ? WorldWebScenario.groupsConfig(WorldWebScenario.PERSONAL_MESSAGE_WRITE_MILLIS)
+                : WorldWebScenario.groupsConfig();
+        var platform = personalHours ? new edu.cufe.auction.world.PlatformPostModel.Config(
+                WorldWebScenario.PERSONAL_MESSAGE_WRITE_MILLIS, WorldWebScenario.GROUPS_DELIVERY_MILLIS)
+                : WorldWebScenario.groupsPlatformConfig();
         return new WorldRuntime(journal, manifest, openings, registry,
                 baseline ? null : new edu.cufe.auction.world.ManufacturingRun.Config(
                         new edu.cufe.auction.world.ManufacturingModel.Opening("company", "CO",
@@ -319,12 +378,13 @@ public final class ComposedWorldScenario {
                         WorldWebScenario.COMPANY, "fund-a", List.of("ACC-FUND"))), appointments),
                 info,
                 decisions, null,
-                WorldWebScenario.mediaConfig(), WorldWebScenario.interviewConfig(),
+                eightDesks ? MediaDesks.media(WorldWebScenario.mediaConfig(), RunManifest.DUAL_CLOCK_EDITING.equals(
+                        manifest.dataVersions().get(RunManifest.CROSS_BORDER_EDITING)), MediaDesks.scheduled(manifest)) : WorldWebScenario.mediaConfig(),
+                eightDesks ? MediaDesks.interviews(WorldWebScenario.interviewConfig()) : WorldWebScenario.interviewConfig(),
                 WorldWebScenario.dialogueConfig(), WorldWebScenario.evidenceConfig(),
-                WorldWebScenario.socialConfig(), WorldWebScenario.SOCIAL_BLOCK_MILLIS,
-                contacts, PrototypeCompanies.PROFILE.equals(manifest.dataVersions().get("profile")) ? PrototypeCompanies.engineering() : baseline ? baselineEngineering() : engineeringConfigWithAcceptance(),
-                WorldWebScenario.groupsConfig(), WorldWebScenario.groupsPlatformConfig(),
-                WorldWebScenario.GROUPS_FEED_LIMIT, WorldWebScenario.GROUPS_READ_MILLIS,
+                social, WorldWebScenario.SOCIAL_BLOCK_MILLIS, contacts, engineering,
+                groups, platform, WorldWebScenario.GROUPS_FEED_LIMIT,
+                personalHours ? WorldWebScenario.PERSONAL_MESSAGE_READ_MILLIS : WorldWebScenario.GROUPS_READ_MILLIS,
                 governed, bankOpening, manifest.hasManufacturingFunding()
                         ? edu.cufe.auction.world.ManufacturingFunding.cash(
                                 new edu.cufe.auction.world.ManufacturingModel.Opening("company", "CO",

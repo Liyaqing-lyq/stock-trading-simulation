@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -8,6 +9,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 
@@ -49,6 +51,8 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
     public static final String KIND_REVIEW = PendingTask.MEDIA_STORY_REVIEW_V1;
     /** 发布。 */
     public static final String KIND_PUBLISH = PendingTask.MEDIA_STORY_PUBLISH_V1;
+    /** 签发正式撤稿公告。 */
+    public static final String KIND_WITHDRAW = PendingTask.MEDIA_STORY_WITHDRAW_V1;
     /** 开启更正。 */
     public static final String KIND_CORRECTION = PendingTask.MEDIA_STORY_CORRECTION_V1;
     /** 取消本人未完成的媒体工作。 */
@@ -59,7 +63,7 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
 
     /** 本桥登记的全部媒体任务种类。 */
     public static final Set<String> KINDS = Set.of(KIND_PROPOSE, KIND_SUBMIT, KIND_REVIEW,
-            KIND_PUBLISH, KIND_CORRECTION, KIND_CANCEL, KIND_EVIDENCE_SHARE);
+            KIND_PUBLISH, KIND_WITHDRAW, KIND_CORRECTION, KIND_CANCEL, KIND_EVIDENCE_SHARE);
 
     /** 采访协调种类（schema14 才可能出现）：只进同一工时账，不进媒体故事流。 */
     public static final Set<String> INTERVIEW_KINDS = Set.of(
@@ -226,9 +230,17 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
      * @param storyId      关联稿件；无关联为空串
      * @param timeMillis   完成时点
      * @param position     提交位置
+     * @param sourceShortfall 新版投稿人的来源不足计数，其他回执省略
      */
     public record Report(String taskId, String personPartyId, String kind, boolean accepted,
-                         String reason, String storyId, long timeMillis, long position) {
+                         String reason, String storyId, long timeMillis, long position,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) MediaModel.SourceShortfall sourceShortfall) {
+
+        /** 创建不带来源计数的任务回报。 */
+        public Report(String taskId, String personPartyId, String kind, boolean accepted,
+                      String reason, String storyId, long timeMillis, long position) {
+            this(taskId, personPartyId, kind, accepted, reason, storyId, timeMillis, position, null);
+        }
 
         /** 校验字段。 */
         public Report {
@@ -238,6 +250,10 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
             }
             if (reason == null || reason.isBlank()) {
                 throw new IllegalArgumentException("媒体报告缺少结果代码：" + taskId);
+            }
+            if (sourceShortfall != null && (accepted || !KIND_SUBMIT.equals(kind)
+                    || !MediaModel.REASON_INSUFFICIENT_SOURCES.equals(reason))) {
+                throw new IllegalArgumentException("媒体报告与来源不足结果不符：" + taskId);
             }
             if (storyId == null) {
                 storyId = "";
@@ -361,7 +377,7 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
             case KIND_PROPOSE -> config.proposeMillis();
             case KIND_SUBMIT -> policy.writeMillis();
             case KIND_REVIEW -> policy.reviewMillis();
-            case KIND_PUBLISH -> policy.publishMillis();
+            case KIND_PUBLISH, KIND_WITHDRAW -> policy.publishMillis();
             case KIND_CORRECTION -> config.correctionMillis();
             case KIND_CANCEL -> config.cancelMillis();
             default -> throw new IllegalArgumentException("未登记的媒体任务种类：" + kind);
@@ -398,6 +414,22 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
         return null;
     }
 
+    /** 当前确认帧里正式发表的精确版本及其原始根。 */
+    Optional<List<MediaModel.Ref>> publishedRoots(InformationModel.State information, String docId, long version) {
+        for (var desk : states) {
+            for (var entry : desk.lineage()) {
+                if (!docId.equals(entry.docId()) || version != entry.version()) continue;
+                var document = MediaModel.boundPublishedVersion(desk, entry, information);
+                if (document == null) return Optional.empty();
+                boolean confirmed = desk.revisions().stream().anyMatch(revision -> (revision.status() == MediaModel.Status.PUBLISHED || revision.status() == MediaModel.Status.WITHDRAWN)
+                        && docId.equals(revision.docId()) && revision.docVersion() == version
+                        && revision.atMillis() == document.publishedAt());
+                return confirmed ? Optional.of(entry.roots()) : Optional.empty();
+            }
+        }
+        return Optional.empty();
+    }
+
     /** @return 该组织预算；不存在返回 null */
     public Budget budgetOf(String organizationPartyId) {
         for (Budget budget : budgets) {
@@ -427,6 +459,14 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
             }
         }
         return reserved;
+    }
+
+    /** 按冻结规则计算观察时刻已获准使用的累计组织工时；已耗与预留仍分别记账。 */
+    long releasedMillis(String organization, long now, boolean scheduled) {
+        Budget budget = budgetOf(organization);
+        if (budget == null) return 0L;
+        return scheduled ? budget.totalMillis() / MediaDesks.CONTRACT_SHIFTS * MediaDesks.releasedShifts(now)
+                : budget.totalMillis();
     }
 
     /** @return 该组织可用工时；不含在途预留时传空表 */

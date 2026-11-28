@@ -117,6 +117,29 @@ class WorldWebRoutesTest {
     }
 
     @Test
+    void roundTripLargeIntegralTokenCapWithoutRoundingOrChangingRevisionOnInvalidValues() throws Exception {
+        login();
+        var payload = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(
+                replaceBody("0", routesWith(false, "key-1", "deepseek-flash", 5)));
+        var route = (com.fasterxml.jackson.databind.node.ObjectNode) payload.path("routes").get(0);
+        route.put("budgetPolicy", edu.cufe.auction.world.DecisionModel.Route.LONG_HORIZON);
+        long limit = 9_007_199_254_740_991L;
+        route.put("maxTotalTokens",limit+1);
+        assertEquals(400,post("/api/admin/routes",payload.toString()).statusCode());
+        route.put("maxTotalTokens","4000000000");
+        assertEquals(400,post("/api/admin/routes",payload.toString()).statusCode());
+        route.put("maxTotalTokens",4000000000.5);
+        assertEquals(400,post("/api/admin/routes",payload.toString()).statusCode());
+        route.put("maxTotalTokens",limit);
+        assertEquals(200,post("/api/admin/routes",payload.toString()).statusCode());
+        assertEquals(limit,body(get("/api/admin/routes")).at("/routes/0/maxTotalTokens").longValue());
+        try (var reopened = SceneRoutes.open(dir)) {
+            assertEquals(1,reopened.view().revision());
+            assertEquals(limit,reopened.view().routes().get(0).maxTotalTokens());
+        }
+    }
+
+    @Test
     @DisplayName("冲突 409 返回当前 revision 字符串且不覆盖")
     void conflict() throws Exception {
         login();
@@ -200,6 +223,44 @@ class WorldWebRoutesTest {
 
         cookie = null;
         assertEquals(401, get("/api/admin/routes").statusCode());
+    }
+
+    @Test
+    void lifecyclePolicyRoundTripsOverHttpAndCannotSilentlyUpgradeLegacy() throws Exception {
+        login();
+        String oversized = replaceBody("0", routesWith(false, "key-1", "deepseek-flash", 500));
+        assertEquals(400, post("/api/admin/routes", oversized).statusCode());
+        var request = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(oversized);
+        var first = (com.fasterxml.jackson.databind.node.ObjectNode) request.path("routes").get(0);
+        first.put("budgetPolicy", "lifecycle-v1").put("maxTotalTokens", 10_000_000);
+        var response = post("/api/admin/routes", request.toString());
+        assertEquals(200, response.statusCode(), response.body());
+        assertEquals("lifecycle-v1", body(response).path("routes").get(0).path("budgetPolicy").asText());
+        assertEquals("lifecycle-v1", body(get("/api/admin/routes")).path("routes").get(0).path("budgetPolicy").asText());
+        assertFalse(body(response).path("routes").get(1).has("budgetPolicy"));
+        try (var reopened = SceneRoutes.open(dir)) {
+            assertEquals("lifecycle-v1", reopened.view().routes().get(0).budgetPolicy());
+            assertEquals(500, reopened.view().routes().get(0).maxCalls());
+        }
+        request.put("expectedRevision", "1"); first.put("budgetPolicy", "unbounded");
+        assertEquals(400, post("/api/admin/routes", request.toString()).statusCode());
+        first.put("budgetPolicy", 1);
+        assertEquals(400, post("/api/admin/routes", request.toString()).statusCode());
+        assertEquals("1", body(get("/api/admin/routes")).path("revision").asText());
+    }
+
+    @Test void explicitThinkingPolicyRoundTripsAndOffOmitsItWithoutLosingBudget() throws Exception {
+        login();
+        var request=(com.fasterxml.jackson.databind.node.ObjectNode)JSON.readTree(replaceBody("0",routesWith(false,"key-1","deepseek-flash",500)));
+        var first=(com.fasterxml.jackson.databind.node.ObjectNode)request.path("routes").get(0);
+        first.put("budgetPolicy","lifecycle-v1").put("providerPolicy","deepseek-thinking-high-v1").put("maxTotalTokens",35000000).put("maxOutputTokens",8192);
+        var response=post("/api/admin/routes",request.toString());assertEquals(200,response.statusCode());
+        assertEquals("deepseek-thinking-high-v1",body(get("/api/admin/routes")).path("routes").get(0).path("providerPolicy").asText());
+        try(var reopened=SceneRoutes.open(dir)){assertEquals("deepseek-thinking-high-v1",reopened.view().routes().get(0).providerPolicy());}
+        request.put("expectedRevision","1");first.put("providerPolicy","unknown");assertEquals(400,post("/api/admin/routes",request.toString()).statusCode());
+        first.putNull("providerPolicy");assertEquals(400,post("/api/admin/routes",request.toString()).statusCode());
+        first.remove("providerPolicy");assertEquals(200,post("/api/admin/routes",request.toString()).statusCode());
+        var after=body(get("/api/admin/routes")).path("routes").get(0);assertFalse(after.has("providerPolicy"));assertEquals("lifecycle-v1",after.path("budgetPolicy").asText());
     }
 
     // ------------------------------------------------------------ 工具

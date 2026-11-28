@@ -72,6 +72,27 @@ class WorldLocalOverviewTest {
         }
     }
 
+    @Test void registeredCopiesAppearByNameAndOnlyListedCompaniesHavePrices() throws Exception {
+        Path journal = dir.resolve("configured.journal");
+        Path draft = Path.of("src/main/resources/world/opening-copies-example.json");
+        try (var host = new WorldWebHost(() -> {
+            var w = ComposedIndustryScenario.openOpeningCopiesOperating(journal, draft);
+            return new WorldWebHost.Opened(w, w.profile().manifest().runId());
+        })) {
+            var overview = JSON.valueToTree(host.worldOverview());
+            var companies = overview.required("companies");
+            assertEquals(11, companies.size());
+            var copy = java.util.stream.StreamSupport.stream(companies.spliterator(), false)
+                    .filter(r -> "independent-engineering".equals(r.path("id").asText())).findFirst().orElseThrow();
+            assertEquals("独立工程试验公司", copy.required("name").asText());
+            assertEquals("0.00", copy.required("cash").asText());
+            assertTrue(copy.required("symbol").isNull());
+            assertTrue(copy.required("referencePrice").isNull());
+            assertFalse(overview.required("marketOrders").has("independent-engineering"));
+            assertEquals("独立投资者", host.personPage("independent-reader").displayName());
+        }
+    }
+
     private WorldWebHost host() {
         Path journal=dir.resolve(UUID.randomUUID()+".journal");
         return new WorldWebHost(()-> {var w=ComposedIndustryScenario.openPrototype(journal);return new WorldWebHost.Opened(w,w.profile().manifest().runId());});

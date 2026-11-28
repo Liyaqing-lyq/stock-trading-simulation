@@ -1,6 +1,7 @@
 "use strict";
 
 const RESEARCH_ACTIONS = {
+  LICENSE_SIGN: "接受成果许可要约", LICENSE_DELIVER: "交付已签使用权", LICENSE_COLLECT: "收取到期许可款",
   REGISTER: "登记研发项目", BEGIN: "开始一个研发阶段", APPROVE: "按授权转为可用资产",
   CONVENE: "召集商业化会议", PROPOSE: "提出商业化议案", IMPLEMENT: "实施会议决议"
 };
@@ -70,9 +71,31 @@ function renderResearch(view) {
   state.researchView = view;
   $("research-financial-card").hidden = state.mode !== "admin" || !view.companyReport;
   $("research-note").textContent = view.note || "";
-  $("research-cut").textContent = (view.companyName || view.companyId || "") + " · 确认记录 " + view.position + " · 世界时点 " + view.timeMillis + " 毫秒";
+  $("research-cut").textContent = [view.companyName || view.companyId,
+    view.position == null ? null : "确认记录 " + view.position, "世界时点 " + view.timeMillis + " 毫秒"]
+    .filter(Boolean).join(" · ");
   for (const id of ["research-projects", "research-financial"]) $(id).replaceChildren();
   const projects = view.projects || [];
+  if (view.licensing) {
+    const license = document.createElement("section");
+    const heading = document.createElement("h3");
+    heading.textContent = "成果使用许可";
+    license.append(heading);
+    researchLine(license, view.licensing.terms);
+    const approved = view.licensing.approvedProjects;
+    researchLine(license, approved.length ? "已获准办理许可的项目：" + approved.join("、") : "目前没有获准办理许可的项目。");
+    const totals = view.licensing.totals;
+    researchLine(license, "累计交付收入 " + totals.revenue + " 元，累计实收 " + totals.cashReceived +
+      " 元，期末应收 " + totals.receivable + " 元。");
+    for (const contract of Object.values(view.licensing.contracts || {})) {
+      const state = contract.paidAt != null ? "已收款" : contract.deliveredAt != null ? "已交付，等待收款" : "已签，待交付";
+      researchLine(license, contract.projectId + " · " + state + " · 签约时点 " + contract.signedAt
+        + (contract.deliveredAt == null ? " · 最早交付 " + contract.deliverableAt : " · 实际交付 " + contract.deliveredAt)
+        + (contract.paidAt != null ? " · 实际收款 " + contract.paidAt
+          : contract.dueAt != null ? " · 款项到期 " + contract.dueAt : ""));
+    }
+    $("research-projects").appendChild(license);
+  }
   for (const project of projects) {
     const article = document.createElement("article");
     article.className = "card";
@@ -132,6 +155,9 @@ function renderResearch(view) {
 
 function researchFields() {
   const action = $("research-action").value;
+  const license = action.startsWith("LICENSE_");
+  $("research-due").readOnly = license;
+  if (license) $("research-due").value = state.researchView.licenseEarliestFinishMillis;
   for (const field of document.querySelectorAll("[data-research-actions]")) {
     const visible = field.dataset.researchActions.split(" ").includes(action);
     field.hidden = !visible;
@@ -154,9 +180,9 @@ async function submitResearch(event) {
   if (state.mode !== "person" || !view?.enabled) return;
   const action = $("research-action").value;
   const id = "web-rnd-" + crypto.randomUUID();
-  const command = { expectedPosition: view.position, commandId: id, taskId: id + "-task",
+  const command = { expectedPosition: view.observationToken ?? view.position, commandId: id, taskId: id + "-task",
     dueTimeMillis: researchInteger("research-due"), companyId: view.companyId, action };
-  if (["REGISTER", "BEGIN", "PROPOSE", "APPROVE"].includes(action)) command.projectId = $("research-project").value;
+  if (action.startsWith("LICENSE_") || ["REGISTER", "BEGIN", "PROPOSE", "APPROVE"].includes(action)) command.projectId = $("research-project").value;
   if (["REGISTER", "BEGIN", "PROPOSE", "APPROVE"].includes(action)) command.durationMillis = researchInteger("research-duration");
   if (action === "BEGIN") command.stage = $("research-stage").value;
   if (["CONVENE", "PROPOSE", "IMPLEMENT", "APPROVE"].includes(action)) command.meetingId = $("research-meeting").value.trim();

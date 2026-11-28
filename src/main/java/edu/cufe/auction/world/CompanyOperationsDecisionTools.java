@@ -70,6 +70,12 @@ public final class CompanyOperationsDecisionTools {
     /** 本公司公开方案和真实已发生台账；不输出客户私有预算、认证计划或扩产失败种子。 */
     static JsonNode observation(CompanyOperationsRun run, BoardRun board, String company, long now,
             Map<String, CashLedger.CashAccount> accounts) {
+        return observation(run, board, company, now, accounts, false);
+    }
+
+    /** 显式新信息合同按真实提交位置输出报告；原调用保留迭代序。 */
+    static JsonNode observation(CompanyOperationsRun run, BoardRun board, String company, long now,
+            Map<String, CashLedger.CashAccount> accounts, boolean positionOrder) {
         Map<String, Object> view = new TreeMap<>(CompanyOperationsRuntime.observation(run, board, company, now));
         var ledger = run.company(company).ledger();
         view.put("cash", accounts.get(run.company(company).cashAccountId()).cash());
@@ -81,12 +87,13 @@ public final class CompanyOperationsDecisionTools {
         view.put("receivables", ledger.receivables());
         view.put("trials", ledger.trials());
         view.put("expansions", ledger.expansions());
-        view.put("reports", run.reports().values().stream().filter(r -> company.equals(r.companyPartyId())).toList());
+        view.put("reports", reports(run, company, positionOrder));
         Map<String, String> fields = new TreeMap<>();
         fields.put("ORDER_MATERIAL", "materialId:string, quantity:long");
         fields.put("START_BATCH", "productId:string, generation:int, quantity:long");
         fields.put("REQUEST_CERT", "trialId:string, customerId:string, productId:string, generation:int, round:int, evidenceId:string(本人真实阅读标识)");
-        fields.put("SIGN_CONTRACT", "contractId:string, customerId:string, productId:string, generation:int, quantity:long, unitPrice:decimal-string, promisedAt:long, expiresAt:long");
+        if (run.company(company).intakeVersion() == null)
+            fields.put("SIGN_CONTRACT", "contractId:string, customerId:string, productId:string, generation:int, quantity:long, unitPrice:decimal-string, promisedAt:long, expiresAt:long");
         fields.put("DELIVER", "contractId:string, quantity:long, receivableId:string");
         for (String action : List.of("COLLECT", "WRITE_OFF_RECEIVABLE")) fields.put(action, "receivableId:string");
         for (String action : List.of("MARK_OVERDUE", "CANCEL_CONTRACT")) fields.put(action, "contractId:string");
@@ -95,5 +102,14 @@ public final class CompanyOperationsDecisionTools {
         view.put("actionFields", fields);
         view.put("executionRule", "fields仅填写所选动作字段；时点为绝对模拟毫秒。管理动作需1000毫秒；报价、到货和完工按实际执行时点判断。拒绝保留回报，可观望，不得猜测未来结果。");
         return JSON.valueToTree(view);
+    }
+
+    /** 每个经营提交仅追加一条报告；显式新合同按唯一 position 排序，旧合同保持原序。 */
+    static List<CompanyOperationsRun.ReportEntry> reports(CompanyOperationsRun run, String company,
+            boolean positionOrder) {
+        var reports = run.reports().values().stream().filter(r -> company.equals(r.companyPartyId()));
+        return positionOrder
+                ? reports.sorted(Comparator.comparingLong(CompanyOperationsRun.ReportEntry::position)).toList()
+                : reports.toList();
     }
 }

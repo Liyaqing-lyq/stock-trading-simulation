@@ -31,6 +31,10 @@ public final class BankPersistence {
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .enable(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN);
 
+    private record ConfigRead(String json, BankConfig config) { }
+    // 相邻世界帧通常携带完全相同的冻结规则。单槽只复用已校验的规则，逐帧账簿仍独立解码。
+    private static volatile ConfigRead lastConfig;
+
     private BankPersistence() {
     }
 
@@ -57,6 +61,8 @@ public final class BankPersistence {
      */
     public static BankConfig readConfig(String json) {
         Objects.requireNonNull(json, "json");
+        ConfigRead last = lastConfig;
+        if (last != null && last.json().equals(json)) return last.config();
         BankConfigSnapshot snapshot;
         try {
             snapshot = MAPPER.readValue(json, BankConfigSnapshot.class);
@@ -64,7 +70,9 @@ public final class BankPersistence {
             throw new IllegalArgumentException("CONFIG_JSON_INVALID", failure);
         }
         try {
-            return snapshot.toConfig();
+            BankConfig config = snapshot.toConfig();
+            lastConfig = new ConfigRead(json, config);
+            return config;
         } catch (RuntimeException failure) {
             throw new IllegalArgumentException("CONFIG_INVALID:" + failure.getMessage(), failure);
         }
@@ -122,6 +130,13 @@ public final class BankPersistence {
                 || !trusted.fingerprint().equals(snapshot.configFingerprint())) {
             throw new IllegalArgumentException("STATE_CONFIG_MISMATCH");
         }
+        // 原参考档以 BANK-X|主体 为键。相同注册表也能显式使用带长度的自定义键，按存档本身识别。
+        if (trusted.profile() != BankingProfile.reference()
+                && trusted.profile().fingerprint().equals(BankingProfile.reference().fingerprint())
+                && java.util.stream.Stream.of(snapshot.loans(), snapshot.depositAccounts(), snapshot.facilityAccounts(),
+                        snapshot.commitmentRecords()).flatMap(map -> map.keySet().stream())
+                        .anyMatch(key -> BankChart.BANKS.stream().anyMatch(bank -> key.startsWith(bank + "|"))))
+            trusted = BankConfigSnapshot.of(trusted).toConfig(BankingProfile.reference());
         validateReferences(snapshot, trusted);
         BankState state;
         try {

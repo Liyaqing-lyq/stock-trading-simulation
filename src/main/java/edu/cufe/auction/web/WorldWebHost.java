@@ -1,6 +1,7 @@
 package edu.cufe.auction.web;
 
 import edu.cufe.auction.world.BoardModel;
+import edu.cufe.auction.world.IssuerCreditDecisions;
 import edu.cufe.auction.world.BeliefModel;
 import edu.cufe.auction.world.BoardRun;
 import edu.cufe.auction.world.BranchOrigin;
@@ -30,11 +31,14 @@ import edu.cufe.auction.world.ManufacturingRun;
 import edu.cufe.auction.world.MediaModel;
 import edu.cufe.auction.world.MediaRun;
 import edu.cufe.auction.world.OpeningRegistry;
+import edu.cufe.auction.world.PersonalMarket;
 import edu.cufe.auction.world.PendingTask;
 import edu.cufe.auction.world.PerformanceModel;
 import edu.cufe.auction.world.PeriodicActionPayload;
 import edu.cufe.auction.world.PeriodicModel;
 import edu.cufe.auction.world.RoleAccess;
+import edu.cufe.auction.world.RoleEvidenceDocuments;
+import edu.cufe.auction.world.RunManifest;
 import edu.cufe.auction.world.RoleRun;
 import edu.cufe.auction.world.RoleTradingView;
 import edu.cufe.auction.world.RoleView;
@@ -42,11 +46,13 @@ import edu.cufe.auction.world.SocialMessageModel;
 import edu.cufe.auction.world.SocialRun;
 import edu.cufe.auction.world.ValuationModel;
 import edu.cufe.auction.world.WorldExchange;
+import edu.cufe.auction.world.MarketSessions;
 import edu.cufe.auction.world.WorldRuntime;
 import edu.cufe.auction.world.WorldScheduler;
 import edu.cufe.auction.world.bank.BankActions;
 import edu.cufe.auction.world.bank.BankChart;
 import edu.cufe.auction.world.bank.BankConfig;
+import edu.cufe.auction.world.bank.BankCrisis;
 import edu.cufe.auction.world.bank.BankMetrics;
 import edu.cufe.auction.world.bank.BankRun;
 import edu.cufe.auction.world.bank.BankState;
@@ -56,6 +62,7 @@ import edu.cufe.auction.world.bank.Money;
 import edu.cufe.auction.world.composed.BankCompanyReport;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -186,7 +193,7 @@ public final class WorldWebHost implements AutoCloseable {
     private volatile WorldRuntime runtime;
 
     /** 场景路由；只有 live Host 组合才非空。 */
-    private final SceneRoutes routes;
+    private SceneRoutes routes;
     /** 提供方适配器；只有 live Host 组合才非空。 */
     private final DecisionProvider provider;
     /** 有界 worker 池；非 live 组合为 null，不创建任何线程。 */
@@ -204,6 +211,37 @@ public final class WorldWebHost implements AutoCloseable {
     private boolean sessionBegun;
     /** 上一轮结束时的跳过原因（有界，保留给状态页）。 */
     private List<SkipReason> lastSkips = List.of();
+    // 当前快照可重建的免费输入阻断，不是已付费失败决定，也不是第二本持久账。
+    private record BlockedInput(long position, long timeMillis, InputSize size) { }
+    private final Map<String, BlockedInput> blockedInputs = new HashMap<>();
+    record InputBlockEvent(long position,long timeMillis,String person,String transition,InputSize before,InputSize after) { }
+    @FunctionalInterface
+    interface InputBlockObserver { void record(InputBlockEvent event) throws IOException; }
+    private InputBlockObserver inputBlockObserver;
+
+    /** 由调度 writer 在权限判断发生时通知实验取证方，数据仅含尺寸。 */
+    void observeInputBlocks(InputBlockObserver observer) throws Exception {
+        call(() -> { inputBlockObserver = observer; return null; });
+    }
+
+    private void setInputBlock(String person, BlockedInput next, String cleared) throws IOException {
+        var old = next == null ? blockedInputs.remove(person) : blockedInputs.put(person, next);
+        if (inputBlockObserver == null) return;
+        var before = old == null ? null : old.size();
+        var after = next == null ? null : next.size();
+        if (java.util.Objects.equals(before,after)) return;
+        var snap = runtime.snapshot();
+        inputBlockObserver.record(new InputBlockEvent(snap.position(),snap.timeMillis(),person,
+                after == null ? cleared : before == null ? "BLOCKED" : "SIZE_CHANGED",before,after));
+    }
+
+    private void retainEligibleInputBlocks(Set<String> eligible) throws IOException {
+        for (String person : List.copyOf(blockedInputs.keySet()))
+            if (!eligible.contains(person)) setInputBlock(person,null,"LEFT_ROSTER");
+    }
+
+    private long blockedRefreshPosition = -1;
+    private long blockedRefreshTimeMillis = -1;
     /** 最近一次显式开始的轮次摘要（本轮场景/人员/公司）；未开始时为空。 */
     private String lastRoundScene;
     private List<String> lastRoundPersons = List.of();
@@ -220,6 +258,7 @@ public final class WorldWebHost implements AutoCloseable {
         String reason = "RUNNING";
         List<WakeGroup> groups = List.of();
         List<WakeGroup> roster = List.of();
+        Set<String> selectedPersons = Set.of();
         final Map<String, com.fasterxml.jackson.databind.JsonNode> observed = new HashMap<>();
         final Map<String, Long> lastWake = new HashMap<>();
         final Set<String> busy = new HashSet<>();
@@ -246,6 +285,13 @@ public final class WorldWebHost implements AutoCloseable {
      */
     public void startAutonomy(long expectedPosition, long expectedRevision,
                               long targetMillis, long stepMillis) throws Exception {
+        startAutonomy(expectedPosition, expectedRevision, targetMillis, stepMillis, Set.of());
+    }
+
+    /** 专项研究的显式人员名单；空集合沿用网页默认的全体在岗人员。 */
+    void startAutonomy(long expectedPosition, long expectedRevision, long targetMillis, long stepMillis,
+                       Set<String> selectedPersons) throws Exception {
+        var selection = Set.copyOf(selectedPersons);
         call(() -> {
             var current = readyNow();
             if (current.snapshot().position() != expectedPosition)
@@ -259,13 +305,17 @@ public final class WorldWebHost implements AutoCloseable {
             if (targetMillis <= now || targetMillis - now > 180L * 86_400_000L
                     || stepMillis != 3_600_000L)
                 throw new IllegalArgumentException("目标须在未来180日内，本版本窗口固定为1小时");
-            List<WakeGroup> groups = autonomyGroups();
+            List<WakeGroup> groups = selectedGroups(selection);
+            var runnable = groups.stream().flatMap(g -> g.persons().stream()).collect(java.util.stream.Collectors.toSet());
+            if (selection.stream().anyMatch(p -> !runnable.contains(p) && !current.personDecisionsPaused(p))) {
+                throw new IllegalArgumentException("名单包含本次无法唤醒的人物");
+            }
             for (WakeGroup group : groups) {
                 var route = routeOf(routes.view(), group.scene());
                 if (route == null || !route.enabled())
                     throw new SceneRejected("请先启用实际角色所需的模型场景：" + group.scene());
             }
-            if (groups.isEmpty()) throw new SceneRejected("当前没有可唤醒的真实角色");
+            if (groups.isEmpty() && !hasPausedParticipants(selection)) throw new SceneRejected("当前没有可唤醒的真实角色");
             if (!sessionBegun) {
                 current.beginDecisionSession("autonomy:" + expectedPosition + ":" + expectedRevision);
                 sessionBegun = true;
@@ -277,6 +327,7 @@ public final class WorldWebHost implements AutoCloseable {
             next.callsAtStart = current.snapshot().decisions().orElseThrow().state().runUsage().attempts();
             next.roster = groups;
             next.groups = groups;
+            next.selectedPersons = selection;
             autonomy = next;
             if (eventAutonomy()) {
                 for (var decision : current.snapshot().decisions().orElseThrow().state().decisions()) {
@@ -315,42 +366,214 @@ public final class WorldWebHost implements AutoCloseable {
         return "role-events-v2".equals(runtime.profile().manifest().dataVersions().get("autonomy-driver"));
     }
 
+    private boolean accountableAutonomy() {
+        return edu.cufe.auction.world.RoleDeliberation.isAccountable(runtime.profile().manifest().dataVersions().get("role-context"));
+    }
+
     // 比较本人可见的具体事实；世界时间或观察时点自身变化不触发全体付费调用。
-    private static com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
+    com.fasterxml.jackson.databind.JsonNode wakeFacts(com.fasterxml.jackson.databind.JsonNode input) {
+        var interviewTurn = input.at("/interview/activeTurn");
+        if (interviewTurn.isObject()) return interviewTurn.deepCopy();
         var facts = (com.fasterxml.jackson.databind.node.ObjectNode) input.deepCopy();
+        if (edu.cufe.auction.world.RoleInputTables.enabled(runtime.profile().manifest().dataVersions()
+                .get(edu.cufe.auction.world.RoleInputTables.POLICY))) {
+            edu.cufe.auction.world.RoleInputTables.expand(facts);
+        }
         facts.remove(List.of("time", "observedAt", "wakeReason", "pendingActions"));
+        if ("dated-facts-v1".equals(runtime.profile().manifest().dataVersions().get("wake-clock"))) {
+            if (facts.at("/engineering/exchangeSessions") instanceof com.fasterxml.jackson.databind.node.ObjectNode sessions)
+                sessions.remove("nowMillis");
+            for (var quote : facts.at("/profile/market"))
+                if (quote instanceof com.fasterxml.jackson.databind.node.ObjectNode row) row.remove("referenceAgeMillis");
+            if (facts.at("/engineering/openFund") instanceof com.fasterxml.jackson.databind.node.ObjectNode fund)
+                fund.remove("timeMillis");
+            // 预约下界随观察时钟平移；记者任职、提前期和已发邀请仍是可触发复查的事实。
+            if (facts.at("/interview/inviteWindow") instanceof com.fasterxml.jackson.databind.node.ObjectNode window)
+                window.remove(List.of("executionMillis", "earliestWindowStartMillis"));
+        }
+        if (facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
+            delib.remove(List.of("reviewBounds", "recentDecisions"));
+        if (edu.cufe.auction.world.RoleDeliberation.isAccountable(input.path("engineering").path("roleContextVersion").asText())
+                && facts.path("engineering").path("deliberation") instanceof com.fasterxml.jackson.databind.node.ObjectNode delib)
+            delib.remove("lastActionResult");
+        if (edu.cufe.auction.world.RoleDeliberation.isPlanning(input.path("engineering").path("roleContextVersion").asText())
+                && facts.path("engineering") instanceof com.fasterxml.jackson.databind.node.ObjectNode eng) {
+            eng.remove("planning");
+            // 本人刚写下的笔记不会自行触发下一次付费复查。资料变化仍由正式阅读和目录字段追踪。
+            eng.remove("researchNotes");
+            for (var director : eng.path("directorships"))
+                for (var meeting : director.path("meetings"))
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) meeting).remove("planningPrerequisites");
+        }
+        if (localInputPolicy())
+            for (var company : facts.path("engineering").path("companyOperations"))
+                ((com.fasterxml.jackson.databind.node.ObjectNode) company).remove("asOfMillis");
         return facts;
+    }
+
+    private boolean localInputPolicy() {
+        return "local-input-v1".equals(runtime.profile().manifest().dataVersions().get("dispatch-policy"));
+    }
+
+    private static InputSize inputSize(WorldRuntime.DecisionInputTooLargeException error) {
+        return new InputSize(Long.toString(error.actualChars()), Long.toString(error.actualBytes()),
+                Long.toString(error.maxChars()), Long.toString(error.maxBytes()));
+    }
+
+    private boolean inputBlocked(String person) throws IOException {
+        // 输入仅取当前state及本Host冻结的manifest/decisionConfig；付费wakeFacts会剥离影响尺寸的提示，不能用于免费检查缓存。
+        var snapshot = runtime.snapshot();
+        var previous = blockedInputs.get(person);
+        if (previous != null && previous.position() == snapshot.position()
+                && previous.timeMillis() == snapshot.timeMillis()) return true;
+        var violation = runtime.autonomyInputLimitViolation(person);
+        if (violation.isPresent()) {
+            setInputBlock(person, new BlockedInput(snapshot.position(), snapshot.timeMillis(), inputSize(violation.get())),null);
+            return true;
+        }
+        setInputBlock(person,null,"RECOVERED");
+        return false;
+    }
+
+    private void refreshBlockedInputs() throws IOException {
+        var snapshot = runtime.snapshot();
+        long position = snapshot.position(), timeMillis = snapshot.timeMillis();
+        if (blockedInputs.isEmpty() || (position == blockedRefreshPosition
+                && timeMillis == blockedRefreshTimeMillis)) return;
+        var eligible = autonomyGroups().stream().flatMap(group -> group.persons().stream()).collect(java.util.stream.Collectors.toSet());
+        retainEligibleInputBlocks(eligible);
+        for (String person : List.copyOf(blockedInputs.keySet()))
+            inputBlocked(person);
+        blockedRefreshPosition = position;
+        blockedRefreshTimeMillis = timeMillis;
     }
 
     private List<WakeGroup> eventWakeGroups(List<WakeGroup> roster) throws IOException {
         var ready = new HashSet<String>();
         long now = runtime.snapshot().timeMillis();
+        if (localInputPolicy()) retainEligibleInputBlocks(roster.stream()
+                .flatMap(group -> group.persons().stream()).collect(java.util.stream.Collectors.toSet()));
         for (String person : roster.stream().flatMap(g -> g.persons().stream()).distinct().toList()) {
-            var input = runtime.autonomyRoleObservation(person);
-            if (runtime.autonomyRoleBusy(person) || !input.path("pendingActions").isEmpty()) {
+            if (!runtime.autonomyDutyAvailable(person)) continue;
+            if (runtime.autonomyRoleBusy(person)) {
                 autonomy.busy.add(person);
                 continue;
             }
+            var input = runtime.autonomyRoleObservation(person);
+            if (!input.path("pendingActions").isEmpty()) {
+                autonomy.busy.add(person);
+                continue;
+            }
+            if (localInputPolicy() && inputBlocked(person)) continue;
+            // 同一事实的严格协议失败已由DecisionModel有限重试；从持久决定派生隔离，跨重开也不重试。
+            // 本人失败历史不算外部新事实，新的真实业务信息仍可解除隔离。
+            if (accountableAutonomy() && failedOnSameFacts(person, input)) continue;
             boolean finishedWork = autonomy.busy.remove(person);
             Long last = autonomy.lastWake.get(person);
-            if (last == null || finishedWork || now - last >= 86_400_000L
-                    || !wakeFacts(input).equals(autonomy.observed.get(person))) ready.add(person);
+            if (last == null || finishedWork) {
+                ready.add(person);
+                continue;
+            }
+            long review = runtime.autonomyNextReviewAt(person, last + 86_400_000L);
+            if (now >= review) {
+                ready.add(person);
+                continue;
+            }
+            if (newFactsRequireWake(input,autonomy.observed.get(person),last,review)) ready.add(person);
         }
         return roster.stream().map(g -> new WakeGroup(g.scene(), g.company(),
                         g.persons().stream().filter(ready::contains).toList()))
                 .filter(g -> !g.persons().isEmpty()).toList();
     }
 
+    boolean newFactsRequireWake(com.fasterxml.jackson.databind.JsonNode input, com.fasterxml.jackson.databind.JsonNode previous,
+                                        long last, long review) {
+        var facts = wakeFacts(input);
+        if (RunManifest.ROLE_EXPOSURE_CHOICE.equals(runtime.profile().manifest().dataVersions().get(RunManifest.MARKET_SESSION_WAKE)))
+            deferRoutineMarketSession(input, previous, facts, last, review);
+        if (facts.equals(previous)) return false;
+        if ("role-choice-v1".equals(runtime.profile().manifest().dataVersions().get("public-post-wake"))) {
+            boolean deferPostCount = RunManifest.PUBLIC_POST_REVIEW_WAKE_VERSION.equals(
+                    runtime.profile().manifest().dataVersions().get(RunManifest.PUBLIC_POST_REVIEW_WAKE_POLICY));
+            return !BoardWaitBroadcast.deferChosenPosts(previous, facts, input, last, review, deferPostCount);
+        }
+        return !edu.cufe.auction.world.EngineeringCustomerPolicy.VERSION.equals(
+                runtime.profile().manifest().dataVersions().get(edu.cufe.auction.world.EngineeringCustomerPolicy.KEY))
+                || !BoardWaitBroadcast.defer(previous, facts, input, last, review);
+    }
+
+    // 只对本次有效等待合并普通交易时段开关；停复牌、报价及同刻其他消息仍按原事实比较。
+    private static void deferRoutineMarketSession(com.fasterxml.jackson.databind.JsonNode input,
+                com.fasterxml.jackson.databind.JsonNode previous, com.fasterxml.jackson.databind.JsonNode facts, long last, long review) {
+        long now = input.path("time").asLong();
+        if (previous == null || now < last || now >= review) return;
+        var earlier = previous.at("/engineering/exchangeSessions/sessionOpen");
+        if (!earlier.isBoolean() || !(facts.at("/engineering/exchangeSessions") instanceof com.fasterxml.jackson.databind.node.ObjectNode sessions)
+                || !sessions.path("sessionOpen").isBoolean() || earlier.equals(sessions.get("sessionOpen"))) return;
+        var saved = input.at("/engineering/deliberation/recentDecisions/0");
+        if (!"WAIT".equals(saved.path("outcome").asText()) || !"role.wait".equals(saved.path("tool").asText())
+                || saved.path("observedAt").asLong(-1) != last || saved.path("derivedReviewAt").asLong(-1) != review) return;
+        String choice = saved.at("/ownStatement/marketSessionWake").asText(input.at("/engineering/marketSessionWakeDefault").asText());
+        if ("ON_REVIEW".equals(choice)) sessions.set("sessionOpen", earlier);
+    }
+
+    private boolean failedOnSameFacts(String person, com.fasterxml.jackson.databind.JsonNode input) throws IOException {
+        var decisions = runtime.snapshot().decisions().orElseThrow().state().decisions();
+        for (int i = decisions.size()-1; i >= 0; i--) {
+            var d = decisions.get(i);
+            if (!d.personPartyId().equals(person) || d.attempts().isEmpty()) continue;
+            return d.outcome() == DecisionModel.Outcome.TECHNICAL_FAILED
+                    && wakeFacts(input).equals(wakeFacts(PAYLOAD_MAPPER.readTree(d.inputText())));
+        }
+        return false;
+    }
+
     private long nextAutonomyTime() {
-        long now = runtime.snapshot().timeMillis();
+        var snapshot = runtime.snapshot();
+        long now = snapshot.timeMillis();
         long target = Math.min(autonomy.target, now + autonomy.step);
         if (eventAutonomy()) {
-            for (PendingTask task : runtime.snapshot().pending())
+            if (RunManifest.PERSONAL_ATTENTION_VERSION.equals(runtime.profile().manifest().dataVersions().get(RunManifest.PERSONAL_ATTENTION_POLICY)))
+                target = edu.cufe.auction.world.PersonalDutyWindows.nextBoundary(now, target);
+            if ("dated-facts-v1".equals(runtime.profile().manifest().dataVersions().get("wake-clock"))
+                    && snapshot.exchange().isPresent() && !snapshot.exchange().get().closed())
+                target = edu.cufe.auction.world.MarketSessions.nextBoundary(now,target);
+            for (PendingTask task : snapshot.pending())
                 if (task.dueTimeMillis() > now) target = Math.min(target, task.dueTimeMillis());
-            for (long last : autonomy.lastWake.values())
-                if (last + 86_400_000L > now) target = Math.min(target, last + 86_400_000L);
+            if ("registered-boundaries-v1".equals(runtime.profile().manifest().dataVersions().get("manager-term-clock"))
+                    && snapshot.roles().isPresent()) {
+                target = nextManagerTermBoundary(snapshot.roles().get().access().appointments(), now, target);
+            }
+            for (var entry : autonomy.lastWake.entrySet()) {
+                long review = runtime.autonomyNextReviewAt(entry.getKey(), entry.getValue() + 86_400_000L);
+                if (review > now) target = Math.min(target, review);
+            }
         }
         return target;
+    }
+
+    /** 失效或已结束的任期不产生时钟事件；当前时刻的权限由既有角色名单读取。 */
+    static long nextManagerTermBoundary(List<RoleAccess.Appointment> appointments, long now, long target) {
+        for (var appointment : appointments) {
+            long end = appointment.effectiveEnd();
+            if (appointment.role() != RoleAccess.Role.COMPANY_MANAGER || appointment.startsAt() >= end) continue;
+            if (appointment.startsAt() > now) target = Math.min(target, appointment.startsAt());
+            if (end > now) target = Math.min(target, end);
+        }
+        return target;
+    }
+
+    private List<WakeGroup> selectedGroups(Set<String> persons) {
+        List<WakeGroup> groups = autonomyGroups();
+        if (persons.isEmpty()) return groups;
+        return groups.stream().map(g -> new WakeGroup(g.scene(), g.company(),
+                g.persons().stream().filter(persons::contains).toList()))
+                .filter(g -> !g.persons().isEmpty()).toList();
+    }
+
+    private boolean hasPausedParticipants(Set<String> selection) {
+        var paused=runtime.snapshot().roles().map(RoleRun::pausedPersons).orElse(List.of());
+        return selection.isEmpty() ? !paused.isEmpty() : selection.stream().anyMatch(paused::contains);
     }
 
     private List<WakeGroup> autonomyGroups() {
@@ -376,7 +599,7 @@ public final class WorldWebHost implements AutoCloseable {
                 choices.stream().filter(group -> group.company() == null).findFirst().orElseGet(() ->
                         choices.get((int) Math.floorMod(window + person.hashCode(), choices.size())))));
         var selectedGroups = new ArrayList<>(groups.stream().map(group -> new WakeGroup(group.scene(), group.company(),
-                group.persons().stream().filter(person -> selected.get(person).equals(group)).toList()))
+                group.persons().stream().filter(person -> selected.get(person).equals(group) && !runtime.personDecisionsPaused(person)).toList()))
                 .filter(group -> !group.persons().isEmpty()).toList());
         // 每个世界窗口轮转起点，避免固定首家公司/岗位总是优先消费有限调用预算。
         if (!selectedGroups.isEmpty()) java.util.Collections.rotate(selectedGroups,
@@ -406,6 +629,7 @@ public final class WorldWebHost implements AutoCloseable {
     private void pumpAutonomy() throws IOException {
         if (closed || autonomy == null || !autonomy.running || livePaused) return;
         if (liveFault != null || runtime.isPaused()) { endAutonomy("WORLD_FAULT"); return; }
+        if (stopChangedAutonomyConfiguration()) return;
         if (routes.view().revision() != autonomy.revision) { endAutonomy("CONFIGURATION_CHANGED"); return; }
         if (liveRound != null || hasUnsettledWork()) return;
         var decisions = runtime.snapshot().decisions().orElseThrow().state().decisions();
@@ -420,10 +644,13 @@ public final class WorldWebHost implements AutoCloseable {
                     autonomy.windowFailures++; autonomy.failures++;
                 }
             }
-            if (!lastSkips.isEmpty()) { endAutonomy("ROLE_DISPATCH_REJECTED"); return; }
+            if (lastSkips.stream().anyMatch(skip -> !"PERSON_DECISIONS_PAUSED".equals(skip.reason()) && (!localInputPolicy()
+                    || !WorldRuntime.DecisionInputTooLargeException.CODE.equals(skip.reason())))) {
+                endAutonomy("ROLE_DISPATCH_REJECTED"); return;
+            }
         }
         if (autonomy.next == autonomy.groups.size()) {
-            if (autonomy.windowDecisions > 0 && autonomy.windowFailures == autonomy.windowDecisions) {
+            if (!accountableAutonomy() && autonomy.windowDecisions > 0 && autonomy.windowFailures == autonomy.windowDecisions) {
                 endAutonomy("ALL_DECISIONS_FAILED"); return;
             }
             long target = nextAutonomyTime();
@@ -431,11 +658,11 @@ public final class WorldWebHost implements AutoCloseable {
             if (runtime.snapshot().timeMillis() != target) { endAutonomy("UNRESOLVED_BARRIER"); return; }
             autonomy.cycles++;
             if (target == autonomy.target) { endAutonomy("TARGET_REACHED"); return; }
-            autonomy.roster = autonomyGroups();
+            autonomy.roster = selectedGroups(autonomy.selectedPersons);
             autonomy.groups = eventAutonomy() ? eventWakeGroups(autonomy.roster) : autonomy.roster;
             autonomy.next = 0;
             autonomy.windowDecisions = 0; autonomy.windowFailures = 0;
-            if (autonomy.roster.isEmpty()) { endAutonomy("NO_ELIGIBLE_ROLES"); return; }
+            if (autonomy.roster.isEmpty() && !hasPausedParticipants(autonomy.selectedPersons)) { endAutonomy("NO_ELIGIBLE_ROLES"); return; }
             return;
         }
         WakeGroup group = autonomy.groups.get(autonomy.next++);
@@ -443,7 +670,8 @@ public final class WorldWebHost implements AutoCloseable {
         Set<String> alreadyDecided = new HashSet<>();
         decisions.stream().filter(d -> d.decisionAtMillis() == runtime.snapshot().timeMillis()
                 && !d.attempts().isEmpty()).forEach(d -> alreadyDecided.add(d.personPartyId()));
-        List<String> pendingPeople = group.persons().stream().filter(p -> !alreadyDecided.contains(p)).toList();
+        List<String> pendingPeople = group.persons().stream()
+                .filter(p -> !alreadyDecided.contains(p) && !runtime.personDecisionsPaused(p)).toList();
         if (pendingPeople.isEmpty()) return;
         autonomy.decisionStart = decisions.size();
         try {
@@ -506,10 +734,24 @@ public final class WorldWebHost implements AutoCloseable {
      * @param provider 提供方（可为脚本实现）
      */
     public WorldWebHost(IOSupplier supplier, SceneRoutes routes, DecisionProvider provider) {
+        this(supplier, routes, provider, null);
+    }
+
+    /** 在写入线程验证分支后，从已验证的来源建立该子档的独立路由。 */
+    static WorldWebHost forBranch(IOSupplier supplier, Path routeDirectory, LiveDecisionProvider provider) {
+        return new WorldWebHost(supplier, null, provider, java.util.Objects.requireNonNull(routeDirectory));
+    }
+
+    SceneRoutes openedRoutes() throws Exception {
+        awaitOpening();
+        return routes;
+    }
+
+    private WorldWebHost(IOSupplier supplier, SceneRoutes routes, DecisionProvider provider, Path branchRouteDirectory) {
         if (supplier == null) {
             throw new IllegalArgumentException("宿主参数不合法");
         }
-        if ((routes == null) != (provider == null)) {
+        if ((routes == null && branchRouteDirectory == null) != (provider == null)) {
             throw new IllegalArgumentException("场景路由与提供方必须同时提供");
         }
         this.supplier = supplier;
@@ -521,7 +763,7 @@ public final class WorldWebHost implements AutoCloseable {
             thread.setDaemon(true);
             return thread;
         }, new ThreadPoolExecutor.AbortPolicy());
-        this.writer = new Thread(this::loop, "world-web-writer");
+        this.writer = new Thread(() -> loop(branchRouteDirectory), "world-web-writer");
         this.writer.setDaemon(true);
         this.writer.start();
     }
@@ -541,6 +783,16 @@ public final class WorldWebHost implements AutoCloseable {
     /** @return writer 线程是否存活（测试用） */
     public boolean writerAlive() {
         return writer.isAlive();
+    }
+
+    /** 等待运行工厂完成开局或续跑，保留实际恢复异常供启动入口报告。 */
+    public void awaitOpening() throws Exception {
+        try {
+            ready.get();
+        } catch (ExecutionException failure) {
+            if (failure.getCause() instanceof Exception error) throw error;
+            throw new IllegalStateException("世界初始化失败", failure.getCause());
+        }
     }
 
     /** @return 队列当前长度（测试/观测用） */
@@ -642,6 +894,68 @@ public final class WorldWebHost implements AutoCloseable {
         return call(() -> readyNow().profile());
     }
 
+    /** 当前档案的人工操作范围；旧制为空，受保护档只在真实上帝接管分支允许写入。 */
+    String personActionMode() throws Exception {
+        return call(() -> personActionMode(readyNow()));
+    }
+
+    private static String personActionMode(WorldRuntime world) {
+        if (!RunManifest.MARKED_TAKEOVER_BRANCH.equals(
+                world.profile().manifest().dataVersions().get(RunManifest.PERSON_TAKEOVER_POLICY))) return null;
+        return world.branchOrigin().filter(o -> o.kind() == BranchOrigin.Kind.GOD_TAKEOVER).isPresent()
+                ? "TAKEOVER" : "READ_ONLY";
+    }
+
+    record TakeoverCut(String runId, long parentPosition) {}
+    private record PersonTakeoverRequest(long observationToken, long position) {}
+    private final Map<String, PersonTakeoverRequest> lastPersonTakeover = new HashMap<>();
+
+    /** 本人凭据或管理员确认位置、合法身份和新子档在同一个 writer 任务中复核。 */
+    TakeoverCut takeoverCut(String person, long expected, boolean personal,
+                            edu.cufe.auction.world.BranchRepository repository) throws Exception {
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            if (!"READ_ONLY".equals(personActionMode(world)) || world.branchOrigin().isPresent())
+                throw new edu.cufe.auction.world.BranchRejectedException("TAKEOVER_UNAVAILABLE", "当前运行不支持再次接管");
+            if (world.systemPublisherOnly(person)) throw new IllegalArgumentException("不是可接管的人物");
+            world.roleView(person);
+            long current = world.snapshot().position();
+            long position = expected;
+            if (personal) {
+                var previous = lastPersonTakeover.get(person);
+                if (previous != null && previous.observationToken() == expected) {
+                    position = previous.position();
+                } else {
+                    var scope = PersonalObservations.Page.ENGINEERING;
+                    if (PersonalObservations.issuedPage(world, person, expected, scope) == null
+                            || !(personalWebPageOf(world, person, scope) instanceof com.fasterxml.jackson.databind.JsonNode page)
+                            || !Long.toString(expected).equals(page.path("observationToken").asText()))
+                        throw new PositionMismatch(-1);
+                    position = current;
+                }
+            }
+            String note = "人工接管人物 " + person;
+            String child = null;
+            for (var entry : repository.runs()) {
+                if (entry.runId().startsWith("take-") && runId.equals(entry.parentRunId())
+                        && position == entry.parentPosition() && note.equals(entry.note())
+                        && BranchOrigin.Kind.GOD_TAKEOVER.name().equals(entry.kind())) {
+                    if (child != null) throw new edu.cufe.auction.world.BranchRejectedException(
+                            "TAKEOVER_ID_CONFLICT", "同一人物切点对应多个接管档");
+                    child = entry.runId();
+                }
+            }
+            if (child == null) {
+                if (position != current) throw new PositionMismatch(personal ? -1 : current);
+                // 子运行标识可见于个人页，不从可枚举的父审计序号计算。
+                child = "take-" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+                createWebBranch(world, child, position, BranchOrigin.Kind.GOD_TAKEOVER, note);
+            }
+            if (personal) lastPersonTakeover.put(person, new PersonTakeoverRequest(expected, position));
+            return new TakeoverCut(child, position);
+        });
+    }
+
     /**
      * 在父运行已确认边界创建一条独立分支子档（与其它 writer 任务串行，共用引擎同一把锁）。
      *
@@ -659,7 +973,22 @@ public final class WorldWebHost implements AutoCloseable {
     public WorldRuntime.BranchReceipt createBranch(String childRunId, long position,
                                                    BranchOrigin.Kind kind, String note)
             throws BusyException, Exception {
-        return call(() -> readyNow().createBranch(childRunId, position, kind, note));
+        return call(() -> {
+            WorldRuntime world = readyNow();
+            if (childRunId != null && childRunId.startsWith("take-") && personActionMode(world) != null)
+                throw new edu.cufe.auction.world.BranchRejectedException("TAKEOVER_ID_RESERVED", "此名称前缀用于自动接管分支");
+            return createWebBranch(world, childRunId, position, kind, note);
+        });
+    }
+
+    private WorldRuntime.BranchReceipt createWebBranch(WorldRuntime world, String child, long position,
+                                                       BranchOrigin.Kind kind, String note) throws IOException {
+        if (kind != BranchOrigin.Kind.GOD_TAKEOVER || personActionMode(world) == null)
+            return world.createBranch(child, position, kind, note);
+        if (routes == null) throw new IllegalStateException("人工接管缺少父运行的场景配置");
+        var source = routes.view();
+        var frozen = source.routes().stream().map(r -> decisionRoute(r, source.revision())).toList();
+        return world.createBranch(child, position, kind, note, frozen);
     }
 
     /**
@@ -713,8 +1042,99 @@ public final class WorldWebHost implements AutoCloseable {
         return call(() -> readyNow().roleView(personId));
     }
 
+    private final edu.cufe.auction.world.PersonalLibraryPages personalLibraryPages = new edu.cufe.auction.world.PersonalLibraryPages();
+
+    Map<String,Object> personalLibrary(String person, String query, String token, String after) throws Exception {
+        return call(() -> {
+            var world = readyNow();
+            var manifest = world.profile().manifest();
+            if (!edu.cufe.auction.world.RunManifest.DISCOVERY_CATALOG_VERSION.equals(
+                    manifest.dataVersions().get(edu.cufe.auction.world.RunManifest.DISCOVERY_CATALOG_POLICY))) return Map.of("enabled",false);
+            return personalLibraryPages.page(manifest.runId(),world.roleView(person),query,token,after);
+        });
+    }
+
+    /** 本人银行页和关系页共同使用的单一属主存款明细。 */
+    static List<Map<String, Object>> personalDepositRows(String ownerId, BankConfig config, BankState state) {
+        var rows = new ArrayList<Map<String, Object>>();
+        for (var entry : new java.util.TreeMap<>(config.profile().parties()).entrySet()) {
+            if (!entry.getValue().ownerId().equals(ownerId) || entry.getValue().depositGl() == null) continue;
+            for (String bankKey : state.chart().banks()) {
+                var offer = config.depositOffer(bankKey);
+                var account = state.depositAccount(bankKey, entry.getKey());
+                Map<String,Object> row = new LinkedHashMap<>();
+                row.put("bankKey", bankKey);
+                row.put("partyKey", entry.getKey());
+                row.put("amount", money(state.depositOf(bankKey, entry.getKey())));
+                row.put("offerId", offer == null ? "" : offer.offerId());
+                row.put("rateU", offer == null ? "0" : Long.toString(offer.rateU()));
+                row.put("rateText", offer == null ? "—" : rateText(offer.rateU()));
+                row.put("nonAccrual", account != null && account.nonAccrual());
+                rows.add(row);
+            }
+        }
+        return rows;
+    }
+
     /** 个人页面在同一截止取角色投影与可选采编数据；旧档案media为空。 */
-    public record PersonPage(RoleView view, Map<String, Object> media) { }
+    public record PersonPage(RoleView view, Map<String, Object> media,
+                             List<Map<String, Object>> publicReports, Map<String, Object> personalResearch,
+                             List<PersonBusinessRelations.Edge> businessRelations, String displayName,
+                             Map<RoleView.Holding, Map<String,String>> holdingWeights, Boolean marketClosed, Boolean decisionPaused,
+                             Map<String,Object> fundUnits, Map<String,Map<String,String>> portfolioReturns,
+                             Map<String,Object> publicMarketBars) {
+        /** 兼容未查询公开成交历史的个人页面。 */
+        public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
+                          Map<String,Object> personalResearch, List<PersonBusinessRelations.Edge> businessRelations,
+                          String displayName, Map<RoleView.Holding,Map<String,String>> holdingWeights, Boolean marketClosed,
+                          Boolean decisionPaused, Map<String,Object> fundUnits, Map<String,Map<String,String>> portfolioReturns) {
+            this(view, media, publicReports, personalResearch, businessRelations, displayName, holdingWeights, marketClosed,
+                    decisionPaused, fundUnits, portfolioReturns, null);
+        }
+        /** 兼容仅显示基金份额和期末净值的页面。 */
+        public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
+                          Map<String,Object> personalResearch,List<PersonBusinessRelations.Edge> businessRelations,
+                          String displayName,Map<RoleView.Holding,Map<String,String>> holdingWeights,Boolean marketClosed,
+                          Boolean decisionPaused,Map<String,Object> fundUnits) {
+            this(view,media,publicReports,personalResearch,businessRelations,displayName,holdingWeights,marketClosed,
+                    decisionPaused,fundUnits,Map.of());
+        }
+        /** 旧页面沿用原有的个人暂停状态。 */
+        public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
+                          Map<String,Object> personalResearch,List<PersonBusinessRelations.Edge> businessRelations,
+                          String displayName,Map<RoleView.Holding,Map<String,String>> holdingWeights,Boolean marketClosed,Boolean decisionPaused) {
+            this(view,media,publicReports,personalResearch,businessRelations,displayName,holdingWeights,marketClosed,decisionPaused,Map.of());
+        }
+        /** 兼容仅含交易所日历状态的个人页。 */
+        public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
+                          Map<String,Object> personalResearch,List<PersonBusinessRelations.Edge> businessRelations,
+                          String displayName,Map<RoleView.Holding,Map<String,String>> holdingWeights,Boolean marketClosed) {
+            this(view, media, publicReports, personalResearch, businessRelations, displayName, holdingWeights, marketClosed, null);
+        }
+        /** 兼容尚未附上交易所日历状态的个人页。 */
+        public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
+                          Map<String,Object> personalResearch, List<PersonBusinessRelations.Edge> businessRelations,
+                          String displayName, Map<RoleView.Holding,Map<String,String>> holdingWeights) {
+            this(view, media, publicReports, personalResearch, businessRelations, displayName, holdingWeights, null);
+        }
+        /** 兼容仅提供姓名与业务关系的个人页。 */
+        public PersonPage(RoleView view, Map<String,Object> media, List<Map<String,Object>> publicReports,
+                          Map<String,Object> personalResearch, List<PersonBusinessRelations.Edge> businessRelations, String displayName) {
+            this(view, media, publicReports, personalResearch, businessRelations, displayName, Map.of());
+        }
+        /** 兼容只提供个人业务关系的调用方。 */
+        public PersonPage(RoleView view, Map<String, Object> media, List<Map<String, Object>> publicReports,
+                          Map<String, Object> personalResearch, List<PersonBusinessRelations.Edge> businessRelations) {
+            this(view, media, publicReports, personalResearch, businessRelations,
+                    WorldOverviewView.displayName(view.personPartyId(), view.personPartyId()));
+        }
+
+        /** 兼容未提供经营及资金关系的个人页。 */
+        public PersonPage(RoleView view, Map<String, Object> media, List<Map<String, Object>> publicReports,
+                          Map<String, Object> personalResearch) {
+            this(view, media, publicReports, personalResearch, List.of());
+        }
+    }
 
     /**
      * 读取指定已验证人物的个人页面；正文仅取实际可回忆经历，不查管理端原件。
@@ -723,12 +1143,27 @@ public final class WorldWebHost implements AutoCloseable {
      * @throws Exception 人物无效或世界读取失败
      */
     public PersonPage personPage(String personId) throws Exception {
+        return personPage(personId, null, null);
+    }
+
+    /** 本人选定行情后，在同一次快照取得账户、公开报价与相同截止的 K 线。 */
+    PersonPage personPage(String personId, String symbol, String period) throws Exception {
         return call(() -> {
             WorldRuntime current = readyNow();
             var snapshot = current.snapshot();
-            if (snapshot.media().isEmpty()) return new PersonPage(current.roleView(personId), null);
-            RoleTradingView trading = current.openRoleSession(personId).view();
-            RoleView view = trading.profile();
+            RoleTradingView trading = snapshot.media().isPresent() ? current.openRoleSession(personId).view() : null;
+            RoleView view = trading == null ? current.roleView(personId) : trading.profile();
+            var publicBars = symbol == null ? null : MarketHistory.personalBars(snapshot, view, symbol, period);
+            var publicReports = CompanyPublications.personalReports(current, snapshot, view);
+            var businessRelations = PersonBusinessRelations.of(current, snapshot, view);
+            var holdingWeights = PersonalHoldingWeights.holdingWeights(current, view, snapshot.position());
+            Boolean marketClosed = view.portfolios() == null ? null : snapshot.exchange().orElseThrow().closed();
+            Boolean decisionPaused = "confirmed-person-v1".equals(current.profile().manifest().dataVersions().get("person-decision-pause"))
+                    ? current.personDecisionsPaused(personId) : null;
+            String name = WorldOverviewView.displayName(personId, current.openingRegistry().map(r -> displayName(r, personId)).orElse(personId));
+            var fundUnits = fundUnitsPage(current, personId);
+            var portfolioReturns = OwnerBankValuationWeb.portfolioReturns(current, view);
+            if (trading == null) return new PersonPage(view, null, publicReports, Map.of(), businessRelations, name, holdingWeights, marketClosed, decisionPaused, fundUnits, portfolioReturns, publicBars);
             List<Map<String, Object>> stories = new ArrayList<>();
             Set<String> visibleStories = new LinkedHashSet<>();
             for (RoleTradingView.MediaStory story : trading.media()) {
@@ -738,6 +1173,19 @@ public final class WorldWebHost implements AutoCloseable {
                 row.put("topic", story.topic()); row.put("authorPartyId", story.authorPartyId());
                 row.put("own", story.own()); row.put("canReview", story.canReview());
                 row.put("canPublish", story.canPublish()); row.put("sourceGroups", num(story.sourceGroups()));
+                if (story.reviewNotes() != null) {
+                    List<Map<String, Object>> notes = new ArrayList<>();
+                    for (var note : story.reviewNotes()) {
+                        Map<String, Object> item = new LinkedHashMap<>();
+                        item.put("revisionNo", num(note.revisionNo())); item.put("docId", note.docId());
+                        item.put("version", num(note.version())); item.put("read", note.read());
+                        if (note.read()) view.observations().stream()
+                                .filter(e -> note.docId().equals(e.ref().docId()) && note.version() == e.ref().version())
+                                .findFirst().ifPresent(e -> item.put("body", e.body()));
+                        notes.add(item);
+                    }
+                    row.put("reviewNotes", notes);
+                }
                 row.put("updatedAtMillis", num(story.updatedAtMillis())); stories.add(row);
                 visibleStories.add(story.storyId());
             }
@@ -748,17 +1196,32 @@ public final class WorldWebHost implements AutoCloseable {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("kind", report.kind()); row.put("accepted", report.accepted());
                 row.put("reason", report.reason()); row.put("storyId", report.storyId());
+                if (report.sourceShortfall() != null) {
+                    row.put("countedIndependentSources", report.sourceShortfall().counted());
+                    row.put("requiredIndependentSources", report.sourceShortfall().required());
+                }
                 row.put("timeMillis", num(report.timeMillis())); reports.add(row);
             }
             reports.sort(Comparator.comparingLong((Map<String, Object> row) ->
                     parseLong(row.get("timeMillis"))).reversed());
             List<Map<String, Object>> documents = new ArrayList<>();
+            Map<String,Long> withdrawalVersions = new HashMap<>();
+            if (RunManifest.MEDIA_WITHDRAWAL_VERSION.equals(current.profile().manifest().dataVersions().get(RunManifest.MEDIA_WITHDRAWAL_POLICY))) {
+                var visibleVersions = new HashSet<DocRef>();
+                for (var entry : view.catalog()) visibleVersions.add(new DocRef(entry.docId(), entry.version()));
+                for (var office : snapshot.media().orElseThrow().states()) for (var story : office.stories()) {
+                    if (story.status() == MediaModel.Status.WITHDRAWN && visibleVersions.contains(new DocRef(story.publicDocId(), story.publicVersion())))
+                        withdrawalVersions.put(story.publicDocId(), story.publicVersion());
+                }
+            }
             for (RoleView.Experience experience : view.observations()) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("docId", experience.ref().docId()); row.put("version", num(experience.ref().version()));
                 row.put("index", num(experience.ref().index())); row.put("title", experience.title());
                 row.put("body", experience.body()); row.put("sourceDescription", experience.publicSourceDescription());
                 row.put("publishedAtMillis", num(experience.publishedAt()));
+                Long withdrawn = withdrawalVersions.get(experience.ref().docId());
+                if (withdrawn != null && withdrawn > experience.ref().version()) row.put("withdrawalNoticeVersion", num(withdrawn));
                 row.put("completedAtMillis", num(experience.completedAt())); documents.add(row);
             }
             Map<String, Object> media = new LinkedHashMap<>();
@@ -766,7 +1229,112 @@ public final class WorldWebHost implements AutoCloseable {
             media.put("stories", bounded(stories)); media.put("reports", bounded(reports));
             media.put("documents", bounded(documents));
             media.put("tools", trading.tools());
-            return new PersonPage(view, java.util.Collections.unmodifiableMap(media));
+            if (trading.tools().contains(RoleTradingView.TOOL_MEDIA_WITHDRAW)) {
+                media.put("withdrawal", PersonalObservations.page(current, personId, PersonalObservations.Page.MEDIA_WITHDRAWAL,
+                        mediaWithdrawalPage(trading)));
+            }
+            Map<String, Object> research = new LinkedHashMap<>();
+            if ("household-plans-v1".equals(current.profile().manifest().dataVersions().get("personal-opening-profiles"))) {
+                var input = current.autonomyRoleObservation(personId).path("engineering");
+                for (var goal : input.at("/deliberation/objectives")) {
+                    if (goal.has("personalPlan")) research.put("goal", goal);
+                }
+                if (input.has("materialTrading")) research.put("materialTrading", input.get("materialTrading"));
+                var notes = input.path("researchNotes");
+                for (String field : List.of("previous", "current")) {
+                    if (notes.has(field)) research.put(field, notes.get(field));
+                }
+                var contacts = input.path("contactHistory");
+                if (contacts.path("namedReadings").size() > 0) research.put("namedReadings", contacts.get("namedReadings"));
+                if (contacts.path("assessments").size() > 0) research.put("contactAssessments", contacts.get("assessments"));
+                var actions = input.at("/deliberation/recentDecisions");
+                var cuts = snapshot.decisions().orElseThrow().state().decisions().stream()
+                        .filter(decision -> personId.equals(decision.personPartyId()))
+                        .sorted(Comparator.comparingLong(DecisionModel.Decision::cutoffPosition).reversed())
+                        .limit(MAX_ROWS).map(decision -> Map.of("digest", decision.inputDigest(),
+                                "timeMillis", num(decision.cutoffTimeMillis()))).distinct().toList();
+                if (!cuts.isEmpty()) research.put("portfolioHistory", cuts);
+                for (var row : actions) {
+                    var basis = row.path("basedOnNote").textValue();
+                    if (basis != null && (basis.equals(notes.at("/current/actionId").textValue())
+                            || basis.equals(notes.at("/previous/actionId").textValue()))) {
+                        research.put("decision", row);
+                        break;
+                    }
+                }
+            }
+            return new PersonPage(view, java.util.Collections.unmodifiableMap(media), publicReports, research, businessRelations, name, holdingWeights, marketClosed, decisionPaused, fundUnits, portfolioReturns, publicBars);
+        });
+    }
+
+    private static Map<String,Object> fundUnitsPage(WorldRuntime world,String person) throws Exception {
+        if (!world.hasOpenFund()) return Map.of();
+        var page = new LinkedHashMap<>(world.openFundView(person));
+        if (page.isEmpty()) return page;
+        page.remove("position");
+        byte[] visible = PAYLOAD_MAPPER.writer().with(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+                .writeValueAsBytes(page);
+        page.put("revision",java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(visible)));
+        return page;
+    }
+
+    Map<String,Object> applyFundOrder(String person,String revision,String requestId,String action,BigDecimal amount) throws Exception {
+        return call(() -> {
+            var world = readyNow();
+            var page = fundUnitsPage(world,person);
+            if (!Boolean.TRUE.equals(page.get("holder"))) throw new IllegalArgumentException("本人没有该产品申请权限");
+            if (!revision.equals(page.get("revision"))) throw new IllegalStateException("本人看到的份额账已更新");
+            long position = world.snapshot().position();
+            if ("CANCEL".equals(action)) world.cancelFundUnits(person,requestId,position);
+            else world.requestFundUnits(person,requestId,edu.cufe.auction.world.OpenFundUnits.Kind.valueOf(action),amount,position);
+            return fundUnitsPage(world,person);
+        });
+    }
+
+    /** 本人决定时收到、当前仍获准查看的资产及观察时点。 */
+    public record PortfolioHistory(String personPartyId, String timeMillis,
+                                   List<Map<String,String>> accounts, List<Map<String,String>> holdings) { }
+
+    /**
+     * 读取本人决定时实际收到的资产观察，并按当前权限复核每个账户。
+     * @param person 已验证会话中的人物
+     * @param digest 本人冻结输入摘要
+     * @return 原截止的可见资产
+     * @throws Exception 世界读取失败或该观察不可用
+     */
+    public PortfolioHistory portfolioHistory(String person, String digest) throws Exception {
+        return call(() -> {
+            var world = readyNow();
+            if (!"household-plans-v1".equals(world.profile().manifest().dataVersions().get("personal-opening-profiles")))
+                throw new IllegalArgumentException("没有这份个人观察");
+            var decision = world.snapshot().decisions().orElseThrow().state().decisions().stream()
+                    .filter(d -> person.equals(d.personPartyId()) && d.inputDigest().equals(digest))
+                    .findFirst().orElseThrow(() -> new IllegalArgumentException("没有这份个人观察"));
+            var input = (com.fasterxml.jackson.databind.node.ObjectNode) PAYLOAD_MAPPER.readTree(decision.inputText());
+            edu.cufe.auction.world.RoleInputTables.expand(input);
+            var current = new HashMap<String, RoleView.Account>();
+            for (var a : world.roleView(person).accounts()) current.put(a.accountId(), a);
+            var accounts = new ArrayList<Map<String,String>>();
+            var holdings = new ArrayList<Map<String,String>>();
+            var allowed = new HashSet<String>();
+            for (var a : input.at("/profile/accounts")) {
+                String id = a.required("accountId").asText();
+                if (!current.containsKey(id)) continue;
+                allowed.add(id);
+                accounts.add(Map.of("accountId", id, "kind", a.required("kind").asText(),
+                        "ownerId", current.get(id).ownerId(), "availableCash", a.required("availableCash").asText()));
+            }
+            for (var h : input.at("/profile/holdings")) {
+                String id = h.required("accountId").asText();
+                if (!allowed.contains(id)) continue;
+                var row = new java.util.LinkedHashMap<>(Map.of("accountId", id, "symbol", h.required("symbol").asText(),
+                        "quantity", h.required("quantity").asText(), "available", h.required("available").asText()));
+                var issued = input.at("/engineering/resourceIssuedShares");
+                if ("RESOURCE".equals(row.get("symbol")) && issued.isTextual())
+                    row.put("issuedSharePercent",PersonalHoldingWeights.issuedSharePercent(Long.parseLong(row.get("quantity")),Long.parseLong(issued.asText())));
+                holdings.add(row);
+            }
+            return new PortfolioHistory(person, num(decision.cutoffTimeMillis()), accounts, holdings);
         });
     }
 
@@ -875,7 +1443,7 @@ public final class WorldWebHost implements AutoCloseable {
                     owners.add(new ViewOwner(ownerId, value.status().name(),
                             value.netWorth() == null ? null : value.netWorth().toPlainString(),
                             value.cash().toPlainString(),
-                            value.holdings().toPlainString()));
+                            dec(value.holdings())));
                 }
             }
             String providerKind = "UNAVAILABLE";
@@ -903,9 +1471,8 @@ public final class WorldWebHost implements AutoCloseable {
         if (registry != null) {
             Map<String, String> names = new java.util.TreeMap<>();
             registry.parties().forEach(p -> names.put(p.partyId(), p.name()));
-            for (OpeningRegistry.Security security : registry.securities().stream()
-                    .sorted(Comparator.comparing(OpeningRegistry.Security::symbol)).toList()) {
-                String company = security.issuerOrganizationId();
+            for (var listing : WorldOverviewView.listings(registry, snapshot)) {
+                String company = listing.id();
                 BoardRun board = world.boardOfCompany(company).orElse(null);
                 InformationModel.DocumentVersion note = governanceNoteOf(information, company,
                         snapshot.timeMillis());
@@ -931,7 +1498,7 @@ public final class WorldWebHost implements AutoCloseable {
                 }
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("companyId", company); row.put("name", names.get(company));
-                row.put("symbol", security.symbol()); row.put("cash", dec(cash));
+                row.put("symbol", listing.security() == null ? null : listing.security().symbol()); row.put("cash", dec(cash));
                 row.put("managers", managers); row.put("hasCharter", board != null);
                 row.put("boardSeats", board == null ? null : Integer.toString(board.board().charter().seats().size()));
                 row.put("budgetLines", board == null ? null : Integer.toString(board.board().budgets().size()));
@@ -1327,7 +1894,11 @@ public final class WorldWebHost implements AutoCloseable {
                                     List<String> symbols, String selectedSymbol, String period,
                                     String basis, List<MarketBarView> bars,
                                     List<MarketGapView> gaps, boolean truncated,
-                                    String totalBars) {
+                                    String totalBars,
+                                    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                    String selectedSessionStatus,
+                                    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                    edu.cufe.auction.world.IssuerResolution.Status issuerResolution) {
         /** 冻结集合，避免调用方修改响应。 */
         public MarketHistoryView {
             symbols = List.copyOf(symbols);
@@ -1374,6 +1945,13 @@ public final class WorldWebHost implements AutoCloseable {
             boolean available = snapshot.exchange().isPresent();
             boolean marketClosed = snapshot.exchange()
                     .map(WorldExchange.State::closed).orElse(false);
+            String sessionStatus = null;
+            var resolution = current.resolutionStatus(selected);
+            if (RunManifest.usesMarketSessions(current.profile().manifest().policyRunId())) {
+                sessionStatus = resolution != null && resolution.openedAtMillis() != null ? resolution.trading()
+                        : MarketSessions.status(selected, snapshot.timeMillis(), marketClosed);
+                marketClosed = !"OPEN".equals(MarketSessions.status("", snapshot.timeMillis(), marketClosed));
+            }
             List<WorldExchange.Trade> trades = snapshot.exchange()
                     .map(WorldExchange.State::trades).orElse(List.of());
             MarketHistory.Result result = selected == null
@@ -1401,7 +1979,7 @@ public final class WorldWebHost implements AutoCloseable {
                     Long.toString(snapshot.timeMillis()), snapshot.lastPhase(), available,
                     marketClosed, List.copyOf(symbols), selected, period.id(),
                     "UNADJUSTED_EXPERIMENT", bars, gaps, result.truncated(),
-                    Long.toString(result.totalBars()));
+                    Long.toString(result.totalBars()), sessionStatus, resolution);
         });
     }
 
@@ -1508,7 +2086,7 @@ public final class WorldWebHost implements AutoCloseable {
      * @param notes                口径说明
      */
     public record PerformanceView(String runId, String position, String timeMillis,
-                                  boolean performanceAvailable, Section accounts, Section owners,
+                                  boolean performanceAvailable, int ownerPage, int ownerPages, Section accounts, Section owners,
                                   Section holdings, Section flows, List<String> notes) {
     }
 
@@ -1806,7 +2384,7 @@ public final class WorldWebHost implements AutoCloseable {
                     row.put("attendees", String.join(",", meeting.attendeeSeatIds()));
                     row.put("recused", String.join(",", meeting.recusedSeatIds()));
                     row.put("materialCount", Integer.toString(meeting.materials().size()));
-                    row.put("proposedLines", proposedLines(meeting.proposedLines()));
+                    putMeetingProposal(row, meeting, true);
                     row.put("ballots", ballots(meeting.ballots()));
                     row.put("failureReason", meeting.failureReason());
                     row.put("dividendSchemeId", meeting.dividendProposal() == null
@@ -1929,6 +2507,22 @@ public final class WorldWebHost implements AutoCloseable {
         });
     }
 
+    /** 在同一确认时点只读计算登记持有人的价格冲击，供管理员关系页使用。 */
+    WorldExposureMatrix.View worldExposure() throws Exception {
+        return call(() -> WorldExposureMatrix.of(readyNow()));
+    }
+
+    /**
+     * 读取一份已采样的公司期末原件。
+     * @param companyId 公司
+     * @param period 已结束并采样的期间
+     * @return 经采样摘要核验的正文
+     * @throws Exception 日志读取或摘要校验失败
+     */
+    public WorldRuntime.ConfirmedPeriodStatement companyPeriodStatement(String companyId, long period) throws Exception {
+        return call(() -> readyNow().confirmedPeriodStatement(companyId, period));
+    }
+
     /**
      * 人物与任职（单 writer 任务、单快照）。
      *
@@ -2037,6 +2631,9 @@ public final class WorldWebHost implements AutoCloseable {
                     row.put("organizationName", partyName(registry,
                             mandate.organizationPartyId()));
                     row.put("accountIds", String.join(",", mandate.accountIds()));
+                    if (RunManifest.FIXED_FUND_CAPITAL.equals(current.profile().manifest().dataVersions().get("fund-capital-policy"))) {
+                        row.put("capitalPolicy", "固定资本，申购与赎回关闭");
+                    }
                     mandateRows.add(row);
                 }
                 for (RoleRun.Report report : roles.reports().values()) {
@@ -2373,23 +2970,39 @@ public final class WorldWebHost implements AutoCloseable {
      * @throws Exception     读取失败
      */
     public PerformanceView performanceView() throws BusyException, Exception {
+        return performanceView(1);
+    }
+
+    /** 按登记主体的固定排序分页，查询同一确认帧的主体净值。
+     * @param requestedPage 从一开始的页码
+     * @return 含实际页码、总页数的估值视图
+     * @throws Exception 无法读取账本
+     */
+    public PerformanceView performanceView(long requestedPage) throws Exception {
+        if (requestedPage < 1) throw new IllegalArgumentException("主体页码必须为正数");
         return call(() -> {
             WorldRuntime current = readyNow();
             WorldRuntime.Snapshot snapshot = current.snapshot();
             OpeningRegistry registry = current.openingRegistry().orElse(null);
             long position = snapshot.position();
-            boolean performanceAvailable = position <= MAX_PERFORMANCE_FRAMES;
+            boolean longRun = RunManifest.usesCurrentTenCompany(current.profile().manifest().policyRunId());
+            boolean performanceAvailable = longRun || position <= MAX_PERFORMANCE_FRAMES;
 
+            var settlements = current.cashSettlementsAt(position);
             List<Map<String, Object>> accountRows = new ArrayList<>();
-            snapshot.accounts().forEach((accountId, account) -> {
+            for (var entry : snapshot.accounts().entrySet()) {
+                String accountId = entry.getKey();
+                var account = entry.getValue();
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("accountId", accountId);
                 row.put("ownerId", account.ownerId());
                 row.put("ownerName", ownerName(registry, account.ownerId()));
                 row.put("cash", account.cash().toPlainString());
                 row.put("source", account.source());
+                var settlement = settlements.get(accountId);
+                if (settlement != null) row.put("settlement", OwnerBankValuationWeb.settlement(settlement));
                 accountRows.add(row);
-            });
+            }
             accountRows.sort(Comparator.comparing(
                     (Map<String, Object> row) -> String.valueOf(row.get("accountId"))));
 
@@ -2404,6 +3017,7 @@ public final class WorldWebHost implements AutoCloseable {
                 }
             }
             ownerIds.sort(Comparator.naturalOrder());
+            var performances = performanceAvailable && !ownerIds.isEmpty() ? current.openingReturns() : Map.<String, WorldRuntime.OpeningReturn>of();
             for (String ownerId : ownerIds) {
                 ValuationModel.Value value = current.valuation(ownerId);
                 Map<String, Object> row = new LinkedHashMap<>();
@@ -2415,6 +3029,8 @@ public final class WorldWebHost implements AutoCloseable {
                 row.put("holdings", dec(value.holdings()));
                 row.put("dividendReceivable", dec(value.dividendReceivable()));
                 row.put("dividendPayable", dec(value.dividendPayable()));
+                if (value.bankClaims() != null) row.put("bankClaims", RoleView.BankAmounts.from(value.bankClaims()));
+                if (value.fundClaims() != null) row.put("fundClaims", RoleView.FundAmounts.from(value.fundClaims()));
                 row.put("netWorth", dec(value.netWorth()));
                 row.put("missingSymbols", String.join(",", value.missingSymbols()));
                 for (ValuationModel.HoldingLine line : value.lines()) {
@@ -2424,6 +3040,9 @@ public final class WorldWebHost implements AutoCloseable {
                     holding.put("symbol", line.symbol());
                     holding.put("quantity", num(line.quantity()));
                     holding.put("priceSource", line.price().source().name());
+                    boolean hasPrice = line.price().source() != ValuationModel.PriceSource.MISSING;
+                    holding.put("priceAsOfMillis", hasPrice ? num(line.price().asOfMillis()) : null);
+                    holding.put("priceAgeMillis", hasPrice ? num(line.price().ageMillis()) : null);
                     holding.put("price", dec(line.price().price()));
                     holding.put("value", dec(line.value()));
                     holdingRows.add(holding);
@@ -2444,23 +3063,22 @@ public final class WorldWebHost implements AutoCloseable {
                     flowById.putIfAbsent(flow.flowId(), item);
                 }
                 if (performanceAvailable) {
-                    try {
-                        PerformanceModel.Performance performance =
-                                current.performance(ownerId, 1L, position);
+                    var result = performances.get(ownerId);
+                    if (result.value() != null) {
+                        var performance = result.value();
                         row.put("performanceStatus", performance.status().name());
                         row.put("returnRate", dec(performance.returnRate()));
                         row.put("index", dec(performance.index()));
                         row.put("maxDrawdown", dec(performance.maxDrawdown()));
-                        row.put("segmentCount", Integer.toString(performance.segments().size()));
+                        row.put("segmentCount", Long.toString(performance.segmentCount()));
                         row.put("performanceNote", null);
-                    } catch (RuntimeException invalid) {
+                    } else {
                         row.put("performanceStatus", "UNAVAILABLE");
                         row.put("returnRate", null);
                         row.put("index", null);
                         row.put("maxDrawdown", null);
                         row.put("segmentCount", null);
-                        row.put("performanceNote", invalid.getMessage() == null
-                                ? invalid.getClass().getSimpleName() : invalid.getMessage());
+                        row.put("performanceNote", result.error());
                     }
                 } else {
                     row.put("performanceStatus", "NOT_COMPUTED");
@@ -2483,14 +3101,24 @@ public final class WorldWebHost implements AutoCloseable {
                     .thenComparing(row -> String.valueOf(row.get("symbol"))));
 
             List<String> notes = new ArrayList<>();
-            notes.add("净资产 = 现金（含冻结，不重复相加）+ 原始价格估值持仓 + 已确认分红应收 − 分红应付；缺价时净资产保持空，不填 0。");
+            notes.add(OwnerBankValuationWeb.enabled(current) ? OwnerBankValuationWeb.basis(current)
+                    : "净资产 = 现金（含冻结，不重复相加）+ 原始价格估值持仓 + 已确认分红应收 − 分红应付；缺价时净资产保持空，不填 0。");
             notes.add("期间收益率、指数与最大回撤全部来自 PerformanceModel：真实资本流前后估值几何链接，DECIMAL128 中间计算、12 位 HALF_EVEN 输出。");
             notes.add("少于两个确认帧、存在缺价或非正权益时，期间表现显示为不适用；本页不另算一套收益率，也不把资本流当收益。");
             notes.add("资本流只列真实确认的转移事实，按主体任一侧过滤；课程排行榜的初始权益口径不在此页混用。");
 
+            if (longRun || RunManifest.UNPRICED_REFERENCE_RUN_ID.equals(current.profile().manifest().policyRunId())) {
+                OwnerBankValuationWeb.rankReturns(ownerRows);
+                notes.add("本期收益名次按全部已登记个人和产品的开局至当前时间加权收益率降序排列。同收益并列，估值不完整、净资产非正或缺期间收益的主体不参与。");
+            }
+            int ownerPages = Math.max(1, (int) ((ownerRows.size() + (long) MAX_ROWS - 1) / MAX_ROWS));
+            int ownerPage = (int) Math.min(requestedPage, ownerPages);
+            int offset = (ownerPage - 1) * MAX_ROWS;
+            var selectedOwners = new Section(ownerRows.size(), ownerRows.subList(offset,
+                    (int) Math.min((long) offset + MAX_ROWS, ownerRows.size())));
             return new PerformanceView(runId, Long.toString(position),
-                    Long.toString(snapshot.timeMillis()), performanceAvailable,
-                    bounded(accountRows), bounded(ownerRows), bounded(holdingRows),
+                    Long.toString(snapshot.timeMillis()), performanceAvailable, ownerPage, ownerPages,
+                    bounded(accountRows), selectedOwners, bounded(holdingRows),
                     bounded(flowRows), notes);
         });
     }
@@ -2576,7 +3204,8 @@ public final class WorldWebHost implements AutoCloseable {
                     : pointRows.get(pointRows.size() - 1).timeMillis();
 
             List<String> notes = new ArrayList<>();
-            notes.add("资金规模 = 该确认帧的净资产（现金含冻结不重复相加 + 持仓按最后有效成交价 + 分红应收 − 分红应付）；缺价点断开，不填 0。");
+            notes.add(OwnerBankValuationWeb.enabled(current) ? OwnerBankValuationWeb.basis(current)
+                    : "资金规模 = 该确认帧的净资产（现金含冻结不重复相加 + 持仓按最后有效成交价 + 分红应收 − 分红应付）；缺价点断开，不填 0。");
             notes.add("表现指数以 1 为基数，按真实资本流前后的估值几何链接；当前回撤相对该点之前的高精度峰值。两者与期间汇总来自同一遍计算，前端不重算收益。");
             notes.add("横轴是确认记录位置，不是均匀时间；同一毫秒可以有多个确认点。每点的模拟时刻另列。");
             notes.add("区间超过 " + MAX_PERFORMANCE_FRAMES + " 帧会被拒绝；响应总带实际起点，" +
@@ -3013,28 +3642,7 @@ public final class WorldWebHost implements AutoCloseable {
                 row.put("deposits", money(value.deposits()));
                 row.put("beneficial", money(value.beneficial()));
                 ownerRows.add(row);
-                for (Map.Entry<String, BankingProfile.PartyRef> entry
-                        : new java.util.TreeMap<>(config.profile().parties()).entrySet()) {
-                    BankingProfile.PartyRef party = entry.getValue();
-                    if (!party.ownerId().equals(ownerId) || party.depositGl() == null) {
-                        continue;
-                    }
-                    for (String bankKey : state.chart().banks()) {
-                        BigDecimal amount = state.depositOf(bankKey, entry.getKey());
-                        Map<String, Object> deposit = new LinkedHashMap<>();
-                        deposit.put("bankKey", bankKey);
-                        deposit.put("partyKey", entry.getKey());
-                        deposit.put("amount", money(amount));
-                        BankConfig.DepositOffer offer = config.depositOffer(bankKey);
-                        deposit.put("offerId", offer == null ? "" : offer.offerId());
-                        deposit.put("rateU", offer == null ? "0" : Long.toString(offer.rateU()));
-                        deposit.put("rateText", offer == null ? "—" : rateText(offer.rateU()));
-                        BankState.DepositAccount account =
-                                state.depositAccount(bankKey, entry.getKey());
-                        deposit.put("nonAccrual", account != null && account.nonAccrual());
-                        depositRows.add(deposit);
-                    }
-                }
+                depositRows.addAll(personalDepositRows(ownerId, config, state));
             }
             // 本人托管受益：owner 来自身份的真实授权账户，再按 profile 的 partyKey 逐人取明细。
             // 与 God 全池审计口径不同：这里只有本人那一份，且显式带 ownerId 以免多属主重复。
@@ -3053,13 +3661,6 @@ public final class WorldWebHost implements AutoCloseable {
             view.put("actions", own);
             // ---- 可操作范围（全部来自真实任职/账户，不接受客户端自报身份） ----
             BankChart chart = decoded.state().chart();
-            Set<String> myParties = new java.util.TreeSet<>();
-            for (Map.Entry<String, BankingProfile.PartyRef> entry
-                    : new java.util.TreeMap<>(config.profile().parties()).entrySet()) {
-                if (owners.contains(entry.getValue().ownerId())) {
-                    myParties.add(entry.getKey());
-                }
-            }
             Set<String> managedOrgs = new java.util.TreeSet<>();
             for (RoleView.Appointment appointment : role.appointments()) {
                 if (appointment.role() == edu.cufe.auction.world.RoleAccess.Role.COMPANY_MANAGER) {
@@ -3082,9 +3683,28 @@ public final class WorldWebHost implements AutoCloseable {
                     payableOrgs.add(org);
                 }
             }
-            view.put("entitlements", entitlements(managedBanks));
-            view.put("options", actionOptions(config, state, chart, role, owners, myParties,
-                    payableOrgs));
+            boolean scoped = OwnerBankValuationWeb.enabled(current);
+            payableOrgs.addAll(current.bankCashProducts(personId));
+            var kinds = bankEntitlements(config, managedOrgs, managedBanks);
+            if (scoped && payableOrgs.isEmpty()) kinds.removeAll(entitlements(List.of()));
+            if (scoped && !payableOrgs.isEmpty() && payableOrgs.stream().allMatch(
+                    key -> config.profile().parties().get(key).ownerKind() == BankingProfile.PartyKind.PRODUCT))
+                kinds.removeIf(kind -> kind.startsWith("LOAN_") && !kind.equals("LOAN_APPROVE"));
+            if (IssuerCreditDecisions.lossEnabled(current.profile().manifest()) && !managedBanks.isEmpty()) {
+                kinds.add("LOAN_IMPAIR"); kinds.add("LOAN_WRITE_OFF");
+                view.put("lossTerms", IssuerCreditDecisions.LOSS_TERMS);
+                view.put("lossExposures", IssuerCreditDecisions.lossExposures(state, current.bankBook(),
+                        Set.copyOf(managedBanks), managedOrgs, personId));
+            }
+            view.put("entitlements", kinds);
+            if (BankCrisis.PROVIDER.equals(config.profile().providerKey())
+                    && (managedOrgs.contains(BankCrisis.PROVIDER) || managedOrgs.contains(BankCrisis.AUTHORITY) || !managedBanks.isEmpty())) {
+                view.put("facilities",state.facilityAccounts().values().stream().map(a -> Map.of(
+                        "id",a.authorizationId(),"bank",a.bank(),"limit",money(a.limit()),"outstanding",money(a.nominal()),
+                        "authorizedUntil",Long.toString(a.authorizationExpiryMs()))).toList());
+                view.put("facilityTerms","实验应急额度自授权起三日内可提。每笔期限30日，无担保、免息，须偿还本金。处置可在净资产为负、准备金为零且尚有存款，或到期应急债务超出准备金时开启。");
+            }
+            view.put("options", actionOptions(config, state, chart, role, payableOrgs, scoped ? decoded.book() : null));
             view.put("loans", loanContracts(config, chart, current.bankBook(), payableOrgs,
                     managedBanks));
             view.put("actionsEnabled", true);
@@ -3160,22 +3780,35 @@ public final class WorldWebHost implements AutoCloseable {
         return list;
     }
 
+    private static List<String> bankEntitlements(BankConfig config, Set<String> managedOrgs, List<String> managedBanks) {
+        var list = entitlements(managedBanks);
+        if (!BankCrisis.PROVIDER.equals(config.profile().providerKey())) return list;
+        for (String bank : config.profile().banks().keySet()) {
+            for (var kind : BankActions.Kind.values()) {
+                var office = BankCrisis.office(kind,bank);
+                if (office != null && BankCrisis.eligible(managedOrgs,office,bank) && !list.contains(kind.name())) list.add(kind.name());
+            }
+        }
+        return list;
+    }
+
     /** 表单选项：只列本人可见账户/存款与本人任职组织的桶；普通用户不手写内部 token。 */
     static Map<String, Object> actionOptions(BankConfig config, BankState state, BankChart chart,
-                                             RoleView role, Set<String> owners,
-                                             Set<String> myParties, Set<String> payableOrgs) {
+                                             RoleView role, Set<String> payableOrgs, CustodyBook custodyBook) {
         List<Map<String, Object>> cash = new ArrayList<>();
         List<Map<String, Object>> deposits = new ArrayList<>();
         List<Map<String, Object>> payees = new ArrayList<>();
         List<Map<String, Object>> subjects = new ArrayList<>();
+        List<Map<String, Object>> custody = new ArrayList<>();
         for (String partyKey : payableOrgs) {
             BankingProfile.PartyRef party = config.profile().parties().get(partyKey);
             if (party == null) {
                 continue;
             }
             boolean personal = partyKey.equals(role.personPartyId());
-            subjects.add(Map.of("token", personal ? "" : partyKey,
-                    "label", personal ? "本人" : "任职公司 " + partyKey));
+            boolean product = custodyBook != null && party.ownerKind() == BankingProfile.PartyKind.PRODUCT;
+            if (product) subjects.add(Map.of("token", partyKey, "label", "受托产品 " + partyKey, "internalOnly", true));
+            else subjects.add(Map.of("token", personal ? "" : partyKey, "label", personal ? "本人" : "任职公司 " + partyKey));
             if (party.cashAccountId() != null) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("token", "CASH|" + party.cashAccountId());
@@ -3199,11 +3832,22 @@ public final class WorldWebHost implements AutoCloseable {
                 deposits.add(row);
                 payees.add(row);
             }
+            if (custodyBook != null) {
+                for (String custodian : new java.util.TreeSet<>(config.profile().custodians().keySet())) {
+                    var row = Map.<String,Object>of("token", "CUSTODY|" + custodian + "|" + partyKey,
+                            "label", "托管 " + partyKey + " · " + custodian + " · "
+                                    + money(custodyBook.detailOf(custodian, partyKey)) + " 元",
+                            "partyKey", partyKey, "ownerId", party.ownerId());
+                    custody.add(row);
+                    payees.add(row);
+                }
+            }
         }
         Map<String, Object> options = new LinkedHashMap<>();
         options.put("cash", cash);
         options.put("subjects", subjects);
         options.put("deposits", deposits);
+        if (custodyBook != null) options.put("custody", custody);
         options.put("payees", payees);
         options.put("workMillis", Map.of("min", "1", "max", "3600000", "default", "1000"));
         options.put("banks", new ArrayList<>(chart.banks()));
@@ -3334,18 +3978,44 @@ public final class WorldWebHost implements AutoCloseable {
             if (kind == BankActions.Kind.LOAN_ACCRUE) {
                 throw new IllegalArgumentException("计息只能由世界按合同到期创建");
             }
-            if (!entitlements(managedBanks).contains(kind.name())) {
+            boolean loanLoss = BankActions.isLossDecision(kind);
+            if (loanLoss ? !IssuerCreditDecisions.lossEnabled(current.profile().manifest()) || managedBanks.isEmpty()
+                    : !bankEntitlements(config,managedOrgs,managedBanks).contains(kind.name())) {
                 throw new IllegalArgumentException("当前身份不能执行该动作：" + kind);
             }
             if (command.workMillis() <= 0 || command.workMillis() > 3_600_000L) {
                 throw new IllegalArgumentException("声明工时必须在 1 毫秒到 1 小时之间");
             }
             String org = command.organizationPartyId() == null ? "" : command.organizationPartyId();
-            if (!org.isBlank() && !managedOrgs.contains(org) && !myParties.contains(org)) {
+            Set<String> cashProducts = current.bankCashProducts(personId);
+            if (!org.isBlank() && !managedOrgs.contains(org) && !myParties.contains(org) && !cashProducts.contains(org)) {
                 throw new IllegalArgumentException("本人不是该组织当时有效的经理：" + org);
             }
             String bankKey = resolveBankKey(command, chart, myParties, managedBanks);
-            if (needsFunds(kind)) {
+            if (loanLoss) {
+                var exposure = IssuerCreditDecisions.lossExposures(state, current.bankBook(), Set.copyOf(managedBanks),
+                        managedOrgs, personId).stream().filter(row -> row.get("loanId").equals(command.loanId())).findFirst()
+                        .orElseThrow(() -> new IllegalArgumentException("没有本行可见的已提款合同"));
+                bankKey = exposure.get("bank");
+                if (command.workMillis() != 60_000L) throw new IllegalArgumentException("贷款减值及核销工时为一分钟");
+            }
+            if (needsFunds(kind) && OwnerBankValuationWeb.enabled(current)) {
+                Set<String> parties = new java.util.HashSet<>(managedOrgs);
+                parties.add(personId);
+                parties.addAll(cashProducts);
+                parties.retainAll(config.profile().parties().keySet());
+                String subject = org.isBlank() ? personId : org;
+                if (!parties.contains(subject)) throw new IllegalArgumentException("该身份不能划转此主体的资金");
+                String source = command.sourceToken();
+                if (kind == BankActions.Kind.PAY || source != null && !source.isBlank()) {
+                    if (!config.profile().ownsCashBucket(subject, source)
+                            || kind == BankActions.Kind.DEPOSIT && !source.startsWith("CASH|")
+                            || kind == BankActions.Kind.WITHDRAW && !source.startsWith("DEPOSIT|"))
+                        throw new IllegalArgumentException("出款账户与授权主体不符");
+                }
+                if (kind == BankActions.Kind.PAY && parties.stream().noneMatch(p -> config.profile().ownsCashBucket(p, command.payeeToken())))
+                    throw new IllegalArgumentException("收款账户不在本人授权范围");
+            } else if (needsFunds(kind)) {
                 Set<String> ownCash = new java.util.HashSet<>();
                 for (RoleView.Account account : role.accounts()) {
                     ownCash.add("CASH|" + account.accountId());
@@ -3376,7 +4046,8 @@ public final class WorldWebHost implements AutoCloseable {
                     }
                 }
             }
-            java.math.BigDecimal amount = parseMoney(command.amount());
+            java.math.BigDecimal amount = BankCrisis.procedural(kind) && (command.amount() == null || "0".equals(command.amount()))
+                    ? java.math.BigDecimal.ZERO : parseMoney(command.amount());
             // 完整请求含 taskId；JSON 转义避免业务文本中的分隔符产生碰撞。
             String signature = PAYLOAD_MAPPER.writeValueAsString(command);
             String cacheKey = PAYLOAD_MAPPER.writeValueAsString(List.of(runId, personId, command.commandId()));
@@ -3674,6 +4345,8 @@ public final class WorldWebHost implements AutoCloseable {
             case "LOAN_ACCEPT" -> "借款人接受条款";
             case "LOAN_APPROVE" -> "银行批准";
             case "LOAN_DRAW" -> "提款放款";
+            case "LOAN_IMPAIR" -> "计提贷款减值";
+            case "LOAN_WRITE_OFF" -> "核销贷款本金";
             case "LOAN_REPAY" -> "还本";
             case "LOAN_ACCRUE" -> "计息";
             case "LOAN_PAY_INTEREST" -> "付息";
@@ -3863,11 +4536,13 @@ public final class WorldWebHost implements AutoCloseable {
         return runtime == null ? ready.join() : runtime;
     }
 
-    private void loop() {
+    private void loop(Path branchRouteDirectory) {
         WorldRuntime created = null;
         try {
             Opened opened = supplier.open();
             created = opened.runtime();
+            if (branchRouteDirectory != null)
+                routes = SceneRoutes.openBranch(branchRouteDirectory, created.branchOrigin().orElseThrow());
             // 展示用 runId 一律取实际打开的 manifest，不额外接受第二份参数
             runId = opened.runId();
             runtime = created;
@@ -3978,6 +4653,11 @@ public final class WorldWebHost implements AutoCloseable {
             List<LivePerson> persons = scenes.isEmpty() ? List.of() : livePeople(snapshot);
             List<LivePerson> governancePersons = scenes.contains(SCENE_GOVERNANCE)
                     ? governancePersons(snapshot) : List.of();
+            var paused=snapshot.roles().map(RoleRun::pausedPersons).orElse(List.of());
+            if (!paused.isEmpty()) {
+                persons=persons.stream().filter(p->!paused.contains(p.personPartyId())).toList();
+                governancePersons=governancePersons.stream().filter(p->!paused.contains(p.personPartyId())).toList();
+            }
             return new LiveCapabilities(num(snapshot.position()), num(snapshot.timeMillis()),
                     snapshot.media().isPresent(), scenes, persons, governancePersons);
         });
@@ -4003,6 +4683,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (party.kind() != OpeningRegistry.PartyKind.PERSON) {
                 continue;
             }
+            if (runtime.systemPublisherOnly(party.partyId())) continue;
             LivePerson known = legacy.get(party.partyId());
             if (known != null) {
                 if (!known.governanceCompanies().isEmpty() && !known.scenes().isEmpty()) {
@@ -4040,9 +4721,28 @@ public final class WorldWebHost implements AutoCloseable {
     private List<LivePerson> livePeople(WorldRuntime.Snapshot snapshot) {
         OpeningRegistry registry = runtime.openingRegistry().orElse(null);
         Map<String, LivePerson> people = new LinkedHashMap<>();
-        for (String person : LIVE_ROLE_PERSONS) {
-            people.put(person, livePersonOf(registry, person,
-                    person.equals("alice") ? "research" : "trading"));
+        if (RunManifest.usesBankCrisis(runtime.profile().manifest().policyRunId())) {
+            for (var office : snapshot.roles().orElseThrow().access().appointments()) {
+                if (office.activeAt(snapshot.timeMillis()) && office.role() == RoleAccess.Role.COMPANY_MANAGER
+                        && Set.of(BankCrisis.PROVIDER,BankCrisis.AUTHORITY).contains(office.organizationPartyId()))
+                    addLiveScene(people,registry,office.personPartyId(),"trading");
+            }
+        }
+        if (usesFundOfficeRouting()) {
+            var access = snapshot.roles().orElseThrow().access();
+            for (var appointment : access.appointments()) {
+                if (!appointment.activeAt(snapshot.timeMillis()) || access.mandates().stream()
+                        .noneMatch(m -> m.organizationPartyId().equals(appointment.organizationPartyId()))) continue;
+                String scene = switch (appointment.role()) {
+                    case RESEARCHER -> "research";
+                    case PORTFOLIO_MANAGER, RISK_OFFICER, EXECUTION_TRADER -> "trading";
+                    default -> null;
+                };
+                if (scene != null) addLiveScene(people, registry, appointment.personPartyId(), scene);
+            }
+        } else {
+            for (String person : LIVE_ROLE_PERSONS)
+                people.put(person, livePersonOf(registry, person, person.equals("alice") ? "research" : "trading"));
         }
         if (snapshot.media().isPresent() && snapshot.roles().isPresent()) {
             var media = snapshot.media().orElseThrow();
@@ -4053,8 +4753,17 @@ public final class WorldWebHost implements AutoCloseable {
                         || (appointment.role() != RoleAccess.Role.JOURNALIST
                             && appointment.role() != RoleAccess.Role.EDITOR)) continue;
                 // 既有四岗的路由不因新增媒体任职被静默替换。
-                people.putIfAbsent(appointment.personPartyId(),
-                        livePersonOf(registry, appointment.personPartyId(), "media"));
+                addLiveScene(people, registry, appointment.personPartyId(), "media");
+            }
+        }
+        if (registry != null && snapshot.roles().isPresent()
+                && PersonalMarket.VERSION.equals(runtime.profile().manifest().dataVersions().get(PersonalMarket.POLICY))) {
+            for (var registered : snapshot.roles().orElseThrow().access().personAccounts()) {
+                var account = snapshot.accounts().get(registered.accountId());
+                var owner = account == null ? null : registry.owner(account.ownerId());
+                if (owner != null && owner.kind() == OpeningRegistry.OwnerKind.PERSON
+                        && registered.personPartyId().equals(owner.partyId()))
+                    addLiveScene(people, registry, owner.partyId(), "trading");
             }
         }
         // schema15：已配置联系目标与真实预约参与者（含尚未接受）走 media 技术路由；
@@ -4082,14 +4791,46 @@ public final class WorldWebHost implements AutoCloseable {
         SocialRun social = snapshot.social().orElse(null);
         if (social != null) {
             for (InterviewRun.ContactEntry entry : social.contacts()) {
-                addDialoguePerson(people, registry, entry.targetPartyId());
+                addSocialPerson(people, registry, entry.targetPartyId(), entry.channel());
             }
             for (SocialMessageModel.Message message : social.state().messages()) {
-                addDialoguePerson(people, registry, message.from());
-                addDialoguePerson(people, registry, message.to());
+                addSocialPerson(people, registry, message.from(), message.channel());
+                addSocialPerson(people, registry, message.to(), message.channel());
             }
         }
+        if (RunManifest.usesTenCompanyAutonomy(runtime.profile().manifest().policyRunId())) {
+            var mandate = snapshot.engineering().orElseThrow().config().customerMandate();
+            addLiveScene(people, registry, mandate.representativePartyId(), "trading");
+            people.keySet().removeIf(runtime::systemPublisherOnly);
+        }
         return List.copyOf(people.values());
+    }
+
+    private boolean usesFundOfficeRouting() {
+        return "active-appointments-v1".equals(runtime.profile().manifest().dataVersions().get("fund-office-routing"));
+    }
+
+    private void addLiveScene(Map<String, LivePerson> people, OpeningRegistry registry, String person, String scene) {
+        LivePerson prior = people.get(person);
+        if (prior == null) {
+            people.put(person, livePersonOf(registry, person, scene));
+        } else if (usesFundOfficeRouting() && !prior.scenes().contains(scene)) {
+            List<String> scenes = new ArrayList<>(prior.scenes());
+            scenes.add(scene);
+            people.put(person, new LivePerson(person, prior.name(), prior.sceneId(), List.copyOf(scenes), prior.governanceCompanies()));
+        }
+    }
+
+    private void addSocialPerson(Map<String, LivePerson> people, OpeningRegistry registry,
+                                 String person, String channel) {
+        if (usesFundOfficeRouting() && channel.startsWith("基金工作/")) return;
+        // 在职董事和经理已有治理路由，董事会工作信函不构成媒体任职或采访活动。
+        if (RunManifest.usesFundedOperatingRules(runtime.profile().manifest().policyRunId())
+                && RoleEvidenceDocuments.CHAIR_CONTACT_CHANNEL.equals(channel)
+                && !runtime.governanceCompanies(person).isEmpty()) {
+            return;
+        }
+        addDialoguePerson(people, registry, person);
     }
 
     private void addDialoguePerson(Map<String, LivePerson> people, OpeningRegistry registry,
@@ -4151,6 +4892,143 @@ public final class WorldWebHost implements AutoCloseable {
      */
     public WorldRuntime.InterviewView interviewView(String personId) throws Exception {
         return call(() -> readyNow().interviewView(personId));
+    }
+
+    Object personalInterviewPage(String person) throws Exception {
+        return call(() -> {
+            var world = readyNow();
+            var interviews = world.interviewView(person);
+            var visits = world.siteVisitsFor(person);
+            var controls = world.personalInterviewControls(person);
+            if (!visits.enabled() && controls == null) return interviews;
+            com.fasterxml.jackson.databind.node.ObjectNode page = PAYLOAD_MAPPER.valueToTree(interviews);
+            page.put("timeMillis", num(world.snapshot().timeMillis()));
+            if (visits.enabled()) page.set("siteVisits", PAYLOAD_MAPPER.valueToTree(visits));
+            if (controls != null) page.set("coordination", PAYLOAD_MAPPER.valueToTree(controls));
+            return page;
+        });
+    }
+
+    Map<String, String> scheduleInterviewCoordination(String person, long observed, String cmd,
+            edu.cufe.auction.world.WorldRoleSession.InterviewInviteDraft invite,
+            edu.cufe.auction.world.WorldRoleSession.InterviewRespondDraft respond) throws Exception {
+        return call(() -> {
+            var world=readyNow();
+            var controls=world.personalInterviewControls(person);
+            if (controls==null) throw new IllegalArgumentException("未启用本人预约操作");
+            var previous=world.previousInterviewSchedule(person,cmd,observed,invite!=null?invite:respond);
+            if (previous.isPresent()) {
+                var old=previous.orElseThrow();
+                return Map.of("receipt",old.receipt(),"dueTimeMillis",num(old.dueTimeMillis()));
+            }
+            if (controls.observedMillis()!=observed) throw new IllegalStateException("时点已变化");
+            var page=world.interviewView(person);
+            var session=world.openRoleSession(person);
+            long due;
+            String receipt;
+            if (invite!=null) {
+                if (controls.inviteOffice()==null || page.contacts().stream().noneMatch(c -> c.targetPartyId().equals(invite.toPartyId())))
+                    throw new IllegalArgumentException("本人缺少可用的记者任职或已读联系入口");
+                due=controls.inviteDueMillis();
+                receipt=session.inviteInterview(cmd,cmd+"-task",due,invite);
+            } else {
+                if (page.invites().stream().noneMatch(i -> i.requestId().equals(respond.requestId())
+                        && i.toPartyId().equals(person) && "PROPOSED".equals(i.status())))
+                    throw new IllegalArgumentException("本人没有该待回应邀请");
+                due=controls.respondDueMillis();
+                receipt=session.respondInterview(cmd,cmd+"-task",due,respond);
+            }
+            return Map.of("receipt",receipt,"dueTimeMillis",num(due));
+        });
+    }
+
+    com.fasterxml.jackson.databind.node.ObjectNode personalOrders(String person) throws Exception {
+        return call(() -> edu.cufe.auction.world.PersonalOrderDesk.view(readyNow(), person));
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode newsletterPage(WorldRuntime world, String person) throws Exception {
+        var subscriptions = world.mediaSubscriptionsOf(person);
+        com.fasterxml.jackson.databind.node.ObjectNode page = PAYLOAD_MAPPER.valueToTree(subscriptions);
+        page.put("enabled", !subscriptions.isEmpty()).put("person", person)
+                .put("observedMillis", num(world.snapshot().timeMillis()));
+        if (subscriptions.isEmpty()) return page;
+        var deskNames = new HashMap<String,String>();
+        world.openingRegistry().orElseThrow().parties().forEach(p -> deskNames.put(p.partyId(), p.name()));
+        for (var item : page.required("offers")) {
+            var desk = (com.fasterxml.jackson.databind.node.ObjectNode) item;
+            String org = desk.required("organization").asText();
+            desk.put("name", deskNames.getOrDefault(org, org));
+        }
+        if (page.path("deliveries").isEmpty()) return page;
+        var remembered = new HashMap<DocRef, RoleView.Experience>();
+        for (var experience : world.roleView(person).observations())
+            remembered.put(new DocRef(experience.ref().docId(), experience.ref().version()), experience);
+        for (var item : page.required("deliveries")) {
+            var receipt = (com.fasterxml.jackson.databind.node.ObjectNode) item;
+            if (receipt.has("speakerPartyId")) {
+                String speaker = receipt.get("speakerPartyId").asText();
+                receipt.put("speakerName", deskNames.getOrDefault(speaker, speaker));
+            }
+            var memory = remembered.get(new DocRef(receipt.required("docId").asText(), receipt.required("version").asLong()));
+            receipt.put("bodyAvailable", memory != null);
+            if (memory != null) receipt.put("body", memory.body());
+        }
+        return page;
+    }
+
+    private static Map<String,Object> mediaWithdrawalPage(RoleTradingView view) {
+        var reasons = new LinkedHashMap<String,String>();
+        for (var reason : MediaModel.WithdrawalReason.values()) reasons.put(reason.name(), reason.label());
+        var stories = view.media().stream().filter(s -> s.withdrawWorkMillis() != null)
+                .map(s -> Map.of("storyId", s.storyId(), "topic", s.topic(), "publicDocId", s.publicDocId(),
+                        "publicVersion", num(s.publicVersion()), "workMillis", num(s.withdrawWorkMillis()))).toList();
+        return Map.of("stories", stories, "reasons", reasons, "timeMillis", num(view.timeMillis()));
+    }
+
+    Object withdrawPublishedStory(String person, long expected, String command, WorldRoleSession.MediaWithdrawalDraft draft) throws Exception {
+        return personalWebCommand(person, expected, frame -> {
+            var world = readyNow();
+            var session = world.openRoleSession(person);
+            var view = session.view();
+            if (!view.tools().contains(RoleTradingView.TOOL_MEDIA_WITHDRAW))
+                throw new IllegalArgumentException("当前无正式撤稿权限");
+            var story = view.media().stream().filter(s -> s.withdrawWorkMillis() != null
+                    && s.storyId().equals(draft.storyId()) && s.publicVersion() == draft.expectedPublicVersion())
+                    .findFirst().orElseThrow(() -> new IllegalArgumentException("当前无权撤回这版公开稿"));
+            long due = Math.addExact(view.timeMillis(), story.withdrawWorkMillis());
+            var receipt = session.withdrawStory(command, command, due, draft);
+            return Map.of("receipt", receipt, "dueTimeMillis", num(due));
+        }, PersonalObservations.Page.MEDIA_WITHDRAWAL);
+    }
+
+    Map<String, String> newsletterAction(String person, long observed, String command, String action, String target) throws Exception {
+        return call(() -> {
+            var world = readyNow();
+            String id = "web-news:" + person.length() + ":" + person + ":" + command;
+            String receipt = world.scheduleMediaSubscription(person, action, target, id, observed);
+            return Map.of("receipt", receipt);
+        });
+    }
+
+    Map<String, String> personalOrder(String person, long observed, String command,
+                                      edu.cufe.auction.world.PersonalOrderDesk.Instruction request) throws Exception {
+        return call(() -> edu.cufe.auction.world.PersonalOrderDesk.schedule(readyNow(), person, observed, command, request));
+    }
+
+    Map<String, String> scheduleSiteVisit(String person, long observedMillis, String expectedStage,
+                                           String commandId, String requestId, String action) throws Exception {
+        return call(() -> {
+            var world = readyNow();
+            var snapshot = world.snapshot();
+            var row = world.siteVisitsFor(person).appointments().stream().filter(r -> r.requestId().equals(requestId))
+                    .findFirst().orElseThrow(() -> new IllegalArgumentException("当前没有可执行的现场采访动作"));
+            if (snapshot.timeMillis() != observedMillis || !row.stage().equals(expectedStage)) throw new IllegalStateException("行程已更新");
+            if (!row.actions().contains(action)) throw new IllegalArgumentException("当前没有可执行的现场采访动作");
+            long due = Math.addExact(snapshot.timeMillis(), 1000L);
+            String receipt = world.openRoleSession(person).siteVisit(commandId, commandId + "-task", due,
+                    new edu.cufe.auction.world.OnsiteVisit.Draft(requestId, action));
+            return Map.of("receipt", receipt, "dueTimeMillis", num(due));
+        });
     }
 
     /** 上帝视角一条真实轮次；阅读状态来自真实完成阅读，不看声明或回执。 */
@@ -4520,9 +5398,10 @@ public final class WorldWebHost implements AutoCloseable {
                         java.util.List.of("当前档案未启用证据模块。"));
             }
             EvidenceRun run = snapshot.evidence().orElseThrow();
-            InformationModel.State info = snapshot.information().orElseThrow().information();
             MediaRun media = snapshot.media().orElseThrow();
-            java.util.Set<DocRef> readable = recallable(current, personId);
+            var readable = new java.util.HashMap<DocRef,RoleView.Experience>();
+            for (var read : current.roleView(personId).observations())
+                readable.put(new DocRef(read.ref().docId(),read.ref().version()), read);
             for (var entry : run.states().entrySet()) {
                 String organization = entry.getKey();
                 for (MediaEvidence.AliasBinding alias : entry.getValue().aliases()) {
@@ -4532,7 +5411,8 @@ public final class WorldWebHost implements AutoCloseable {
                         continue; // 该次提交未发表：旧标签不冒充已公开
                     }
                     DocRef publicRef = new DocRef(published.docId(), published.docVersion());
-                    if (!readable.contains(publicRef)) {
+                    var article = readable.get(publicRef);
+                    if (article == null) {
                         continue; // 未实际读到并仍可回忆，不出现（不泄存在性）
                     }
                     Map<String, Object> row = new LinkedHashMap<>();
@@ -4540,24 +5420,25 @@ public final class WorldWebHost implements AutoCloseable {
                     row.put("publicDocId", published.docId());
                     row.put("publicVersion", published.docVersion());
                     row.put("publicLabel", alias.publicLabel());
+                    row.put("publicTitle",article.title());
+                    row.put("publicBody",article.body());
+                    row.put("publicSourceDescription",article.publicSourceDescription());
                     labels.add(row);
                 }
                 for (MediaEvidence.IdentityShare share : entry.getValue().shares()) {
                     if (!share.recipientPartyId().equals(personId)) {
                         continue;
                     }
-                    if (!readable.contains(new DocRef(share.sharingDocId(),
-                            share.sharingVersion()))) {
+                    var shared = readable.get(new DocRef(share.sharingDocId(),share.sharingVersion()));
+                    if (shared == null) {
                         continue; // 未读或已遗忘的共享不出现
                     }
-                    InformationModel.DocumentVersion version = versionOf(info,
-                            share.sharingDocId(), share.sharingVersion());
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("shareId", share.shareId());
                     row.put("sharingDocId", share.sharingDocId());
                     row.put("sharingVersion", share.sharingVersion());
-                    row.put("title", version == null ? "" : version.title());
-                    row.put("body", version == null ? "" : version.body());
+                    row.put("title", shared.title());
+                    row.put("body", shared.body());
                     shares.add(row);
                 }
             }
@@ -4719,7 +5600,14 @@ public final class WorldWebHost implements AutoCloseable {
 
     /** 公开平台目录条目（不含群内帖）。 */
     public record GroupFeedView(String docId, String version, String title, String publisher,
-                                String publishedAt, String kind) {
+                                String publishedAt, String kind,
+                                @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                                String rankingReason) {
+        /** 既有公开时间目录没有个人推荐依据。 */
+        public GroupFeedView(String docId, String version, String title, String publisher,
+                             String publishedAt, String kind) {
+            this(docId, version, title, publisher, publishedAt, kind, null);
+        }
     }
 
     /** 本人群组页：只含本人有权限的群、邀请、帖子与公开目录。 */
@@ -4756,100 +5644,138 @@ public final class WorldWebHost implements AutoCloseable {
      * @throws Exception     读取失败
      */
     public GroupPageView groupPage(String personId) throws BusyException, Exception {
+        return call(() -> groupPageOf(readyNow(),personId));
+    }
+
+    private <T> T onWriter(Callable<T> action) throws Exception {
+        return Thread.currentThread() == writer ? action.call() : call(action);
+    }
+
+    @FunctionalInterface
+    interface PersonSubmission { Object submit(long position) throws Exception; }
+
+    boolean roleArgumentsEnabled() throws Exception {
+        return onWriter(() -> roleArgumentsEnabled(readyNow()));
+    }
+
+    private static boolean roleArgumentsEnabled(WorldRuntime world) {
+        return RunManifest.ROLE_ARGUMENTS_VERSION.equals(world.profile().manifest().dataVersions()
+                .get(RunManifest.ROLE_ARGUMENTS_POLICY));
+    }
+
+    Object personalWebPage(String person, PersonalObservations.Page scope) throws Exception {
+        return call(() -> personalWebPageOf(readyNow(), person, scope));
+    }
+
+    private Object personalWebPageOf(WorldRuntime world, String person, PersonalObservations.Page scope) throws Exception {
+        Object raw = switch (scope) {
+            case OPERATIONS -> OperationsWeb.view(world, person);
+            case MANUFACTURING -> ManufacturingWeb.view(world, person);
+            case RESEARCH -> ResearchWeb.view(world, person);
+            case ENGINEERING -> personEngineeringOf(world, person);
+            case GROUPS -> groupPageOf(world, person);
+            case NEWSLETTERS -> newsletterPage(world, person);
+            case MEDIA_WITHDRAWAL -> mediaWithdrawalPage(world.openRoleSession(person).view());
+        };
+        if ((scope == PersonalObservations.Page.ENGINEERING || scope == PersonalObservations.Page.GROUPS)
+                && roleArgumentsEnabled(world)) {
+            com.fasterxml.jackson.databind.node.ObjectNode page = PAYLOAD_MAPPER.valueToTree(raw);
+            page.put("roleToolArguments", RunManifest.ROLE_ARGUMENTS_VERSION);
+            raw = page;
+        }
+        return PersonalObservations.enabled(world, person) ? PersonalObservations.page(world, person, scope,raw) : raw;
+    }
+
+    // 令牌复核、原世界位置检查和业务写入在同一次 writer 任务内完成；旧档按原位置协议调用。
+    Object personalWebCommand(String person, long expected, PersonSubmission command, PersonalObservations.Page... allowed) throws Exception {
         return call(() -> {
-            WorldRuntime current = readyNow();
-            WorldRuntime.Snapshot snapshot = current.snapshot();
-            GroupsRun run = current.groupsRun();
-            if (run == null) {
-                return new GroupPageView(runId, num(snapshot.position()), num(snapshot.timeMillis()), personId, false,
-                        List.of(), List.of(), List.of(), List.of(), Map.of());
-            }
-            long now = snapshot.timeMillis();
-            List<GroupSummaryView> groups = new ArrayList<>();
-            for (GroupModel.Membership segment : run.state().memberships()) {
-                if (!segment.person().equals(personId) || !segment.open()) {
-                    continue;
-                }
-                run.group(segment.groupId()).ifPresent(group -> groups.add(
-                        new GroupSummaryView(group.groupId(), group.joinPolicy().name(),
-                                group.historyPolicy().name(), num(segment.joinedAt()),
-                                group.ownerPartyId().equals(personId))));
-            }
-            List<GroupInviteView> invitations = new ArrayList<>();
-            for (GroupModel.Invitation invitation : run.state().invitations()) {
-                if (invitation.invitee().equals(personId)
-                        && invitation.status() == GroupModel.InvitationStatus.PENDING) {
-                    invitations.add(new GroupInviteView(invitation.inviteId(),
-                            invitation.groupId(), invitation.inviter(),
-                            num(invitation.invitedAt())));
-                }
-            }
-            Set<String> mine = new HashSet<>();
-            for (GroupSummaryView group : groups) {
-                mine.add(group.groupId());
-            }
-            RoleView view = current.roleView(personId);
-            Set<String> visible = new HashSet<>();
-            for (InformationModel.CatalogEntry entry : view.catalog()) {
-                visible.add(entry.docId() + "#" + entry.version());
-            }
-            Map<String, RoleView.Experience> experiences = new HashMap<>();
-            for (RoleView.Experience experience : view.observations()) {
-                experiences.put(experience.ref().docId() + "#" + experience.ref().version(),
-                        experience);
-            }
-            List<GroupPostView> posts = new ArrayList<>();
-            for (InformationModel.CatalogEntry entry : view.catalog()) {
-                InformationModel.Document document = documentOf(snapshot, entry.docId());
-                if (document == null
-                        || document.audience().kind() != InformationModel.AudienceKind.GROUP
-                        || !mine.contains(document.audience().partyId())) {
-                    continue;
-                }
-                RoleView.Experience experience = experiences.get(
-                        entry.docId() + "#" + entry.version());
-                boolean read = experience != null;
-                GroupModel.Post post = null;
-                for (GroupModel.Post candidate : run.state().posts()) {
-                    if (candidate.docId().equals(entry.docId())) {
-                        post = candidate;
-                    }
-                }
-                List<String> refs = new ArrayList<>();
-                if (post != null) {
-                    for (GroupModel.Ref ref : post.declaredRefs()) {
-                        // 只公开读者本人此刻可访问/可引用的来源表示；God 审计另列真实根
-                        String key = ref.docId() + "#" + ref.version();
-                        if (visible.contains(key)) {
-                            refs.add(key);
-                        }
-                    }
-                }
-                posts.add(new GroupPostView(entry.docId(), num(entry.version()),
-                        document.audience().partyId(), document.publisherPartyId(), entry.title(),
-                        read ? experience.body() : null, num(document.versions()
-                                .get(document.versions().size() - 1).publishedAt()),
-                        document.publisherPartyId().equals(personId), read, List.copyOf(refs)));
-            }
-            List<GroupFeedView> feed = new ArrayList<>();
-            for (PublicationRun.FeedEntry entry : PublicationRun.feed(
-                    run.publication().platform(), mediaForFeed(snapshot), infoOf(snapshot), now,
-                    run.feedLimit())) {
-                feed.add(new GroupFeedView(entry.docId(), num(entry.version()), entry.title(),
-                        entry.publisherPartyId(), num(entry.publishedAt()), entry.kind().name()));
-            }
-            return new GroupPageView(runId, num(snapshot.position()), num(snapshot.timeMillis()), personId, true,
-                    List.copyOf(groups), List.copyOf(invitations), List.copyOf(posts),
-                    List.copyOf(feed), Map.of(
-                    "JOIN", num(run.config().joinMillis()),
-                    "INVITE", num(run.config().inviteMillis()),
-                    "RESPOND", num(run.config().respondMillis()),
-                    "LEAVE", num(run.config().leaveMillis()),
-                    "POST", num(run.config().postMillis()),
-                    "CORRECTION", num(run.config().postMillis()),
-                    "PLATFORM_POST", num(run.platformConfig().postMillis()),
-                    "PLATFORM_CORRECTION", num(run.platformConfig().postMillis())));
+            WorldRuntime world = readyNow();
+            if (!PersonalObservations.enabled(world, person)) return command.submit(expected);
+            var scope = PersonalObservations.issuedPage(world, person, expected, allowed);
+            if (scope == null) throw new PositionMismatch(-1);
+            var page = (com.fasterxml.jackson.databind.node.ObjectNode) personalWebPageOf(world, person, scope);
+            if (!page.required("observationToken").asText().equals(Long.toString(expected))) throw new PositionMismatch(-1);
+            long frame = world.snapshot().position();
+            Object result = command.submit(frame);
+            if (world.snapshot().position() != frame) PersonalObservations.consume(world, person, scope);
+            var receipt = PAYLOAD_MAPPER.valueToTree(result);
+            PersonalObservations.scrub(receipt);
+            return receipt;
         });
+    }
+
+    private GroupPageView groupPageOf(WorldRuntime current, String personId) throws IOException {
+        WorldRuntime.Snapshot snapshot = current.snapshot();
+        GroupsRun run = current.groupsRun();
+        if (run == null) {
+            return new GroupPageView(runId, num(snapshot.position()), num(snapshot.timeMillis()), personId, false,
+                    List.of(), List.of(), List.of(), List.of(), Map.of());
+        }
+        long now = snapshot.timeMillis();
+        List<GroupSummaryView> groups = new ArrayList<>();
+        for (GroupModel.Membership segment : run.state().memberships()) {
+            if (!segment.person().equals(personId) || !segment.open()) {
+                continue;
+            }
+            run.group(segment.groupId()).ifPresent(group -> groups.add(
+                    new GroupSummaryView(group.groupId(), group.joinPolicy().name(),
+                            group.historyPolicy().name(), num(segment.joinedAt()),
+                            group.ownerPartyId().equals(personId))));
+        }
+        List<GroupInviteView> invitations = new ArrayList<>();
+        for (GroupModel.Invitation invitation : run.state().invitations()) {
+            if (invitation.invitee().equals(personId)
+                    && invitation.status() == GroupModel.InvitationStatus.PENDING) {
+                invitations.add(new GroupInviteView(invitation.inviteId(),
+                        invitation.groupId(), invitation.inviter(),
+                        num(invitation.invitedAt())));
+            }
+        }
+        Set<String> mine = new HashSet<>();
+        for (GroupSummaryView group : groups) {
+            mine.add(group.groupId());
+        }
+        RoleView view = current.roleView(personId);
+        var readableRefs = run.readableGroupRefs(view);
+        Map<String, RoleView.Experience> experiences = new HashMap<>();
+        for (RoleView.Experience experience : view.observations()) {
+            experiences.put(experience.ref().docId() + "#" + experience.ref().version(),
+                    experience);
+        }
+        List<GroupPostView> posts = new ArrayList<>();
+        for (InformationModel.CatalogEntry entry : view.catalog()) {
+            InformationModel.Document document = documentOf(snapshot, entry.docId());
+            if (document == null
+                    || document.audience().kind() != InformationModel.AudienceKind.GROUP
+                    || !mine.contains(document.audience().partyId())) {
+                continue;
+            }
+            RoleView.Experience experience = experiences.get(
+                    entry.docId() + "#" + entry.version());
+            boolean read = experience != null;
+            var refs = readableRefs.getOrDefault(new GroupModel.Ref(entry.docId(), entry.version()),
+                    List.of()).stream().map(ref -> ref.docId() + "#" + ref.version()).toList();
+            posts.add(new GroupPostView(entry.docId(), num(entry.version()),
+                    document.audience().partyId(), document.publisherPartyId(), entry.title(),
+                    read ? experience.body() : null, num(entry.publishedAt()),
+                    document.publisherPartyId().equals(personId), read, refs));
+        }
+        List<GroupFeedView> feed = new ArrayList<>();
+        for (PublicationRun.FeedEntry entry : current.personalNewsFeed(personId)) {
+            feed.add(new GroupFeedView(entry.docId(), num(entry.version()), entry.title(),
+                    entry.publisherPartyId(), num(entry.publishedAt()), entry.kind().name(), entry.rankingReason()));
+        }
+        return new GroupPageView(runId, num(snapshot.position()), num(snapshot.timeMillis()), personId, true,
+                List.copyOf(groups), List.copyOf(invitations), List.copyOf(posts),
+                List.copyOf(feed), Map.of(
+                "JOIN", num(run.config().joinMillis()),
+                "INVITE", num(run.config().inviteMillis()),
+                "RESPOND", num(run.config().respondMillis()),
+                "LEAVE", num(run.config().leaveMillis()),
+                "POST", num(run.config().postMillis()),
+                "CORRECTION", num(run.config().postMillis()),
+                "PLATFORM_POST", num(run.platformConfig().postMillis()),
+                "PLATFORM_CORRECTION", num(run.platformConfig().postMillis())));
     }
 
     /**
@@ -4867,7 +5793,7 @@ public final class WorldWebHost implements AutoCloseable {
         if (request == null) {
             throw new IllegalArgumentException("群组动作不能为空");
         }
-        return call(() -> {
+        return onWriter(() -> {
             WorldRuntime current = readyNow();
             WorldRuntime.Snapshot snapshot = current.snapshot();
             if (snapshot.position() != request.expectedPosition()) {
@@ -5066,13 +5992,6 @@ public final class WorldWebHost implements AutoCloseable {
         return snapshot.information().orElseThrow().information();
     }
 
-    private static MediaModel.State mediaForFeed(WorldRuntime.Snapshot snapshot) {
-        if (snapshot.media().isEmpty() || snapshot.media().orElseThrow().states().isEmpty()) {
-            return null;
-        }
-        return snapshot.media().orElseThrow().states().get(0);
-    }
-
     private static InformationModel.Document documentOf(WorldRuntime.Snapshot snapshot,
                                                         String docId) {
         for (InformationModel.Document document : infoOf(snapshot).documents()) {
@@ -5251,7 +6170,7 @@ public final class WorldWebHost implements AutoCloseable {
                     true, bounded(organizations), bounded(stories), bounded(works), bounded(reports),
                     bounded(pending), List.of("工时为本次运行的实验总预算，没有每日自动重置。",
                     "取消控制不另扣采编工时；被取消工作按实际已过时间收费。",
-                    "发布不会自动变成人物已读经历。采访、匿名与社交传播尚未接入。"));
+                    "人物读完已发表版本后，才能在本人经历中查看这份稿件。"));
         });
     }
 
@@ -5381,6 +6300,7 @@ public final class WorldWebHost implements AutoCloseable {
         private final LinkedHashSet<String> pending;
         private final Map<String, String> skipped = new LinkedHashMap<>();
         private final Map<String, InputSize> inputSizes = new LinkedHashMap<>();
+        private final Map<String, String> personalActionIds = new java.util.HashMap<>();
         /** 本轮显式场景；null 表示沿人物原自动路由。 */
         private final String scene;
         /** 治理轮绑定的真实公司；其它轮为 null。 */
@@ -5591,6 +6511,7 @@ public final class WorldWebHost implements AutoCloseable {
             throw new IllegalArgumentException("同一人物不能在一个轮次里出现两次");
         }
         for (String person : distinct) {
+            if (current.personDecisionsPaused(person)) throw new IllegalArgumentException("该人物已暂停新决定");
             if (allowed.contains(person)) {
                 continue;
             }
@@ -5636,7 +6557,8 @@ public final class WorldWebHost implements AutoCloseable {
                 throw new SceneRejected("只有公司治理场景可以绑定公司");
             } else {
                 for (String person : distinct) {
-                    if (!scene.equals(sceneFor(person))) {
+                    if (livePeople(current.snapshot()).stream().noneMatch(row ->
+                            row.personPartyId().equals(person) && row.scenes().contains(scene))) {
                         throw new SceneRejected(
                                 "该场景不是此人物当前的模型路由：" + person);
                     }
@@ -5681,6 +6603,9 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     /** 是否有任何未结算工作：物理请求、完成槽、逻辑未结算或未派完名单。 */
+    /** 试验封存前由同一 writer 确认外发、回执槽及账本中未完成尝试均已清空。 */
+    boolean liveQuiescent() throws Exception { return call(() -> !hasUnsettledWork()); }
+
     private boolean hasUnsettledWork() {
         if (!physicalInFlight.isEmpty()) {
             return true;
@@ -5711,6 +6636,17 @@ public final class WorldWebHost implements AutoCloseable {
         }
     }
 
+    private boolean stopChangedAutonomyConfiguration() {
+        if (!localInputPolicy() || autonomy == null || !autonomy.running
+                || routes.view().revision() == autonomy.revision) return false;
+        if (liveRound != null) {
+            liveRound.stopping = true;
+            liveRound.pending.clear();
+        }
+        endAutonomy("CONFIGURATION_CHANGED");
+        return true;
+    }
+
     private void pumpLive() throws IOException {
         WorldRuntime current = readyNow();
         if (closed || workers == null || !liveRuntime() || livePaused || liveFault != null
@@ -5720,6 +6656,8 @@ public final class WorldWebHost implements AutoCloseable {
         if (!sessionBegun) {
             return;
         }
+        // 新调度合同先停止补发，已经在途的调用仍沿原路径结算。
+        stopChangedAutonomyConfiguration();
         current.drainDecisionCallbacks();
         current.expireDecisionTimeouts();
         LiveRound round = liveRound;
@@ -5740,12 +6678,18 @@ public final class WorldWebHost implements AutoCloseable {
         SceneRoutes.Snapshot snapshot = routes.view();
         Iterator<String> iterator = round.pending.iterator();
         while (iterator.hasNext()) {
+            if (stopChangedAutonomyConfiguration()) break;
             if (physicalInFlight.size() >= capacity
                     || current.liveCompletionSlots() >= capacity
                     || unsettledCount() >= capacity) {
                 break;
             }
             String person = iterator.next();
+            if (current.personDecisionsPaused(person)) {
+                round.skipped.put(person, "PERSON_DECISIONS_PAUSED");
+                iterator.remove();
+                continue;
+            }
             String scene = round.scene == null ? sceneFor(person) : round.scene;
             if (scene == null) {
                 round.skipped.put(person, "PERSON_NOT_ELIGIBLE");
@@ -5768,7 +6712,10 @@ public final class WorldWebHost implements AutoCloseable {
             if (scenePhysical(scene) >= route.maxConcurrency()) {
                 continue;
             }
-            String actionId = round.roundId + ":act:" + person;
+            String actionId = edu.cufe.auction.world.BusinessReceipts.enabled(current.profile().manifest())
+                    ? round.personalActionIds.computeIfAbsent(person, key -> edu.cufe.auction.world.BusinessReceipts.nextActionId(
+                            current.snapshot().decisions().orElseThrow().state(), key))
+                    : round.roundId + ":act:" + person;
             String commandId = round.roundId + ":open:" + person;
             DecisionRun.Call call;
             String openResult;
@@ -5778,9 +6725,9 @@ public final class WorldWebHost implements AutoCloseable {
                                 decisionRoute(route, snapshot.revision()))));
             } catch (WorldRuntime.DecisionInputTooLargeException tooLarge) {
                 round.skipped.put(person, "INPUT_TOO_LARGE");
-                round.inputSizes.put(person, new InputSize(Long.toString(tooLarge.actualChars()),
-                        Long.toString(tooLarge.actualBytes()), Long.toString(tooLarge.maxChars()),
-                        Long.toString(tooLarge.maxBytes())));
+                round.inputSizes.put(person, inputSize(tooLarge));
+                if (localInputPolicy()) setInputBlock(person, new BlockedInput(
+                        current.snapshot().position(), current.snapshot().timeMillis(), inputSize(tooLarge)),null);
                 iterator.remove();
                 continue;
             } catch (IllegalArgumentException | IllegalStateException rejected) {
@@ -5789,6 +6736,7 @@ public final class WorldWebHost implements AutoCloseable {
                 iterator.remove();
                 continue;
             }
+            if (localInputPolicy()) setInputBlock(person,null,"RECOVERED");
             DecisionModel.Decision opened = DecisionModel.decision(
                     current.snapshot().decisions().orElseThrow().state(), actionId).orElseThrow();
             if (opened.status() != DecisionModel.Status.OPEN) {
@@ -5900,10 +6848,10 @@ public final class WorldWebHost implements AutoCloseable {
     private static DecisionModel.Route decisionRoute(SceneRoutes.Route route, long revision) {
         return new DecisionModel.Route(route.scene().id(), route.slotId(), route.model(),
                 revision, route.maxCalls(), route.maxTotalTokens(), route.maxOutputTokens(),
-                route.maxConcurrency());
+                route.maxConcurrency(), route.budgetPolicy(), route.providerPolicy());
     }
 
-    private LiveStatus buildLiveStatus() {
+    private LiveStatus buildLiveStatus() throws IOException {
         WorldRuntime current = readyNow();
         WorldRuntime.Snapshot snapshot = current.snapshot();
         boolean live = workers != null && liveRuntime();
@@ -5924,6 +6872,15 @@ public final class WorldWebHost implements AutoCloseable {
         List<String> pending = liveRound == null ? List.of()
                 : List.copyOf(liveRound.pending);
         List<SkipReason> skips = liveRound != null ? collectSkips(liveRound) : lastSkips;
+        if (localInputPolicy()) {
+            refreshBlockedInputs();
+            var merged = new java.util.TreeMap<String, SkipReason>();
+            for (var skip : skips)
+                if (!WorldRuntime.DecisionInputTooLargeException.CODE.equals(skip.reason())) merged.put(skip.personPartyId(), skip);
+            blockedInputs.forEach((person, blocked) -> merged.putIfAbsent(person, new SkipReason(person,
+                    WorldRuntime.DecisionInputTooLargeException.CODE, blocked.size())));
+            skips = List.copyOf(merged.values());
+        }
         List<SceneState> scenes = new ArrayList<>();
         if (snapshot.decisions().isPresent() && routes != null) {
             SceneRoutes.Snapshot view = routes.view();
@@ -5938,7 +6895,7 @@ public final class WorldWebHost implements AutoCloseable {
                         Integer.toString(route.maxCalls()), Long.toString(used.inputTokens()),
                         Long.toString(reserved.inputTokens()), Long.toString(used.outputTokens()),
                         Long.toString(reserved.outputTokens()),
-                        Integer.toString(route.maxTotalTokens())));
+                        Long.toString(route.maxTotalTokens())));
             }
         }
         List<DecisionView> decisions = new ArrayList<>();
@@ -5988,7 +6945,7 @@ public final class WorldWebHost implements AutoCloseable {
             }
         }
         return new LiveStatus(runId, Long.toString(snapshot.position()),
-                Long.toString(snapshot.timeMillis()), phase, livePaused, liveFault,
+                Long.toString(snapshot.timeMillis()), phase, livePaused, current.commitFailureCode() == null ? liveFault : current.commitFailureCode(),
                 pending, physicalInFlight.size(), current.liveCompletionSlots(), runBudget,
                 personBudgets, scenes, skips, decisions,
                 lastRoundScene, lastRoundPersons, lastRoundCompany);
@@ -6076,6 +7033,7 @@ public final class WorldWebHost implements AutoCloseable {
      * 只在真实治理董事会里开一次任免议题会议，不新建角色或无限期任职。
      */
     public static final String BOARD_CONVENE_APPOINTMENT_TOOL = "board.conveneAppointment";
+    private static final String BOARD_CONVENE_DIGITAL_CESSATION = "board.conveneDigitalCessation";
 
     /**
      * 只读解析持久化待办载荷用的映射器；不持有世界状态。
@@ -6174,7 +7132,7 @@ public final class WorldWebHost implements AutoCloseable {
 
     /** 本人制造操作与位置复核在同一世界队列中完成。 */
     Map<String, Object> scheduleManufacturing(String person, ManufacturingWeb.Command command) throws Exception {
-        return call(() -> {
+        return onWriter(() -> {
             WorldRuntime world = readyNow();
             String receipt = ManufacturingWeb.schedule(world, person, command);
             return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
@@ -6193,7 +7151,7 @@ public final class WorldWebHost implements AutoCloseable {
 
     /** 本人研发动作与位置检查在同一世界队列中完成。 */
     Map<String, Object> scheduleResearch(String person, ResearchWeb.Command command) throws Exception {
-        return call(() -> {
+        return onWriter(() -> {
             WorldRuntime world = readyNow();
             String receipt = ResearchWeb.schedule(world, person, command);
             return Map.of("position", num(world.snapshot().position()),
@@ -6212,48 +7170,84 @@ public final class WorldWebHost implements AutoCloseable {
         return call(() -> OperationsWeb.view(readyNow(), person));
     }
 
-    /** 本人资源命令在同一世界队列核对身份、位置和真实任职。 */
-    Map<String, Object> scheduleResource(String person, OperationsWeb.ResourceCommand command) throws Exception {
+    /** 管理员查看开局合同与当前分类。 */
+    Map<String, Object> disclosedLoan() throws Exception {
+        return call(() -> readyNow().disclosedLoan());
+    }
+
+    long promoteDisclosedLoan(String loanId, long position) throws Exception {
+        return call(() -> readyNow().promoteDisclosedLoan(loanId, position));
+    }
+
+    /** 管理员在同一写队列确认个人暂停或恢复，途中的模型调用先完成结算。 */
+    long setPersonDecisionPause(WorldRuntime.PersonPauseRequest request) throws Exception {
+        return call(() -> {
+            var world=readyNow();
+            if (world.snapshot().position()==request.expectedPosition() && physicalInFlight.keySet().stream()
+                    .anyMatch(k->DecisionModel.decision(world.snapshot().decisions().orElseThrow().state(),k.actionId())
+                            .map(d->d.personPartyId().equals(request.person())).orElse(false)))
+                throw new IllegalStateException("该人物的模型调用仍在途，请在结算后变更");
+            return world.setPersonDecisionPause(request);
+        });
+    }
+
+    /** 管理员在当前世界队列校验或提交成组收单规则变更。 */
+    long migrateManufacturingIntake(edu.cufe.auction.world.ManufacturingIntake.Migration request, boolean apply) throws Exception {
         return call(() -> {
             WorldRuntime world = readyNow();
+            long position = world.snapshot().position();
+            if (position != request.expectedPosition()) throw new PositionMismatch(position);
+            return world.migrateManufacturingIntake(request, apply);
+        });
+    }
+
+    edu.cufe.auction.world.ManufacturingUpgrade.View manufacturingUpgrade(
+            edu.cufe.auction.world.ManufacturingUpgrade.Request request) throws Exception {
+        return call(() -> readyNow().manufacturingUpgrade(request));
+    }
+
+    /** 本人资源命令在同一世界队列核对身份、位置和真实任职。 */
+    Map<String, Object> scheduleResource(String person, OperationsWeb.ResourceCommand command) throws Exception {
+        return onWriter(() -> {
+            WorldRuntime world = readyNow();
             String receipt = OperationsWeb.scheduleResource(world, person, command);
-            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+            return OperationsWeb.acknowledgment(world, person, receipt);
         });
     }
 
     /** 本人水电命令在同一世界队列核对身份、位置和真实任职。 */
     Map<String, Object> scheduleHydro(String person, OperationsWeb.HydroCommand command) throws Exception {
-        return call(() -> {
+        return onWriter(() -> {
             WorldRuntime world = readyNow();
             String receipt = OperationsWeb.scheduleHydro(world, person, command);
-            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+            return OperationsWeb.acknowledgment(world, person, receipt);
         });
     }
 
     /** 本人数字服务命令在同一世界队列核对身份、位置和真实任职。 */
     Map<String, Object> scheduleDigital(String person, OperationsWeb.DigitalCommand command) throws Exception {
-        return call(() -> {
+        return onWriter(() -> {
             WorldRuntime world = readyNow();
             String receipt = OperationsWeb.scheduleDigital(world, person, command);
-            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+            return OperationsWeb.acknowledgment(world, person, receipt);
         });
     }
 
     /** 本人陈酿命令在同一世界队列核对身份、位置和真实任职。 */
     Map<String, Object> scheduleAged(String person, OperationsWeb.AgedCommand command) throws Exception {
-        return call(() -> {
+        return onWriter(() -> {
             WorldRuntime world = readyNow();
             String receipt = OperationsWeb.scheduleAged(world, person, command);
-            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+            return OperationsWeb.acknowledgment(world, person, receipt);
         });
     }
 
     /** 本人经营命令的位置与身份检查在同一世界队列中完成。 */
     Map<String, Object> scheduleOperations(String person, OperationsWeb.Command command) throws Exception {
-        return call(() -> {
+        return onWriter(() -> {
             WorldRuntime world = readyNow();
             String receipt = OperationsWeb.schedule(world, person, command);
-            return Map.of("position", num(world.snapshot().position()), "receipt", receipt);
+            return OperationsWeb.acknowledgment(world, person, receipt);
         });
     }
 
@@ -7027,10 +8021,10 @@ public final class WorldWebHost implements AutoCloseable {
             }
 
             Map<String, Long> asOfByRef = periodicEvidenceAsOf(periods, companyPartyId, period,
-                    snapshotRow.capturedAt());
+                    snapshotRow.capturedAt(), current.usesIssuerReportVersions());
             List<Map<String, Object>> evidence = new ArrayList<>();
             for (Map<String, Object> entry : evidenceByPeriod.getOrDefault(period, List.of())) {
-                Object refValue = entry.get("ref");
+                Object refValue = entry.getOrDefault("sourceRef", entry.get("ref"));
                 if (!(refValue instanceof String ref) || ref.isBlank()) {
                     continue;
                 }
@@ -7040,7 +8034,7 @@ public final class WorldWebHost implements AutoCloseable {
                     continue;
                 }
                 Map<String, Object> copy = new LinkedHashMap<>();
-                copy.put("ref", ref);
+                copy.put(entry.containsKey("sourceRef") ? "sourceRef" : "ref", ref);
                 copy.put("dimensions", entry.get("dimensions"));
                 copy.put("asOf", num(exact == null ? snapshotRow.capturedAt() : exact));
                 evidence.add(copy);
@@ -7129,6 +8123,10 @@ public final class WorldWebHost implements AutoCloseable {
             }
 
             Map<String, Object> roleRow = roleRowByPeriod.getOrDefault(period, Map.of());
+            if (seatHolder && roleRow.get("materialReadable") instanceof Boolean readable) {
+                row.put("materialReadable", readable);
+                row.put("myBallotSubmitted", Boolean.TRUE.equals(roleRow.get("myBallotSubmitted")));
+            }
             List<Map<String, Object>> draftRows = new ArrayList<>();
             Map<String, Object> latestDraft = null;
             if (god) {
@@ -7186,6 +8184,11 @@ public final class WorldWebHost implements AutoCloseable {
                 draftView.put("requiredApprovals",
                         Integer.toString(PeriodicModel.MIN_COMPLETE_SEATS));
                 draftView.put("mine", !me.isBlank() && me.equals(preparedBy));
+                if (row.containsKey("materialReadable") && myDraft.get("docId") instanceof String doc
+                        && myDraft.get("version") instanceof Number version) {
+                    draftView.put("myRead", access.hasRead(me, doc, version.longValue(), snapshot.timeMillis()));
+                    draftView.put("myRecallEligible", access.recallEligible(me, doc, version.longValue(), snapshot.timeMillis()));
+                }
                 draftRows.add(draftView);
                 latestDraft = draftView;
             }
@@ -7251,7 +8254,20 @@ public final class WorldWebHost implements AutoCloseable {
                 ballotRows.add(ballotView);
             }
             scoreView.put("closed", aggregate != null);
-            if (aggregate != null) {
+            if (aggregate != null && !god && current.usesOperatingPeriodEvidence()) {
+                if (roleRow.get("reviewDocId") instanceof String resultId) {
+                    scoreView.put("reviewDocId", resultId);
+                    scoreView.put("reviewVersion", roleRow.get("reviewVersion"));
+                }
+                if (roleRow.get("reviewResult") instanceof Map<?, ?> result) {
+                    for (String key : List.of("status", "reason", "total")) {
+                        scoreView.put(key, result.get(key));
+                    }
+                    scoreView.put("seatCount", String.valueOf(result.get("seatCount")));
+                } else {
+                    scoreView.put("resultVisible", false);
+                }
+            } else if (aggregate != null) {
                 scoreView.put("status", aggregate.status().name());
                 scoreView.put("reason", aggregate.reason());
                 scoreView.put("seatCount", Integer.toString(aggregate.seatCount()));
@@ -7317,7 +8333,7 @@ public final class WorldWebHost implements AutoCloseable {
             PeriodicModel.Release latestRelease = null;
             Long latestPublicVersion = null;
             String releaseDocId = publicDocByPeriod.get(period);
-            for (PeriodicModel.Release release : periods.releases()) {
+            for (PeriodicModel.Release release : periods.releasesForEvidence(true)) {
                 if (release.period() != period) {
                     continue;
                 }
@@ -7361,8 +8377,10 @@ public final class WorldWebHost implements AutoCloseable {
                     releaseView.put("requiresReading", !recallable);
                 }
                 releaseRows.add(releaseView);
-                latestRelease = release;
-                latestPublicVersion = publicVersion;
+                if (publicVersion != null) {
+                    latestRelease = release;
+                    latestPublicVersion = publicVersion;
+                }
             }
             row.put("releases", releaseRows);
             Map<String, Object> publication = new LinkedHashMap<>();
@@ -7429,7 +8447,7 @@ public final class WorldWebHost implements AutoCloseable {
     }
 
     /** 登记姓名优先，没有登记时回退到稳定 partyId，不让页面出现空空白。 */
-    private static String displayName(OpeningRegistry registry, String partyId) {
+    static String displayName(OpeningRegistry registry, String partyId) {
         String name = partyName(registry, partyId);
         return name == null || name.isBlank() ? partyId : name;
     }
@@ -7486,7 +8504,7 @@ public final class WorldWebHost implements AutoCloseable {
      * 定位是精确的；再用公开版本正文与所发草稿的 Information 正文核对一次，正文对不上就不认
      * 这条映射。两者都来自真实文档记录，不读任何私有值。</p>
      */
-    private static InformationModel.DocumentVersion publicVersionOf(
+    static InformationModel.DocumentVersion publicVersionOf(
             InformationModel.State information, String publicDocId,
             PeriodicModel.Release release) {
         if (information == null || publicDocId == null || publicDocId.isBlank()
@@ -7495,7 +8513,8 @@ public final class WorldWebHost implements AutoCloseable {
         }
         String draftBody = publicBody(information, release.docId(), release.version());
         for (InformationModel.Document document : information.documents()) {
-            if (!document.docId().equals(publicDocId)) {
+            if (!document.docId().equals(publicDocId)
+                    || document.audience().kind() != InformationModel.AudienceKind.PUBLIC) {
                 continue;
             }
             for (InformationModel.DocumentVersion version : document.versions()) {
@@ -7518,10 +8537,10 @@ public final class WorldWebHost implements AutoCloseable {
      * 调用方不得猜历史。
      */
     private static Map<String, Long> periodicEvidenceAsOf(PeriodicModel.CompanyPeriods periods,
-            String companyPartyId, long period, long capturedAt) {
+            String companyPartyId, long period, long capturedAt, boolean issuerReports) {
         Map<String, Long> times = new LinkedHashMap<>();
         Map<Long, Integer> order = new LinkedHashMap<>();
-        for (PeriodicModel.Release release : periods.releases()) {
+        for (PeriodicModel.Release release : periods.releasesForEvidence(issuerReports)) {
             int index = order.merge(release.period(), 1, Integer::sum);
             if (release.period() < period && release.publishedAt() <= capturedAt) {
                 times.put("disclosure:" + companyPartyId + ":" + release.period()
@@ -7552,6 +8571,24 @@ public final class WorldWebHost implements AutoCloseable {
         return null;
     }
 
+    private static boolean showAppointmentRequest(WorldRuntime current) {
+        return "v1".equals(current.profile().manifest().dataVersions().get("role-decision-guide"));
+    }
+
+    private static void putMeetingProposal(Map<String, Object> row, BoardModel.Meeting meeting,
+                                           boolean showAppointment) {
+        row.put("proposedLines", proposedLines(meeting.proposedLines()));
+        if (!showAppointment || meeting.appointmentProposal() == null) return;
+        var request = meeting.appointmentProposal().request();
+        Map<String, Object> appointment = new LinkedHashMap<>();
+        appointment.put("appointmentId", request.appointmentId());
+        appointment.put("personPartyId", request.personPartyId());
+        appointment.put("action", request.action().name());
+        appointment.put("effectiveAt", num(request.effectiveAt()));
+        appointment.put("endsAt", request.endsAt() == null ? null : num(request.endsAt()));
+        row.put("appointmentRequest", appointment);
+    }
+
     private static Map<String, Object> meetingRow(BoardModel.Meeting meeting) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("meetingId", meeting.meetingId());
@@ -7565,7 +8602,7 @@ public final class WorldWebHost implements AutoCloseable {
         row.put("attendees", String.join(",", meeting.attendeeSeatIds()));
         row.put("recused", String.join(",", meeting.recusedSeatIds()));
         row.put("materialCount", Integer.toString(meeting.materials().size()));
-        row.put("proposedLines", proposedLines(meeting.proposedLines()));
+        putMeetingProposal(row, meeting, true);
         row.put("ballots", ballots(meeting.ballots()));
         row.put("failureReason", meeting.failureReason());
         return row;
@@ -7597,6 +8634,11 @@ public final class WorldWebHost implements AutoCloseable {
             return new PersonEngineeringView(personPartyId, position, time, captured, false,
                     ENGINEERING_DISABLED_NOTE, List.of(), List.of(ENGINEERING_DISABLED_NOTE));
         }
+        current.engineeringCustomerMandateView(personPartyId).ifPresent(mandate -> {
+            String organization = mandate.path("organization").asText();
+            companies.add(Map.of("companyId", organization, "companyName", partyName(registry, organization),
+                    "template", "ENGINEERING_CUSTOMER", "customerMandate", mandate, "tools", List.of()));
+        });
         // 章程公司（制造）与工程公司共用同一周期状态；旧选择器只遍历工程公司会把制造周期挡掉。
         String manufacturingCompany = snapshot.governance()
                 .map(board -> board.board().charter().companyPartyId()).orElse(null);
@@ -7713,6 +8755,24 @@ public final class WorldWebHost implements AutoCloseable {
                     if (!withAttend.contains(PERIODIC_ATTEND_TOOL)) {
                         withAttend.add(PERIODIC_ATTEND_TOOL);
                     }
+                    boolean issuerBoard = current.engineeringDividendIssuer().filter(companyId::equals).isPresent();
+                    if (issuerBoard) {
+                        withAttend.add("issuer.dividend.propose");
+                        if (RunManifest.DIVIDEND_AMENDMENT_VERSION.equals(
+                                current.profile().manifest().dataVersions().get(RunManifest.DIVIDEND_AMENDMENT_POLICY))) {
+                            withAttend.add(RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND);
+                            for (var seat : current.engineeringRoleInput(personPartyId).path("directorships")) {
+                                if (companyId.equals(seat.path("companyPartyId").asText())) {
+                                    card.put("amendableAnnouncements", seat.path("amendableAnnouncements"));
+                                    break;
+                                }
+                            }
+                        }
+                        if (ownSeat.equals(charter.chairSeatId())) {
+                            withAttend.add("issuer.dividend.convene");
+                            withAttend.add("issuer.dividend.authorize");
+                        }
+                    }
                     card.put("tools", List.copyOf(withAttend));
                     List<Map<String, Object>> meetings = new ArrayList<>();
                     List<BoardModel.Meeting> all = new ArrayList<>(board.board().meetings().values());
@@ -7722,7 +8782,14 @@ public final class WorldWebHost implements AutoCloseable {
                         boolean involved = meeting.convenerSeatId().equals(ownSeat)
                                 || meeting.attendeeSeatIds().contains(ownSeat)
                                 || meeting.recusedSeatIds().contains(ownSeat);
+                        boolean eligibleForDividend = issuerBoard && meeting.topic() == BoardModel.Topic.DIVIDEND_AUTHORIZATION;
+                        if (!involved && !eligibleForDividend) {
+                            continue;
+                        }
                         if (!involved) {
+                            meetings.add(Map.of("meetingId", meeting.meetingId(), "topic", meeting.topic().name(),
+                                    "status", meeting.status().name(), "role", "ELIGIBLE", "opensAt", num(meeting.opensAt()),
+                                    "closesAt", num(meeting.closesAt()), "materialDeadline", num(meeting.materialDeadline())));
                             continue;
                         }
                         Map<String, Object> row = new LinkedHashMap<>();
@@ -7750,7 +8817,21 @@ public final class WorldWebHost implements AutoCloseable {
                         }
                         row.put("tally", "yes=" + yes + ",no=" + no + ",abstain=" + abstain);
                         row.put("materials", Integer.toString(meeting.materials().size()));
-                        row.put("proposedLines", proposedLines(meeting.proposedLines()));
+                        putMeetingProposal(row, meeting, showAppointmentRequest(current));
+                        if (eligibleForDividend && meeting.dividendProposal() != null) {
+                            var terms = meeting.dividendProposal().request();
+                            var change = terms.amendment();
+                            if (change != null) {
+                                row.put("dividendAmendment", Map.of("schemeId", change.currentSchemeId(),
+                                        "expectedVersion", Integer.toString(change.expectedVersion()),
+                                        "operation", change.operation(), "reason", change.reason()));
+                            }
+                            if (change == null || "REPLACE".equals(change.operation())) {
+                                row.put("dividendRequest", Map.of("schemeId", terms.schemeId(), "symbol", terms.symbol(),
+                                        "perShare", dec(terms.perShare()), "recordAt", num(terms.recordAtMillis()),
+                                        "exAt", num(terms.exAtMillis()), "payAt", num(terms.payAtMillis())));
+                            }
+                        }
                         row.put("failureReason", meeting.failureReason());
                         meetings.add(row);
                     }
@@ -7821,6 +8902,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (seat.equals(charter.chairSeatId())) {
                 // 只有主席能召集任免议题；该入口在运行层复用同一任免机制，不新建角色。
                 tools.add(BOARD_CONVENE_APPOINTMENT_TOOL);
+                if (current.digitalCessation(companyPartyId)) tools.add(BOARD_CONVENE_DIGITAL_CESSATION);
             }
         }
         if (manager) {
@@ -7870,7 +8952,7 @@ public final class WorldWebHost implements AutoCloseable {
             }
             row.put("tally", "yes=" + yes + ",no=" + no + ",abstain=" + abstain);
             row.put("materials", Integer.toString(meeting.materials().size()));
-            row.put("proposedLines", proposedLines(meeting.proposedLines()));
+            putMeetingProposal(row, meeting, showAppointmentRequest(current));
             row.put("failureReason", meeting.failureReason());
             meetings.add(row);
         }
@@ -7925,11 +9007,15 @@ public final class WorldWebHost implements AutoCloseable {
         if (command == null) {
             throw new IllegalArgumentException("阅读命令不能为空");
         }
-        return call(() -> {
+        return onWriter(() -> {
             WorldRuntime current = readyNow();
             WorldRuntime.Snapshot snapshot = current.snapshot();
             if (snapshot.position() != command.expectedPosition()) {
                 throw new PositionMismatch(snapshot.position());
+            }
+            if (PersonalObservations.enabled(current, personPartyId)
+                    && !current.canReadDocumentVersion(personPartyId, command.docId(), command.version())) {
+                throw new IllegalArgumentException("本人当前无法阅读此资料版本");
             }
             String receipt = current.scheduleStartReading(command.commandId(), command.taskId(),
                     command.dueTimeMillis(), personPartyId, command.docId(), command.version());
@@ -7973,7 +9059,7 @@ public final class WorldWebHost implements AutoCloseable {
         if (command == null) {
             throw new IllegalArgumentException("命令不能为空");
         }
-        return call(() -> {
+        return onWriter(() -> {
             WorldRuntime current = readyNow();
             WorldRuntime.Snapshot snapshot = current.snapshot();
             if (snapshot.engineering().isEmpty()) {
@@ -8027,6 +9113,52 @@ public final class WorldWebHost implements AutoCloseable {
         });
     }
 
+    record IssuerDividendCommand(long position, String command, String task, long due, String company,
+            String tool, String meeting, long materials, long opens, long closes,
+            String scheme, BigDecimal perShare, long recordAt, long exAt, long payAt,
+            String operation, int expectedVersion, String reason) { }
+
+    EngineeringActionView scheduleIssuerDividend(String person, IssuerDividendCommand action) throws Exception {
+        return onWriter(() -> {
+            WorldRuntime world = readyNow();
+            var snapshot = world.snapshot();
+            if (snapshot.position() != action.position()) throw new PositionMismatch(snapshot.position());
+            if (world.engineeringDividendIssuer().filter(action.company()::equals).isEmpty()) {
+                throw new IllegalArgumentException("该档案未登记这家分红发行人");
+            }
+            String receipt = submitIssuerDividend(world, person, action);
+            var after = world.snapshot();
+            return new EngineeringActionView(runId, num(after.position()), num(after.timeMillis()), action.company(), action.tool(), receipt);
+        });
+    }
+
+    private static String submitIssuerDividend(WorldRuntime world, String person, IssuerDividendCommand action) throws Exception {
+        var session = world.openRoleSession(person);
+        if (RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND.equals(action.tool())) {
+            boolean replacement = "REPLACE".equals(action.operation());
+            return session.amendIssuerDividend(action.command(), action.task(), action.due(), action.meeting(), action.scheme(),
+                    action.expectedVersion(), action.operation(), action.reason(),
+                    replacement ? action.perShare().toPlainString() : null, replacement ? action.recordAt() : null,
+                    replacement ? action.exAt() : null, replacement ? action.payAt() : null);
+        }
+        DividendModel.SchemeRequest request = null;
+        if ("issuer.dividend.propose".equals(action.tool())) {
+            var issuer = world.snapshot().engineering().orElseThrow().config().specOf(action.company());
+            var security = world.openingRegistry().orElseThrow().securities().stream()
+                    .filter(s -> action.company().equals(s.issuerOrganizationId())).findFirst().orElseThrow();
+            request = new DividendModel.SchemeRequest(action.scheme(), security.symbol(), issuer.companyOwnerId(),
+                    issuer.companyAccountId(), action.perShare(), action.recordAt(), action.exAt(), action.payAt());
+        }
+        String operation = switch (action.tool()) {
+            case "issuer.dividend.propose" -> "PROPOSE";
+            case "issuer.dividend.convene" -> "CONVENE";
+            case "issuer.dividend.authorize" -> "AUTHORIZE";
+            default -> throw new IllegalArgumentException("未知分红董事动作");
+        };
+        return session.issuerDividend(action.command(), action.task(), action.due(),
+                operation, action.meeting(), action.materials(), action.opens(), action.closes(), request);
+    }
+
     private static boolean isChair(WorldRuntime current, String companyId, String personPartyId) {
         return current.boardOfCompany(companyId)
                 .map(board -> board.board().charter())
@@ -8062,6 +9194,7 @@ public final class WorldWebHost implements AutoCloseable {
                     PERIODIC_ATTEND_TOOL));
             if (seat.equals(charter.chairSeatId())) {
                 tools.add(BOARD_CONVENE_APPOINTMENT_TOOL);
+                if (current.digitalCessation(companyPartyId)) tools.add(BOARD_CONVENE_DIGITAL_CESSATION);
             }
         }
         if (manager) {
@@ -8110,6 +9243,9 @@ public final class WorldWebHost implements AutoCloseable {
                         : current.scheduleEngineeringWaiverConvene(cid, tid, due, company, person,
                                 meeting, command.materialDeadline(), command.opensAt(),
                                 command.closesAt());
+            case BOARD_CONVENE_DIGITAL_CESSATION:
+                return current.scheduleCompanyBoardConvene(cid, tid, due, company, person, meeting,
+                        command.materialDeadline(), command.opensAt(), command.closesAt(), BoardModel.Topic.DIGITAL_CESSATION);
             case BOARD_CONVENE_APPOINTMENT_TOOL:
                 // 任免议题召集：与工程董事会同一入口，章程公司用其唯一治理董事会。
                 return current.scheduleEngineeringAppointmentConvene(cid, tid, due, company,
@@ -8226,7 +9362,7 @@ public final class WorldWebHost implements AutoCloseable {
             if (periods == null || capturedAt < 0) {
                 throw new IllegalArgumentException("没有该期采样，不能提交评分：第 " + period + " 期");
             }
-            Map<String, Long> asOfByRef = periodicEvidenceAsOf(periods, company, period, capturedAt);
+            Map<String, Long> asOfByRef = periodicEvidenceAsOf(periods, company, period, capturedAt, current.usesIssuerReportVersions());
             for (PeriodicMetricInput input : command.metrics()) {
                 String dimension = input.dimension() == null ? "" : input.dimension();
                 try {

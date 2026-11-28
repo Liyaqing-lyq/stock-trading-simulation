@@ -135,6 +135,11 @@ class EvidenceWebHttpTest {
                     "投影不得包含私根字段：" + labels);
             assertFalse(labels.contains(harness.provider.privateDocId),
                     "投影不得泄露匿名私证标识：" + labels);
+            for (var label : mine.path("labels").path("rows")) {
+                assertFalse(label.path("publicTitle").asText().isBlank());
+                assertFalse(label.path("publicBody").asText().isBlank());
+                assertFalse(label.has("docId"));
+            }
             assertEquals(0, mine.path("shares").path("total").asInt(),
                     "sam 不是共享收件人，不得看到别人的共享");
 

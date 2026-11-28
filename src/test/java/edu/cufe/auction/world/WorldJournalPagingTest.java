@@ -10,6 +10,33 @@ import static org.junit.jupiter.api.Assertions.*;
 class WorldJournalPagingTest {
     @TempDir Path dir;
 
+    @Test void reloadedPayloadMustMatchTheChecksumAcceptedForThatFrame() throws Exception {
+        var original = dir.resolve("original.journal");
+        var other = dir.resolve("other.journal");
+        for (var file : List.of(original, other)) {
+            String value = file.equals(original) ? "10" : "20";
+            try (var log = new WorldJournal(file, "cash")) {
+                log.commit("first", "same", "OK", List.of(new WorldEvent("snapshot", "STATE_SNAPSHOT_V1", value)));
+                for (int i = 0; i < 6; i++) log.commit("next" + i, "same", "OK", List.of());
+                assertEquals(value, log.commitAt(1).orElseThrow().events().get(0).payload());
+            }
+            try (var reopened = new WorldJournal(file, "cash")) {
+                assertEquals(value, reopened.commitAt(1).orElseThrow().events().get(0).payload());
+            }
+        }
+        // 两份日志都由正常写入器产生，其首帧只有省略于查询索引的快照内容不同。
+        var stored = java.nio.ByteBuffer.wrap(java.nio.file.Files.readAllBytes(original));
+        var alternate = java.nio.ByteBuffer.wrap(java.nio.file.Files.readAllBytes(other));
+        int length = stored.getInt();
+        assertEquals(length, alternate.getInt());
+        stored.position(8 + length); alternate.position(8);
+        byte[] accepted = new byte[32], payload = new byte[length], otherChecksum = new byte[32];
+        stored.get(accepted); alternate.get(payload).get(otherChecksum);
+        assertDoesNotThrow(() -> WorldJournal.verifyReadChecksum(payload, otherChecksum, otherChecksum));
+        assertThrows(java.io.IOException.class, () -> WorldJournal.verifyReadChecksum(payload, otherChecksum, accepted));
+        assertThrows(java.io.IOException.class, () -> WorldJournal.verifyReadChecksum(payload, accepted, accepted));
+    }
+
     @Test void compressedFramesKeepOldPrefixAndScannerRecoveryAndChecksumRules() throws Exception {
         Path file=dir.resolve("mixed.journal");
         var event=new WorldEvent("e1","STATE_SNAPSHOT_V1","data".repeat(10_000));

@@ -22,6 +22,8 @@ import java.util.TreeSet;
  * 指纹精确序列化所有行为与声明字段（比率 6 位、金额 2 位、文本原样）。</p>
  */
 public final class BankConfig {
+    /** 九家发行人独立授信、按每份合同的计息到期帧判断逾期的实验档。 */
+    public static final String ISSUER_CREDIT_ARCHIVE = "COMPOSED-ISSUER-CREDIT-EXP-V1";
 
     /** 元数据上限：precision 与 |scale| 都不超过该值。 */
     private static final int MAX_META = 40;
@@ -292,6 +294,7 @@ public record Clue(String name, String url, String doc) {
     }
 
     private static final List<String> ALL_ACTIONS = BankRules.ENFORCEMENT_ACTIONS;
+    private volatile String fingerprint;
     private final String archiveId;
     private final int version;
     private final String label;
@@ -630,6 +633,15 @@ public record Clue(String name, String url, String doc) {
      * @return SHA-256 十六进制
      */
     public String fingerprint() {
+        String existing = fingerprint;
+        if (existing == null) {
+            existing = computeFingerprint();
+            fingerprint = existing;
+        }
+        return existing;
+    }
+
+    private String computeFingerprint() {
         StringBuilder sb = new StringBuilder();
         sb.append("id=").append(archiveId).append("|v=").append(version)
                 .append("|label=").append(label).append('\n');
@@ -708,11 +720,7 @@ public record Clue(String name, String url, String doc) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(text.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
+            return java.util.HexFormat.of().formatHex(hash);
         } catch (NoSuchAlgorithmException failure) {
             throw new IllegalStateException("缺少 SHA-256", failure);
         }
@@ -1049,6 +1057,16 @@ public record Clue(String name, String url, String doc) {
 
      */
         public Builder groupMap(Map<String, String> value) { groupMap = new LinkedHashMap<>(value); return this; }
+
+        /** 将一个已披露主体纳入其实际集团，只撤销该主体原有的集团豁免。
+         * @param member 已登记风险桶
+         * @param group 实际所属集团
+         * @return 本构造器 */
+        public Builder includeInGroup(String member, String group) {
+            groupMap.put(member, group);
+            groupExclusionReasons.remove(member);
+            return this;
+        }
 
         /**
 

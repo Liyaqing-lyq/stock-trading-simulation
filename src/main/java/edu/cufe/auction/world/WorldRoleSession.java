@@ -745,6 +745,20 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
         }
     }
 
+    /** 在任编辑指明已有公开版和允许公开的撤稿原因。 */
+    public record MediaWithdrawalDraft(String storyId, long expectedPublicVersion, MediaModel.WithdrawalReason publicReason) {
+        /** 要求明确的稿件、公开版次和原因。 */
+        public MediaWithdrawalDraft {
+            requireText(storyId, "稿件标识");
+            if (expectedPublicVersion < 1 || publicReason == null) throw new IllegalArgumentException("撤稿须指明公开版本和原因");
+        }
+    }
+
+    /** 依本次本人观察排程正式撤稿。 */
+    public String withdrawStory(String command, String task, long due, MediaWithdrawalDraft draft) throws IOException {
+        return runtime.scheduleMediaStory(this, PendingTask.MEDIA_STORY_WITHDRAW_V1, command, task, due, draft);
+    }
+
     /**
      * 记者提出选题。
      *
@@ -821,6 +835,11 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
         public InterviewRequestDraft {
             requireText(requestId, "请求标识");
         }
+    }
+
+    /** 在本人的双边采访预约上办理现场接待、出发、撤权或提前返程。 */
+    public String siteVisit(String clientCommandId, String clientTaskId, long dueMillis, OnsiteVisit.Draft draft) throws IOException {
+        return runtime.scheduleInterview(this,PendingTask.ONSITE_ACTION_V1,clientCommandId,clientTaskId,dueMillis,draft);
     }
 
     /**
@@ -923,6 +942,22 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
                                  DialogueSpeakDraft draft) throws IOException {
         return runtime.scheduleInterview(this, PendingTask.INTERVIEW_SPEAK_V1, clientCommandId,
                 clientTaskId, dueMillis, draft);
+    }
+
+    /**
+     * 按本人声明的来源发送采访发言，确切原件需本人实际读完并仍有权阅读。
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId 本人任务标识
+     * @param dueMillis 发言办结的模拟时点
+     * @param draft 会话、标题与发言正文
+     * @param basis 本人自述、按原件转述或未核实
+     * @return 本次排程回执
+     * @throws IOException 持久提交失败
+     */
+    public String speakInterview(String clientCommandId, String clientTaskId, long dueMillis,
+                                 DialogueSpeakDraft draft, InterviewSourceBasis basis) throws IOException {
+        return runtime.scheduleInterview(this, PendingTask.INTERVIEW_SPEAK_V1, clientCommandId,
+                clientTaskId, dueMillis, new InterviewSourceBasis.Speech(draft, basis));
     }
 
     /**
@@ -1342,8 +1377,9 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
             payeeToken = payeeToken == null ? "" : payeeToken;
             purpose = purpose == null ? "" : purpose;
             loanId = loanId == null || loanId.isBlank() ? requestId : loanId;
-            if (amount == null || amount.signum() <= 0) {
-                throw new IllegalArgumentException("金额必须为正");
+            if (amount == null || (edu.cufe.auction.world.bank.BankCrisis.procedural(kind)
+                    ? amount.signum() != 0 : amount.signum() <= 0)) {
+                throw new IllegalArgumentException("处置程序金额必须为零，资金动作金额必须为正");
             }
             if (rateU < 0 || tenorMs < 0) {
                 throw new IllegalArgumentException("利率与期限不能为负");
@@ -1401,6 +1437,21 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
             CompanyOperationsRun.Fields fields, long durationMillis) throws IOException {
         return runtime.scheduleOperationsFromSession(this, commandId, taskId, dueMillis,
                 companyPartyId, action.name(), fields, durationMillis);
+    }
+
+    /** 以本人真实席位办理冻结工程发行人的分红会议、提案或已通过决议的实施。 */
+    public String issuerDividend(String commandId, String taskId, long dueMillis, String action, String meetingId,
+                                long materialDeadline, long opensAt, long closesAt, DividendModel.SchemeRequest request) throws IOException {
+        return runtime.issuerDividendBoard(this, commandId, taskId, dueMillis, action, meetingId,
+                materialDeadline, opensAt, closesAt, request);
+    }
+
+    /** 以本人席位提议撤销或替换未登记的已公告股利，等待本场董事会真实表决。 */
+    public String amendIssuerDividend(String commandId, String taskId, long dueMillis, String meetingId,
+            String schemeId, int expectedVersion, String operation, String reason, String perShare,
+            Long recordAtMillis, Long exAtMillis, Long payAtMillis) throws IOException {
+        return runtime.amendIssuerDividend(this, commandId, taskId, dueMillis, meetingId, schemeId, expectedVersion,
+                operation, reason, perShare, recordAtMillis, exAtMillis, payAtMillis);
     }
 
     /** 安排本人陈酿经营工作，真实任职和工时由世界复核。 */

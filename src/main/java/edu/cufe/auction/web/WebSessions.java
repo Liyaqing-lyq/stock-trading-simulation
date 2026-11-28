@@ -45,14 +45,14 @@ final class WebSessions {
                 : Optional.ofNullable(sessions.get(token));
     }
 
-    void invalidate(String token) {
+    synchronized void invalidate(String token) {
         if (token != null) {
             sessions.remove(token);
         }
     }
 
     /** 清空全部会话（管理员重新登录时使旧人物/旧管理员会话全部失效）。 */
-    void clear() {
+    synchronized void clear() {
         sessions.clear();
     }
 

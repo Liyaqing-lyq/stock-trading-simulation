@@ -15,6 +15,7 @@ const operationsSource = fs.readFileSync(path.join(webDir, "operations.js"), "ut
 const researchFile = path.join(webDir, "research.js");
 const researchSource = fs.existsSync(researchFile) ? fs.readFileSync(researchFile, "utf8") : "";
 const manufacturingSource = fs.readFileSync(path.join(webDir, "manufacturing.js"), "utf8");
+const interviewCoordinationSource = fs.readFileSync(path.join(webDir, "interview-coordination.js"), "utf8");
 
 // ---------------------------------------------------------------- DOM 原语
 function makeElement(tag = "div") {
@@ -28,6 +29,7 @@ function makeElement(tag = "div") {
     appendChild(child) { this.children.push(child); return child; },
     append(...items) { this.children.push(...items); },
     replaceChildren(...items) { this.children = items; },
+    focus() { this.focused = true; },
     addEventListener() { },
     closest(selector) { this._closest = this._closest || makeElement(selector); return this._closest; },
     querySelectorAll() { return []; },
@@ -55,7 +57,9 @@ function makeDocument() {
     addEventListener() { }
   };
   document._nodes = nodes;
-  document.querySelector = () => null;
+  const bankSubjectLabel = makeElement("label");
+  bankSubjectLabel.setAttribute("for", "person-bank-subject");
+  document.querySelector = selector => selector === 'label[for="person-bank-subject"]' ? bankSubjectLabel : null;
   return document;
 }
 
@@ -72,11 +76,12 @@ function makeWorld(router, name) {
     const method = (options && options.method) || "GET";
     calls.push(method + " " + url);
     const answer = await router(method, url, options || {}, context);
-    return { status: answer.status, json: async () => answer.payload };
+    return { status: answer.status, headers: answer.headers, json: async () => answer.payload };
   };
   vm.runInContext(operationsSource, context);
   if (researchSource) vm.runInContext(researchSource, context);
   vm.runInContext(manufacturingSource, context);
+  vm.runInContext(interviewCoordinationSource, context);
   vm.runInContext(source, context);
   if (groupsSource) vm.runInContext(groupsSource, context);
   // `state` 是脚本级 const，不在全局对象上；显式取同一对象。
@@ -293,6 +298,47 @@ defineCase("admin-interview-cleared-on-switch-person", async () => {
   return "切人物清空四表、提示文案与 cache";
 });
 
+defineCase("identity-transition-keyboard-focus", async () => {
+  let actor = "", localAdmin = false, finishView;
+  const fallback = baseRouter();
+  const world = makeWorld(async (method, url, options, context) => {
+    if (url === "/api/session/person") {
+      actor = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: actor } };
+    }
+    if (url === "/api/me/view") return new Promise(resolve => { finishView = resolve; });
+    if (url === "/api/admin/view") return { status: 200, payload: {
+      runId: "run-1", position: 20, timeMillis: 9000, accounts: [], owners: [], pending: [],
+      trades: [], dividendReports: [], pendingCount: 0, deliveredCount: 0 } };
+    if (url === "/api/session/local") return { status: localAdmin ? 200 : 403,
+      payload: localAdmin ? { role: "ADMIN" } : {} };
+    return fallback(method, url, options, context);
+  }, "identity-focus");
+  await bootSettled(world);
+  const html = fs.readFileSync(path.join(webDir, "index.html"), "utf8");
+  assert.match(html, /<h1\b[^>]*\bid="person-title"[^>]*\btabindex="-1"/);
+  let active;
+  for (const id of ["person-title", "page-title", "library-query", "bootstrap"]) {
+    world.$(id).focus = () => { active = id; };
+  }
+  for (const who of ["frank", "nina"]) {
+    finishView = null;
+    const switching = world.context.switchPerson(who);
+    await waitFor(() => !!finishView, "开始读取本人资料");
+    assert.equal(active, "person-title");
+    assert.equal(world.$("person-name").textContent, "正在读取人物…");
+    world.$("library-query").focus();
+    finishView({ status: 200, payload: personView(who) });
+    await switching;
+    assert.equal(active, "library-query", "本人资料到达不应抢回焦点");
+    localAdmin = who === "frank";
+    await world.context.backToAdmin();
+    assert.equal(world.state.mode, localAdmin ? "admin" : "login", world.$("status").textContent);
+    assert.equal(active, localAdmin ? "page-title" : "bootstrap");
+  }
+  return "切换至个人标题、本人资料回报保留输入焦点，退出后按真实会话进入管理标题或登录框";
+});
+
 defineCase("admin-interview-cleared-on-leave-page", async () => {
   const world = await adminRendered();
   world.context.selectPage("overview", false);
@@ -305,19 +351,25 @@ defineCase("admin-interview-cleared-on-leave-page", async () => {
 defineCase("personal-interview-cleared-on-identity-switch", async () => {
   const pending = [];
   let sessionPerson = null;
-  const views = { rita: personView("rita"), bob: personView("bob") };
+  const views = { rita: personView("rita", { accounts: [
+    {accountId: "R-1"}, {accountId: "R-2"}] }), bob: personView("bob") };
   const world = makeWorld(async (method, url, options) => {
     if (url === "/api/session") return { status: 200, payload: { role: "NONE" } };
     if (url === "/api/session/person") {
       sessionPerson = JSON.parse(options.body).personId;
       return { status: 200, payload: { personId: sessionPerson } };
     }
-    if (url === "/api/me/view") return { status: 200, payload: views[sessionPerson] };
+    if (url === "/api/me/view") return { status: 200, payload: views[sessionPerson],
+      headers: { get: name => name === "X-World-Run-Id" ? "scope-test" : null } };
     if (url === "/api/me/interview") {
       if (sessionPerson === "rita") {
         return { status: 200, payload: { personPartyId: "rita",
           invites: [invite("rita-1", "rita", "investor", "旧")],
-          sessions: [], contacts: [{ targetPartyId: "investor", channel: "c", description: "d" }] } };
+          sessions: [], contacts: [{ targetPartyId: "investor", channel: "c", description: "d" }],
+          officeWorkBudgets: { terms: "本社工时按毫秒计算", offices: [{ organizationPartyId: "wire",
+            totalMillis: 480000, spentMillis: 12000, mediaReservedMillis: 1000,
+            interviewReservedMillis: 60000, availableMillis: 407000, maxDurationMillis: 1800000,
+            minLeadMillis: 60000, inviteTtlMillis: 3600000 }] } } };
       }
       return new Promise((resolve, reject) => pending.push({ reject }));
     }
@@ -327,19 +379,34 @@ defineCase("personal-interview-cleared-on-identity-switch", async () => {
 
   await world.context.switchPerson("rita");
   assert.equal(world.rows("person-interview-invites"), 1, "前置：rita 预约已渲染");
+  assert.equal(world.$("context-account").textContent, "可见 2 个交易账户 · 未单选");
+  assert.equal(world.$("context-account").title, "R-1、R-2");
+  assert.equal(world.$("context-time").textContent, "scope-test · 5000 毫秒");
   assert.equal(world.rows("person-interview-contacts"), 1, "前置：rita 联系入口已渲染");
+  assert.equal(world.$("person-office-work-budgets").hidden, false);
+  const budgetCells = world.$("person-office-work-table").querySelector("tbody").children[0].children;
+  assert.deepEqual(Array.from(budgetCells, cell => String(cell.textContent)), [
+    "wire", "8 分钟", "12 秒", "1 秒", "1 分钟", "407 秒",
+    "单次最长 30 分钟，至少提前 1 分钟，邀请有效期 1 小时"
+  ]);
 
   const second = world.context.switchPerson("bob");
   await waitFor(() => pending.length === 1, "bob 的采访请求已发出");
   assert.equal(world.$("person-name").textContent, "正在读取人物…", "新身份观察返回前不显示旧姓名或内部编号");
   const duringInvites = world.rows("person-interview-invites");
   const duringContacts = world.rows("person-interview-contacts");
+  assert.equal(world.$("context-account").title, "");
+  assert.equal(world.$("context-identity").textContent, "实时 · bob");
+  assert.equal(world.rows("person-office-work-table"), 0);
+  assert.equal(world.$("person-office-work-terms").textContent, "");
+  assert.equal(world.$("person-office-work-budgets").hidden, true);
   const duringHidden = world.$("person-interview").hidden;
 
   pending[0].reject(new Error("network down"));
   await second;
   const afterInvites = world.rows("person-interview-invites");
   const afterContacts = world.rows("person-interview-contacts");
+  assert.equal(world.rows("person-office-work-table"), 0);
   const afterHidden = world.$("person-interview").hidden;
   console.log("  诊断 切身份等待期 rows=" + duringInvites + "/" + duringContacts
     + " hidden=" + duringHidden + " → 新请求失败后 rows=" + afterInvites + "/" + afterContacts
@@ -972,6 +1039,7 @@ defineCase("admin-social-rendered-and-cleared", async () => {
   await bootSettled(world);
   world.context.showMode("admin");
   world.context.selectPage("social", true);
+  assert.equal(world.context.document.getElementById("page-title").focused, true);
   await waitFor(() => world.rows("social-messages") === 2, "消息页渲染");
 
   const first = rowCells(world, "social-messages", 0);
@@ -1250,6 +1318,13 @@ cases.push({ name: "operations-god-person-late-response", body: async () => {
   world.context.renderOperations(secret);
   assert.ok(world.$("operations-financial").children.some(c => c.textContent.includes("9007199254740993.01")));
   assert.ok(world.$("operations-financial").children.some(c => c.textContent.includes("未批准")));
+  assert.equal(world.$("operations-company").value, "mfg-tech");
+  world.state.operationsRequestedCompany = "mfg-struct";
+  world.context.renderOperations(secret);
+  assert.equal(world.$("operations-company").value, "");
+  assert.equal(world.$("operations-financial").children.length, 0);
+  world.context.renderOperations(secret);
+  assert.equal(world.$("operations-company").value, "mfg-tech");
   const pending = world.context.loadOperations(world.state.generation, world.state.pageVersion);
   await waitFor(() => !!resolve, "三制造God请求已发出");
   world.context.showMode("person");
@@ -1257,12 +1332,24 @@ cases.push({ name: "operations-god-person-late-response", body: async () => {
   resolve({status:200,payload:secret}); await pending;
   assert.equal(world.$("operations-financial").children.length, 0);
   assert.equal(world.state.operationsView, null);
+  const privatePerson = {timeMillis:"101", observationToken:"8700000000000000000", enabled:true, companies:[{
+    ...secret.companies[0], reports:[{timeMillis:"100", action:"DELIVER", accepted:true, reason:"SHIPPED", amount:"3.00", businessId:"sale-1"}]
+  }]};
+  world.context.renderOperations(privatePerson);
+  const contents = n => [n.textContent,...n.children.flatMap(contents)];
+  assert.equal(world.$("operations-cut").textContent,"世界时点 101 毫秒");
+  assert.ok(contents(world.$("operations-records")).includes("sale-1"));
+  assert.ok(!contents(world.$("operations-records")).includes("确认记录"));
+  assert.ok(!contents(world.$("operations-records")).includes(privatePerson.observationToken));
+  world.context.showMode("admin");
+  assert.ok(!contents(world.$("operations-records")).includes("sale-1"));
+  assert.equal(world.state.operationsView,null);
   return "金额保真、未批预算不填零、身份切换清空、迟到God响应丢弃";
 }});
 
 cases.push({ name: "resource-operations-submit-and-precision", body: async () => {
   let posted;
-  const view = {position:"9", timeMillis:"1", enabled:true, companies:[{kind:"RESOURCE",companyId:"resources",name:"资源公司",
+  const view = {observationToken:"8700000000000000000", timeMillis:"1", enabled:true, companies:[{kind:"RESOURCE",companyId:"resources",name:"资源公司",
     actions:["BEGIN_EXTRACTION","START_EXPANSION"],plan:{actionFields:{BEGIN_EXTRACTION:"jobId, seamId, quantityKg",START_EXPANSION:"projectId"},mineCapacityKg:"1000",transportCapacityKg:"1000",generatorCapacityMwh:"5",remainingBudget:null,
       mineCoal:{quantity:"9007199254740993"},plantFuel:{quantity:"0"},seams:[{seamId:"seam-a",extractionCostPerKg:"1.00"}]},
     financial:{assets:{"经营现金":"9007199254740993.01"},liabilities:{},equity:{}},jobs:{},receivables:{},reports:[]}]};
@@ -1277,6 +1364,7 @@ cases.push({ name: "resource-operations-submit-and-precision", body: async () =>
   assert.ok(world.$("operations-records").children.some(c=>c.textContent.includes("9007199254740993")));
   await world.context.submitOperations({preventDefault(){}});
   assert.equal(posted.url,"/api/me/resources/action");
+  assert.equal(posted.body.expectedPosition,view.observationToken);
   assert.equal(posted.body.fields.quantityKg,"9007199254740993");
   assert.equal(posted.body.companyId,"resources");
   world.$("operations-action").value="START_EXPANSION"; world.context.operationsFields();

@@ -84,6 +84,22 @@ class DeepSeekClientTest {
         }
     }
 
+    @Test
+    void longerRoleInputUsesFrozenHttpEnvelopeAndDeliversExactEscapedCharacters() throws Exception {
+        String text = "汉\"\\\t".repeat(28_000);
+        var request = new DeepSeekClient.Request(DeepSeekClient.MODEL_FLASH, "系统", text, 512, 5000,
+                DeepSeekClient.THINKING_HIGH_POLICY, true);
+        var result = client("/ok", KEY).send(request);
+        assertEquals(DeepSeekClient.Outcome.COMPLETE, result.outcome());
+        var actual = JSON.readTree(bodies.get("/ok").get(0));
+        assertEquals(text, actual.at("/messages/1/content").asText());
+        assertTrue(bodies.get("/ok").get(0).getBytes(StandardCharsets.UTF_8).length > DeepSeekClient.MAX_REQUEST_BYTES);
+        assertThrows(IllegalArgumentException.class, () -> new DeepSeekClient.Request(DeepSeekClient.MODEL_FLASH,
+                "系统", text, 512, 5000, DeepSeekClient.THINKING_HIGH_POLICY));
+        assertThrows(IllegalArgumentException.class, () -> new DeepSeekClient.Request(DeepSeekClient.MODEL_FLASH,
+                "系统", "X".repeat(DeepSeekClient.EXTENDED_REQUEST_BYTES + 1), 512, 5000, DeepSeekClient.THINKING_HIGH_POLICY, true));
+    }
+
     // ---------------------------------------------------------------- 合法路径
 
     @Test

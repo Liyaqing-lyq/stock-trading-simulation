@@ -186,6 +186,21 @@ class BranchLifecycleChainTest {
                 .filter(view -> view.runId().equals(CHILD)).findFirst().orElseThrow();
         assertEquals("STARTING", duringWindow.status(), "窗口内 start 还没提交 RUNNING");
         assertEquals(1, launcher.activeCount(), "清理完成前仍应占用并发额度");
+        // 子进程已真实监听也不能跳过父进程的来源与身份核验。
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        boolean listening = false;
+        while (System.nanoTime() < until && !listening) {
+            try {
+                listening = childGet(duringWindow.port(), "/", null).statusCode() == 200;
+            } catch (java.io.IOException starting) {
+                Thread.sleep(50L);
+            }
+        }
+        assertTrue(listening);
+        var earlyEntry = post("/api/admin/runs/" + CHILD + "/enter", "");
+        assertEquals(409, earlyEntry.statusCode());
+        assertEquals("RUN_NOT_RUNNING", JSON.readTree(earlyEntry.body()).path("code").asText());
+        assertTrue(earlyEntry.headers().allValues("Set-Cookie").isEmpty());
 
         RunLauncher.View stopped = launcher.stop(CHILD);
         assertEquals("STOPPED", stopped.status(), "用户 stop 必须得到 STOPPED");
@@ -245,6 +260,33 @@ class BranchLifecycleChainTest {
                 .path("status").asText());
     }
 
+    @Test void tenCompanyChildCanStartAdvanceStopAndReopenThroughTheSameAdminService() throws Exception {
+        startParent(true);
+        login();
+        var parent=json(get("/api/admin/view"));
+        var branch=post("/api/admin/branches",JSON.writeValueAsString(Map.of(
+                "position",parent.path("position").asText(),"childRunId",CHILD,"kind","operator","note","独立续行")));
+        assertEquals(200,branch.statusCode(),branch.body());
+        var launch=json(post("/api/admin/runs/"+CHILD+"/start",""));
+        assertEquals("RUNNING",launch.path("status").asText(),launch.toString());
+        int port=launch.path("port").asInt();
+        String admin=childCookieOf(post("/api/admin/runs/"+CHILD+"/enter","")).split(";",2)[0];
+        var initial=childJson(port,"/api/admin/view",admin);
+        long next=Long.parseLong(initial.path("timeMillis").asText())+5000;
+        childJson(port,"/api/admin/advance",admin,JSON.writeValueAsString(Map.of("expectedPosition", initial.path("position").asText(),
+                "targetMillis",Long.toString(next))));
+        var after=childJson(port,"/api/admin/view",admin);
+        assertEquals(next,Long.parseLong(after.path("timeMillis").asText()));
+        assertEquals(parent.path("position").asText(),json(get("/api/admin/view")).path("position").asText());
+        assertEquals("STOPPED",json(post("/api/admin/runs/"+CHILD+"/stop","")).path("status").asText());
+        launch=json(post("/api/admin/runs/"+CHILD+"/start",""));
+        assertEquals("RUNNING",launch.path("status").asText());
+        admin=childCookieOf(post("/api/admin/runs/"+CHILD+"/enter","")).split(";",2)[0];
+        var restored=childJson(launch.path("port").asInt(),"/api/admin/view",admin);
+        assertEquals(after.path("position").asText(),restored.path("position").asText());
+        assertEquals(after.path("timeMillis").asText(),restored.path("timeMillis").asText());
+    }
+
     /** 在限定时间内等待闸门；超时后继续，由测试断言兜底。 */
     private static void awaitQuietly(CountDownLatch latch, long millis) {
         try {
@@ -256,7 +298,9 @@ class BranchLifecycleChainTest {
 
     // ------------------------------------------------------------------ 夹具
 
-    private void startParent() throws Exception {
+    private void startParent() throws Exception { startParent(false); }
+
+    private void startParent(boolean compact) throws Exception {
         Path root = Path.of("target", "branch-lifecycle-tests");
         Files.createDirectories(root);
         work = Files.createTempDirectory(root, "case-");
@@ -268,7 +312,11 @@ class BranchLifecycleChainTest {
         Files.writeString(keyFile, String.join("\n", keys), StandardCharsets.UTF_8);
         KeySlots slots = KeySlots.load(keyFile);
         routes = SceneRoutes.open(work);
-        host = new WorldWebHost(() -> WorldWebScenario.openGroups(work.resolve("world-groups.journal")));
+        host = new WorldWebHost(() -> {
+            if (!compact) return WorldWebScenario.openGroups(work.resolve("world-groups.journal"));
+            var world=edu.cufe.auction.world.composed.ComposedIndustryScenario.openTenCompanyAutonomy(work.resolve("parent.journal"));
+            return new WorldWebHost.Opened(world,world.profile().manifest().runId());
+        });
         server = new WorldWebServer(host, slots, routes, 0, BOOTSTRAP);
         launcher = new RunLauncher(new RunLauncher.Config(work.toAbsolutePath(),
                 work.resolve("runs").toAbsolutePath(), keyFile.toAbsolutePath(), 18100, 18109, 2,

@@ -1,0 +1,210 @@
+{
+  "directory": "G:\\项目\\java-stock-auction\\logs\\world-operating-loop\\logs\\operating-cycle\\live-planning-operating-v4-75f17f4",
+  "callsSaved": 503,
+  "repliesSaved": 503,
+  "pendingOrUnarchivedReplies": 0,
+  "requestedActions": {
+    "role.reading.start": 104,
+    "board.attend": 36,
+    "role.wait": 298,
+    "board.addMaterial": 10,
+    "board.proposeAppointment:APPOINT": 10,
+    "board.vote": 10,
+    "board.implement": 11,
+    "hydro.act:DISPATCH_FLOW": 5,
+    "board.convene": 19
+  },
+  "providerFailures": {},
+  "knownInputTokens": 3717978,
+  "knownOutputTokens": 40817,
+  "unknownUsageReplies": 0,
+  "costStatus": "UNKNOWN",
+  "stop": "RUNTIME_STOP",
+  "autonomy": {
+    "available": true,
+    "running": false,
+    "reason": "ROLE_DISPATCH_REJECTED",
+    "position": "2075",
+    "timeMillis": "5105000",
+    "targetMillis": "5184000000",
+    "cycles": 234,
+    "calls": 503,
+    "failures": 2,
+    "companies": 10,
+    "persons": 54
+  },
+  "physicalInFlight": 0,
+  "fault": null,
+  "confirmedGovernance": {
+    "aged-company": {
+      "meetings": 1,
+      "materials": 1,
+      "attendances": 5,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "meetingStatuses": [
+        "CONVENED"
+      ]
+    },
+    "digital-company": {
+      "meetings": 1,
+      "materials": 1,
+      "attendances": 4,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "meetingStatuses": [
+        "CONVENED"
+      ]
+    },
+    "eng-a": {
+      "meetings": 0,
+      "materials": 0,
+      "attendances": 0,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "meetingStatuses": []
+    },
+    "hydro": {
+      "meetings": 1,
+      "materials": 1,
+      "attendances": 5,
+      "ballots": 5,
+      "appointments": 1,
+      "budgets": 0,
+      "meetingStatuses": [
+        "IMPLEMENTED"
+      ]
+    },
+    "mfg-struct": {
+      "meetings": 1,
+      "materials": 1,
+      "attendances": 5,
+      "ballots": 5,
+      "appointments": 1,
+      "budgets": 0,
+      "meetingStatuses": [
+        "IMPLEMENTED"
+      ]
+    },
+    "mfg-tech": {
+      "meetings": 1,
+      "materials": 1,
+      "attendances": 5,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "meetingStatuses": [
+        "CONVENED"
+      ]
+    },
+    "mfg-versa": {
+      "meetings": 1,
+      "materials": 2,
+      "attendances": 5,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "meetingStatuses": [
+        "CONVENED"
+      ]
+    },
+    "north": {
+      "meetings": 0,
+      "materials": 0,
+      "attendances": 0,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "meetingStatuses": []
+    },
+    "pharma": {
+      "meetings": 1,
+      "materials": 1,
+      "attendances": 5,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "meetingStatuses": [
+        "REJECTED"
+      ]
+    },
+    "resources": {
+      "meetings": 0,
+      "materials": 0,
+      "attendances": 0,
+      "ballots": 0,
+      "appointments": 0,
+      "budgets": 0,
+      "meetingStatuses": []
+    }
+  },
+  "confirmedOperations": [
+    {
+      "companyId": "mfg-struct",
+      "kind": "MANUFACTURING",
+      "contracts": 0,
+      "purchases": 0,
+      "batches": 0,
+      "receivables": 0,
+      "reportRows": 0
+    },
+    {
+      "companyId": "mfg-tech",
+      "kind": "MANUFACTURING",
+      "contracts": 0,
+      "purchases": 0,
+      "batches": 0,
+      "receivables": 0,
+      "reportRows": 0
+    },
+    {
+      "companyId": "mfg-versa",
+      "kind": "MANUFACTURING",
+      "contracts": 0,
+      "purchases": 0,
+      "batches": 0,
+      "receivables": 0,
+      "reportRows": 0
+    },
+    {
+      "companyId": "resources",
+      "kind": "RESOURCE",
+      "contracts": 0,
+      "purchases": 0,
+      "batches": 0,
+      "receivables": 0,
+      "reportRows": 0
+    },
+    {
+      "companyId": "hydro",
+      "kind": "HYDRO",
+      "contracts": 0,
+      "purchases": 0,
+      "batches": 0,
+      "receivables": 0,
+      "reportRows": 65
+    },
+    {
+      "companyId": "digital-company",
+      "kind": "DIGITAL",
+      "contracts": 0,
+      "purchases": 0,
+      "batches": 0,
+      "receivables": 0,
+      "reportRows": 0
+    },
+    {
+      "companyId": "aged-company",
+      "kind": "AGED",
+      "contracts": 0,
+      "purchases": 0,
+      "batches": 0,
+      "receivables": 0,
+      "reportRows": 0
+    }
+  ],
+  "journalBytes": 8290447
+}

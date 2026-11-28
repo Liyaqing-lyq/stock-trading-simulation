@@ -44,7 +44,7 @@ async function loadManufacturing(generation, pageVersion) {
 function renderManufacturing(view) {
   state.manufacturingView = view;
   $("manufacturing-note").textContent = view.note || "";
-  $("manufacturing-cut").textContent = "确认记录 " + view.position + " · 世界时点 " + view.timeMillis + " 毫秒";
+  $("manufacturing-cut").textContent = (view.position == null ? "" : "确认记录 " + view.position + " · ") + "世界时点 " + view.timeMillis + " 毫秒";
   $("manufacturing-summary").replaceChildren();
   $("manufacturing-reports").replaceChildren();
   $("manufacturing-operations").replaceChildren();
@@ -113,7 +113,7 @@ async function submitManufacturing(event) {
   const generation = state.generation, view = state.manufacturingView;
   if (state.mode !== "person" || !view?.enabled) return;
   const action = $("manufacturing-action").value, id = "web-mfg-" + crypto.randomUUID();
-  const command = { expectedPosition: view.position, commandId: id, taskId: id + "-task", action,
+  const command = { expectedPosition: view.observationToken ?? view.position, commandId: id, taskId: id + "-task", action,
     dueTimeMillis: researchInteger("manufacturing-due"), durationMillis: researchInteger("manufacturing-duration"),
     businessId: action === "PAY_BILL" ? "" : $("manufacturing-business").value.trim(), resultId: "", quantity: "0",
     unitPrice: "0", promisedDeliveryAt: "0", period: "0", fundSource: "" };

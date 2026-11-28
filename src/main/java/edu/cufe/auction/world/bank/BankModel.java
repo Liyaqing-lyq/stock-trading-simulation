@@ -64,7 +64,7 @@ public record Outcome(boolean accepted, String reason, String receipt,
      * @param config 冻结档案
      * @param ctx 运行上下文
      * @param cmd 命令（完整 body）
-     * @param frozen 受信冻结快照（非 PAYMENT 命令忽略）
+     * @param frozen 世界侧派生的受信资金冻结快照
      * @return 结果；协议错误与配置错误不消费 commandId
      */
     public static Outcome apply(BankState state, Map<String, CashLedger.CashAccount> accounts,
@@ -142,7 +142,7 @@ public record Outcome(boolean accepted, String reason, String receipt,
         return new Outcome(false, reason, null, state, accounts);
     }
 
-    private static String reasonOf(String receipt) {
+    static String reasonOf(String receipt) {
         for (String part : receipt.split(";")) {
             if (part.startsWith("reason=")) {
                 return part.substring("reason=".length());
@@ -166,9 +166,9 @@ public record Outcome(boolean accepted, String reason, String receipt,
             case WITHDRAW -> withdraw(w, cmd, now);
             case TRANSFER -> transfer(w, config, cmd, now);
             case LOAN_ORIGINATE -> originate(w, config, cmd, now);
-            case LOAN_REPAY -> repay(w, cmd, now);
+            case LOAN_REPAY, CONTRACT_REPAY -> repay(w, cmd, now);
             case IMPAIR -> impair(w, cmd);
-            case WRITE_OFF -> writeOff(w, cmd, now);
+            case WRITE_OFF, CONTRACT_WRITE_OFF -> writeOff(w, cmd, now);
             case THIRD_PARTY_PAY -> thirdPartyPay(w, cmd, now);
             case WAIVE -> waive(w, cmd, now);
             case COMMITMENT_INCREASE -> commit(w, config, cmd);
@@ -178,7 +178,7 @@ public record Outcome(boolean accepted, String reason, String receipt,
             case FACILITY_PROVISION -> facilityProvision(w, config, cmd);
             case FACILITY_DEFAULT -> facilityDefault(w, cmd);
             case MIGRATE -> migrate(w, config, cmd, now);
-            case ACCRUE_LOAN -> accrueLoanCommand(w, cmd, now);
+            case ACCRUE_LOAN -> accrueLoanCommand(w, cmd, now, BankConfig.ISSUER_CREDIT_ARCHIVE.equals(config.archiveId()));
             case ACCRUE_DEPOSIT -> accrueDepositCommand(w, cmd, now);
             case PAY_LOAN_INTEREST -> payLoanInterest(w, cmd, now);
             case PAY_DEPOSIT_INTEREST -> payDepositInterest(w, cmd, now);
@@ -718,11 +718,12 @@ public record Outcome(boolean accepted, String reason, String receipt,
         requireBank(w, bank);
         String bucket = w.chart().bucketFor(borrower);
         BankState.Loan loan = w.draft.loan(bank, borrower);
-        String trancheId = optionalTranche(cmd);
+        boolean recourse = cmd.kind() == BankCommand.Kind.CONTRACT_REPAY;
+        String trancheId = recourse ? cmd.text("tranche") : optionalTranche(cmd);
         if (trancheId != null) {
             // 定位到具体期次：只能还这一期的本金，绝不挪用其它合同余额。
             BankState.Tranche tranche = requireTranche(loan, trancheId);
-            if (amount.compareTo(tranche.onbook()) > 0) {
+            if (amount.compareTo(recourse ? tranche.contract() : tranche.onbook()) > 0) {
                 throw new BankException(Reasons.REPAY_EXCEEDS_CONTRACT + ":tranche:"
                         + trancheId);
             }
@@ -734,10 +735,24 @@ public record Outcome(boolean accepted, String reason, String receipt,
             syncDeposit(w, bank, borrower, now);
             requireDepositRoom(w, bank, borrower, amount);
             BankState.Loan current = w.draft.loan(bank, borrower);
-            addGl(w, bank, bucket, amount.negate());
+            BigDecimal recovery = recourse ? amount.min(tranche.writtenOff()) : Money.zero();
+            BigDecimal onbook = amount.subtract(recovery);
+            addGl(w, bank, bucket, onbook.negate());
             addGl(w, bank, w.chart().depositAccountOf(borrower), amount);
-            w.draft.putLoan(bank, borrower,
-                    normalize(allocateOnbookOn(current, trancheId, amount)));
+            if (recovery.signum() > 0) {
+                addGl(w, bank, "RECOVERY", recovery.negate());
+                w.receipt.put("recovery", Money.text(recovery));
+            }
+            w.draft.putLoan(bank, borrower, normalize(allocatePaymentOn(current, trancheId, onbook, recovery)));
+            if (recourse) {
+                String provisionAccount = w.chart().llpFor(borrower);
+                BigDecimal release = w.draft.gl(bank, provisionAccount).negate().subtract(w.draft.gl(bank, bucket));
+                if (release.signum() > 0) {
+                    addGl(w, bank, provisionAccount, release);
+                    addGl(w, bank, "IMPAIR", release.negate());
+                    w.receipt.put("provisionReleased", Money.text(release));
+                }
+            }
             syncPledgeOfLoan(w, bank, borrower);
             shrinkDeposit(w, bank, borrower);
             w.receipt.put("amount", Money.text(amount));
@@ -779,14 +794,22 @@ public record Outcome(boolean accepted, String reason, String receipt,
         if (amount.compareTo(provision) > 0) {
             throw new BankException(Reasons.INSUFFICIENT_PROVISION);
         }
-        if (amount.compareTo(loan.onbook()) > 0) {
+        String trancheId = cmd.kind() == BankCommand.Kind.CONTRACT_WRITE_OFF ? cmd.text("tranche") : null;
+        if (amount.compareTo(trancheId == null ? loan.onbook() : requireTranche(loan, trancheId).onbook()) > 0) {
             throw new BankException(Reasons.ONBOOK_INSUFFICIENT);
         }
         syncLoan(w, bank, borrower, now);
         BankState.Loan current = w.draft.loan(bank, borrower);
         addGl(w, bank, loanAccount, amount.negate());
         addGl(w, bank, provisionAccount, amount);
-        w.draft.putLoan(bank, borrower, normalize(allocateWriteOff(current, amount)));
+        if (trancheId == null) {
+            w.draft.putLoan(bank, borrower, normalize(allocateWriteOff(current, amount)));
+        } else {
+            w.draft.putLoan(bank, borrower, normalize(new BankState.Loan(current.tranches().stream()
+                    .map(t -> t.trancheId().equals(trancheId) ? copy(t, t.contract(),
+                            t.onbook().subtract(amount), t.writtenOff().add(amount)) : t).toList())));
+            w.receipt.put("tranche", trancheId);
+        }
         syncPledgeOfLoan(w, bank, borrower);
         w.receipt.put("amount", Money.text(amount));
     }
@@ -846,14 +869,20 @@ public record Outcome(boolean accepted, String reason, String receipt,
         w.receipt.put("amount", Money.text(amount));
     }
 
-    private static void accrueLoanCommand(Working w, BankCommand cmd, long now) {
+    private static void accrueLoanCommand(Working w, BankCommand cmd, long now, boolean checkMaturity) {
         String bank = cmd.text("bank");
         String borrower = cmd.text("borrower");
         long toMs = cmd.integer("toMs");
         requireActor(cmd, bank);
         requireBank(w, bank);
-        accrueLoan(w, bank, borrower, optionalTranche(cmd), toMs, now);
+        String trancheId = optionalTranche(cmd);
+        accrueLoan(w, bank, borrower, trancheId, toMs, now);
         BankState.Loan loan = w.draft.loan(bank, borrower);
+        if (checkMaturity && trancheId != null && toMs >= requireTranche(loan, trancheId).terms().maturityMs()) {
+            loan = new BankState.Loan(loan.tranches().stream().map(tranche ->
+                    tranche.trancheId().equals(trancheId) ? matured(tranche) : tranche).toList());
+            w.draft.putLoan(bank, borrower, loan);
+        }
         w.receipt.put("borrower", borrower);
         w.receipt.put("toMs", Long.toString(toMs));
         w.receipt.put("accrued", Money.text(loan.accruedInterest()));
@@ -926,13 +955,7 @@ public record Outcome(boolean accepted, String reason, String receipt,
         List<BankState.Tranche> next = new ArrayList<>();
         for (BankState.Tranche tranche : loan.tranches()) {
             if (tranche.terms() != null && now >= tranche.terms().maturityMs()) {
-                boolean settled = tranche.contract().signum() == 0
-                        && tranche.interestReceivable().signum() == 0;
-                next.add(new BankState.Tranche(tranche.trancheId(), tranche.source(),
-                        tranche.contract(), tranche.onbook(), tranche.writtenOff(),
-                        tranche.terms().withStatus(
-                                settled ? BankState.SETTLED : BankState.PAST_DUE, !settled),
-                        null));
+                next.add(matured(tranche));
             } else {
                 next.add(tranche);
             }
@@ -944,6 +967,13 @@ public record Outcome(boolean accepted, String reason, String receipt,
         w.receipt.put("overdue", Boolean.toString(updated.overdue()));
         w.receipt.put("principal", Money.text(updated.contract()));
         w.receipt.put("interestReceivable", Money.text(updated.interestReceivable()));
+    }
+
+    private static BankState.Tranche matured(BankState.Tranche tranche) {
+        boolean settled = tranche.contract().signum() == 0 && tranche.interestReceivable().signum() == 0;
+        return new BankState.Tranche(tranche.trancheId(), tranche.source(), tranche.contract(),
+                tranche.onbook(), tranche.writtenOff(),
+                tranche.terms().withStatus(settled ? BankState.SETTLED : BankState.PAST_DUE, !settled), null);
     }
 
     // ------------------------------------------------------------ 承诺
@@ -1241,7 +1271,12 @@ public record Outcome(boolean accepted, String reason, String receipt,
         } else if (collateralId != null) {
             throw new BankException(Reasons.FACILITY_COLLATERAL_POLICY_INVALID + ":unsecured");
         }
-        move(w, provider, w.chart().cashAccountOf(provider), w.chart().reserveAccountOf(bank), amount);
+        String providerAccount = w.chart().cashAccountOf(provider);
+        // 旧 EXP-3 现金账户含分隔符，无法用作交易资金桶；只检查冻结快照中实际存在的桶。
+        if (w.frozen != null && w.frozen.frozenByBucket().containsKey("CASH|" + providerAccount)) {
+            requireCashRoom(w, providerAccount, amount);
+        }
+        move(w, provider, providerAccount, w.chart().reserveAccountOf(bank), amount);
         addGl(w, bank, BankChart.FACILITY_DEBT, amount.negate());
         long frozenMaturity = saturate(now, account.loanTenorMs());
         w.draft.putFacilityAccount(account.withDraw(amount, frozenMaturity, pledged));
@@ -2584,17 +2619,17 @@ public record Outcome(boolean accepted, String reason, String receipt,
         return tranche;
     }
 
-    /** 还本：只减少指定期次的表内与合同（其余期次原样）。 */
-    private static BankState.Loan allocateOnbookOn(BankState.Loan loan, String trancheId,
-                                                   BigDecimal amount) {
+    /** 只冲同一具名合同的表内及备查本金，其他期次原样。 */
+    private static BankState.Loan allocatePaymentOn(BankState.Loan loan, String trancheId,
+                                                   BigDecimal onbook, BigDecimal recovery) {
         List<BankState.Tranche> next = new ArrayList<>();
         for (BankState.Tranche tranche : loan.tranches()) {
             if (!tranche.trancheId().equals(trancheId)) {
                 next.add(tranche);
                 continue;
             }
-            next.add(copy(tranche, tranche.contract().subtract(amount),
-                    tranche.onbook().subtract(amount), tranche.writtenOff()));
+            next.add(copy(tranche, tranche.contract().subtract(onbook).subtract(recovery),
+                    tranche.onbook().subtract(onbook), tranche.writtenOff().subtract(recovery)));
         }
         return new BankState.Loan(next);
     }
@@ -3137,6 +3172,7 @@ public record Outcome(boolean accepted, String reason, String receipt,
     }
 
     private static void move(Working w, String actor, String from, String to, BigDecimal amount) {
+        if (w.frozen != null && w.frozen.checkAllCashDebits()) requireCashRoom(w, from, amount);
         CashTransfers.Move moved = CashTransfers.move(w.accounts, w.chart().ownerIdOf(actor),
                 from, to, amount);
         if (!moved.accepted()) {
