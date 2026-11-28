@@ -6578,7 +6578,17 @@ public final class WorldRuntime implements AutoCloseable {
                 manifest.dataVersions().get(RunManifest.INTERVIEW_AUTONOMY_POLICY));
     }
 
-    private record ActiveInterviewTurn(String requestId, long deadlineMillis,
+    private record InterviewReplyWindow(long scheduledEndMillis, long replyDeadlineMillis) {
+        long deadlineMillis() { return Math.min(scheduledEndMillis, replyDeadlineMillis); }
+
+        void describe(com.fasterxml.jackson.databind.node.ObjectNode row) {
+            row.put("scheduledEndMillis", scheduledEndMillis);
+            row.put("replyDeadlineMillis", replyDeadlineMillis);
+            row.put("deadlineMillis", deadlineMillis());
+        }
+    }
+
+    private record ActiveInterviewTurn(String requestId, InterviewReplyWindow window,
             String nextTool, String docId, long version, boolean onsiteReporter) {
         boolean targetsReading(String document, long fixedVersion) {
             return document != null && document.equals(docId) && fixedVersion == version;
@@ -6600,13 +6610,13 @@ public final class WorldRuntime implements AutoCloseable {
                 var turns = dialogue.turnsOf(session.sessionId());
                 var last = turns.isEmpty() ? null : turns.get(turns.size() - 1);
                 long lastAt = last == null ? session.startedAtMillis() : publishedAt(information, last);
-                long deadline = Math.min(invite.startMillis() + invite.durationMillis(),
+                var window = new InterviewReplyWindow(invite.scheduledEnd(),
                         Math.addExact(lastAt, requireDialogueConfig().replyDeadlineMillis()));
                 String next = null;
                 String docId = null;
                 long version = 0;
                 var visit = run.visits().get(invite.requestId());
-                if ((visit == null || "ONSITE".equals(visit.stage())) && now < deadline
+                if ((visit == null || "ONSITE".equals(visit.stage())) && now < window.deadlineMillis()
                         && InterviewDialogue.canSend(dialogue, office,
                         new InterviewModel.Context(snapshot.roles().access(), Map.of(), Map.of()),
                         requireDialogueConfig(), session.sessionId(), person, now)) {
@@ -6619,7 +6629,7 @@ public final class WorldRuntime implements AutoCloseable {
                     }
                 }
                 boolean onsiteReporter = visit != null && "ONSITE".equals(visit.stage()) && person.equals(invite.fromPartyId());
-                return new ActiveInterviewTurn(invite.requestId(), deadline, next, docId, version, onsiteReporter);
+                return new ActiveInterviewTurn(invite.requestId(), window, next, docId, version, onsiteReporter);
             }
         }
         return null;
@@ -31094,10 +31104,13 @@ public final class WorldRuntime implements AutoCloseable {
         InformationModel.State information = snap.information().information();
         var root = mapper.createObjectNode();
         var inviteNodes = root.putArray("invites");
+        boolean showTimeContract = RunManifest.INTERVIEW_TIME_VERSION.equals(
+                manifest.dataVersions().get(RunManifest.INTERVIEW_TIME_POLICY));
         var activeTurn = activeInterviewTurn(snap, person);
         if (activeTurn != null) {
-            var focus = root.putObject("activeTurn").put("requestId", activeTurn.requestId())
-                    .put("deadlineMillis", activeTurn.deadlineMillis());
+            var focus = root.putObject("activeTurn").put("requestId", activeTurn.requestId());
+            if (showTimeContract) activeTurn.window().describe(focus);
+            else focus.put("deadlineMillis", activeTurn.window().deadlineMillis());
             if (activeTurn.nextTool() != null) focus.put("nextTurnTool", activeTurn.nextTool());
             if (activeTurn.docId() != null) focus.put("docId", activeTurn.docId()).put("version", activeTurn.version());
         }
@@ -31105,7 +31118,10 @@ public final class WorldRuntime implements AutoCloseable {
             var visits=siteVisitsAt(snap,person,now);
             if (!visits.appointments().isEmpty()) {
                 root.set("onsiteVisits",mapper.valueToTree(visits));
-                root.put("onsiteTerms","HOST_CONSENT 表示接待人自愿从本人钱包承担不可退的12.00往返票；记者 DEPART 可提前预约，两程各10000毫秒，实际出发才出票。接待人 REVOKE、记者 RETURN 可中止，已花费用与合法观察保留。");
+                String terms = "HOST_CONSENT 表示接待人自愿从本人钱包承担不可退的12.00往返票；记者 DEPART 可提前预约，两程各10000毫秒，实际出发才出票。接待人 REVOKE、记者 RETURN 可中止，已花费用与合法观察保留。";
+                if (showTimeContract) terms += "interview.siteVisit 的 action 只能从本人该预约当前的 actions 中选择。"
+                        + "BOOKED 表示行程已经预订，日历到点会尝试出发。departMillis 为 -1 表示尚未实际出发，无需再次申请 DEPART。";
+                root.put("onsiteTerms",terms);
             }
         }
         var sessionNodes = root.putArray("sessions");
@@ -31166,7 +31182,8 @@ public final class WorldRuntime implements AutoCloseable {
                         deadline = baseline + requireDialogueConfig().replyDeadlineMillis();
                     }
                 }
-                node.put("replyDeadlineMillis", deadline);
+                if (showTimeContract) new InterviewReplyWindow(invite.scheduledEnd(), deadline).describe(node);
+                else node.put("replyDeadlineMillis", deadline);
                 var turnNodes = node.putArray("turns");
                 for (InterviewDialogue.Turn turn : turns) {
                     var item = turnNodes.addObject();
@@ -31181,6 +31198,11 @@ public final class WorldRuntime implements AutoCloseable {
                             turn.docId(), turn.docVersion(), now));
                 }
             }
+        }
+        if (showTimeContract && !sessionNodes.isEmpty()) {
+            root.put("deadlineTerms", "scheduledEndMillis 是预约结束时点，replyDeadlineMillis 是本轮静默超时时点。"
+                    + "deadlineMillis 取两者较早值，发言须在此时点之前完成。会话关闭后，endedAtMillis 是实际结束时点，"
+                    + "replyDeadlineMillis 与 deadlineMillis 均为 -1。");
         }
         for (InterviewRun.ContactEntry entry : interviewChannelsAt(snap, person, now)) {
             if (InformationModel.canCite(information, person, entry.docId(), entry.version(), now)

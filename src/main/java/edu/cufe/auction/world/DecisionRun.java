@@ -794,6 +794,11 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("name", tool);
             Long millis = config.actionMillisByTool().get(tool);
             node.put("actionMillis", millis == null ? 0L : millis);
+            if (RoleTradingView.TOOL_INTERVIEW_SPEAK.equals(tool) && interview != null && interview.has("deadlineTerms")) {
+                node.put("readingTime", "readDurationMillis 是对方阅读这段发言的正整数毫秒下限。正文每个汉字计一单位，"
+                        + "其余连续的非汉字字母和数字合计一单位，标点和空格分隔单位；每单位 200 毫秒。实际读时取两者较大值。"
+                        + "对方须先读完本轮发言且仍能回忆，才能在有效窗口内作答。可按剩余时间选择发言、等待或结束。");
+            }
             if (RoleTradingView.TOOL_MEDIA_WITHDRAW.equals(tool)) {
                 var reasons = node.putObject("publicReasons");
                 for (var reason : MediaModel.WithdrawalReason.values()) reasons.put(reason.name(), reason.label());

@@ -682,6 +682,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.PERSONAL_BELIEF_RUN_ID);
     }
 
+    /**
+     * 打开可查采访实际答复时段与阅读耗时下限的普通世界，恢复时沿用存档版本。
+     * @param journal 普通十公司世界的原生日志
+     * @return 已恢复或新建的普通世界
+     * @throws Exception 初始化或恢复失败
+     */
+    public static WorldRuntime openInterviewTimeTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.INTERVIEW_TIME_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {

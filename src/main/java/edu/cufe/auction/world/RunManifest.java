@@ -175,6 +175,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String BANK_LOAN_LOSS_RUN_ID = "web-ten-company-autonomy-v15";
     /** 显示可核验公司订单指标与本人证据引用的普通十公司版本。 */
     public static final String PERSONAL_BELIEF_RUN_ID = "web-ten-company-autonomy-v16";
+    /** 采访双方能查实际答复截止与阅读耗时下限的普通十公司版本。 */
+    public static final String INTERVIEW_TIME_RUN_ID = "web-ten-company-autonomy-v17";
+    /** 采访双方可见的会谈时间政策。 */
+    public static final String INTERVIEW_TIME_POLICY = "interview-time-contract";
+    /** 按实际答复时段及阅读耗时下限展示采访时间。 */
+    public static final String INTERVIEW_TIME_VERSION = "effective-window-reading-floor-v1";
     /** 本人预测工具合同的开局政策。 */
     public static final String PERSONAL_BELIEF_POLICY = "personal-belief-contract";
     /** 公司订单预测采用本人已读证据与明确的核验时点。 */
@@ -292,7 +298,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(PERSONAL_BELIEF_RUN_ID, BANK_LOAN_LOSS_RUN_ID, MEDIA_WITHDRAWAL_RUN_ID, ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(INTERVIEW_TIME_RUN_ID, PERSONAL_BELIEF_RUN_ID, BANK_LOAN_LOSS_RUN_ID, MEDIA_WITHDRAWAL_RUN_ID, ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
@@ -314,7 +320,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @param id 开局政策标识 @return 是否继承银行经理的贷款损失处理及重大事项交易限制 */
     public static boolean usesLoanLossOpening(String id) {
-        return BANK_LOAN_LOSS_RUN_ID.equals(id) || PERSONAL_BELIEF_RUN_ID.equals(id);
+        return BANK_LOAN_LOSS_RUN_ID.equals(id) || usesPersonalBeliefOpening(id);
+    }
+
+    private static boolean usesPersonalBeliefOpening(String id) {
+        return PERSONAL_BELIEF_RUN_ID.equals(id) || INTERVIEW_TIME_RUN_ID.equals(id);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
@@ -363,7 +373,8 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 policies.put(ISSUER_DECISIONS_POLICY, ISSUER_DECISIONS_VERSION);
                 policies.put(PersonalMarket.MARKET_POLICY, PersonalMarket.MARKET_VERSION);
             }
-            if (PERSONAL_BELIEF_RUN_ID.equals(id)) policies.put(PERSONAL_BELIEF_POLICY, PERSONAL_BELIEF_VERSION);
+            if (INTERVIEW_TIME_RUN_ID.equals(id)) policies.put(INTERVIEW_TIME_POLICY, INTERVIEW_TIME_VERSION);
+            if (usesPersonalBeliefOpening(id)) policies.put(PERSONAL_BELIEF_POLICY, PERSONAL_BELIEF_VERSION);
             if (usesLoanLossOpening(id)) {
                 policies.put(BANK_LOAN_LOSS_POLICY, BANK_LOAN_LOSS_VERSION);
                 policies.put(MATERIAL_TRADING_POLICY, MATERIAL_TRADING_VERSION);

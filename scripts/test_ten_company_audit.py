@@ -86,6 +86,15 @@ class OpeningPolicyTest(unittest.TestCase):
                     checked_opening(self.frame(version, wrong))
 
 
+    def test_v17_interview_timing_is_bound_to_its_opening(self):
+        previous, current = "web-ten-company-autonomy-v16", "web-ten-company-autonomy-v17"
+        old = OPENING_POLICIES[previous]
+        new = {**old, "interview-time-contract": "effective-window-reading-floor-v1"}
+        checked_opening(self.frame(current, new))
+        for run, invalid in ((previous, new), (current, old), (current, {**new, "interview-time-contract": "unknown"})):
+            with self.subTest(run=run), self.assertRaises(ValueError):
+                checked_opening(self.frame(run, invalid))
+
     def test_v16_belief_contract_is_bound_to_its_opening(self):
         previous, current = "web-ten-company-autonomy-v15", "web-ten-company-autonomy-v16"
         old = OPENING_POLICIES[previous]
