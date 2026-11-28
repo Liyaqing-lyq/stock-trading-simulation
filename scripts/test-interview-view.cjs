@@ -57,7 +57,9 @@ function makeDocument() {
     addEventListener() { }
   };
   document._nodes = nodes;
-  document.querySelector = () => null;
+  const bankSubjectLabel = makeElement("label");
+  bankSubjectLabel.setAttribute("for", "person-bank-subject");
+  document.querySelector = selector => selector === 'label[for="person-bank-subject"]' ? bankSubjectLabel : null;
   return document;
 }
 
