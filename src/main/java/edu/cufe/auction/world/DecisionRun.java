@@ -832,6 +832,15 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                         + "index 是本人该版本的阅读序号，目录、他人提及和转述均不授予原件引用权。"
                         + "aliases 可省略。每个标签需绑定本版证据中的真实根及版本。");
             }
+            if (ResearchDecisionTools.BOARD.equals(tool) && engineering != null
+                    && engineering.path("directorships").findValue("researchBoardProcedure") != null) {
+                node.put("argumentSource","action 为 PROPOSE 或 IMPLEMENT；根据同公司董事席位 researchBoardProcedure 及本次会议 materials 填写。");
+                node.putObject("arrayItems").putObject("evidence").put("materialId","string")
+                        .put("sourceRef","string（同一材料的 docId）").put("version","long").put("asOf","long（同一材料的模拟毫秒）");
+            }
+            if (IssuerCreditDecisions.CRISIS.equals(tool) && engineering != null
+                    && engineering.at("/issuerCredit/crisisOffices/0").has("actionArguments"))
+                node.put("argumentSource","在 engineering.issuerCredit.crisisOffices 中按 bank 和本职 actions 选 kind；lineId 与 amount 的具体填法见该行 actionArguments[kind]。");
             if (engineering != null && engineering.has("orderPredictionRules")) {
                 if (RoleTradingView.TOOL_BELIEF_ASSERT.equals(tool)) {
                     node.putObject("arrayItems").putObject("evidence")

@@ -398,8 +398,7 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void onsiteDecisionClockIsFrozenForNewWorldsAndTheirBranches() throws Exception {
-        var current = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v19.journal"), current);
+        var current = dir.resolve("world-ten-company-autonomy-v19.journal");
         var previous = dir.resolve("world-ten-company-autonomy-v18.journal");
         try (var old = ComposedIndustryScenario.openDividendAmendmentTenCompanyStudy(previous)) {
             assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.ONSITE_DECISION_CLOCK_POLICY));
@@ -408,6 +407,17 @@ class StudyTenCompanyOpeningTest {
         }
         verifyVersionedPolicy(current, previous, RunManifest.ONSITE_DECISION_CLOCK_RUN_ID,
                 RunManifest.ONSITE_DECISION_CLOCK_POLICY, RunManifest.ONSITE_DECISION_CLOCK_VERSION);
+    }
+
+    @Test void crisisOperationsDeclareTheirArgumentsWithoutChangingExistingWorlds() throws Exception {
+        var current = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v20.journal"), current);
+        var previous = dir.resolve("world-ten-company-autonomy-v19.journal");
+        try (var old = ComposedIndustryScenario.openOnsiteDecisionClockTenCompanyStudy(previous)) {
+            assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.CRISIS_ARGUMENTS_POLICY));
+        }
+        verifyVersionedPolicy(current, previous, RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID,
+                RunManifest.CRISIS_ARGUMENTS_POLICY, RunManifest.CRISIS_ARGUMENTS_VERSION);
     }
 
     private void verifyVersionedPolicy(Path current, Path previous, String expectedId, String key, String value) throws Exception {
@@ -448,14 +458,25 @@ class StudyTenCompanyOpeningTest {
                 assertEquals(expectedId, created.profile().manifest().runId());
             }
         }
-        try (var old = ComposedIndustryScenario.openOnsiteDecisionClockTenCompanyStudy(previous);
-             var world = ComposedIndustryScenario.openOnsiteDecisionClockTenCompanyStudy(current)) {
+        if (RunManifest.ONSITE_DECISION_CLOCK_RUN_ID.equals(expectedId)) {
+            try (var created = ComposedIndustryScenario.openOnsiteDecisionClockTenCompanyStudy(current)) {
+                assertEquals(expectedId, created.profile().manifest().runId());
+            }
+        }
+        try (var old = ComposedIndustryScenario.openCrisisArgumentsTenCompanyStudy(previous);
+             var world = ComposedIndustryScenario.openCrisisArgumentsTenCompanyStudy(current)) {
             var manifest = world.profile().manifest();
             var oldManifest = old.profile().manifest();
             assertEquals(expectedId, manifest.runId());
             var expected = new TreeMap<>(oldManifest.dataVersions());
             expected.put("branch-profile-run", manifest.runId());
             expected.put(key, value);
+            if (RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID.equals(expectedId)) {
+                expected.put(RunManifest.BOARD_RESEARCH_ARGUMENTS_POLICY, RunManifest.BOARD_RESEARCH_ARGUMENTS_VERSION);
+                var missing = new TreeMap<>(expected);
+                missing.remove(RunManifest.BOARD_RESEARCH_ARGUMENTS_POLICY);
+                assertThrows(IllegalArgumentException.class, () -> withPolicies(manifest, missing));
+            }
             if (RunManifest.ONSITE_DECISION_CLOCK_RUN_ID.equals(expectedId)) {
                 expected.put(RunManifest.DISCOVERY_CATALOG_POLICY, RunManifest.DISCOVERY_CATALOG_VERSION);
                 expected.put(RunManifest.PARTICIPANT_HISTORY_POLICY, RunManifest.PARTICIPANT_HISTORY_VERSION);
@@ -502,7 +523,7 @@ class StudyTenCompanyOpeningTest {
         }
         assertArrayEquals(saved, Files.readAllBytes(previous));
         assertEquals(current, WorldWebApp.tenCompanyJournal(dir));
-        try (var restored = ComposedIndustryScenario.openOnsiteDecisionClockTenCompanyStudy(current);
+        try (var restored = ComposedIndustryScenario.openCrisisArgumentsTenCompanyStudy(current);
              var child = new BranchRepository(dir.resolve("runs")).open("policy-child", restored.profile())) {
             assertEquals(expectedId, child.profile().manifest().policyRunId());
             assertEquals(restored.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());

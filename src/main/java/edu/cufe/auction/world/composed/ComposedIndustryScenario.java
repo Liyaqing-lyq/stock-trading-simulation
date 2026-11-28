@@ -712,6 +712,15 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.ONSITE_DECISION_CLOCK_RUN_ID);
     }
 
+    /** 新建或恢复普通十公司世界，按开局版本向在岗者说明应急融资和药企董事提案所需的参数。
+     * @param journal 原生存档文件
+     * @return 由存档既有政策或新开局政策建立的世界
+     * @throws Exception 无法创建或恢复时抛出
+     */
+    public static WorldRuntime openCrisisArgumentsTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
@@ -871,7 +880,7 @@ public final class ComposedIndustryScenario {
             var limits = decisions.limits();
             var timings = new TreeMap<>(decisions.actionMillisByTool());
             if (currentTen) timings.put(OnsiteVisit.TOOL,1_000L);
-            if (RunManifest.ONSITE_DECISION_CLOCK_RUN_ID.equals(thinkingRunId)) timings.put(RunManifest.PARTICIPANT_HISTORY_TOOL, 1_000L);
+            if (RunManifest.usesOnsiteDecisionClockOpening(thinkingRunId)) timings.put(RunManifest.PARTICIPANT_HISTORY_TOOL, 1_000L);
             if (RunManifest.OPEN_FUND_RUN_ID.equals(thinkingRunId))
                 edu.cufe.auction.world.OpenFundTools.TOOLS.forEach(tool -> timings.put(tool,1_000L));
             if (RunManifest.usesCreditDecisions(thinkingRunId)) IssuerCreditDecisions.addTimings(timings);

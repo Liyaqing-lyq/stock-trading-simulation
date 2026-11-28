@@ -187,7 +187,7 @@ public final class IssuerCreditDecisions {
 
     static void append(ObjectNode engineering, Set<String> managed, List<OwnerCash> owners, BankRun.Decoded decoded,
                        BankActions.Book book, Map<String, CashLedger.CashAccount> accounts, edu.cufe.auction.world.bank.CashFreeze frozen,
-                       boolean loanLoss, String person) {
+                       RunManifest manifest, String person) {
         BankConfig config = decoded.config();
         BankState state = decoded.state();
         var visible = engineering.putObject("issuerCredit");
@@ -197,6 +197,8 @@ public final class IssuerCreditDecisions {
                 if (actions.isEmpty()) continue;
                 var office=visible.withArray("crisisOffices").addObject().put("bank",bank);
                 office.set("actions",JSON.valueToTree(actions));
+                if (RunManifest.CRISIS_ARGUMENTS_VERSION.equals(manifest.dataVersions().get(RunManifest.CRISIS_ARGUMENTS_POLICY)))
+                    describeCrisisArguments(office,actions);
                 office.put("terms","EXP 参考当前已核报表及现金，自主决定是否采取行动或等待。应急额度3日内可提，单笔30日免息无担保。处置顺序依次为存款、应急融资和次级债务。");
                 if (actions.contains("FACILITY_AUTHORIZE")) {
                     var id=config.chart().cashAccountOf(config.profile().providerKey());
@@ -267,12 +269,39 @@ public final class IssuerCreditDecisions {
                 }
             }
         }
-        if (loanLoss && !banks.isEmpty()) {
+        if (lossEnabled(manifest) && !banks.isEmpty()) {
             var bankKeys = new TreeSet<String>();
             banks.forEach(row -> bankKeys.add(row.path("bank").asText()));
             visible.put("lossProcedure", LOSS_TERMS);
             visible.set("lossExposures", JSON.valueToTree(lossExposures(state, book, bankKeys, managed, person)));
         }
+    }
+
+    private static void describeCrisisArguments(ObjectNode office, List<String> actions) {
+        var rules = office.putObject("actionArguments");
+        for (var action : actions) {
+            var fields = rules.putObject(action);
+            switch (BankActions.Kind.valueOf(action)) {
+                case FACILITY_AUTHORIZE -> fields
+                        .put("lineId","由出资方自拟本行未用的新编号，须非空且不得含 |。可在没有借款申请、lines 为空时授权。")
+                        .put("amount","拟授权的额度上限，授权时不划款，也不要求额度低于当前 providerAvailable；提款时另核可用资金。");
+                case FACILITY_DRAW -> fields
+                        .put("lineId","引用本行 lines 中出资方已授权的 lineId；提款须在该额度有效期及融资到期前完成。")
+                        .put("amount","本次拟提金额不得超过该行 limit 减累计 drawn，且出资方须有足够可付资金。");
+                case FACILITY_PAY -> fields
+                        .put("lineId","引用本行 lines 中已提款、尚有应还本金的 lineId。")
+                        .put("amount","本次归还的本金不得超过该额度 outstanding，也不得超过本行可支付的准备金。");
+                case RESOLUTION_OPEN, RESOLUTION_DISTRIBUTE -> {
+                    fields.put("lineId","省略或填 null。").put("amount","省略或填 null。");
+                    fields.put("condition",action.equals("RESOLUTION_OPEN")
+                            ? "账面权益为负、准备金耗尽且仍有存款，或到期应急融资应付额超过准备金时可申请立案。"
+                            : "已立案且存款冻结不再阻碍分配时，依在账债权次序分配实际可用资金。");
+                }
+                default -> throw new IllegalArgumentException("未登记的危机动作：" + action);
+            }
+        }
+        if (actions.contains("FACILITY_AUTHORIZE") || actions.contains("FACILITY_DRAW"))
+            office.put("amountFormat","金额以元计，须为正数、可精确到分且小于 1000000000000000；资金与授权在实际执行时再核。");
     }
 
     static JsonNode contract(JsonNode credit, String loanId) {

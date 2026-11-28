@@ -12,7 +12,7 @@ public final class ResearchDecisionTools {
     private ResearchDecisionTools() { }
     /** 研发经理工具名。 */
     public static final String ACT = "research.act";
-    /** 董事商业化提案与执行；仅新独立公司调试档配置。 */
+    /** 有相应权限的药企董事可提议商业化，或执行已通过的决议。 */
     public static final String BOARD = "board.research";
     /** 实验动作工时；阶段研发时间另计。 */
     public static final long ACTION_MILLIS = 1_000;

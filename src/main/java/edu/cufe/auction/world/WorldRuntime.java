@@ -31628,6 +31628,14 @@ public final class WorldRuntime implements AutoCloseable {
             if (seat != null) {
                 var node = directorships.addObject();
                 node.put("companyPartyId", company);
+                boolean researchBoardArguments = snap.research() != null && company.equals(snap.research().companyPartyId())
+                        && companyDecisionsEnabled() && RunManifest.BOARD_RESEARCH_ARGUMENTS_VERSION.equals(
+                                manifest.dataVersions().get(RunManifest.BOARD_RESEARCH_ARGUMENTS_POLICY));
+                if (researchBoardArguments) node.put("researchBoardProcedure",
+                        "COMMERCIALIZATION_APPROVAL 议题使用 board.research。PROPOSE 由已到会且未回避的本公司董事在材料截止前提交；"
+                        + "projectId 取本人已读阶段报告的项目，evidence 依 RESEARCH、DEVELOPMENT、REGISTRATION 顺序填写三条本人仍可引用的结果。"
+                        + "各条从本会议 materials 取 materialId、docId、version、asOf，其中 docId 填入工具的 sourceRef。"
+                        + "会议通过并关闭后，IMPLEMENT 只传 companyPartyId、meetingId、action，执行已表决的原案。经理的项目批准与后续许可另行办理。");
                 if (EngineeringIssuerDividend.decisions(manifest)) {
                     var topics = node.putArray("ordinaryConveningTopics");
                     topics.add("BUDGET").add("MANAGER_APPOINTMENT");
@@ -31703,10 +31711,14 @@ public final class WorldRuntime implements AutoCloseable {
                     if ("v1".equals(manifest.dataVersions().get("role-decision-guide")) && meeting.appointmentProposal() != null) {
                         item.set("appointmentRequest", mapper.valueToTree(meeting.appointmentProposal().request()));
                     }
+                    boolean researchMeeting = researchBoardArguments && meeting.topic() == BoardModel.Topic.COMMERCIALIZATION_APPROVAL;
+                    if (researchMeeting && meeting.commercializationProposal() != null)
+                        item.putObject("commercializationRequest").put("projectId",meeting.commercializationProposal().request().projectId());
                     var review = reviewMeetings.get(meeting.meetingId());
                     if (review != null) item.put("periodReviewProcedure", "本期按 periodic.score 登记在会董事的独立考核；对经理准备的确切稿件可用 periodic.approve 单独登记批准。本人已评分与本稿批准情况见同一 meetingId 的 periodic 行。");
                     var materials = item.putArray("materials");
                     for (BoardModel.MaterialRef material : meeting.materials()) {
+                        if (researchMeeting && !visibleDocumentVersion(snap, person, material.sourceRef(), material.version(), now)) continue;
                         var entry = materials.addObject();
                         entry.put("materialId", material.materialId());
                         // 期末会议冻结了真实文书和它的账务来源；阅读工具只接受文书标识。
@@ -31717,6 +31729,7 @@ public final class WorldRuntime implements AutoCloseable {
                         boolean readable = !frozenReport || (snap.information() != null
                                 && visibleDocumentVersion(snap, person, docId, material.version(), now));
                         if (frozenReport) entry.put("readable", readable);
+                        if (researchMeeting) entry.put("asOf", material.asOf());
                         boolean read = readable && snap.information() != null
                                 && InformationModel.canCite(snap.information().information(), person, docId, material.version(), now);
                         entry.put("read", read);
@@ -32153,7 +32166,7 @@ public final class WorldRuntime implements AutoCloseable {
                     ? IssuerCreditDecisions.owners(snap.roles().access(), bankOpening.config(), person, now) : List.<IssuerCreditDecisions.OwnerCash>of();
             if (!managed.isEmpty() || !owners.isEmpty()) IssuerCreditDecisions.append(root, managed, owners, snap.bank().decode(snap.accounts()),
                     snap.bankActions() == null ? BankActions.Book.empty() : snap.bankActions(), snap.accounts(), outflowFreeze(snap.exchange(),now),
-                    IssuerCreditDecisions.lossEnabled(manifest), person);
+                    manifest, person);
         }
         if ("product-office-v1".equals(manifest.dataVersions().get("institutional-objectives"))
                 && snap.roles() != null) {

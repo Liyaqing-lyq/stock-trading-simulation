@@ -86,6 +86,21 @@ class OpeningPolicyTest(unittest.TestCase):
                     checked_opening(self.frame(version, wrong))
 
 
+    def test_v20_bank_and_board_arguments_require_the_new_opening(self):
+        previous, current = "web-ten-company-autonomy-v19", "web-ten-company-autonomy-v20"
+        old = OPENING_POLICIES[previous]
+        added = {"crisis-action-arguments": "operation-specific-line-identity-v1",
+                 "board-research-arguments": "action-and-evidence-reference-v1"}
+        new = {**old, **added}
+        checked_opening(self.frame(previous, old))
+        checked_opening(self.frame(current, new))
+        for key, value in added.items():
+            for run, invalid in ((previous, {**old, key: value}),
+                                 (current, {k: v for k, v in new.items() if k != key}),
+                                 (current, {**new, key: "unknown"})):
+                with self.subTest(run=run, key=key), self.assertRaises(ValueError):
+                    checked_opening(self.frame(run, invalid))
+
     def test_v19_onsite_clock_and_catalog_belong_to_their_opening(self):
         previous, run = "web-ten-company-autonomy-v18", "web-ten-company-autonomy-v19"
         old = OPENING_POLICIES[previous]

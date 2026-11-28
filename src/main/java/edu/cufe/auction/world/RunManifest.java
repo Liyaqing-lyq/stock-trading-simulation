@@ -189,6 +189,16 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String DIVIDEND_AMENDMENT_VERSION = "board-correction-before-record-v1";
     /** 现场接待按本人思考及办事的实际耗时列出选项的普通十公司版本。 */
     public static final String ONSITE_DECISION_CLOCK_RUN_ID = "web-ten-company-autonomy-v19";
+    /** 普通十公司开局的应急融资和药企董事操作参数版本。 */
+    public static final String CRISIS_ARGUMENTS_STUDY_RUN_ID = "web-ten-company-autonomy-v20";
+    /** 银行应急操作的金额和额度编号口径。 */
+    public static final String CRISIS_ARGUMENTS_POLICY = "crisis-action-arguments";
+    /** 逐项区分新设额度、已有额度与处置程序的参数。 */
+    public static final String CRISIS_ARGUMENTS_VERSION = "operation-specific-line-identity-v1";
+    /** 药企董事按已读材料提议商业化与执行既有决议的参数口径。 */
+    public static final String BOARD_RESEARCH_ARGUMENTS_POLICY = "board-research-arguments";
+    /** 展示当次动作与可由本人核对的版本证据。 */
+    public static final String BOARD_RESEARCH_ARGUMENTS_VERSION = "action-and-evidence-reference-v1";
     /** 本人决定办理现场采访所用的时间政策键。 */
     public static final String ONSITE_DECISION_CLOCK_POLICY = "onsite-decision-clock";
     /** 在冻结的观察时点计算现场动作最早完成时刻。 */
@@ -320,7 +330,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(ONSITE_DECISION_CLOCK_RUN_ID, DIVIDEND_AMENDMENT_RUN_ID, INTERVIEW_TIME_RUN_ID, PERSONAL_BELIEF_RUN_ID, BANK_LOAN_LOSS_RUN_ID, MEDIA_WITHDRAWAL_RUN_ID, ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(CRISIS_ARGUMENTS_STUDY_RUN_ID, ONSITE_DECISION_CLOCK_RUN_ID, DIVIDEND_AMENDMENT_RUN_ID, INTERVIEW_TIME_RUN_ID, PERSONAL_BELIEF_RUN_ID, BANK_LOAN_LOSS_RUN_ID, MEDIA_WITHDRAWAL_RUN_ID, ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
@@ -355,7 +365,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @param id 开局政策标识 @return 是否启用登记前重新表决分红方案 */
     public static boolean usesDividendAmendmentOpening(String id) {
-        return DIVIDEND_AMENDMENT_RUN_ID.equals(id) || ONSITE_DECISION_CLOCK_RUN_ID.equals(id);
+        return DIVIDEND_AMENDMENT_RUN_ID.equals(id) || usesOnsiteDecisionClockOpening(id);
+    }
+
+    /** @param id 开局政策标识 @return 是否按人物办结时间确定现场接待及启用个人历史查阅 */
+    public static boolean usesOnsiteDecisionClockOpening(String id) {
+        return ONSITE_DECISION_CLOCK_RUN_ID.equals(id) || CRISIS_ARGUMENTS_STUDY_RUN_ID.equals(id);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
@@ -404,7 +419,11 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 policies.put(ISSUER_DECISIONS_POLICY, ISSUER_DECISIONS_VERSION);
                 policies.put(PersonalMarket.MARKET_POLICY, PersonalMarket.MARKET_VERSION);
             }
-            if (ONSITE_DECISION_CLOCK_RUN_ID.equals(id)) {
+            if (CRISIS_ARGUMENTS_STUDY_RUN_ID.equals(id)) {
+                policies.put(CRISIS_ARGUMENTS_POLICY, CRISIS_ARGUMENTS_VERSION);
+                policies.put(BOARD_RESEARCH_ARGUMENTS_POLICY, BOARD_RESEARCH_ARGUMENTS_VERSION);
+            }
+            if (usesOnsiteDecisionClockOpening(id)) {
                 policies.put(ONSITE_DECISION_CLOCK_POLICY, ONSITE_DECISION_CLOCK_VERSION);
                 policies.put(DISCOVERY_CATALOG_POLICY, DISCOVERY_CATALOG_VERSION);
                 policies.put(PARTICIPANT_HISTORY_POLICY, PARTICIPANT_HISTORY_VERSION);
