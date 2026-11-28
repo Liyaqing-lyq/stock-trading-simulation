@@ -132,6 +132,7 @@ fi
 echo "== 3/4 Web 图表、采访身份隔离与页面结构 =="
 if node --check src/main/resources/web/app.js > "$LOG/web-chart.log" 2>&1 \
     && node --check src/main/resources/web/person-takeover.js >> "$LOG/web-chart.log" 2>&1 \
+    && node --check src/main/resources/web/person-library.js >> "$LOG/web-chart.log" 2>&1 \
     && node --check src/main/resources/web/research.js >> "$LOG/web-chart.log" 2>&1 \
     && node --check src/main/resources/web/newsletters.js >> "$LOG/web-chart.log" 2>&1 \
     && node --check src/main/resources/web/person-orders.js >> "$LOG/web-chart.log" 2>&1 \

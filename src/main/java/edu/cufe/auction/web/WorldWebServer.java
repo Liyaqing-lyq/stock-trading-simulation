@@ -503,6 +503,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requireAdmin(exchange, session.get(), () -> reveal(exchange, slotId));
                 return;
             }
+            if ("/api/me/library".equals(path) && "GET".equals(method)) {
+                requirePerson(exchange, session.get(), () -> personalLibrary(exchange, session.get()));
+                return;
+            }
             if ("/api/me/portfolio-history".equals(path) && "GET".equals(method)) {
                 requirePerson(exchange, session.get(), () -> {
                     String query = exchange.getRequestURI().getRawQuery();
@@ -841,7 +845,7 @@ public final class WorldWebServer implements AutoCloseable {
             return true;
         }
         return "/api/me/view".equals(path) && ("GET".equals(method) || "POST".equals(method))
-                || "/api/me/portfolio-history".equals(path) && "GET".equals(method);
+                || ("/api/me/library".equals(path) || "/api/me/portfolio-history".equals(path)) && "GET".equals(method);
     }
 
     private Optional<WebSessions.Session> resolveSession(HttpExchange exchange) {
@@ -2850,6 +2854,27 @@ public final class WorldWebServer implements AutoCloseable {
         return List.copyOf(metrics);
     }
 
+    /** 在已登录人物的可见资料范围内检索、翻页。 */
+    private void personalLibrary(HttpExchange exchange, WebSessions.Session session) throws IOException, WorldWebHost.BusyException {
+        try {
+            var params = new java.util.HashMap<String,String>();
+            String raw = exchange.getRequestURI().getRawQuery();
+            if (raw != null && !raw.isEmpty()) for (String part : raw.split("&",-1)) {
+                int equals = part.indexOf('=');
+                if (equals <= 0) throw new IllegalArgumentException("资料查询参数无效");
+                String name = part.substring(0,equals);
+                if (!Set.of("q","token","after").contains(name) || params.putIfAbsent(name,
+                        java.net.URLDecoder.decode(part.substring(equals+1),StandardCharsets.UTF_8))!=null)
+                    throw new IllegalArgumentException("资料查询参数不合法");
+            }
+            var result = host.personalLibrary(session.personId(),params.getOrDefault("q",""),params.get("token"),params.get("after"));
+            send(exchange,200,mapper.writeValueAsString(result));
+        } catch (IllegalArgumentException invalid) {
+            send(exchange,400,error("INVALID",invalid.getMessage()));
+        } catch (WorldWebHost.BusyException busy) { throw busy; }
+        catch (Exception failure) { throw new WorldIoFailure(); }
+    }
+
     /** 个人阅读排程：阅读者取会话；到期后由信息模块复核正文受众与已读完成。 */
     private void readAction(HttpExchange exchange, WebSessions.Session session)
             throws IOException, WorldWebHost.BusyException {
@@ -3438,6 +3463,7 @@ public final class WorldWebServer implements AutoCloseable {
             case "/person-takeover.js" -> "person-takeover.js";
             case "/person-orders.js" -> "person-orders.js";
             case "/newsletters.js" -> "newsletters.js";
+            case "/person-library.js" -> "person-library.js";
             case "/groups.js" -> "groups.js";
             case "/research.js" -> "research.js";
             case "/operations.js" -> "operations.js";

@@ -1040,6 +1040,18 @@ public final class WorldWebHost implements AutoCloseable {
         return call(() -> readyNow().roleView(personId));
     }
 
+    private final edu.cufe.auction.world.PersonalLibraryPages personalLibraryPages = new edu.cufe.auction.world.PersonalLibraryPages();
+
+    Map<String,Object> personalLibrary(String person, String query, String token, String after) throws Exception {
+        return call(() -> {
+            var world = readyNow();
+            var manifest = world.profile().manifest();
+            if (!edu.cufe.auction.world.RunManifest.DISCOVERY_CATALOG_VERSION.equals(
+                    manifest.dataVersions().get(edu.cufe.auction.world.RunManifest.DISCOVERY_CATALOG_POLICY))) return Map.of("enabled",false);
+            return personalLibraryPages.page(manifest.runId(),world.roleView(person),query,token,after);
+        });
+    }
+
     /** 本人银行页和关系页共同使用的单一属主存款明细。 */
     static List<Map<String, Object>> personalDepositRows(String ownerId, BankConfig config, BankState state) {
         var rows = new ArrayList<Map<String, Object>>();

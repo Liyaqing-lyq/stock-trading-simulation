@@ -214,6 +214,7 @@ function clearAdminDom() {
 function clearPersonDom() {
   globalThis.PersonOrders?.clear();
   globalThis.Newsletters?.clear();
+  globalThis.PersonLibrary?.clear();
   state.personChart = null;
   $("person-chart-symbol").replaceChildren();
   $("person-chart-period").value = "day";
@@ -783,7 +784,10 @@ async function refreshPerson() {
   await renderPersonalEvidence(generation);
   await renderPersonalSocial(generation);
   await renderPersonalEngineering(generation);
-  if (isCurrent(generation) && state.mode === "person") renderPersonalReports(view.publicReports || []);
+  if (current()) {
+    renderPersonalReports(view.publicReports || []);
+    await globalThis.PersonLibrary?.refresh(view.personPartyId, generation);
+  }
 }
 
 const fundClaimFields = [
