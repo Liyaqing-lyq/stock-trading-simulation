@@ -871,6 +871,7 @@ public final class ComposedIndustryScenario {
             var limits = decisions.limits();
             var timings = new TreeMap<>(decisions.actionMillisByTool());
             if (currentTen) timings.put(OnsiteVisit.TOOL,1_000L);
+            if (RunManifest.ONSITE_DECISION_CLOCK_RUN_ID.equals(thinkingRunId)) timings.put(RunManifest.PARTICIPANT_HISTORY_TOOL, 1_000L);
             if (RunManifest.OPEN_FUND_RUN_ID.equals(thinkingRunId))
                 edu.cufe.auction.world.OpenFundTools.TOOLS.forEach(tool -> timings.put(tool,1_000L));
             if (RunManifest.usesCreditDecisions(thinkingRunId)) IssuerCreditDecisions.addTimings(timings);

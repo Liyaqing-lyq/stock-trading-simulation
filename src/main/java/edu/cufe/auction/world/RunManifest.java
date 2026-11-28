@@ -197,6 +197,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String DISCOVERY_CATALOG_POLICY = "personal-discovery-catalog";
     /** 默认显示有限条目，可按本人原有权限通过检索和翻页查看其余条目。 */
     public static final String DISCOVERY_CATALOG_VERSION = "bounded-catalog-search-pages-v1";
+    /** 已结束的本人事务与仍待办理的活动分别呈现。 */
+    public static final String PARTICIPANT_HISTORY_POLICY = "personal-participant-history";
+    /** 按本人原有权限查阅往期采访、稿件、业务回报及往来信件。 */
+    public static final String PARTICIPANT_HISTORY_VERSION = "bounded-personal-history-v1";
+    /** 本人查阅已结束事务的普通角色工具。 */
+    public static final String PARTICIPANT_HISTORY_TOOL = "role.history.lookup";
     /** 本人预测工具合同的开局政策。 */
     public static final String PERSONAL_BELIEF_POLICY = "personal-belief-contract";
     /** 公司订单预测采用本人已读证据与明确的核验时点。 */
@@ -401,6 +407,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
             if (ONSITE_DECISION_CLOCK_RUN_ID.equals(id)) {
                 policies.put(ONSITE_DECISION_CLOCK_POLICY, ONSITE_DECISION_CLOCK_VERSION);
                 policies.put(DISCOVERY_CATALOG_POLICY, DISCOVERY_CATALOG_VERSION);
+                policies.put(PARTICIPANT_HISTORY_POLICY, PARTICIPANT_HISTORY_VERSION);
             }
             if (usesDividendAmendmentOpening(id)) policies.put(DIVIDEND_AMENDMENT_POLICY, DIVIDEND_AMENDMENT_VERSION);
             if (usesInterviewTimeOpening(id)) policies.put(INTERVIEW_TIME_POLICY, INTERVIEW_TIME_VERSION);

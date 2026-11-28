@@ -151,13 +151,9 @@ final class MediaSubscriptions {
         } catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
     }
 
-    static Map<String,Object> view(MediaRun media, InterviewRun interviews, RoleTradingRun trading, InformationModel.State info,
-                                   String person, long position) {
-        List<Map<String,Object>> offers = new ArrayList<>(), deliveries = new ArrayList<>(), turns = new ArrayList<>();
-        for (var policy : media.config().policies()) {
-            String org = policy.mediaOrganizationPartyId();
-            offers.add(Map.of("organization", org, "subscribed", active(trading, person, org, position)));
-        }
+    /** 原订阅信封投影：仅本人开局或此后实际获送的通知及署名附页，不呈现正文。 */
+    static List<Map<String,Object>> deliveries(InformationModel.State info,String person) {
+        List<Map<String,Object>> deliveries = new ArrayList<>();
         for (var doc : info.documents()) {
             if (!doc.docId().startsWith(PREFIX) || !InformationModel.Audience.direct(person).equals(doc.audience())) continue;
             var v = doc.at(1);
@@ -175,9 +171,19 @@ final class MediaSubscriptions {
         }
         deliveries.sort(Comparator.<Map<String,Object>>comparingLong(r -> (Long) r.get("deliveredAt")).reversed()
                 .thenComparing(r -> (String) r.get("docId")));
+        return List.copyOf(deliveries);
+    }
+
+    static Map<String,Object> view(MediaRun media, InterviewRun interviews, RoleTradingRun trading, InformationModel.State info,
+                                   String person, long position) {
+        List<Map<String,Object>> offers = new ArrayList<>(), turns = new ArrayList<>();
+        for (var policy : media.config().policies()) {
+            String org = policy.mediaOrganizationPartyId();
+            offers.add(Map.of("organization", org, "subscribed", active(trading, person, org, position)));
+        }
         for (var turn : ownTurns(interviews,info,trading,person))
             turns.add(Map.of("turnId",turn.key(),"organization",turn.organization(),"title",turn.source().at(turn.version()).title()));
-        return Map.of("offers",List.copyOf(offers),"deliveries",List.copyOf(deliveries),"releasableTurns",List.copyOf(turns),
+        return Map.of("offers",List.copyOf(offers),"deliveries",deliveries(info,person),"releasableTurns",List.copyOf(turns),
                 "terms","免费试刊。订退与本人授权各用1000模拟毫秒。生效后送达本社新刊标题和公开读址，或另送发言者本人授权的采访原话。退订停止以后送达，已送达不撤回。阅读正文另计工时。");
     }
 }

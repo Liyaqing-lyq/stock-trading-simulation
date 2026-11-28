@@ -90,7 +90,8 @@ class OpeningPolicyTest(unittest.TestCase):
         previous, run = "web-ten-company-autonomy-v18", "web-ten-company-autonomy-v19"
         old = OPENING_POLICIES[previous]
         added = {"onsite-decision-clock": "observed-action-completion-v1",
-                 "personal-discovery-catalog": "bounded-catalog-search-pages-v1"}
+                 "personal-discovery-catalog": "bounded-catalog-search-pages-v1",
+                 "personal-participant-history": "bounded-personal-history-v1"}
         current = {**old, **added}
         checked_opening(self.frame(run, current))
         for key, value in added.items():

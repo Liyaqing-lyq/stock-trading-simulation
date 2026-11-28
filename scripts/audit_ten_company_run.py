@@ -46,7 +46,8 @@ BELIEF_CONTRACT_POLICIES = {**BANK_LOSS_POLICIES, "personal-belief-contract": "v
 INTERVIEW_TIME_POLICIES = {**BELIEF_CONTRACT_POLICIES, "interview-time-contract": "effective-window-reading-floor-v1"}
 DIVIDEND_AMENDMENT_POLICIES = {**INTERVIEW_TIME_POLICIES, "issuer-dividend-amendments": "board-correction-before-record-v1"}
 ONSITE_CLOCK_POLICIES = {**DIVIDEND_AMENDMENT_POLICIES, "onsite-decision-clock": "observed-action-completion-v1",
-                        "personal-discovery-catalog": "bounded-catalog-search-pages-v1"}
+                        "personal-discovery-catalog": "bounded-catalog-search-pages-v1",
+                        "personal-participant-history": "bounded-personal-history-v1"}
 OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
                     "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES,
                     "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES,

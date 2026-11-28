@@ -422,7 +422,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                  INFORMATION_START_READ_V1, INFORMATION_CANCEL_READ_V1,
                  INFORMATION_COMPLETE_READ_V1,
                  MediaSubscriptions.JOIN_TASK, MediaSubscriptions.LEAVE_TASK, MediaSubscriptions.RELEASE_TASK,
-                 ROLE_LIBRARY_SEARCH_V1, ROLE_TRADING_READ_V1, ROLE_TRADING_UNREAD_V1,
+                 ParticipantHistory.TASK, ROLE_LIBRARY_SEARCH_V1, ROLE_TRADING_READ_V1, ROLE_TRADING_UNREAD_V1,
                  ROLE_TRADING_RESEARCH_V1, ROLE_TRADING_TARGET_V1,
                  ROLE_TRADING_REVIEW_V1, ROLE_TRADING_CONFIRM_V1,
                  ROLE_TRADING_HALT_V1, ROLE_TRADING_CANCEL_V1,

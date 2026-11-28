@@ -404,6 +404,7 @@ class StudyTenCompanyOpeningTest {
         try (var old = ComposedIndustryScenario.openDividendAmendmentTenCompanyStudy(previous)) {
             assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.ONSITE_DECISION_CLOCK_POLICY));
             assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.DISCOVERY_CATALOG_POLICY));
+            assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.PARTICIPANT_HISTORY_POLICY));
         }
         verifyVersionedPolicy(current, previous, RunManifest.ONSITE_DECISION_CLOCK_RUN_ID,
                 RunManifest.ONSITE_DECISION_CLOCK_POLICY, RunManifest.ONSITE_DECISION_CLOCK_VERSION);
@@ -456,9 +457,13 @@ class StudyTenCompanyOpeningTest {
             expected.put("branch-profile-run", manifest.runId());
             expected.put(key, value);
             if (RunManifest.ONSITE_DECISION_CLOCK_RUN_ID.equals(expectedId)) {
-                var missingCatalog = new TreeMap<>(expected);
-                assertThrows(IllegalArgumentException.class, () -> withPolicies(manifest, missingCatalog));
                 expected.put(RunManifest.DISCOVERY_CATALOG_POLICY, RunManifest.DISCOVERY_CATALOG_VERSION);
+                expected.put(RunManifest.PARTICIPANT_HISTORY_POLICY, RunManifest.PARTICIPANT_HISTORY_VERSION);
+                for (String policy : java.util.List.of(RunManifest.DISCOVERY_CATALOG_POLICY, RunManifest.PARTICIPANT_HISTORY_POLICY)) {
+                    var invalid = new TreeMap<>(expected);
+                    invalid.remove(policy);
+                    assertThrows(IllegalArgumentException.class, () -> withPolicies(manifest, invalid));
+                }
             }
             if (RunManifest.ISSUER_DECISIONS_RUN_ID.equals(expectedId)) {
                 expected.put(edu.cufe.auction.world.PersonalMarket.MARKET_POLICY, edu.cufe.auction.world.PersonalMarket.MARKET_VERSION);

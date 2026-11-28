@@ -347,6 +347,10 @@ public final class WorldRuntime implements AutoCloseable {
     private record DiscoveryAnchor(long position, long time, byte[] fingerprint, CatalogDiscovery.Index index) {}
     private final Map<String, DiscoveryAnchor> lastDiscoveryObservations = new HashMap<>();
     private final Map<String, DiscoveryAnchor> lastDiscoverySearches = new HashMap<>();
+    /** 每人最近一次已验证输入的本人历史索引；不保留整个世界快照。 */
+    private record HistoryAnchor(long position, long time, byte[] fingerprint, RoleTradingView view,
+                                 ParticipantHistory.InterviewIndex interviews, PublicationRoleHistory.Index publications) { }
+    private final Map<String, HistoryAnchor> historyAnchors = new HashMap<>();
     private WorldJournal heldSeal;
     /** 分支来源；普通运行为 null。 */
     private final BranchOrigin branchOrigin;
@@ -6459,6 +6463,56 @@ public final class WorldRuntime implements AutoCloseable {
         return anchor.index();
     }
 
+    private ParticipantHistory.Page historyPage(WorldState frame, String actionId) throws IOException {
+        var original = frame.commandContents().get(DecisionRun.actionCommandId(actionId));
+        if (original == null) throw new IOException("历史查阅缺少本人原指令");
+        return mapper.readValue(mapper.readValue(original,RoleActionPayload.class).body(),ParticipantHistory.Page.class);
+    }
+
+    private RoleTradingRun.Report lastHistoryLookup(WorldState frame, String person) {
+        return frame.trading().reports().values().stream().filter(row -> ParticipantHistory.TASK.equals(row.kind())
+                && person.equals(row.personPartyId()) && row.accepted())
+                .max(Comparator.comparingLong(RoleTradingRun.Report::position)).orElse(null);
+    }
+
+    private ParticipantHistory.Page completedHistoryPage(WorldState frame, RoleTradingRun.Report receipt) {
+        if (receipt == null) return null;
+        try { return historyPage(frame,receipt.clientTaskId()); }
+        catch (IOException invalid) { throw new IllegalStateException("本人已完成的查阅缺少原件",invalid); }
+    }
+
+    private ParticipantHistory.Page selectHistory(WorldState base, DecisionModel.Decision recorded, ParticipantHistory.Request request) throws IOException {
+        WorldState previousCursor = deltaReadCursor;
+        try {
+            var frame = commitSource.commitAt(recorded.cutoffPosition()).orElseThrow(() -> new IOException("历史查阅缺少观察帧"));
+            if (frame.position()!=recorded.cutoffPosition() || !base.runId().equals(frame.runId())) throw new IOException("历史查阅的观察位置不符");
+            String person = recorded.personPartyId();
+            var anchor = historyAnchors.get(person);
+            byte[] identity = HistoricalInformationCache.fingerprint(frame);
+            if (anchor != null && anchor.position()==frame.position() && frame.position()<=verifiedInformationPosition) {
+                if (anchor.time()!=recorded.cutoffTimeMillis() || !MessageDigest.isEqual(anchor.fingerprint(),identity))
+                    throw new IOException("本人历史查阅的已核观察被改变");
+            } else {
+                deltaReadCursor = null;
+                var observed = frame.position()==base.position() ? base : decodeSnapshot(frame);
+                if (observed.timeMillis()!=recorded.cutoffTimeMillis()) throw new IOException("历史查阅的观察时点不符");
+                anchor = new HistoryAnchor(frame.position(),observed.timeMillis(),identity,
+                        roleTradingViewAt(observed,openRoleSessionAt(observed,person,observed.timeMillis())),
+                        ParticipantHistory.index(observed.interviews(),person),PublicationRoleHistory.index(observed.groups(),observed.information().information(),person));
+            }
+            var selection = switch (request.section()) {
+                case "interview" -> ParticipantHistory.interview(anchor.interviews(),request);
+                case "messages" -> SocialMessageHistory.select(anchor.view(),request);
+                case "fund-children" -> FundChildHistory.select(anchor.view(),request);
+                case "publications" -> PublicationRoleHistory.select(anchor.publications(),request);
+                default -> MediaRoleHistory.select(anchor.view(),request);
+            };
+            return new ParticipantHistory.Page(request.section(),request,anchor.time(),selection);
+        } finally {
+            deltaReadCursor = previousCursor;
+        }
+    }
+
     private CatalogDiscovery.Page recordedDiscoveryPage(WorldState base, String actionId) throws IOException {
         var command = base.commandContents().get(DecisionRun.actionCommandId(actionId));
         if (command == null) throw new IOException("检索动作没有原始命令");
@@ -9384,6 +9438,12 @@ public final class WorldRuntime implements AutoCloseable {
                  IssuerCreditDecisions.DEPOSIT, IssuerCreditDecisions.WITHDRAW, IssuerCreditDecisions.MOVE -> {
                 return planCredit(binding, recorded, model, forcedTaskId, base, tool, args);
             }
+            case RunManifest.PARTICIPANT_HISTORY_TOOL -> {
+                if (!ParticipantHistory.enabled(manifest)) throw new IOException("本档未启用个人历史查阅");
+                kind = ParticipantHistory.TASK;
+                body = forcedTaskId == null ? selectHistory(base,recorded,strict(ParticipantHistory.Request.class,args))
+                        : historyPage(base,recorded.actionId());
+            }
             case PersonalLibrarySearch.TOOL -> {
                 if (!"visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
                     throw new IOException("该档未启用资料检索");
@@ -11537,6 +11597,13 @@ public final class WorldRuntime implements AutoCloseable {
             if (identity != null) lastDiscoveryObservations.put(decision.personPartyId(),
                     new DiscoveryAnchor(previous.position(), previous.timeMillis(), identity, CatalogDiscovery.Index.from(view.profile())));
         }
+        if (ParticipantHistory.enabled(manifest) && tools.contains(RunManifest.PARTICIPANT_HISTORY_TOOL)
+                && previous.position() == verifiedInformationPosition) {
+            var identity = historicalInformationCache.confirmedFingerprint(historicalInformationSource, previous.runId(), previous.position());
+            if (identity != null) historyAnchors.put(decision.personPartyId(),new HistoryAnchor(previous.position(),
+                    previous.timeMillis(),identity,view,ParticipantHistory.index(previous.interviews(),decision.personPartyId()),
+                    PublicationRoleHistory.index(previous.groups(),previous.information().information(),decision.personPartyId())));
+        }
         if (previous.position() == verifiedInformationPosition && requiresPublishedBoardMaterial()
                 && tools.contains(RoleTradingView.TOOL_BOARD_MATERIAL)) {
             byte[] identity = historicalInformationCache.confirmedFingerprint(historicalInformationSource,
@@ -11622,6 +11689,7 @@ public final class WorldRuntime implements AutoCloseable {
         historicalInformationCache.clear();
         lastDiscoveryObservations.clear();
         lastDiscoverySearches.clear();
+        historyAnchors.clear();
         activeMediaObservations.clear();
         openMediaDecisionIndices.clear();
         lastVerifiedMediaObservation = null;
@@ -19806,7 +19874,7 @@ public final class WorldRuntime implements AutoCloseable {
             case PendingTask.ROLE_TRADING_READ_V1,
                  PendingTask.ROLE_TRADING_UNREAD_V1 -> completeRoleReading(task);
             case MediaSubscriptions.JOIN_TASK, MediaSubscriptions.LEAVE_TASK, MediaSubscriptions.RELEASE_TASK,
-                 PendingTask.ROLE_LIBRARY_SEARCH_V1,
+                 ParticipantHistory.TASK, PendingTask.ROLE_LIBRARY_SEARCH_V1,
                  PendingTask.ROLE_TRADING_RESEARCH_V1,
                  PendingTask.ROLE_TRADING_TARGET_V1,
                  PendingTask.ROLE_TRADING_REVIEW_V1,
@@ -31287,6 +31355,7 @@ public final class WorldRuntime implements AutoCloseable {
             if (MediaSubscriptions.canRelease(snap.interviews(), snap.information().information(), snap.trading(), person))
                 tools.add(MediaSubscriptions.RELEASE);
         }
+        if (ParticipantHistory.enabled(manifest)) tools.add(RunManifest.PARTICIPANT_HISTORY_TOOL);
         var activeTurn = activeInterviewTurn(snap, person);
         if (activeTurn != null)
             tools.removeIf(tool -> !tool.equals(activeTurn.nextTool()) && !RoleTradingView.TOOL_INTERVIEW_END.equals(tool));
@@ -31316,8 +31385,13 @@ public final class WorldRuntime implements AutoCloseable {
             if (activeTurn.nextTool() != null) focus.put("nextTurnTool", activeTurn.nextTool());
             if (activeTurn.docId() != null) focus.put("docId", activeTurn.docId()).put("version", activeTurn.version());
         }
+        boolean history = ParticipantHistory.enabled(manifest);
+        var visits = onsiteEnabled() ? decisionSiteVisits(snap,person,now,wake) : new OnsiteVisit.View(false,false,List.of());
+        Set<String> selected = history ? ParticipantHistory.preview(run,person,() -> roleView(snap,person,snap.roles().access()),visits,
+                completedHistoryPage(snap,lastHistoryLookup(snap,person))) : Set.of();
         if (onsiteEnabled()) {
-            var visits=decisionSiteVisits(snap,person,now,wake);
+            if (history) visits = new OnsiteVisit.View(visits.enabled(),visits.traveling(),
+                    visits.appointments().stream().filter(row -> selected.contains(row.requestId())).toList());
             if (!visits.appointments().isEmpty()) {
                 root.set("onsiteVisits",mapper.valueToTree(visits));
                 String terms = "HOST_CONSENT 表示接待人自愿从本人钱包承担不可退的12.00往返票；记者 DEPART 可提前预约，两程各10000毫秒，实际出发才出票。接待人 REVOKE、记者 RETURN 可中止，已花费用与合法观察保留。";
@@ -31344,6 +31418,7 @@ public final class WorldRuntime implements AutoCloseable {
             String organization = state.policy().mediaOrganizationPartyId();
             InterviewDialogue.State dialogue = run.dialoguesOf(organization);
             for (InterviewModel.Invite invite : state.invites()) {
+                if (history && !selected.contains(invite.requestId())) continue;
                 if (!invite.fromPartyId().equals(person) && !invite.toPartyId().equals(person)) {
                     continue;
                 }
@@ -31366,6 +31441,7 @@ public final class WorldRuntime implements AutoCloseable {
                 node.put("sessionId", "SESSION-" + invite.requestId());
             }
             for (InterviewModel.Session session : state.sessions()) {
+                if (history && !selected.contains(session.requestId())) continue;
                 InterviewModel.Invite invite = findInvite(state, session.requestId());
                 if (invite == null || (!invite.fromPartyId().equals(person)
                         && !invite.toPartyId().equals(person))) {
@@ -31976,6 +32052,10 @@ public final class WorldRuntime implements AutoCloseable {
                     + "并使用同一 companyId、comparator、threshold 和 targetAsOf；证据须包含亲自读过的该版预测。");
             rules.put("verification", "有权的公司主席可以申请未来精确时点的正式订单公告。本人读完同公司、同指标、"
                     + "同一截止毫秒的正式事实原件后才会核验。已到期但尚未读到匹配事实的判断仍可未决。");
+        }
+        if (ParticipantHistory.enabled(manifest)) {
+            var last = lastHistoryLookup(snap,person);
+            ParticipantHistory.show(root,completedHistoryPage(snap,last),last,snap.interviews(),person);
         }
         if (boundedDiscoveryCatalog()) {
             var library = root.putObject("librarySearch");
@@ -34349,6 +34429,12 @@ public final class WorldRuntime implements AutoCloseable {
                 reason = result.reason();
                 informationAfter = result.information();
             }
+            case ParticipantHistory.TASK -> {
+                if (!ParticipantHistory.enabled(manifest)) throw new IOException("该档未启用历史查阅");
+                subject = mapper.readValue(payload.body(),ParticipantHistory.Page.class).section();
+                accepted = true;
+                reason = "HISTORY_LOOKED_UP";
+            }
             case PendingTask.ROLE_LIBRARY_SEARCH_V1 -> {
                 if (!"visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
                     throw new IOException("该档未启用资料检索");
@@ -35932,6 +36018,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         String field = switch (request.kind()) {
             case MediaSubscriptions.JOIN_TASK, MediaSubscriptions.LEAVE_TASK, MediaSubscriptions.RELEASE_TASK -> "target";
+            case ParticipantHistory.TASK -> "section";
             case PendingTask.ROLE_LIBRARY_SEARCH_V1 -> "query";
             case PendingTask.ROLE_TRADING_READ_V1, PendingTask.ROLE_TRADING_UNREAD_V1 -> "docId";
             case PendingTask.ROLE_TRADING_RESEARCH_V1 -> "researchId";

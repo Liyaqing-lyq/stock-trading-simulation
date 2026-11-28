@@ -675,7 +675,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         }
 
         ArrayNode children = root.putArray("children");
-        for (RoleTradingView.ChildView child : sorted(view.children(),
+        for (RoleTradingView.ChildView child : sorted(FundChildHistory.visible(root, view),
                 item -> item.ref().childId())) {
             ObjectNode node = children.addObject();
             node.put("parentId", child.ref().parentId());
@@ -688,8 +688,9 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("status", child.status());
         }
 
+        var businessHistory = MediaRoleHistory.project(root,view);
         ArrayNode notices = root.putArray("notices");
-        for (RoleTradingView.Notice notice : sorted(view.notices(),
+        for (RoleTradingView.Notice notice : sorted(businessHistory.notices(),
                 item -> item.clientTaskId() + "#" + item.timeMillis())) {
             ObjectNode node = notices.addObject();
             node.put("clientTaskId", notice.clientTaskId());
@@ -706,7 +707,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             // schema16 最小稿件投影：只用于让模型拿到本人可见的 storyId/版次/状态与实际可读标识，
             // 不含真实根、私证、策略、其他机构或隐藏字段；旧 v1–v3 输入逐字不变。
             ArrayNode stories = root.putArray("media");
-            for (RoleTradingView.MediaStory story : sorted(view.media(),
+            for (RoleTradingView.MediaStory story : sorted(businessHistory.media(),
                     item -> item.storyId())) {
                 ObjectNode node = stories.addObject();
                 node.put("storyId", story.storyId());
@@ -739,9 +740,12 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 || TOOL_CONTRACT_VERSION_V6.equals(toolContractVersion)) && view.social() != null) {
             // schema17 人物社交投影：只本人 inbox/outbox 与合法联系人，不含正文与他人消息
             ObjectNode social = root.putObject("social");
+            var visibleMail = root.at("/engineering/historyLookup").isObject()
+                    ? SocialMessageHistory.preview(root, social, view) : null;
             ArrayNode inbox = social.putArray("inbox");
             for (SocialMessageModel.EnvelopeView envelope : sorted(view.social().inbox(),
                     item -> item.messageId())) {
+                if (visibleMail != null && !visibleMail.contains(envelope.messageId())) continue;
                 ObjectNode node = inbox.addObject();
                 node.put("messageId", envelope.messageId());
                 node.put("docId", envelope.docId());
@@ -754,6 +758,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             ArrayNode outbox = social.putArray("outbox");
             for (SocialMessageModel.OutboxView entry : sorted(view.social().outbox(),
                     item -> item.messageId())) {
+                if (visibleMail != null && !visibleMail.contains(entry.messageId())) continue;
                 ObjectNode node = outbox.addObject();
                 node.put("messageId", entry.messageId());
                 node.put("to", entry.to());
@@ -862,6 +867,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 node.put("decision", permission.decision().name());
             }
         }
+        PublicationRoleHistory.project(root);
         RolePlanningContext.append(root, wakeReason, config);
         EngineeringManagerHistory.project(root);
         PersonalContactHistory.project(root);
@@ -991,6 +997,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
         if (TOOL_CONTRACT_VERSION_V6.equals(version)) {
             if (MediaSubscriptions.JOIN.equals(tool) || MediaSubscriptions.LEAVE.equals(tool) || MediaSubscriptions.RELEASE.equals(tool))
                 return List.<String[]>of(new String[]{"target", "string"});
+            if (RunManifest.PARTICIPANT_HISTORY_TOOL.equals(tool)) return List.of(new String[]{"section","interview|media|notices|messages|fund-children|publications"},
+                    new String[]{"id","string (optional)"},new String[]{"before","string (optional)"});
             if (PersonalLibrarySearch.TOOL.equals(tool)) return List.<String[]>of(new String[]{"query", "string"});
             // 只声明模型可选的业务对象；actor/seat 由运行层按本人真实任职派生，不能自授
             switch (tool) {
