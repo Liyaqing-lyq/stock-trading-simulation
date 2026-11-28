@@ -3,7 +3,7 @@ import json
 import unittest
 from copy import deepcopy
 
-from audit_ten_company_run import OPENING_POLICIES, checked_dividend, checked_opening, checked_reread
+from audit_ten_company_run import OPENING_POLICIES, checked_dividend, checked_loan_loss, checked_loan_receipt, checked_opening, checked_reread
 
 
 class OpeningPolicyTest(unittest.TestCase):
@@ -84,6 +84,78 @@ class OpeningPolicyTest(unittest.TestCase):
                                    (run, {**current, key: "unknown"})):
                 with self.subTest(version=version, key=key), self.assertRaises(ValueError):
                     checked_opening(self.frame(version, wrong))
+
+
+    def test_v15_loan_and_trade_policies_are_bound_to_their_opening(self):
+        previous, current = "web-ten-company-autonomy-v14", "web-ten-company-autonomy-v15"
+        old = OPENING_POLICIES[previous]
+        new = {**old, "bank-loan-loss": "manager-impair-writeoff-v1",
+               "material-information-trading": "issuer-disclosure-window-v1",
+               "customer-personal-tools": "personal-communication-v1"}
+        checked_opening(self.frame(current, new))
+        for key in new.keys() - old.keys():
+            for run, changed in ((previous, {**old, key: new[key]}),
+                                 (current, {k: v for k, v in new.items() if k != key}),
+                                 (current, {**new, key: "unregistered"})):
+                with self.subTest(run=run, key=key), self.assertRaises(ValueError):
+                    checked_opening(self.frame(run, changed))
+
+
+class LoanLossEvidenceTest(unittest.TestCase):
+    profile = {"buckets": {"firm": {"loanGl": "loan", "llpGl": "provision"}},
+               "parties": {"firm": {"depositGl": "deposit"}}}
+
+    @staticmethod
+    def state(face, onbook, memo, cash, provision, expense, recovered):
+        tranche = {"trancheId": "T", "contract": face, "onbook": onbook, "writtenOff": memo}
+        return {"glByBank": {"north": {"loan": onbook, "deposit": -cash, "provision": -provision,
+                                       "IMPAIR": expense, "RECOVERY": -recovered, "RESERVE": 300}},
+                "loans": {"L|5:north|4:firm": {"tranches": [tranche]}}}
+
+    def check(self, kind, amount, receipt, before, after):
+        request = {"kind": kind, "bankKey": "north", "customerKey": "firm", "loanId": "original", "amount": amount}
+        contracts = {"original": {"bankKey": "north", "borrowerKey": "firm", "trancheId": "T"}}
+        return checked_loan_loss(kind, request, receipt, before, after, self.profile, contracts)
+
+    def test_writeoff_preserves_the_borrowers_debt_and_only_repayment_moves_the_deposit(self):
+        orig = self.state(200, 200, 0, 90, 0, 0, 0)
+        provisioned = self.state(200, 200, 0, 90, 30, 30, 0)
+        written = self.state(200, 185, 15, 90, 15, 30, 0)
+        paid = self.state(180, 180, 0, 70, 15, 30, 15)
+        self.assertEqual(30, self.check("LOAN_IMPAIR", 30, "amount=30;bucket=firm", orig, provisioned)["loanImpairmentAdded"])
+        self.assertEqual(15, self.check("LOAN_WRITE_OFF", 15, "amount=15;tranche=T", provisioned, written)["loanPrincipalWrittenOff"])
+        amounts = self.check("LOAN_REPAY", 20, "amount=20;tranche=T;recovery=15", written, paid)
+        self.assertEqual((20, 15), (amounts["repaidPrincipal"], amounts["writtenOffPrincipalRecovered"]))
+        for false in (self.state(185, 185, 0, 90, 15, 30, 0), self.state(200, 185, 15, 75, 15, 30, 0)):
+            with self.assertRaises(ValueError):
+                self.check("LOAN_WRITE_OFF", 15, "amount=15;tranche=T", provisioned, false)
+        with self.assertRaises(ValueError):
+            self.check("LOAN_REPAY", 20, "amount=20;tranche=T;recovery=20", written, paid)
+
+
+    def test_retry_returns_the_original_result_and_adds_no_loss(self):
+        original = self.state(200, 200, 0, 90, 0, 0, 0)
+        booked = self.state(200, 200, 0, 90, 30, 30, 0)
+        contracts = {"c": {"bankKey": "north", "borrowerKey": "firm", "trancheId": "T"}}
+        seen = {}
+
+        def sample(position, receipt, before, after):
+            req = {"requestId": "request", "kind": "LOAN_IMPAIR", "bankKey": "north", "customerKey": "firm", "loanId": "c", "amount": 30}
+            task = {"commandId": str(position), "personPartyId": "manager", "requestJson": json.dumps(req)}
+            result = {**req, "taskId": str(position), "position": position, "atMillis": position, "commandId": str(position),
+                      "personPartyId": "manager", "accepted": True, "reason": "ACCEPTED", "receipt": receipt}
+            frame = {"position": position, "events": [{"type": "TASK_COMPLETED_V1", "eventId": "task-completed:" + str(position),
+                                                        "payload": json.dumps(task)}]}
+            return checked_loan_receipt(frame, result, before, after, self.profile, contracts, True, seen)
+
+        proof = "amount=30;bucket=firm"
+        self.assertEqual(30, sample(3, proof, original, booked)[1]["loanImpairmentAdded"])
+        entry, flows = sample(7, proof + ";replayed=true", booked, booked)
+        self.assertEqual((3, {}), (entry["originalPosition"], flows))
+        with self.assertRaises(ValueError):
+            sample(8, proof, booked, booked)
+        with self.assertRaises(ValueError):
+            sample(9, proof + ";replayed=true", original, booked)
 
 
 class DividendEvidenceTest(unittest.TestCase):

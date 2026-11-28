@@ -1091,7 +1091,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 case IssuerCreditDecisions.ACCEPT, IssuerCreditDecisions.APPROVE, IssuerCreditDecisions.DRAW -> {
                     return List.<String[]>of(new String[]{"loanId","string"});
                 }
-                case IssuerCreditDecisions.INTEREST, IssuerCreditDecisions.REPAY -> {
+                case IssuerCreditDecisions.INTEREST, IssuerCreditDecisions.REPAY,
+                     IssuerCreditDecisions.IMPAIR, IssuerCreditDecisions.WRITE_OFF -> {
                     return List.of(new String[]{"loanId","string"}, new String[]{"amount","decimal"});
                 }
                 case IssuerCreditDecisions.MOVE -> {

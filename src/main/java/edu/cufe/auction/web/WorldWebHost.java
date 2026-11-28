@@ -1,6 +1,7 @@
 package edu.cufe.auction.web;
 
 import edu.cufe.auction.world.BoardModel;
+import edu.cufe.auction.world.IssuerCreditDecisions;
 import edu.cufe.auction.world.BeliefModel;
 import edu.cufe.auction.world.BoardRun;
 import edu.cufe.auction.world.BranchOrigin;
@@ -1220,6 +1221,7 @@ public final class WorldWebHost implements AutoCloseable {
                 for (var goal : input.at("/deliberation/objectives")) {
                     if (goal.has("personalPlan")) research.put("goal", goal);
                 }
+                if (input.has("materialTrading")) research.put("materialTrading", input.get("materialTrading"));
                 var notes = input.path("researchNotes");
                 for (String field : List.of("previous", "current")) {
                     if (notes.has(field)) research.put(field, notes.get(field));
@@ -3670,6 +3672,12 @@ public final class WorldWebHost implements AutoCloseable {
             if (scoped && !payableOrgs.isEmpty() && payableOrgs.stream().allMatch(
                     key -> config.profile().parties().get(key).ownerKind() == BankingProfile.PartyKind.PRODUCT))
                 kinds.removeIf(kind -> kind.startsWith("LOAN_") && !kind.equals("LOAN_APPROVE"));
+            if (IssuerCreditDecisions.lossEnabled(current.profile().manifest()) && !managedBanks.isEmpty()) {
+                kinds.add("LOAN_IMPAIR"); kinds.add("LOAN_WRITE_OFF");
+                view.put("lossTerms", IssuerCreditDecisions.LOSS_TERMS);
+                view.put("lossExposures", IssuerCreditDecisions.lossExposures(state, current.bankBook(),
+                        Set.copyOf(managedBanks), managedOrgs, personId));
+            }
             view.put("entitlements", kinds);
             if (BankCrisis.PROVIDER.equals(config.profile().providerKey())
                     && (managedOrgs.contains(BankCrisis.PROVIDER) || managedOrgs.contains(BankCrisis.AUTHORITY) || !managedBanks.isEmpty())) {
@@ -3952,7 +3960,9 @@ public final class WorldWebHost implements AutoCloseable {
             if (kind == BankActions.Kind.LOAN_ACCRUE) {
                 throw new IllegalArgumentException("计息只能由世界按合同到期创建");
             }
-            if (!bankEntitlements(config,managedOrgs,managedBanks).contains(kind.name())) {
+            boolean loanLoss = BankActions.isLossDecision(kind);
+            if (loanLoss ? !IssuerCreditDecisions.lossEnabled(current.profile().manifest()) || managedBanks.isEmpty()
+                    : !bankEntitlements(config,managedOrgs,managedBanks).contains(kind.name())) {
                 throw new IllegalArgumentException("当前身份不能执行该动作：" + kind);
             }
             if (command.workMillis() <= 0 || command.workMillis() > 3_600_000L) {
@@ -3964,6 +3974,13 @@ public final class WorldWebHost implements AutoCloseable {
                 throw new IllegalArgumentException("本人不是该组织当时有效的经理：" + org);
             }
             String bankKey = resolveBankKey(command, chart, myParties, managedBanks);
+            if (loanLoss) {
+                var exposure = IssuerCreditDecisions.lossExposures(state, current.bankBook(), Set.copyOf(managedBanks),
+                        managedOrgs, personId).stream().filter(row -> row.get("loanId").equals(command.loanId())).findFirst()
+                        .orElseThrow(() -> new IllegalArgumentException("没有本行可见的已提款合同"));
+                bankKey = exposure.get("bank");
+                if (command.workMillis() != 60_000L) throw new IllegalArgumentException("贷款减值及核销工时为一分钟");
+            }
             if (needsFunds(kind) && OwnerBankValuationWeb.enabled(current)) {
                 Set<String> parties = new java.util.HashSet<>(managedOrgs);
                 parties.add(personId);
@@ -4310,6 +4327,8 @@ public final class WorldWebHost implements AutoCloseable {
             case "LOAN_ACCEPT" -> "借款人接受条款";
             case "LOAN_APPROVE" -> "银行批准";
             case "LOAN_DRAW" -> "提款放款";
+            case "LOAN_IMPAIR" -> "计提贷款减值";
+            case "LOAN_WRITE_OFF" -> "核销贷款本金";
             case "LOAN_REPAY" -> "还本";
             case "LOAN_ACCRUE" -> "计息";
             case "LOAN_PAY_INTEREST" -> "付息";

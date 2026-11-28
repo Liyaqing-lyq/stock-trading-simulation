@@ -734,6 +734,16 @@ async function refreshPerson() {
   });
   fillTable("person-market", view.market, (tr, row) => {
     cell(tr, row.symbol);
+    const policy = view.personalResearch?.materialTrading;
+    const own = policy?.restrictions.filter(item => item.symbol === row.symbol) || [];
+    if (own.length) {
+      const detail = document.createElement("details");
+      const title = document.createElement("summary");
+      title.textContent = "本人新单受限 · 等待正式披露";
+      detail.append(title, document.createTextNode(policy.rule + " 本人涉及的报告：" +
+        own.map(item => item.document + " v" + item.version).join("、")));
+      tr.firstElementChild.appendChild(detail);
+    }
     if (row.issuerResolution) {
       const detail = document.createElement("details");
       const title = document.createElement("summary");
@@ -2839,7 +2849,9 @@ async function loadPersonalBank(generation) {
     cell(tr, row.kindLabel || row.kind);
     cell(tr, row.stageLabel || row.stage);
     cell(tr, frameResult(row));
-    cell(tr, row.reason);
+    const loanReceipt = ["LOAN_IMPAIR", "LOAN_WRITE_OFF"].includes(row.kind)
+      || (row.kind === "LOAN_REPAY" && /(?:recovery|provisionReleased)=/.test(row.receipt || ""));
+    cell(tr, loanReceipt && row.receipt ? row.reason + " · " + row.receipt : row.reason);
     cell(tr, row.atMillis);
   });
   const tools = (view.tools || []).join("、") || "无";
@@ -2852,6 +2864,7 @@ const BANK_KIND_LABELS = {
   DEPOSIT: "存入", WITHDRAW: "取出", PAY: "支付",
   LOAN_REQUEST: "贷款申请", LOAN_ACCEPT: "接受冻结条款", LOAN_APPROVE: "批准本行合同",
   LOAN_DRAW: "提款放款", LOAN_REPAY: "还本", LOAN_PAY_INTEREST: "付息",
+  LOAN_IMPAIR: "计提贷款减值", LOAN_WRITE_OFF: "核销贷款本金",
   FACILITY_AUTHORIZE: "授权应急额度", FACILITY_DRAW: "提取应急资金", FACILITY_PAY: "偿还应急融资",
   RESOLUTION_OPEN: "开始银行处置", RESOLUTION_DISTRIBUTE: "依顺位分配准备金"
 };
@@ -2920,7 +2933,8 @@ function togglePersonalBankRows() {
   const kindSelect = $("person-bank-kind");
   if (options.custody) {
     for (const option of kindSelect.options) {
-      option.hidden = option.disabled = products.has(party) && !["DEPOSIT", "WITHDRAW", "PAY"].includes(option.value);
+      option.hidden = option.disabled = products.has(party)
+        && !["DEPOSIT", "WITHDRAW", "PAY", "LOAN_IMPAIR", "LOAN_WRITE_OFF"].includes(option.value);
     }
     if (kindSelect.selectedOptions[0]?.disabled) kindSelect.value = "PAY";
     const payees = (options.payees || []).filter(row => products.has(party)
@@ -2932,6 +2946,37 @@ function togglePersonalBankRows() {
     if (payees.some(row => row.token === previous)) payee.value = previous;
   }
   const kind = kindSelect.value;
+  const loss = kind === "LOAN_IMPAIR" || kind === "LOAN_WRITE_OFF";
+  const lossRow = $("person-bank-loss-row");
+  if (lossRow) {
+    lossRow.hidden = !loss;
+    $("person-bank-subject").hidden = loss;
+    document.querySelector('label[for="person-bank-subject"]').hidden = loss;
+    const work = $("person-bank-work");
+    if (work.dataset.lossWork !== undefined) {
+      work.value = work.dataset.lossWork;
+      delete work.dataset.lossWork;
+      work.disabled = false;
+    }
+    if (loss) {
+      work.dataset.lossWork = work.value;
+      work.value = "60000";
+      work.disabled = true;
+      const selector = $("person-bank-loss-loan"), selectedLoan = selector.value;
+      selector.replaceChildren();
+      for (const row of view.lossExposures || []) {
+        const limit = kind === "LOAN_IMPAIR" ? row.maxImpair : row.maxWriteOff;
+        selector.add(new Option(row.bank + " · " + row.loanId + " · " + row.borrower + " · 表内 " + row.onbook
+          + " · 组合拨备 " + row.portfolioAllowance + " · 已核销 " + row.writtenOff
+          + " · " + (row.overdue === "true" ? "逾期" : "未逾期") + " · 本次上限 " + limit + " 元", row.loanId));
+      }
+      if ([...selector.options].some(option => option.value === selectedLoan)) selector.value = selectedLoan;
+      $("person-bank-loss-terms").textContent = view.lossTerms;
+    } else {
+      $("person-bank-loss-loan").replaceChildren();
+      $("person-bank-loss-terms").textContent = "";
+    }
+  }
   const sources = kind === "DEPOSIT" ? (options.cash || [])
     : kind === "WITHDRAW" ? (options.deposits || [])
     : (options.cash || []).concat(options.deposits || [], options.custody || []);
@@ -2953,7 +2998,7 @@ function togglePersonalBankRows() {
   show("person-bank-payee-row", kind === "PAY");
   const facility = kind.startsWith("FACILITY_");
   show("person-bank-facility-row", facility);
-  show("person-bank-amount-row", funds || lifecycle || kind === "LOAN_REQUEST" || facility);
+  show("person-bank-amount-row", funds || lifecycle || loss || kind === "LOAN_REQUEST" || facility);
   show("person-bank-loan-row", lifecycle);
   show("person-bank-terms-row", kind === "LOAN_REQUEST");
 }
@@ -2998,6 +3043,10 @@ async function submitPersonalBankAction() {
     }
     if (kind === "PAY") {
       body.payeeToken = $("person-bank-payee").value;
+    }
+    if (kind === "LOAN_IMPAIR" || kind === "LOAN_WRITE_OFF") {
+      body.loanId = $("person-bank-loss-loan").value;
+      delete body.organizationPartyId;
     }
     if (kind.startsWith("FACILITY_")) body.loanId = $("person-bank-facility-id").value.trim();
     if (kind.startsWith("RESOLUTION_")) body.amount = "0";
@@ -3044,6 +3093,11 @@ async function submitPersonalBankAction() {
 
 /** 切换身份/离开人物视角时清空本人银行卡片，避免旧身份的存款留在页面上。 */
 function clearPersonalBank() {
+  if ($("person-bank-loss-row")) {
+    $("person-bank-loss-row").hidden = true;
+    $("person-bank-loss-terms").textContent = "";
+    $("person-bank-loss-loan").replaceChildren();
+  }
   $("person-bank-facility-note").textContent = "";
   $("person-bank-facility-id").value = "";
   show("person-bank-facility-row", false);

@@ -142,7 +142,7 @@ public record Outcome(boolean accepted, String reason, String receipt,
         return new Outcome(false, reason, null, state, accounts);
     }
 
-    private static String reasonOf(String receipt) {
+    static String reasonOf(String receipt) {
         for (String part : receipt.split(";")) {
             if (part.startsWith("reason=")) {
                 return part.substring("reason=".length());
@@ -166,9 +166,9 @@ public record Outcome(boolean accepted, String reason, String receipt,
             case WITHDRAW -> withdraw(w, cmd, now);
             case TRANSFER -> transfer(w, config, cmd, now);
             case LOAN_ORIGINATE -> originate(w, config, cmd, now);
-            case LOAN_REPAY -> repay(w, cmd, now);
+            case LOAN_REPAY, CONTRACT_REPAY -> repay(w, cmd, now);
             case IMPAIR -> impair(w, cmd);
-            case WRITE_OFF -> writeOff(w, cmd, now);
+            case WRITE_OFF, CONTRACT_WRITE_OFF -> writeOff(w, cmd, now);
             case THIRD_PARTY_PAY -> thirdPartyPay(w, cmd, now);
             case WAIVE -> waive(w, cmd, now);
             case COMMITMENT_INCREASE -> commit(w, config, cmd);
@@ -718,11 +718,12 @@ public record Outcome(boolean accepted, String reason, String receipt,
         requireBank(w, bank);
         String bucket = w.chart().bucketFor(borrower);
         BankState.Loan loan = w.draft.loan(bank, borrower);
-        String trancheId = optionalTranche(cmd);
+        boolean recourse = cmd.kind() == BankCommand.Kind.CONTRACT_REPAY;
+        String trancheId = recourse ? cmd.text("tranche") : optionalTranche(cmd);
         if (trancheId != null) {
             // 定位到具体期次：只能还这一期的本金，绝不挪用其它合同余额。
             BankState.Tranche tranche = requireTranche(loan, trancheId);
-            if (amount.compareTo(tranche.onbook()) > 0) {
+            if (amount.compareTo(recourse ? tranche.contract() : tranche.onbook()) > 0) {
                 throw new BankException(Reasons.REPAY_EXCEEDS_CONTRACT + ":tranche:"
                         + trancheId);
             }
@@ -734,10 +735,24 @@ public record Outcome(boolean accepted, String reason, String receipt,
             syncDeposit(w, bank, borrower, now);
             requireDepositRoom(w, bank, borrower, amount);
             BankState.Loan current = w.draft.loan(bank, borrower);
-            addGl(w, bank, bucket, amount.negate());
+            BigDecimal recovery = recourse ? amount.min(tranche.writtenOff()) : Money.zero();
+            BigDecimal onbook = amount.subtract(recovery);
+            addGl(w, bank, bucket, onbook.negate());
             addGl(w, bank, w.chart().depositAccountOf(borrower), amount);
-            w.draft.putLoan(bank, borrower,
-                    normalize(allocateOnbookOn(current, trancheId, amount)));
+            if (recovery.signum() > 0) {
+                addGl(w, bank, "RECOVERY", recovery.negate());
+                w.receipt.put("recovery", Money.text(recovery));
+            }
+            w.draft.putLoan(bank, borrower, normalize(allocatePaymentOn(current, trancheId, onbook, recovery)));
+            if (recourse) {
+                String provisionAccount = w.chart().llpFor(borrower);
+                BigDecimal release = w.draft.gl(bank, provisionAccount).negate().subtract(w.draft.gl(bank, bucket));
+                if (release.signum() > 0) {
+                    addGl(w, bank, provisionAccount, release);
+                    addGl(w, bank, "IMPAIR", release.negate());
+                    w.receipt.put("provisionReleased", Money.text(release));
+                }
+            }
             syncPledgeOfLoan(w, bank, borrower);
             shrinkDeposit(w, bank, borrower);
             w.receipt.put("amount", Money.text(amount));
@@ -779,14 +794,22 @@ public record Outcome(boolean accepted, String reason, String receipt,
         if (amount.compareTo(provision) > 0) {
             throw new BankException(Reasons.INSUFFICIENT_PROVISION);
         }
-        if (amount.compareTo(loan.onbook()) > 0) {
+        String trancheId = cmd.kind() == BankCommand.Kind.CONTRACT_WRITE_OFF ? cmd.text("tranche") : null;
+        if (amount.compareTo(trancheId == null ? loan.onbook() : requireTranche(loan, trancheId).onbook()) > 0) {
             throw new BankException(Reasons.ONBOOK_INSUFFICIENT);
         }
         syncLoan(w, bank, borrower, now);
         BankState.Loan current = w.draft.loan(bank, borrower);
         addGl(w, bank, loanAccount, amount.negate());
         addGl(w, bank, provisionAccount, amount);
-        w.draft.putLoan(bank, borrower, normalize(allocateWriteOff(current, amount)));
+        if (trancheId == null) {
+            w.draft.putLoan(bank, borrower, normalize(allocateWriteOff(current, amount)));
+        } else {
+            w.draft.putLoan(bank, borrower, normalize(new BankState.Loan(current.tranches().stream()
+                    .map(t -> t.trancheId().equals(trancheId) ? copy(t, t.contract(),
+                            t.onbook().subtract(amount), t.writtenOff().add(amount)) : t).toList())));
+            w.receipt.put("tranche", trancheId);
+        }
         syncPledgeOfLoan(w, bank, borrower);
         w.receipt.put("amount", Money.text(amount));
     }
@@ -2596,17 +2619,17 @@ public record Outcome(boolean accepted, String reason, String receipt,
         return tranche;
     }
 
-    /** 还本：只减少指定期次的表内与合同（其余期次原样）。 */
-    private static BankState.Loan allocateOnbookOn(BankState.Loan loan, String trancheId,
-                                                   BigDecimal amount) {
+    /** 只冲同一具名合同的表内及备查本金，其他期次原样。 */
+    private static BankState.Loan allocatePaymentOn(BankState.Loan loan, String trancheId,
+                                                   BigDecimal onbook, BigDecimal recovery) {
         List<BankState.Tranche> next = new ArrayList<>();
         for (BankState.Tranche tranche : loan.tranches()) {
             if (!tranche.trancheId().equals(trancheId)) {
                 next.add(tranche);
                 continue;
             }
-            next.add(copy(tranche, tranche.contract().subtract(amount),
-                    tranche.onbook().subtract(amount), tranche.writtenOff()));
+            next.add(copy(tranche, tranche.contract().subtract(onbook).subtract(recovery),
+                    tranche.onbook().subtract(onbook), tranche.writtenOff().subtract(recovery)));
         }
         return new BankState.Loan(next);
     }

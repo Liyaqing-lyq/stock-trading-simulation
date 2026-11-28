@@ -84,7 +84,7 @@ class CrisisOfficeObjectivesTest {
         return w.taskCommitResult(WorldRuntime.roleTaskId(person, id) + ":finish");
     }
 
-    private static void appoint(WorldRuntime w, String company, String manager) throws Exception {
+    static void appoint(WorldRuntime w, String company, String manager) throws Exception {
         var charter = w.boardOfCompany(company).orElseThrow().board().charter();
         String chair = charter.seats().stream().filter(s -> s.seatId().equals(charter.chairSeatId())).findFirst().orElseThrow().partyId();
         var voters = charter.seats().stream().map(BoardModel.Seat::partyId).filter(p -> !manager.equals(p)).toList();

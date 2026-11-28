@@ -39,6 +39,9 @@ MEDIA_FOLLOWUP_POLICIES = {**ISSUER_DECISIONS_POLICIES, "media-withdrawal": "pub
                           "media-work-calendar": "finite-business-shifts-v1",
                           "personal-attention": "weekday-duty-windows-v1",
                           "dividend-claims": "holder-and-issuer-followup-v1"}
+BANK_LOSS_POLICIES = {**MEDIA_FOLLOWUP_POLICIES, "bank-loan-loss": "manager-impair-writeoff-v1",
+                      "material-information-trading": "issuer-disclosure-window-v1",
+                      "customer-personal-tools": "personal-communication-v1"}
 OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
                     "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES,
                     "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES,
@@ -47,12 +50,13 @@ OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy
                     "web-ten-company-autonomy-v11": PERSONAL_NEWS_POLICIES,
                     "web-ten-company-autonomy-v12": INTERVIEW_AUTONOMY_POLICIES,
                     "web-ten-company-autonomy-v13": ISSUER_DECISIONS_POLICIES,
-                    "web-ten-company-autonomy-v14": MEDIA_FOLLOWUP_POLICIES}
+                    "web-ten-company-autonomy-v14": MEDIA_FOLLOWUP_POLICIES,
+                    "web-ten-company-autonomy-v15": BANK_LOSS_POLICIES}
 
 
 def check_policies(run_id, data_versions):
     expected = OPENING_POLICIES[run_id]
-    actual = {k: data_versions[k] for k in MEDIA_FOLLOWUP_POLICIES if k in data_versions}
+    actual = {k: data_versions[k] for k in BANK_LOSS_POLICIES if k in data_versions}
     if data_versions.get("branch-profile-run") != run_id or actual != expected:
         raise ValueError("原生开局声明的政策与该版运行身份不符")
 
@@ -72,6 +76,92 @@ def checked_opening(frame):
         raise ValueError("首帧运行与清单身份不符")
     check_policies(run_id, command["manifest"]["dataVersions"])
     return command
+
+
+def checked_loan_loss(kind, request, receipt, before, after, profile, contracts):
+    """按借款人、真实总账及合同期次核对已接受的计提、核销与还本。"""
+    bank, borrower = request["bankKey"], request["customerKey"]
+    if not request["loanId"] or not receipt or kind != request["kind"]:
+        raise ValueError("贷款损失缺少原合同或请求")
+    parts = dict(field.split("=", 1) for field in receipt.split(";"))
+    loan = contracts.get(request["loanId"])
+    if loan is None or (loan["bankKey"], loan["borrowerKey"]) != (bank, borrower) or not loan.get("trancheId"):
+        raise ValueError("原合同与银行、借款人或期次不符")
+    if kind != "LOAN_IMPAIR" and parts.get("tranche") != loan["trancheId"]:
+        raise ValueError("回执指向另一贷款期次")
+    amount = Decimal(parts["amount"])
+    if amount <= 0 or amount != Decimal(str(request["amount"])):
+        raise ValueError("办理金额与贷款请求不符")
+    previous, current = before["glByBank"][bank], after["glByBank"][bank]
+    def delta(account):
+        return current.get(account, 0) - previous.get(account, 0)
+    bucket = profile["buckets"][borrower]
+    reserve = delta("RESERVE")
+    deposit = delta(profile["parties"][borrower]["depositGl"])
+    provision = -delta(bucket["llpGl"])
+    onbook = delta(bucket["loanGl"])
+    expense, recovered = delta("IMPAIR"), -delta("RECOVERY")
+    loan_key = f"L|{len(bank)}:{bank}|{len(borrower)}:{borrower}"
+    def principal(book):
+        tranches = book["loans"].get(loan_key, {}).get("tranches", [])
+        match = next((t for t in tranches if t["trancheId"] == loan["trancheId"]), {})
+        return tuple(match.get(k, 0) for k in ("contract", "onbook", "writtenOff"))
+    face, book, memo = (b - a for a, b in zip(principal(before), principal(after)))
+    if kind == "LOAN_IMPAIR":
+        if parts.get("bucket") != borrower or (reserve, deposit, onbook, provision, expense, recovered, face, book, memo) != (0, 0, 0, amount, amount, 0, 0, 0, 0):
+            raise ValueError("计提与借款人拨备、费用或未还本金不符")
+        return {"loanImpairmentAdded": amount}
+    if kind == "LOAN_WRITE_OFF":
+        if (reserve, deposit, onbook, provision, expense, recovered, face, book, memo) != (0, 0, -amount, -amount, 0, 0, 0, -amount, amount):
+            raise ValueError("核销与原期次、备查债权或拨备不符")
+        return {"loanPrincipalWrittenOff": amount}
+    if kind != "LOAN_REPAY":
+        raise ValueError("未登记的贷款损失动作")
+    release = Decimal(parts.get("provisionReleased", "0"))
+    if (reserve, deposit, face, book, memo, expense, provision) != (0, amount, -amount, onbook, -recovered, -release, -release) or (
+            recovered != Decimal(parts.get("recovery", "0")) or recovered < 0 or release < 0 or onbook != recovered - amount):
+        raise ValueError("还本金、核销收回、存款或拨备转回不符")
+    return {"repaidPrincipal": amount, "writtenOffPrincipalRecovered": recovered, "loanProvisionReleased": release}
+
+
+def checked_loan_receipt(frame, result, before, after, profile, contracts, cash_unchanged, seen):
+    """将原业务请求、前端命令与银行回执逐一关联；已办理请求的回执不重复计流量。"""
+    task_event, = [e for e in frame["events"] if e["type"] == "TASK_COMPLETED_V1"]
+    task = decode(task_event["payload"])
+    req = decode(task["requestJson"])
+    request_id = req["requestId"]
+    if (not request_id or task_event["eventId"] != "task-completed:" + result["taskId"]
+            or task["commandId"] != result["commandId"] or task["personPartyId"] != result["personPartyId"]
+            or result["position"] != frame["position"] or any(req[k] != result[k] for k in ("kind", "bankKey", "customerKey"))
+            or not cash_unchanged):
+        raise ValueError("贷款回执、原业务请求或同帧现金不符")
+    entry = {k: result[k] for k in ("position", "atMillis", "kind", "bankKey", "customerKey", "personPartyId", "accepted", "reason")}
+    entry.update(loanId=req["loanId"], requestId=request_id)
+    proof = result["receipt"]
+    if result["reason"] == "COMMAND_ID_CONFLICT" and proof:
+        raise ValueError("业务编号冲突回执夹带另一笔业务内容")
+    replayed = "replayed=true" in proof.split(";")
+    same_balances = (before["glByBank"], before["loans"]) == (after["glByBank"], after["loans"])
+    previous = seen.get(request_id)
+    if replayed:
+        if (previous is None or not same_balances or previous["request"] != req or previous["person"] != result["personPartyId"]
+                or previous["accepted"] != result["accepted"] or previous["reason"] != result["reason"]
+                or previous["receipt"] != ";".join(x for x in proof.split(";") if x != "replayed=true")):
+            raise ValueError("重复贷款回执与首次原件或实际余额不符")
+        entry.update(replayed=True, originalPosition=previous["position"])
+        return entry, {}
+    if previous is None:
+        seen[request_id] = {"request": req, "person": result["personPartyId"], "position": frame["position"],
+                            "receipt": proof, "accepted": result["accepted"], "reason": result["reason"]}
+    elif result["accepted"]:
+        raise ValueError("同一银行业务请求被再次作为新业务受理")
+    amounts = {}
+    if result["accepted"]:
+        amounts = checked_loan_loss(result["kind"], req, proof, before, after, profile, contracts)
+    elif not same_balances:
+        raise ValueError("被拒贷款改变了总账或借款人本金")
+    entry.update(amounts)
+    return entry, amounts
 
 
 def checked_frames(source, file_digest):
@@ -424,6 +514,8 @@ def audit(source, target_days=None):
     orders, symbols = [], []
     dividends, issuer_symbol = None, None
     dividend_followup = None
+    loan_profile, fields = None, FIELDS
+    loan_requests = {}
     dividend_meetings = set()
     for frame in checked_frames(source, file_digest):
         position = frame["position"]
@@ -434,12 +526,18 @@ def audit(source, target_days=None):
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
         if run_id not in OPENING_POLICIES or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2 至 v14 紧凑日志")
+            raise ValueError("此脚本仅复算标准十公司 v2 至 v15 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")
         prior_digest = delta["resultDigest"]
         patch = delta["patch"]
+        bank_receipts = []
+        if loan_profile is not None:
+            bank_receipts = [decode(e["payload"]) for e in events if e["type"] == "BANK_ACTION_V1"]
+            bank_receipts = [r for r in bank_receipts if r["kind"] in ("LOAN_IMPAIR", "LOAN_WRITE_OFF", "LOAN_REPAY")]
+            if bank_receipts:
+                bank_before = decode(state["bank"]["stateJson"])
         previous_claims = None
         if dividends is not None and any(e["type"] == "DIVIDEND_REPORT_V1" for e in events):
             previous_claims = {key:claim.copy() for key,claim in dividends["claims"].items()}
@@ -450,14 +548,17 @@ def audit(source, target_days=None):
                 raise ValueError("首帧登记册与已确认开局命令不符")
             if patch["value"]["runId"] != run_id:
                 raise ValueError("开局清单、状态与普通十公司运行身份不符")
-            state = {name: patch["value"][name] for name in FIELDS}
+            if "bank-loan-loss" in OPENING_POLICIES[run_id]:
+                fields = (*FIELDS, "bank", "bankActions")
+                loan_profile = decode(patch["value"]["bank"]["configJson"])["profile"]
+            state = {name: patch["value"].get(name) for name in fields}
             if "issuer-decisions" in OPENING_POLICIES[run_id]:
                 dividends = patch["value"]["dividends"]
                 issuer_symbol, = [s["symbol"] for s in registries[0]["securities"] if s["issuerOrganizationId"] == "eng-a"]
             if "dividend-claims" in OPENING_POLICIES[run_id]:
                 dividend_followup = dividend_followup_context(patch["value"],registries[0])
         else:
-            for name in FIELDS:
+            for name in fields:
                 if name in patch["changes"]:
                     state[name] = patch_field(state[name], patch["changes"][name])
             if dividends is not None and "dividends" in patch["changes"]:
@@ -567,6 +668,18 @@ def audit(source, target_days=None):
                 entries.append(receipt)
                 for metric in totals:
                     totals[metric] += receipt.get(metric,0)
+        if loan_profile is not None:
+            loan_rows = row.setdefault("bankLoanReceipts", [])
+            loan_flows = row.setdefault("bankLoanFlows", dict.fromkeys(("loanImpairmentAdded", "loanPrincipalWrittenOff",
+                    "repaidPrincipal", "writtenOffPrincipalRecovered", "loanProvisionReleased"), 0))
+            for result in bank_receipts:
+                if result["atMillis"] != now:
+                    raise ValueError("贷款回执与世界时点不符")
+                entry, amounts = checked_loan_receipt(frame, result, bank_before, decode(state["bank"]["stateJson"]),
+                        loan_profile, (state["bankActions"] or {}).get("loans", {}), previous_cash == cash, loan_requests)
+                loan_rows.append(entry)
+                for k, amount in amounts.items():
+                    loan_flows[k] += amount
         for account, net in capital_legs.items():
             if cash[account] - previous_cash[account] != net:
                 raise ValueError("资本实缴事件与同一帧的账户资金增减不符")

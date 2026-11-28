@@ -21,6 +21,8 @@ import java.util.TreeMap;
  */
 public final class BankActions {
 
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON = new com.fasterxml.jackson.databind.ObjectMapper();
+
     private BankActions() {
     }
 
@@ -34,6 +36,8 @@ public final class BankActions {
         /** 银行经理按同一条款批准。 */ LOAN_APPROVE,
         /** 借款人在双方一致后提款。 */ LOAN_DRAW,
         /** 借款人还本。 */ LOAN_REPAY,
+        /** 本行经理计提借款人组合拨备。 */ LOAN_IMPAIR,
+        /** 本行经理按已提拨备核销指定期次。 */ LOAN_WRITE_OFF,
         /** 按合同到期累计利息（系统任务）。 */ LOAN_ACCRUE,
         /** 借款人付息。 */ LOAN_PAY_INTEREST,
         /** 出资方签出无担保额度。 */ FACILITY_AUTHORIZE,
@@ -41,6 +45,11 @@ public final class BankActions {
         /** 银行偿还应急本金。 */ FACILITY_PAY,
         /** 独立处置办公室开启已触发的处置。 */ RESOLUTION_OPEN,
         /** 独立处置办公室按冻结的债权顺序分配实有准备金。 */ RESOLUTION_DISTRIBUTE
+    }
+
+    /** 贷款损失两项仅由任职中的本行经理签办。 */
+    public static boolean isLossDecision(Kind kind) {
+        return kind == Kind.LOAN_IMPAIR || kind == Kind.LOAN_WRITE_OFF;
     }
 
     /** 贷款请求状态。 */
@@ -334,9 +343,19 @@ public final class BankActions {
                                 CustodyBook book, Book loans, BankConfig config, BankContext ctx,
                                 Request request, Actor actor, CashFreeze frozen,
                                 boolean custodyTrading) {
+        return apply(bank, accounts, book, loans, config, ctx, request, actor, frozen, custodyTrading, false);
+    }
+
+    /** 在登记损失处置政策的世界中允许经理签署减值、核销及借款人偿付备查本金。 */
+    public static Outcome apply(BankState bank, Map<String, CashLedger.CashAccount> accounts,
+                                CustodyBook book, Book loans, BankConfig config, BankContext ctx,
+                                Request request, Actor actor, CashFreeze frozen, boolean custodyTrading,
+                                boolean loanLoss) {
         Objects.requireNonNull(frozen, "受信冻结快照不能为空；无冻结请显式传 CashFreeze.none()");
         BankChart chart = bank.chart();
         Map<String, CashLedger.CashAccount> cash = accounts == null ? Map.of() : accounts;
+        if (loanLoss && (isLossDecision(request.kind()) || request.kind() == Kind.LOAN_REPAY))
+            return signedLoanAction(bank, cash, book, loans, config, ctx, request, actor, frozen);
         if (BankCrisis.office(request.kind(),request.bankKey()) != null)
             return BankCrisis.apply(bank,cash,book,loans,config,ctx,request,actor,frozen);
         switch (request.kind()) {
@@ -347,11 +366,14 @@ public final class BankActions {
             case LOAN_REQUEST, LOAN_ACCEPT, LOAN_APPROVE -> {
                 return loanTerms(bank, cash, book, loans, config, ctx, request, actor);
             }
+            case LOAN_IMPAIR, LOAN_WRITE_OFF -> {
+                return reject("LOAN_LOSS_POLICY_DISABLED", bank, cash, book, loans);
+            }
             case LOAN_DRAW -> {
                 return loanDraw(bank, cash, book, loans, config, ctx, request, actor, frozen);
             }
             case LOAN_REPAY, LOAN_PAY_INTEREST, LOAN_ACCRUE -> {
-                return loanMoney(bank, cash, book, loans, config, ctx, request, actor, frozen);
+                return loanMoney(bank, cash, book, loans, config, ctx, request, actor, frozen, false);
             }
             default -> {
                 return reject(Reasons.PROTOCOL_ERROR + ":kind:" + request.kind(), bank, cash, book,
@@ -672,10 +694,69 @@ public final class BankActions {
         return new Book(next);
     }
 
+    /** 以签署主体、合同及完整条款识别同一业务请求；拒绝也冻结其原始结果。 */
+    private static Outcome signedLoanAction(BankState bank, Map<String, CashLedger.CashAccount> cash,
+                                           CustodyBook book, Book loans, BankConfig config, BankContext ctx,
+                                           Request request, Actor actor, CashFreeze frozen) {
+        boolean loss = isLossDecision(request.kind());
+        if (loss ? !actor.bankManager() || !request.bankKey().equals(actor.managedBank())
+                : actor.bankManager() || !actor.partyKey().equals(request.customerKey()))
+            return reject(Reasons.ACTOR_NOT_AUTHORIZED, bank, cash, book, loans);
+        String signature = "signed-loan-v1:" + JSON.valueToTree(java.util.List.of(actor, request));
+        var previous = bank.command(request.requestId());
+        if (previous != null) {
+            if (!signature.equals(previous.body())) return reject(Reasons.COMMAND_ID_CONFLICT, bank, cash, book, loans);
+            String reason = BankModel.reasonOf(previous.receipt());
+            return new Outcome(previous.accepted(), reason, bank, cash, book, loans, previous.receipt() + ";replayed=true");
+        }
+        var loan = loans.loan(request.loanId());
+        Outcome outcome;
+        if (loan == null || !loan.bankKey().equals(request.bankKey()) || !loan.borrowerKey().equals(request.customerKey()))
+            outcome = reject("LOAN_NOT_DRAWN_AT_BANK", bank, cash, book, loans);
+        else if (loss) outcome = loanLoss(bank, cash, book, loans, config, ctx, request, frozen);
+        else outcome = loanMoney(bank, cash, book, loans, config, ctx, request, actor, frozen, true);
+        String receipt = outcome.receipt() == null ? "accepted=false;reason=" + outcome.reason() : outcome.receipt();
+        var draft = outcome.bank().draft();
+        draft.putCommand(request.requestId(), new BankState.CommandRecord(signature, receipt, outcome.accepted()));
+        return new Outcome(outcome.accepted(), outcome.reason(), draft.freeze(), outcome.accounts(), book, outcome.loans(), receipt);
+    }
+
+    private static Outcome loanLoss(BankState bank, Map<String, CashLedger.CashAccount> cash,
+                                    CustodyBook book, Book loans, BankConfig config, BankContext ctx,
+                                    Request request, CashFreeze frozen) {
+        Loan loan = loans.loan(request.loanId());
+        if (loan.status() != LoanStatus.DRAWN || loan.trancheId() == null)
+            return reject("LOAN_NOT_DRAWN_AT_BANK", bank, cash, book, loans);
+        var borrower = loan.borrowerKey();
+        var tranche = bank.loan(loan.bankKey(), borrower).tranche(loan.trancheId());
+        if (tranche == null || tranche.onbook().signum() == 0)
+            return reject(Reasons.ONBOOK_INSUFFICIENT, bank, cash, book, loans);
+        String bankKey = loan.bankKey();
+        var body = new LinkedHashMap<String,String>();
+        body.put("bank", bankKey);
+        body.put("amount", Money.text(request.amount()));
+        BankCommand.Kind kind;
+        if (request.kind() == Kind.LOAN_IMPAIR) {
+            BigDecimal available = bank.gl(bankKey, bank.chart().bucketFor(borrower))
+                    .add(bank.gl(bankKey, bank.chart().llpFor(borrower)));
+            if (request.amount().compareTo(available) > 0)
+                return reject("EXCEEDS_UNPROVIDED_EXPOSURE", bank, cash, book, loans);
+            body.put("bucket", borrower);
+            kind = BankCommand.Kind.IMPAIR;
+        } else {
+            body.put("borrower", borrower);
+            body.put("tranche", loan.trancheId());
+            kind = BankCommand.Kind.CONTRACT_WRITE_OFF;
+        }
+        var result = BankModel.apply(bank, cash, config, ctx,
+                new BankCommand(request.requestId(), kind, body, bankKey), frozen);
+        return new Outcome(result.accepted(), result.reason(), result.state(), result.accounts(), book, loans, result.receipt());
+    }
+
     private static Outcome loanMoney(BankState bank, Map<String, CashLedger.CashAccount> cash,
                                      CustodyBook book, Book loans, BankConfig config,
                                      BankContext ctx, Request request, Actor actor,
-                                     CashFreeze frozen) {
+                                     CashFreeze frozen, boolean loanLoss) {
         Loan loan = loans.loan(request.loanId());
         if (loan == null) {
             return reject(Reasons.UNKNOWN_BORROWER + ":loan:" + request.loanId(), bank, cash,
@@ -688,7 +769,7 @@ public final class BankActions {
                     return reject(Reasons.ACTOR_NOT_AUTHORIZED + ":borrower", bank, cash, book,
                             loans);
                 }
-                kind = BankCommand.Kind.LOAN_REPAY;
+                kind = loanLoss ? BankCommand.Kind.CONTRACT_REPAY : BankCommand.Kind.LOAN_REPAY;
             }
             case LOAN_PAY_INTEREST -> {
                 if (!actor.partyKey().equals(loan.borrowerKey()) || actor.bankManager()) {

@@ -171,6 +171,20 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String ISSUER_DECISIONS_VERSION = "engineering-cash-dividend-v1";
     /** 第十四版普通世界，启用正式撤稿、跨期采编工时以及股利债权后续。 */
     public static final String MEDIA_WITHDRAWAL_RUN_ID = "web-ten-company-autonomy-v14";
+    /** 银行贷款损失及重大事项交易窗口的普通十公司版本。 */
+    public static final String BANK_LOAN_LOSS_RUN_ID = "web-ten-company-autonomy-v15";
+    /** 银行经理办理贷款减值、核销及收回的开局政策。 */
+    public static final String BANK_LOAN_LOSS_POLICY = "bank-loan-loss";
+    /** 沿用原合同和银行自有账的贷款损失办理规则。 */
+    public static final String BANK_LOAN_LOSS_VERSION = "manager-impair-writeoff-v1";
+    /** 发行人重大事项在公开前的交易限制政策。 */
+    public static final String MATERIAL_TRADING_POLICY = "material-information-trading";
+    /** 按本人知悉、发行人及正式披露时点限制新委托。 */
+    public static final String MATERIAL_TRADING_VERSION = "issuer-disclosure-window-v1";
+    /** 工程业主代表作为自然人使用个人通信工具的政策。 */
+    public static final String CUSTOMER_PERSONAL_TOOLS = "customer-personal-tools";
+    /** 个人联系不代替业主组织按合同验收或付款。 */
+    public static final String PERSONAL_COMMUNICATION = "personal-communication-v1";
     /** 有限个人活动时段与通信工时的政策键。 */
     public static final String PERSONAL_ATTENTION_POLICY = "personal-attention";
     /** 工作日普通注意力时段，已确认的约定可在时段外履行。 */
@@ -272,7 +286,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(MEDIA_WITHDRAWAL_RUN_ID, ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(BANK_LOAN_LOSS_RUN_ID, MEDIA_WITHDRAWAL_RUN_ID, ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
@@ -284,7 +298,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @param id 开局政策标识 @return 是否启用独立董事分红议题和个人市价委托 */
     public static boolean usesIssuerDecisionsOpening(String id) {
-        return ISSUER_DECISIONS_RUN_ID.equals(id) || MEDIA_WITHDRAWAL_RUN_ID.equals(id);
+        return ISSUER_DECISIONS_RUN_ID.equals(id) || usesMediaFollowupOpening(id);
+    }
+
+    /** @param id 开局政策标识 @return 是否使用按日采编工时、个人时段和股利债权后续规则 */
+    public static boolean usesMediaFollowupOpening(String id) {
+        return MEDIA_WITHDRAWAL_RUN_ID.equals(id) || BANK_LOAN_LOSS_RUN_ID.equals(id);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
@@ -333,7 +352,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 policies.put(ISSUER_DECISIONS_POLICY, ISSUER_DECISIONS_VERSION);
                 policies.put(PersonalMarket.MARKET_POLICY, PersonalMarket.MARKET_VERSION);
             }
-            if (MEDIA_WITHDRAWAL_RUN_ID.equals(id)) {
+            if (BANK_LOAN_LOSS_RUN_ID.equals(id)) {
+                policies.put(BANK_LOAN_LOSS_POLICY, BANK_LOAN_LOSS_VERSION);
+                policies.put(MATERIAL_TRADING_POLICY, MATERIAL_TRADING_VERSION);
+                policies.put(CUSTOMER_PERSONAL_TOOLS, PERSONAL_COMMUNICATION);
+            }
+            if (usesMediaFollowupOpening(id)) {
                 policies.put(MEDIA_WITHDRAWAL_POLICY, MEDIA_WITHDRAWAL_VERSION);
                 policies.put(PERSONAL_ATTENTION_POLICY, PERSONAL_ATTENTION_VERSION);
                 policies.put(MEDIA_WORK_CALENDAR, FINITE_BUSINESS_SHIFTS);

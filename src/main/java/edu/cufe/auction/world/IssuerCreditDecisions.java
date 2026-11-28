@@ -23,6 +23,58 @@ public final class IssuerCreditDecisions {
             DRAW = "bank.loan.draw", REPAY = "bank.loan.repay", INTEREST = "bank.loan.payInterest",
             DEPOSIT = "bank.cash.deposit", WITHDRAW = "bank.cash.withdraw";
     static final String CRISIS = "bank.crisis.act", MOVE = "bank.cash.move";
+    static final String IMPAIR = "bank.loan.impair", WRITE_OFF = "bank.loan.writeOff";
+
+    /** 新档银行经理贷款损失决定使用既有银行动作工时。 */
+    public static void addLossTimings(Map<String, Long> timings) {
+        timings.put(IMPAIR, DURATION);
+        timings.put(WRITE_OFF, DURATION);
+    }
+
+    /** 本档是否已登记经理办理贷款损失及追收政策。 */
+    public static boolean lossEnabled(RunManifest manifest) {
+        return RunManifest.BANK_LOAN_LOSS_VERSION.equals(manifest.dataVersions().get(RunManifest.BANK_LOAN_LOSS_POLICY));
+    }
+
+    /** 本行已提款合同、真实拨备和可处置金额。拨备按借款人科目计量，核销限定具名期次。 */
+    public static List<Map<String,String>> lossExposures(BankState state, BankActions.Book book,
+                                                         Set<String> banks, Set<String> managed, String person) {
+        var loans = new java.util.TreeMap<>(book.loans());
+        boolean disclosed = BankLoanPromotionOpening.POOL.equals(state.chart().backgroundBorrowerKey());
+        var historic = disclosed ? BankLoanPromotionOpening.certificate() : null;
+        if (disclosed) loans.putIfAbsent(historic.contract().loanId(), historic.contract());
+        var rows = new java.util.ArrayList<Map<String,String>>();
+        for (var c : loans.values()) {
+            String bank = c.bankKey(), borrower = c.borrowerKey();
+            if (!banks.contains(bank) || c.trancheId() == null) continue;
+            var tranche = state.loan(bank, borrower).tranche(c.trancheId());
+            String bucket = borrower;
+            if (tranche == null && historic != null && historic.contract().loanId().equals(c.loanId())) {
+                tranche = historic.obligation(state);
+                bucket = BankLoanPromotionOpening.POOL;
+            }
+            if (tranche == null || tranche.contract().signum() <= 0) continue;
+            var provision = state.gl(bank, state.chart().llpFor(bucket)).negate();
+            var onbook = state.gl(bank, state.chart().bucketFor(bucket));
+            var row = new java.util.LinkedHashMap<String,String>();
+            row.put("loanId", c.loanId()); row.put("bank", bank); row.put("borrower", borrower);
+            row.put("tranche", tranche.trancheId()); row.put("contractPrincipal", tranche.contract().toPlainString());
+            row.put("onbook", tranche.onbook().toPlainString()); row.put("writtenOff", tranche.writtenOff().toPlainString());
+            row.put("portfolioAllowance", provision.toPlainString()); row.put("portfolioOnbook", onbook.toPlainString());
+            boolean canAct = !person.equals(borrower) && !managed.contains(borrower) && tranche.onbook().signum() > 0;
+            row.put("maxImpair", (canAct ? onbook.subtract(provision).max(BigDecimal.ZERO) : BigDecimal.ZERO).toPlainString());
+            row.put("maxWriteOff", (canAct ? tranche.onbook().min(provision) : BigDecimal.ZERO).toPlainString());
+            if (tranche.terms() != null) {
+                row.put("maturityAt", Long.toString(tranche.terms().maturityMs()));
+                row.put("overdue", Boolean.toString(tranche.terms().overdue()));
+            }
+            rows.add(row);
+        }
+        return List.copyOf(rows);
+    }
+
+    /** 经理工具的共同记账与金额口径。 */
+    public static final String LOSS_TERMS = "按本人对信用风险的判断，用 loanId 选择已提款合同。impair 在借款人组合计提拨备，writeOff 仅冲指定期次及已有拨备。观察中的上限在执行时复核。核销保留合同和追收权，两项均不付款；借款人还款从本行存款实际扣款，优先冲该合同备查债权。";
     record Crisis(String bank,String kind,String lineId,BigDecimal amount) { }
     static final long DURATION = 60_000L;
     private static final List<String> BORROWER = List.of(REQUEST, ACCEPT, DRAW, REPAY, INTEREST, DEPOSIT, WITHDRAW);
@@ -134,7 +186,8 @@ public final class IssuerCreditDecisions {
     }
 
     static void append(ObjectNode engineering, Set<String> managed, List<OwnerCash> owners, BankRun.Decoded decoded,
-                       BankActions.Book book, Map<String, CashLedger.CashAccount> accounts, edu.cufe.auction.world.bank.CashFreeze frozen) {
+                       BankActions.Book book, Map<String, CashLedger.CashAccount> accounts, edu.cufe.auction.world.bank.CashFreeze frozen,
+                       boolean loanLoss, String person) {
         BankConfig config = decoded.config();
         BankState state = decoded.state();
         var visible = engineering.putObject("issuerCredit");
@@ -214,6 +267,12 @@ public final class IssuerCreditDecisions {
                 }
             }
         }
+        if (loanLoss && !banks.isEmpty()) {
+            var bankKeys = new TreeSet<String>();
+            banks.forEach(row -> bankKeys.add(row.path("bank").asText()));
+            visible.put("lossProcedure", LOSS_TERMS);
+            visible.set("lossExposures", JSON.valueToTree(lossExposures(state, book, bankKeys, managed, person)));
+        }
     }
 
     static JsonNode contract(JsonNode credit, String loanId) {
@@ -232,6 +291,8 @@ public final class IssuerCreditDecisions {
             case REQUEST -> BankActions.Kind.LOAN_REQUEST;
             case ACCEPT -> BankActions.Kind.LOAN_ACCEPT;
             case APPROVE -> BankActions.Kind.LOAN_APPROVE;
+            case IMPAIR -> BankActions.Kind.LOAN_IMPAIR;
+            case WRITE_OFF -> BankActions.Kind.LOAN_WRITE_OFF;
             case DRAW -> BankActions.Kind.LOAN_DRAW;
             case REPAY -> BankActions.Kind.LOAN_REPAY;
             case INTEREST -> BankActions.Kind.LOAN_PAY_INTEREST;

@@ -9325,6 +9325,7 @@ public final class WorldRuntime implements AutoCloseable {
             }
             case IssuerCreditDecisions.REQUEST, IssuerCreditDecisions.ACCEPT, IssuerCreditDecisions.APPROVE,
                  IssuerCreditDecisions.DRAW, IssuerCreditDecisions.REPAY, IssuerCreditDecisions.INTEREST,
+                 IssuerCreditDecisions.IMPAIR, IssuerCreditDecisions.WRITE_OFF,
                  IssuerCreditDecisions.DEPOSIT, IssuerCreditDecisions.WITHDRAW, IssuerCreditDecisions.MOVE -> {
                 return planCredit(binding, recorded, model, forcedTaskId, base, tool, args);
             }
@@ -10235,6 +10236,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (!IssuerCreditDecisions.enabled(manifest)) throw new IOException("本档无经理授信决定合同");
         var credit = mapper.readTree(decision.inputText()).at("/engineering/issuerCredit");
         var kind = IssuerCreditDecisions.kind(tool);
+        boolean loss = BankActions.isLossDecision(kind);
+        if (loss && !IssuerCreditDecisions.lossEnabled(manifest)) throw new IOException("本档无贷款损失决定");
         String bank, borrower, loanId = decision.actionId(), purpose = "", source = "", target = "";
         BigDecimal amount;
         long rate = 0, tenor = 0;
@@ -10256,7 +10259,7 @@ public final class WorldRuntime implements AutoCloseable {
             var draft = strict(IssuerCreditDecisions.Cash.class, args);
             bank = draft.bank(); borrower = draft.borrower(); amount = draft.amount();
         } else {
-            boolean payment = tool.equals(IssuerCreditDecisions.REPAY) || tool.equals(IssuerCreditDecisions.INTEREST);
+            boolean payment = loss || tool.equals(IssuerCreditDecisions.REPAY) || tool.equals(IssuerCreditDecisions.INTEREST);
             var paymentArgs = payment ? strict(IssuerCreditDecisions.Payment.class, args) : null;
             loanId = payment ? paymentArgs.loanId() : strict(IssuerCreditDecisions.Ref.class, args).loanId();
             var row = IssuerCreditDecisions.contract(credit, loanId);
@@ -10265,7 +10268,7 @@ public final class WorldRuntime implements AutoCloseable {
             rate = row.path("rateU").longValue(); tenor = row.path("tenorMs").longValue(); purpose = row.path("purpose").asText();
         }
         requireText(loanId, "贷款标识");
-        boolean approval = tool.equals(IssuerCreditDecisions.APPROVE);
+        boolean approval = tool.equals(IssuerCreditDecisions.APPROVE) || loss;
         var owner = IssuerCreditDecisions.ownerEnabled(manifest) ? IssuerCreditDecisions.observedOwner(credit, bank, borrower) : null;
         String ownerAppointment = null;
         if (owner != null) {
@@ -11710,6 +11713,11 @@ public final class WorldRuntime implements AutoCloseable {
         OrderPayload payload = mapper.readValue(task.payload(), OrderPayload.class);
         long now = task.dueTimeMillis();
         String denial = marketRejection(payload.symbol(), payload.price(), now);
+        if (denial == null && materialTradingEnabled()) {
+            var owner = registry.owner(payload.actorOwnerId());
+            if (owner != null && owner.kind() == OpeningRegistry.OwnerKind.PERSON)
+                denial = materialOrderRejection(state, owner.partyId(), payload.symbol());
+        }
         if (denial != null) {
             var report = new OrderReport(task.taskId(), payload.commandId(), task.kind(), false, denial,
                     null, List.of(), List.of(), now, state.position() + 1);
@@ -18554,6 +18562,11 @@ public final class WorldRuntime implements AutoCloseable {
         BankActions.Request request = draft.toRequest(customerKey);
         String crisisOffice = BankCrisis.office(request.kind(),request.bankKey());
         String observedOffice = crisisOffice == null ? null : session.appointments().get(crisisOffice);
+        if (BankActions.isLossDecision(request.kind())) {
+            String bankOrg = bankOrganizationOf(bankChartOf(state), request.bankKey());
+            if (bankOrg == null || (observedOffice = session.appointments().get(bankOrg)) == null
+                    || durationMillis != IssuerCreditDecisions.DURATION) throw new IllegalArgumentException("需本行经理观察任职及一分钟工时");
+        }
         if (crisisOffice != null && observedOffice == null) throw new IllegalArgumentException("本人观察时无危机处置或出资任职");
         if (ownerBankValuation() && FundInternalCash.isProduct(bankOpening.config().profile(), customerKey)) {
             var manager = FundInternalCash.manager(state.roles().access(), bankOpening.config().profile(), person, request, now);
@@ -18732,6 +18745,8 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("未知银行：" + request.bankKey());
         }
         if (creditSuspended(base, request)) throw new IllegalArgumentException("银行已处置，暂停新增贷款");
+        if (BankActions.isLossDecision(request.kind()) && !IssuerCreditDecisions.lossEnabled(manifest))
+            throw new IllegalArgumentException("本档未开放贷款减值及核销");
         String party = request.customerKey();
         String crisisOffice = BankCrisis.office(request.kind(), request.bankKey());
         if (ownerBankValuation()) {
@@ -18753,7 +18768,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (BankCrisis.PROVIDER.equals(party) || BankCrisis.AUTHORITY.equals(party))
             throw new IllegalArgumentException("危机机构专户仅用于冻结的出资或处置动作");
-        if (request.kind() == BankActions.Kind.LOAN_APPROVE) {
+        if (request.kind() == BankActions.Kind.LOAN_APPROVE || BankActions.isLossDecision(request.kind())) {
             String bankOrg = bankOrganizationOf(chart, request.bankKey());
             if (bankOrg == null || !activeManager(base.roles(), person, bankOrg, now)) {
                 throw new IllegalArgumentException("只有该银行当时有效的公司经理可以批准贷款："
@@ -18893,7 +18908,7 @@ public final class WorldRuntime implements AutoCloseable {
                 edu.cufe.auction.world.bank.CashFreeze frozen = outflowFreeze(base.exchange(),now);
                 outcome = BankActions.apply(decoded.state(), accounts, decoded.book(), book,
                         decoded.config(), ctx, request, resolution.actor(), frozen,
-                        manifest.hasCustodyFill());
+                        manifest.hasCustodyFill(), IssuerCreditDecisions.lossEnabled(manifest));
             } catch (RuntimeException invalid) {
                 failure = "BANK_ERROR:" + shortReason(invalid);
             }
@@ -18907,6 +18922,14 @@ public final class WorldRuntime implements AutoCloseable {
                 accepted = outcome.accepted();
                 reason = outcome.reason();
                 receipt = outcome.receipt() == null ? "" : outcome.receipt();
+                if (IssuerCreditDecisions.lossEnabled(manifest) && !accepted
+                        && edu.cufe.auction.world.bank.Reasons.COMMAND_ID_CONFLICT.equals(reason)) receipt = "";
+                if (!accepted && IssuerCreditDecisions.lossEnabled(manifest)
+                        && (BankActions.isLossDecision(request.kind()) || request.kind() == BankActions.Kind.LOAN_REPAY)
+                        && outcome.bank() != decoded.state()) {
+                    // 仅保存首次合法签署的业务拒绝，资金、合同、记账科目均保持上一帧。
+                    bank = BankRun.of(decoded.config(), outcome.bank(), decoded.book());
+                }
                 if (accepted) {
                     accounts = outcome.accounts();
                     bank = BankRun.of(decoded.config(), outcome.bank(), outcome.book());
@@ -18982,6 +19005,9 @@ public final class WorldRuntime implements AutoCloseable {
     private BankActorResolution resolveBankActionActor(WorldState base, BankActionPayload action,
                                                         BankActions.Request request, long now) {
         if (creditSuspended(base, request)) return new BankActorResolution(null, "ISSUER_RESOLUTION_NO_NEW_CREDIT");
+        if (BankActions.isLossDecision(request.kind()) && (!IssuerCreditDecisions.lossEnabled(manifest)
+                || action.system() || action.appointmentId() == null || action.durationMillis() != IssuerCreditDecisions.DURATION))
+            return new BankActorResolution(null, "ACTOR_NOT_AUTHORIZED:loan-loss");
         if (ownerBankValuation() && bankApprovalConflict(base, action.personPartyId(), request, now))
             return new BankActorResolution(null, "ACTOR_NOT_AUTHORIZED:loan-conflict");
         if (ownerBankValuation() && FundInternalCash.isProduct(bankOpening.config().profile(), request.customerKey())) {
@@ -19004,7 +19030,7 @@ public final class WorldRuntime implements AutoCloseable {
                     : BankActions.Actor.customer(crisisOffice,crisisOffice),null);
         }
         if (action.appointmentId() != null) {
-            boolean approve = request.kind() == BankActions.Kind.LOAN_APPROVE;
+            boolean approve = request.kind() == BankActions.Kind.LOAN_APPROVE || BankActions.isLossDecision(request.kind());
             String org = approve ? bankOpening.config().profile().banks().get(request.bankKey()).partyId() : request.customerKey();
             boolean entitled = base.roles().access().appointments().stream().anyMatch(a -> a.id().equals(action.appointmentId())
                     && a.personPartyId().equals(action.personPartyId()) && a.organizationPartyId().equals(org)
@@ -19018,7 +19044,7 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private boolean bankApprovalConflict(WorldState base, String person, BankActions.Request request, long now) {
-        return request.kind() == BankActions.Kind.LOAN_APPROVE && (person.equals(request.customerKey())
+        return (request.kind() == BankActions.Kind.LOAN_APPROVE || BankActions.isLossDecision(request.kind())) && (person.equals(request.customerKey())
                 || activeManager(base.roles(), person, request.customerKey(), now));
     }
 
@@ -19047,6 +19073,9 @@ public final class WorldRuntime implements AutoCloseable {
                 String stage = !report.accepted() ? "REJECTED" : last == begin ? "IN_PROGRESS" : "APPLIED";
                 row.put("execution", stage).put("reason", report.reason()).put("resultTaskId", report.taskId())
                         .put("resultAt", report.atMillis()).put("resultPosition", report.position()).put("resultKind", report.kind());
+                if (IssuerCreditDecisions.lossEnabled(manifest) && last != begin && (
+                        BankActions.isLossDecision(BankActions.Kind.valueOf(report.kind())) || "LOAN_REPAY".equals(report.kind())))
+                    row.put("bank", report.bankKey()).put("borrower", report.customerKey()).put("bankReceipt", report.receipt());
                 if (last != begin || !report.accepted()) row.put("accepted", report.accepted());
                 if (!report.accepted()) row.put("businessReject", report.reason());
             }
@@ -19416,7 +19445,7 @@ public final class WorldRuntime implements AutoCloseable {
                 BankActions.Request.class);
         requireBankObservationAuthority(previous, action.personPartyId(), request,
                 previous.timeMillis());
-        if ((BankCrisis.office(request.kind(),request.bankKey()) != null
+        if ((BankCrisis.office(request.kind(),request.bankKey()) != null || BankActions.isLossDecision(request.kind())
                 || ownerBankValuation() && FundInternalCash.isProduct(bankOpening.config().profile(), request.customerKey()))
                 && resolveBankActionActor(previous,action,request,previous.timeMillis()).reason() != null)
             throw new IOException("银行任务未绑定观察时点的机构任职");
@@ -21851,11 +21880,12 @@ public final class WorldRuntime implements AutoCloseable {
         invites.sort(Comparator.comparing(InterviewEntry::requestId));
         sessions.sort(Comparator.comparing(InterviewSessionEntry::sessionId));
         List<ContactView> contacts = new ArrayList<>();
+        var channels = interviewChannelsAt(base, personPartyId, now);
         for (Map.Entry<String, Set<String>> entry : reachableMap(base, personPartyId, now)
                 .entrySet()) {
             for (String target : entry.getValue()) {
-                for (InterviewRun.ContactEntry channel : run.contactsFor(target)) {
-                    if (InformationModel.canCite(base.information().information(), personPartyId,
+                for (InterviewRun.ContactEntry channel : channels) {
+                    if (target.equals(channel.targetPartyId()) && InformationModel.canCite(base.information().information(), personPartyId,
                             channel.docId(), channel.version(), now)) {
                         contacts.add(new ContactView(target, channel.channel(),
                                 channel.description(), channel.docId(), channel.version()));
@@ -30966,6 +30996,10 @@ public final class WorldRuntime implements AutoCloseable {
         }
         if (IssuerCreditDecisions.enabled(manifest)) IssuerCreditDecisions.addTools(tools,
                 IssuerCreditDecisions.managed(snap.roles().access(), person, now), bankOpening.config());
+        if (IssuerCreditDecisions.lossEnabled(manifest) && tools.contains(IssuerCreditDecisions.APPROVE)) {
+            tools.add(IssuerCreditDecisions.IMPAIR);
+            tools.add(IssuerCreditDecisions.WRITE_OFF);
+        }
         if (IssuerCreditDecisions.ownerEnabled(manifest)) {
             IssuerCreditDecisions.addOwnerTools(tools, IssuerCreditDecisions.owners(snap.roles().access(), bankOpening.config(), person, now));
         }
@@ -30994,8 +31028,17 @@ public final class WorldRuntime implements AutoCloseable {
                 && activeManager(snap.roles(), person, manufacturingCompanyParty(), now)) {
             tools.add(ManufacturingDecisionTools.ACT);
         }
-        if (engineeringCustomerEnabled() && EngineeringCustomerPolicy.REPRESENTATIVE.equals(person))
-            tools.retainAll(List.of(RoleTradingView.TOOL_READING_START, RoleTradingView.TOOL_READING_CANCEL, RoleTradingView.TOOL_CITE));
+        if (engineeringCustomerEnabled() && EngineeringCustomerPolicy.REPRESENTATIVE.equals(person)) {
+            if (personalCustomerCommunication()) {
+                var ordinary = new HashSet<>(roleTools(List.of(), false, false, false, manifest.hasInterviews(),
+                        false, manifest.hasSocial(), manifest.hasGroups()));
+                ordinary.addAll(List.of(PersonalLibrarySearch.TOOL, RoleTradingView.TOOL_BELIEF_ASSERT,
+                        RoleTradingView.TOOL_INTERVIEW_SPEAK, OnsiteVisit.TOOL));
+                tools.retainAll(ordinary);
+            } else {
+                tools.retainAll(List.of(RoleTradingView.TOOL_READING_START, RoleTradingView.TOOL_READING_CANCEL, RoleTradingView.TOOL_CITE));
+            }
+        }
         if (DividendClaimDecisions.enabled(manifest) && !snap.dividends().claims().isEmpty()) {
             var view = dividendClaimsView(snap, person);
             for (var row : view.path("ownClaims")) if (row.has("failureRef")) { tools.add(DividendClaimDecisions.IMPAIR); break; }
@@ -31114,7 +31157,7 @@ public final class WorldRuntime implements AutoCloseable {
                 }
             }
         }
-        for (InterviewRun.ContactEntry entry : run.config().contacts()) {
+        for (InterviewRun.ContactEntry entry : interviewChannelsAt(snap, person, now)) {
             if (InformationModel.canCite(information, person, entry.docId(), entry.version(), now)
                     && recalledFor(information, person, entry.docId(), entry.version(), now)) {
                 var node = contactNodes.addObject();
@@ -31127,6 +31170,29 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         return root;
+    }
+
+    private boolean personalCustomerCommunication() {
+        return RunManifest.PERSONAL_COMMUNICATION.equals(manifest.dataVersions().get(RunManifest.CUSTOMER_PERSONAL_TOOLS));
+    }
+
+    /** 已读来信的真实回信地址让记者可回访该代表，未公布热线或仅看过工程公告不会列出地址。 */
+    private List<InterviewRun.ContactEntry> interviewChannelsAt(WorldState base, String person, long now) {
+        var configured = base.interviews().config().contacts();
+        if (!personalCustomerCommunication() || base.social() == null || base.social().state().messages().isEmpty()
+                || base.roles().access().appointments().stream()
+                .noneMatch(a -> a.personPartyId().equals(person) && a.role() == RoleAccess.Role.JOURNALIST && a.activeAt(now)))
+            return configured;
+        var social = base.social().state();
+        var info = base.information().information();
+        var context = socialContext(base);
+        var channels = new ArrayList<>(configured);
+        for (var address : SocialMessageModel.recallableContacts(social, info, context, person, now)) {
+            if (EngineeringCustomerPolicy.REPRESENTATIVE.equals(address.targetPartyId())
+                    && SocialMessageModel.reachable(social, info, context, person, address.targetPartyId(), address.channel(), now))
+                channels.add(address);
+        }
+        return channels;
     }
 
     /**
@@ -31158,6 +31224,20 @@ public final class WorldRuntime implements AutoCloseable {
             return Optional.ofNullable(snap.companyGovernance().periodsOf(company));
         }
         return snap.engineering().periodicOf(company);
+    }
+
+    private boolean materialTradingEnabled() {
+        return RunManifest.MATERIAL_TRADING_VERSION.equals(manifest.dataVersions().get(RunManifest.MATERIAL_TRADING_POLICY));
+    }
+
+    private List<MaterialTrading.Restriction> materialRestrictions(WorldState frame, String person, OpeningRegistry.Security security) {
+        return decisionPeriods(frame, security.issuerOrganizationId()).map(periods ->
+                MaterialTrading.restrictions(periods, frame.information().information(), person, security.symbol())).orElse(List.of());
+    }
+
+    private String materialOrderRejection(WorldState frame, String person, String symbol) {
+        var security = registry.security(symbol);
+        return security != null && !materialRestrictions(frame, person, security).isEmpty() ? MaterialTrading.REASON : null;
     }
 
     private void addBudgetWindow(com.fasterxml.jackson.databind.node.ObjectNode role, BoardModel.State board, long now) {
@@ -31641,6 +31721,12 @@ public final class WorldRuntime implements AutoCloseable {
         if (RunManifest.TYPED_REVIEW_FIELDS.equals(manifest.dataVersions().get(RunManifest.DECISION_ENVELOPE_GUIDE)))
             root.put("decisionEnvelopeGuide", RunManifest.TYPED_REVIEW_FIELDS);
         if (personalDutyWindowsEnabled()) root.set("personalDuty", mapper.valueToTree(personalDuty(snap, person, now)));
+        if (materialTradingEnabled()) {
+            var policy = root.putObject("materialTrading").put("rule", MaterialTrading.RULE);
+            var own = policy.putArray("restrictions");
+            for (var security : registry.securities())
+                for (var item : materialRestrictions(snap, person, security)) own.add(mapper.<JsonNode>valueToTree(item));
+        }
         if (PersonalOpeningProfiles.VERSION.equals(manifest.dataVersions().get("personal-opening-profiles"))) {
             PersonalOpeningProfiles.append(root, person, now, PersonalMarket.accounts(snap.roles(), person),
                     orderedOpenings, snap.accounts(), snap.exchange(), hasCashSettlement());
@@ -31699,7 +31785,8 @@ public final class WorldRuntime implements AutoCloseable {
             var owners = IssuerCreditDecisions.ownerEnabled(manifest)
                     ? IssuerCreditDecisions.owners(snap.roles().access(), bankOpening.config(), person, now) : List.<IssuerCreditDecisions.OwnerCash>of();
             if (!managed.isEmpty() || !owners.isEmpty()) IssuerCreditDecisions.append(root, managed, owners, snap.bank().decode(snap.accounts()),
-                    snap.bankActions() == null ? BankActions.Book.empty() : snap.bankActions(), snap.accounts(), outflowFreeze(snap.exchange(),now));
+                    snap.bankActions() == null ? BankActions.Book.empty() : snap.bankActions(), snap.accounts(), outflowFreeze(snap.exchange(),now),
+                    IssuerCreditDecisions.lossEnabled(manifest), person);
         }
         if ("product-office-v1".equals(manifest.dataVersions().get("institutional-objectives"))
                 && snap.roles() != null) {
@@ -34155,6 +34242,8 @@ public final class WorldRuntime implements AutoCloseable {
                 }
                 RoleTradingModel.TargetVersion version = parent.current();
                 String denial = marketRejection(parent.symbol(), draft.limitPrice(), now);
+                if (denial == null && materialTradingEnabled())
+                    denial = materialOrderRejection(state, payload.personPartyId(), parent.symbol());
                 if (denial != null) {
                     reason = denial;
                     break;
@@ -38798,7 +38887,8 @@ public final class WorldRuntime implements AutoCloseable {
         if (!c.bankKey().equals(request.bankKey()) || !c.borrowerKey().equals(request.customerKey())
                 || resolveBankActionActor(base, action, request, next.dueTimeMillis()).reason() != null) return false;
         if (c.loanId().equals(request.loanId()))
-            return request.kind() == BankActions.Kind.LOAN_REPAY || request.kind() == BankActions.Kind.LOAN_PAY_INTEREST;
+            return request.kind() == BankActions.Kind.LOAN_REPAY || request.kind() == BankActions.Kind.LOAN_PAY_INTEREST
+                    || IssuerCreditDecisions.lossEnabled(manifest) && BankActions.isLossDecision(request.kind());
         var requested = base.bankActions() == null ? null : base.bankActions().loan(request.loanId());
         return request.kind() == BankActions.Kind.LOAN_DRAW && requested != null
                 && requested.status() == BankActions.LoanStatus.APPROVED;
