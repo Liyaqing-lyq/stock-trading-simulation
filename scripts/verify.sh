@@ -122,7 +122,7 @@ else
   bad "黑盒复算未通过"; cat "$LOG/csv.log"
 fi
 
-if PYTHONIOENCODING=utf-8 python -B scripts/test_ten_company_audit.py > "$LOG/ten-company-audit.log" 2>&1; then
+if PYTHONIOENCODING=utf-8 python -B -m unittest discover -s scripts -p 'test_ten_company*.py' > "$LOG/ten-company-audit.log" 2>&1; then
   ok "十公司原生账本审计回归"
 else
   bad "十公司原生账本审计回归失败"
