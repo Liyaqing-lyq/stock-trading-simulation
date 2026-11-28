@@ -498,12 +498,15 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             }
         }
         ArrayNode catalog = profile.putArray("catalog");
-        for (InformationModel.CatalogEntry entry
-                : sorted(view.profile().catalog(), InformationModel.CatalogEntry::docId)) {
+        boolean discovery = engineering != null && RunManifest.DISCOVERY_CATALOG_VERSION.equals(
+                engineering.at("/librarySearch/catalogPolicy").asText());
+        var entries = discovery ? CatalogDiscovery.preview(view.profile().catalog())
+                : sorted(view.profile().catalog(), InformationModel.CatalogEntry::docId);
+        for (InformationModel.CatalogEntry entry : entries) {
             ObjectNode node = catalog.addObject();
             node.put("docId", entry.docId());
             node.put("version", entry.version());
-            node.put("title", entry.title());
+            node.put("title", discovery ? CatalogDiscovery.title(entry.title()) : entry.title());
             Long duration = visibleReadingDurations.get(entry.docId());
             if (duration != null) node.put("readDurationMillis", duration.longValue());
             Long lastRead = ownVisibleReadTimes.get(entry.docId());
@@ -842,6 +845,9 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 ObjectNode parameter = parameters.addObject();
                 parameter.put("name", field[0]);
                 parameter.put("type", field[1]);
+            }
+            if (discovery && PersonalLibrarySearch.TOOL.equals(tool)) {
+                parameters.addObject().put("name","cursor").put("type","string (optional)");
             }
         }
 

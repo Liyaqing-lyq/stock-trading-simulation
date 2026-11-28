@@ -702,6 +702,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.DIVIDEND_AMENDMENT_RUN_ID);
     }
 
+    /**
+     * 打开按人物实际思考与办理时间展示现场接待选项的普通十公司世界。
+     * @param journal 普通十公司世界原生日志，已有日志按其开局版本恢复
+     * @return 已恢复或新建的普通世界
+     * @throws Exception 初始化或恢复失败
+     */
+    public static WorldRuntime openOnsiteDecisionClockTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.ONSITE_DECISION_CLOCK_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
@@ -886,7 +896,7 @@ public final class ComposedIndustryScenario {
                 timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_CONVENE, timings.get(RoleTradingView.TOOL_BOARD_CONVENE));
                 timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE, timings.get(RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET));
                 timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE, timings.get(RoleTradingView.TOOL_BOARD_IMPLEMENT));
-                if (RunManifest.DIVIDEND_AMENDMENT_RUN_ID.equals(thinkingRunId)) {
+                if (RunManifest.usesDividendAmendmentOpening(thinkingRunId)) {
                     timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND, timings.get(RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE));
                 }
                 timings.put(PersonalMarket.MARKET, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));

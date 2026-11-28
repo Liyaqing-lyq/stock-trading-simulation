@@ -343,6 +343,10 @@ public final class WorldRuntime implements AutoCloseable {
     /** 各董事最近一次已核对的目录只作明确版本的正证；旧版本仍可从当时的完整状态核验。 */
     private final Map<String, MaterialCatalog> latestMaterialCatalogs = new HashMap<>();
     private record MaterialCatalog(String actionId, long position, long time, byte[] fingerprint, Map<String, Long> versions) {}
+    /** 每人仅保留最近已核对的观察及当前检索链的截止索引，每次使用均核对原确认帧指纹。 */
+    private record DiscoveryAnchor(long position, long time, byte[] fingerprint, CatalogDiscovery.Index index) {}
+    private final Map<String, DiscoveryAnchor> lastDiscoveryObservations = new HashMap<>();
+    private final Map<String, DiscoveryAnchor> lastDiscoverySearches = new HashMap<>();
     private WorldJournal heldSeal;
     /** 分支来源；普通运行为 null。 */
     private final BranchOrigin branchOrigin;
@@ -6418,10 +6422,48 @@ public final class WorldRuntime implements AutoCloseable {
         requireOpen();
         var view = roleTradingViewAt(state, openRoleSessionAt(state, personPartyId, state.timeMillis()));
         return DecisionRun.inputText(view, "wake", state.timeMillis(),
-                pendingActionsAt(state, requireDecisions(), personPartyId), allowedToolsOf(state, view), decisionConfig,
-                toolContractVersion(), manifest.hasDialogue() ? interviewInput(state, personPartyId, state.timeMillis()) : null,
+                pendingActionsAt(state, requireDecisions(), personPartyId), allowedToolsOf(state, view, "wake"), decisionConfig,
+                toolContractVersion(), manifest.hasDialogue() ? interviewInput(state, personPartyId, state.timeMillis(), "wake") : null,
                 engineeringInput(state, personPartyId, state.timeMillis()), manifest.hasGroups()
                         ? groupsInput(state, state.information().information(), view.profile(), state.timeMillis()) : null, ownVisibleReadTimes(state, view), visibleReadingDurations(state, view), roleInputFormat());
+    }
+
+    private boolean boundedDiscoveryCatalog() {
+        return RunManifest.DISCOVERY_CATALOG_VERSION.equals(manifest.dataVersions().get(RunManifest.DISCOVERY_CATALOG_POLICY));
+    }
+
+    private CatalogDiscovery.Index discoveryAt(WorldState base, String person, long position, long time) throws IOException {
+        WorldCommit frame = commitSource.commitAt(position).orElseThrow(() -> new IOException("检索缺少确认截止帧"));
+        if (frame.position() != position || !frame.runId().equals(base.runId()))
+            throw new IOException("检索的确认位置或世界不符");
+        byte[] identity = HistoricalInformationCache.fingerprint(frame);
+        DiscoveryAnchor anchor = lastDiscoverySearches.get(person);
+        if (anchor == null || anchor.position() != position) anchor = lastDiscoveryObservations.get(person);
+        if (anchor != null && anchor.position() == position && position <= verifiedInformationPosition) {
+            if (anchor.time() != time || !MessageDigest.isEqual(anchor.fingerprint(), identity))
+                throw new IOException("检索观察的时点或原确认帧发生变化");
+        } else {
+            WorldState saved = deltaReadCursor;
+            try {
+                // 无已核观察时，从同一确认源重建。候选操作的历史读取不能使正常的差量游标倒退。
+                deltaReadCursor = null;
+                WorldState historical = position == base.position() ? base : decodeSnapshot(frame);
+                if (historical.timeMillis() != time) throw new IOException("检索的历史时钟不符");
+                var index = CatalogDiscovery.Index.from(roleView(historical, person, historical.roles().access()));
+                anchor = new DiscoveryAnchor(position, time, identity, index);
+            } finally {
+                deltaReadCursor = saved;
+            }
+        }
+        if (position <= verifiedInformationPosition) lastDiscoverySearches.put(person, anchor);
+        return anchor.index();
+    }
+
+    private CatalogDiscovery.Page recordedDiscoveryPage(WorldState base, String actionId) throws IOException {
+        var command = base.commandContents().get(DecisionRun.actionCommandId(actionId));
+        if (command == null) throw new IOException("检索动作没有原始命令");
+        var payload = mapper.readValue(command, RoleActionPayload.class);
+        return mapper.readValue(payload.body(), CatalogDiscovery.Page.class);
     }
 
     private String roleInputFormat() {
@@ -7768,7 +7810,7 @@ public final class WorldRuntime implements AutoCloseable {
             WorldRoleSession session = openRoleSessionAt(state, request.personPartyId(),
                     cutoffTime);
             RoleTradingView view = roleTradingViewAt(state, session);
-            List<String> tools = allowedToolsOf(state, view);
+            List<String> tools = allowedToolsOf(state, view, request.wakeReason());
             List<PublicationRun.FeedEntry> feed = publicationFeedEntries(state,
                     state.information() == null ? null : state.information().information(),
                     cutoffTime, view.profile());
@@ -7776,7 +7818,7 @@ public final class WorldRuntime implements AutoCloseable {
                     pendingActionsAt(state, run, request.personPartyId()), tools, decisionConfig,
                     toolContractVersion(),
                     manifest.hasDialogue()
-                            ? interviewInput(state, request.personPartyId(), cutoffTime) : null,
+                            ? interviewInput(state, request.personPartyId(), cutoffTime, request.wakeReason()) : null,
                     engineeringInput(state, request.personPartyId(), cutoffTime),
                     manifest.hasGroups()
                             ? groupsInput(state, view.profile(), cutoffTime, feed)
@@ -8972,8 +9014,11 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** 本次观察允许返回的工具：视图工具去掉只读引用，再加唯一内建观望。 */
-    private List<String> allowedToolsOf(WorldState snapshot, RoleTradingView view) {
+    private List<String> allowedToolsOf(WorldState snapshot, RoleTradingView view, String wake) {
         TreeSet<String> tools = new TreeSet<>(view.tools());
+        if (onsiteDecisionClock() && tools.contains(OnsiteVisit.TOOL)
+                && decisionSiteVisits(snapshot, view.personPartyId(), view.timeMillis(), wake).appointments().stream()
+                .noneMatch(row -> !row.actions().isEmpty())) tools.remove(OnsiteVisit.TOOL);
         if (personalDutyWindowsEnabled()) {
             var duty = personalDuty(snapshot, view.personPartyId(), view.timeMillis());
             if (duty.restricted())
@@ -9343,7 +9388,31 @@ public final class WorldRuntime implements AutoCloseable {
                 if (!"visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
                     throw new IOException("该档未启用资料检索");
                 kind = PendingTask.ROLE_LIBRARY_SEARCH_V1;
-                body = strict(PersonalLibrarySearch.Request.class, args);
+                if (boundedDiscoveryCatalog() && forcedTaskId != null) {
+                    // 已受理页的权限与游标在首次转换重算；之后引用原页，不让后来的授权、读件或下一次翻页改写历史。
+                    body = recordedDiscoveryPage(base, recorded.actionId());
+                } else if (boundedDiscoveryCatalog()) {
+                    var request = strict(CatalogDiscovery.Request.class, args);
+                    var last = PersonalLibrarySearch.latestCompleted(base.trading(), binding.personPartyId());
+                    CatalogDiscovery.Page prior = null;
+                    if (request.cursor() != null) {
+                        if (last == null || !request.cursor().equals(last.clientTaskId()))
+                            return focusRejection(recorded, args, "INVALID_LIBRARY_CURSOR");
+                        prior = recordedDiscoveryPage(base, last.clientTaskId());
+                        if (!prior.hasMore() || !prior.query().equals(request.query()))
+                            return focusRejection(recorded, args, "INVALID_LIBRARY_CURSOR");
+                    }
+                    long position = prior == null ? recorded.cutoffPosition() : prior.anchorPosition();
+                    long at = prior == null ? recorded.cutoffTimeMillis() : prior.searchedAt();
+                    String after = prior == null ? "" : prior.hits().get(prior.hits().size()-1).docId();
+                    if (position > recorded.cutoffPosition() || position > base.position())
+                        throw new IOException("检索截止帧晚于本人的决定");
+                    var original = discoveryAt(base, binding.personPartyId(), position, at);
+                    body = CatalogDiscovery.find(request, position, at, after, original,
+                            roleView(base, binding.personPartyId(), base.roles().access()));
+                } else {
+                    body = strict(PersonalLibrarySearch.Request.class, args);
+                }
             }
             case MediaSubscriptions.JOIN, MediaSubscriptions.LEAVE, MediaSubscriptions.RELEASE -> {
                 if (!hasMediaSubscriptions()) throw new IOException("当前档案未启用媒体试刊");
@@ -9556,11 +9625,17 @@ public final class WorldRuntime implements AutoCloseable {
             case OnsiteVisit.TOOL -> {
                 kind = PendingTask.ONSITE_ACTION_V1;
                 var draft = strict(OnsiteVisit.Draft.class,args);
-                var invite = interviewInvite(base,draft.requestId());
-                if (!onsiteEnabled() || invite==null || forcedTaskId==null &&
-                        !siteActions(base,invite,binding.personPartyId(),DecisionModel.actionDueMillis(model,recorded.actionId())).contains(draft.action()))
-                    throw new IOException("本人与当前预约尚无该现场接待权限");
-                body = new InterviewTaskBody(invite.organizationPartyId(),recorded.cutoffTimeMillis(),recorded.cutoffPosition(),
+                String organization;
+                if (onsiteDecisionClock()) {
+                    organization = observedSiteOrganization(recorded, draft);
+                } else {
+                    var invite = interviewInvite(base,draft.requestId());
+                    if (!onsiteEnabled() || invite==null || forcedTaskId==null &&
+                            !siteActions(base,invite,binding.personPartyId(),DecisionModel.actionDueMillis(model,recorded.actionId())).contains(draft.action()))
+                        throw new IOException("本人与当前预约尚无该现场接待权限");
+                    organization = invite.organizationPartyId();
+                }
+                body = new InterviewTaskBody(organization,recorded.cutoffTimeMillis(),recorded.cutoffPosition(),
                         recorded.barrierAtMillis(),kind,mapper.writeValueAsString(draft));
             }
             case RoleTradingView.TOOL_INTERVIEW_INVITE -> {
@@ -11027,7 +11102,7 @@ public final class WorldRuntime implements AutoCloseable {
             WorldRoleSession session = openRoleSessionAt(previous, request.personPartyId(),
                     cutoffTime);
             RoleTradingView view = roleTradingViewAt(previous, session);
-            List<String> tools = allowedToolsOf(previous, view);
+            List<String> tools = allowedToolsOf(previous, view, request.wakeReason());
             List<PublicationRun.FeedEntry> feed = publicationFeedEntries(previous,
                     previous.information() == null ? null : previous.information().information(),
                     cutoffTime, view.profile());
@@ -11035,7 +11110,7 @@ public final class WorldRuntime implements AutoCloseable {
                     pendingActionsAt(previous, run, request.personPartyId()), tools,
                     decisionConfig, toolContractVersion(),
                     manifest.hasDialogue()
-                            ? interviewInput(previous, request.personPartyId(), cutoffTime) : null,
+                            ? interviewInput(previous, request.personPartyId(), cutoffTime, request.wakeReason()) : null,
                     engineeringInput(previous, request.personPartyId(), cutoffTime),
                     manifest.hasGroups()
                             ? groupsInput(previous, view.profile(), cutoffTime, feed)
@@ -11435,7 +11510,7 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("观察任职无法由历史快照重生成：" + decision.actionId());
         }
         RoleTradingView view = roleTradingViewAt(previous, session);
-        List<String> tools = allowedToolsOf(previous, view);
+        List<String> tools = allowedToolsOf(previous, view, decision.wakeReason());
         if (!tools.equals(decision.allowedTools())) {
             throw new IOException("允许工具与历史投影不一致：" + decision.actionId());
         }
@@ -11444,7 +11519,7 @@ public final class WorldRuntime implements AutoCloseable {
                         decision.personPartyId()), tools, decisionConfig, toolContractVersion(),
                 manifest.hasDialogue()
                         ? interviewInput(previous, decision.personPartyId(),
-                        decision.cutoffTimeMillis()) : null,
+                        decision.cutoffTimeMillis(), decision.wakeReason()) : null,
                 engineeringInput(previous, decision.personPartyId(),
                         decision.cutoffTimeMillis()),
                 manifest.hasGroups()
@@ -11455,6 +11530,12 @@ public final class WorldRuntime implements AutoCloseable {
         regenerated = historicalDecisionInput(regenerated, decision.inputText(), decision.cutoffPosition());
         if (!regenerated.equals(decision.inputText())) {
             throw new IOException("决定输入无法由历史快照重生成：" + decision.actionId());
+        }
+        if (boundedDiscoveryCatalog() && previous.position() == verifiedInformationPosition) {
+            var identity = historicalInformationCache.confirmedFingerprint(historicalInformationSource,
+                    previous.runId(), previous.position());
+            if (identity != null) lastDiscoveryObservations.put(decision.personPartyId(),
+                    new DiscoveryAnchor(previous.position(), previous.timeMillis(), identity, CatalogDiscovery.Index.from(view.profile())));
         }
         if (previous.position() == verifiedInformationPosition && requiresPublishedBoardMaterial()
                 && tools.contains(RoleTradingView.TOOL_BOARD_MATERIAL)) {
@@ -11539,6 +11620,8 @@ public final class WorldRuntime implements AutoCloseable {
         }
         closed = true;
         historicalInformationCache.clear();
+        lastDiscoveryObservations.clear();
+        lastDiscoverySearches.clear();
         activeMediaObservations.clear();
         openMediaDecisionIndices.clear();
         lastVerifiedMediaObservation = null;
@@ -21093,7 +21176,13 @@ public final class WorldRuntime implements AutoCloseable {
         if (PendingTask.ONSITE_ACTION_V1.equals(task.kind())) {
             var visit=mapper.readValue(body.body(),OnsiteVisit.Draft.class);
             var invite=interviewInvite(previous,visit.requestId());
-            if (invite==null || !invite.organizationPartyId().equals(body.organizationPartyId())
+            if (!scheduled && onsiteDecisionClock()) {
+                var decision = DecisionModel.decision(candidate.decisions().state(), ref.actionId()).orElseThrow();
+                if (!decision.personPartyId().equals(payload.personPartyId())
+                        || decision.cutoffPosition() != body.observedPosition()
+                        || !observedSiteOrganization(decision, visit).equals(body.organizationPartyId()))
+                    throw new IOException("现场预约动作与本人冻结观察不符");
+            } else if (invite==null || !invite.organizationPartyId().equals(body.organizationPartyId())
                     || !siteActions(previous,invite,payload.personPartyId(),payload.dueMillis()).contains(visit.action()))
                 throw new IOException("现场预约动作无法由本人授权重算");
         }
@@ -23401,6 +23490,27 @@ public final class WorldRuntime implements AutoCloseable {
         return "host-fare-v1".equals(manifest.dataVersions().get("onsite-interview"));
     }
 
+    private String observedSiteOrganization(DecisionModel.Decision decision, OnsiteVisit.Draft draft) throws IOException {
+        var rows = mapper.readTree(decision.inputText()).at("/interview/onsiteVisits/appointments");
+        for (var row : rows) {
+            if (!draft.requestId().equals(row.path("requestId").asText())) continue;
+            for (var action : row.path("actions"))
+                if (draft.action().equals(action.asText())) return row.required("organization").asText();
+        }
+        throw new IOException("本人与当前预约尚无该现场接待权限");
+    }
+
+    private boolean onsiteDecisionClock() {
+        return RunManifest.ONSITE_DECISION_CLOCK_VERSION.equals(manifest.dataVersions().get(RunManifest.ONSITE_DECISION_CLOCK_POLICY));
+    }
+
+    private OnsiteVisit.View decisionSiteVisits(WorldState base, String person, long now, String wake) {
+        if (!onsiteDecisionClock()) return siteVisitsAt(base, person, now);
+        long barrier = Math.addExact(now, decisionConfig.thinkMillisByWake().get(wake));
+        long finish = Math.addExact(barrier, decisionConfig.actionMillisByTool().get(OnsiteVisit.TOOL));
+        return siteVisitsAt(base, person, finish, finish);
+    }
+
     private List<String> siteActions(WorldState base, InterviewModel.Invite invite, String person, long finish) {
         if (!OnsiteVisit.HOST.equals(invite.toPartyId())) return List.of();
         return OnsiteVisit.actions(invite,base.interviews().visits().get(invite.requestId()),person,
@@ -23414,6 +23524,11 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     private OnsiteVisit.View siteVisitsAt(WorldState base,String person,long now) {
+        long finish = now + OnsiteVisit.ACTION;
+        return siteVisitsAt(base, person, onsiteDecisionClock() ? finish : now, finish);
+    }
+
+    private OnsiteVisit.View siteVisitsAt(WorldState base, String person, long officeAt, long finish) {
         if (!onsiteEnabled()) return new OnsiteVisit.View(false,false,List.of());
         var result=new ArrayList<OnsiteVisit.Row>();
         boolean traveling=false;
@@ -23421,8 +23536,8 @@ public final class WorldRuntime implements AutoCloseable {
             if (!OnsiteVisit.HOST.equals(invite.toPartyId()) || (!person.equals(invite.fromPartyId()) && !person.equals(invite.toPartyId()))) continue;
             var trip=base.interviews().visits().get(invite.requestId());
             if (trip==null && invite.status()!=InterviewModel.Status.ACCEPTED) continue;
-            boolean authorized=invite.organizationPartyId().equals(interviewOrganizationOf(base,invite.fromPartyId(),now));
-            result.add(OnsiteVisit.row(invite,trip,person,authorized,now));
+            boolean authorized=invite.organizationPartyId().equals(interviewOrganizationOf(base,invite.fromPartyId(),officeAt));
+            result.add(OnsiteVisit.row(invite,trip,person,authorized,finish));
             traveling |= trip!=null && trip.traveling() && person.equals(invite.fromPartyId());
         }
         return new OnsiteVisit.View(true,traveling,List.copyOf(result));
@@ -31183,7 +31298,7 @@ public final class WorldRuntime implements AutoCloseable {
     }
 
     /** schema15 本人员工采访观察：只含本人参与的邀请/会话/轮次与真实已读联系入口。 */
-    private JsonNode interviewInput(WorldState snap, String person, long now) {
+    private JsonNode interviewInput(WorldState snap, String person, long now, String wake) {
         if (snap.interviews() == null || snap.information() == null) {
             return null;
         }
@@ -31202,12 +31317,13 @@ public final class WorldRuntime implements AutoCloseable {
             if (activeTurn.docId() != null) focus.put("docId", activeTurn.docId()).put("version", activeTurn.version());
         }
         if (onsiteEnabled()) {
-            var visits=siteVisitsAt(snap,person,now);
+            var visits=decisionSiteVisits(snap,person,now,wake);
             if (!visits.appointments().isEmpty()) {
                 root.set("onsiteVisits",mapper.valueToTree(visits));
                 String terms = "HOST_CONSENT 表示接待人自愿从本人钱包承担不可退的12.00往返票；记者 DEPART 可提前预约，两程各10000毫秒，实际出发才出票。接待人 REVOKE、记者 RETURN 可中止，已花费用与合法观察保留。";
                 if (showTimeContract) terms += "interview.siteVisit 的 action 只能从本人该预约当前的 actions 中选择。"
                         + "BOOKED 表示行程已经预订，日历到点会尝试出发。departMillis 为 -1 表示尚未实际出发，无需再次申请 DEPART。";
+                if (onsiteDecisionClock()) terms += "预约的可选动作按本次思考结束、再完成现场动作的时点判断；在此期间预约或在岗权限仍可能变化。";
                 root.put("onsiteTerms",terms);
             }
         }
@@ -31861,9 +31977,22 @@ public final class WorldRuntime implements AutoCloseable {
             rules.put("verification", "有权的公司主席可以申请未来精确时点的正式订单公告。本人读完同公司、同指标、"
                     + "同一截止毫秒的正式事实原件后才会核验。已到期但尚未读到匹配事实的判断仍可未决。");
         }
-        if ("visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
+        if (boundedDiscoveryCatalog()) {
+            var library = root.putObject("librarySearch");
+            var current = roleView(snap, person, snap.roles().access());
+            CatalogDiscovery.describe(library, current.catalog().size());
+            var last = PersonalLibrarySearch.latestCompleted(snap.trading(), person);
+            if (last != null) {
+                try {
+                    CatalogDiscovery.show(library, recordedDiscoveryPage(snap, last.clientTaskId()), last, current);
+                } catch (IOException invalid) {
+                    throw new IllegalStateException("已完成检索缺少可重放的结果页", invalid);
+                }
+            }
+        } else if ("visible-index-v1".equals(manifest.dataVersions().get("person-library-search"))) {
             PersonalLibrarySearch.append(root, person, snap.trading(), snap.decisions(),
                     () -> roleView(snap, person, snap.roles().access()));
+        }
         if ("role-choice-v1".equals(manifest.dataVersions().get("public-post-wake")))
             root.put("publicPostWakePolicy", "role-choice-v1");
         if (RunManifest.ROLE_EXPOSURE_CHOICE.equals(manifest.dataVersions().get(RunManifest.MARKET_SESSION_WAKE)))
@@ -34223,7 +34352,8 @@ public final class WorldRuntime implements AutoCloseable {
             case PendingTask.ROLE_LIBRARY_SEARCH_V1 -> {
                 if (!"visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
                     throw new IOException("该档未启用资料检索");
-                subject = mapper.readValue(payload.body(), PersonalLibrarySearch.Request.class).query();
+                subject = boundedDiscoveryCatalog() ? mapper.readValue(payload.body(), CatalogDiscovery.Page.class).query()
+                        : mapper.readValue(payload.body(), PersonalLibrarySearch.Request.class).query();
                 accepted = true;
                 reason = "SEARCHED";
             }

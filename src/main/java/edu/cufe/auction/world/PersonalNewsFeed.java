@@ -35,7 +35,7 @@ final class PersonalNewsFeed {
         for (var security : registry.securities())
             if (offices.contains(security.issuerOrganizationId())) officeTerms.add(security.symbol().toLowerCase(Locale.ROOT));
         var search = PersonalLibrarySearch.latestCompleted(trading, reader.personPartyId());
-        searchTerms = search == null ? List.of() : List.of(search.subjectId().strip().toLowerCase(Locale.ROOT).split("\\s+"));
+        searchTerms = search == null || search.subjectId().isBlank() ? List.of() : List.of(search.subjectId().strip().toLowerCase(Locale.ROOT).split("\\s+"));
         for (var outlet : outlets) {
             if (outlet.stories().isEmpty() || !MediaSubscriptions.active(trading, reader.personPartyId(),
                     outlet.policy().mediaOrganizationPartyId(), position)) continue;

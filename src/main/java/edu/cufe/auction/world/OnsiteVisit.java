@@ -65,12 +65,12 @@ public final class OnsiteVisit {
             default -> old;
         };
     }
-    static Row row(InterviewModel.Invite invite, Trip trip, String person, boolean authorized, long now) {
+    static Row row(InterviewModel.Invite invite, Trip trip, String person, boolean authorized, long finish) {
         long returned = trip == null ? -1 : trip.returnedAt() >= 0 ? trip.returnedAt() :
                 "RETURNING".equals(trip.stage()) ? trip.nextAt() : -1;
         return new Row(invite.requestId(),invite.fromPartyId(),invite.toPartyId(),invite.organizationPartyId(),
                 trip == null ? "APPOINTMENT" : trip.stage(),invite.startMillis(),invite.scheduledEnd(),trip==null?-1:trip.departed(),
                 returned,FARE.toPlainString(),trip!=null && trip.departed()>=0?FARE.toPlainString():"0.00",
-                trip!=null && trip.observedAt()>=0,actions(invite,trip,person,authorized,now+ACTION),trip==null?-1:trip.observedAt());
+                trip!=null && trip.observedAt()>=0,actions(invite,trip,person,authorized,finish),trip==null?-1:trip.observedAt());
     }
 }

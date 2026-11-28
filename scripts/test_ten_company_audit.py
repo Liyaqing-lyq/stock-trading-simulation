@@ -86,6 +86,20 @@ class OpeningPolicyTest(unittest.TestCase):
                     checked_opening(self.frame(version, wrong))
 
 
+    def test_v19_onsite_clock_and_catalog_belong_to_their_opening(self):
+        previous, run = "web-ten-company-autonomy-v18", "web-ten-company-autonomy-v19"
+        old = OPENING_POLICIES[previous]
+        added = {"onsite-decision-clock": "observed-action-completion-v1",
+                 "personal-discovery-catalog": "bounded-catalog-search-pages-v1"}
+        current = {**old, **added}
+        checked_opening(self.frame(run, current))
+        for key, value in added.items():
+            for version, wrong in ((previous, {**old, key: value}),
+                                   (run, {k: v for k, v in current.items() if k != key}),
+                                   (run, {**current, key: "unknown"})):
+                with self.subTest(version=version, key=key), self.assertRaises(ValueError):
+                    checked_opening(self.frame(version, wrong))
+
     def test_v18_dividend_amendments_is_bound_to_its_opening(self):
         previous, current = "web-ten-company-autonomy-v17", "web-ten-company-autonomy-v18"
         old = OPENING_POLICIES[previous]
