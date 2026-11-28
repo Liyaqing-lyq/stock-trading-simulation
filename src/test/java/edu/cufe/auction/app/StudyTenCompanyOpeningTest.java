@@ -410,14 +410,27 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void crisisOperationsDeclareTheirArgumentsWithoutChangingExistingWorlds() throws Exception {
-        var current = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v20.journal"), current);
+        var current = dir.resolve("world-ten-company-autonomy-v20.journal");
         var previous = dir.resolve("world-ten-company-autonomy-v19.journal");
         try (var old = ComposedIndustryScenario.openOnsiteDecisionClockTenCompanyStudy(previous)) {
             assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.CRISIS_ARGUMENTS_POLICY));
         }
         verifyVersionedPolicy(current, previous, RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID,
                 RunManifest.CRISIS_ARGUMENTS_POLICY, RunManifest.CRISIS_ARGUMENTS_VERSION);
+    }
+
+    @Test void aggregatorSourceGuideUsesNewOpeningAndPreservesTheOldOfficeInput() throws Exception {
+        var current = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v21.journal"), current);
+        var previous = dir.resolve("world-ten-company-autonomy-v20.journal");
+        try (var old = ComposedIndustryScenario.openCrisisArgumentsTenCompanyStudy(previous)) {
+            assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.AGGREGATOR_EVIDENCE_POLICY));
+            String input = old.autonomyRoleObservation("nina").toString();
+            assertTrue(input.contains("汇编已公开的媒体成稿，保留原始出处，转发不增加独立来源。"));
+            assertFalse(input.contains("evidence 每一项"));
+        }
+        verifyVersionedPolicy(current, previous, RunManifest.AGGREGATOR_EVIDENCE_RUN_ID,
+                RunManifest.AGGREGATOR_EVIDENCE_POLICY, RunManifest.AGGREGATOR_EVIDENCE_VERSION);
     }
 
     private void verifyVersionedPolicy(Path current, Path previous, String expectedId, String key, String value) throws Exception {
@@ -463,8 +476,13 @@ class StudyTenCompanyOpeningTest {
                 assertEquals(expectedId, created.profile().manifest().runId());
             }
         }
-        try (var old = ComposedIndustryScenario.openCrisisArgumentsTenCompanyStudy(previous);
-             var world = ComposedIndustryScenario.openCrisisArgumentsTenCompanyStudy(current)) {
+        if (RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID.equals(expectedId)) {
+            try (var created = ComposedIndustryScenario.openCrisisArgumentsTenCompanyStudy(current)) {
+                assertEquals(expectedId, created.profile().manifest().runId());
+            }
+        }
+        try (var old = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(previous);
+             var world = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(current)) {
             var manifest = world.profile().manifest();
             var oldManifest = old.profile().manifest();
             assertEquals(expectedId, manifest.runId());
@@ -523,7 +541,7 @@ class StudyTenCompanyOpeningTest {
         }
         assertArrayEquals(saved, Files.readAllBytes(previous));
         assertEquals(current, WorldWebApp.tenCompanyJournal(dir));
-        try (var restored = ComposedIndustryScenario.openCrisisArgumentsTenCompanyStudy(current);
+        try (var restored = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(current);
              var child = new BranchRepository(dir.resolve("runs")).open("policy-child", restored.profile())) {
             assertEquals(expectedId, child.profile().manifest().policyRunId());
             assertEquals(restored.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());

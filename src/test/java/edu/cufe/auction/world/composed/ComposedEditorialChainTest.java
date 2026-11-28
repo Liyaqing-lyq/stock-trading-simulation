@@ -469,6 +469,44 @@ class ComposedEditorialChainTest {
         assertArrayEquals(bytes, java.nio.file.Files.readAllBytes(file));
     }
 
+    @Test void aggregatorOfficeExplainsWhichReadSourcesCanBeSubmitted() throws Exception {
+        var seed = directory.resolve("aggregator.journal");
+        JsonNode contract, article;
+        String topic;
+        try (var world = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(seed)) {
+            world.advanceTo(9 * 3_600_000L);
+            for (String person : List.of("nina", "omar")) {
+                var practice = office(world.autonomyRoleObservation(person)).required("editorialPractice").asText();
+                assertTrue(practice.contains("evidence"), person + ": " + practice);
+                assertTrue(practice.contains("每一项") && practice.contains("本人读完") && practice.contains("已刊媒体稿"));
+                assertTrue(practice.contains("合同") && practice.contains("章程") && practice.contains("私人证据"));
+                assertTrue(practice.contains("转发不增加独立来源"));
+            }
+            assertFalse(office(world.autonomyRoleObservation("rita")).required("editorialPractice").asText().contains("已刊媒体稿"));
+            var nonMedia = world.autonomyRoleObservation("alice");
+            assertTrue(office(nonMedia).isMissingNode());
+            assertFalse(nonMedia.required("tools").toString().contains(TOOL_MEDIA_SUBMIT));
+            String original = "engineering-opportunity:A1";
+            String published = publish(world, "rita", "ed", "bea", "WIRE", List.of(original), "客户开价", "本期报价，尚未签约。");
+            contract = read(world, "nina", original);
+            article = read(world, "nina", published);
+            topic = result(world, "nina", TOOL_MEDIA_PROPOSE, Map.of("storyId", "summary", "template", "AGGREGATOR", "topic", "报价资料")).storyId();
+        }
+        byte[] before = java.nio.file.Files.readAllBytes(seed);
+        for (var evidence : List.of(List.of(contract), List.of(article, contract), List.of(article))) {
+            var file = java.nio.file.Files.createTempFile(directory, "submission-", ".journal");
+            java.nio.file.Files.write(file, before);
+            try (var world = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(file)) {
+                var report = result(world, "nina", TOOL_MEDIA_SUBMIT, Map.of("storyId", topic, "expectedRevision", 0,
+                        "title", "摘要", "body", "本期报价尚未成交。", "publicSourceDescription", "已读资料", "evidence", evidence));
+                boolean publishedOnly = evidence.equals(List.of(article));
+                assertEquals(publishedOnly, report.accepted(), report.reason());
+                if (!publishedOnly) assertEquals("AGGREGATOR_REQUIRES_PUBLISHED_STORY", report.reason());
+            }
+        }
+        assertArrayEquals(before, java.nio.file.Files.readAllBytes(seed));
+    }
+
     @Test void eightDesksKeepEvidenceEditorialAndReaderBoundariesAcrossCorrections() throws Exception {
         var file = directory.resolve("eight-desks.journal");
         String original = "engineering-opportunity:A1", second = CompanyOpeningDocuments.documentId("eng-a");

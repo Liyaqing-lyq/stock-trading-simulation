@@ -32135,7 +32135,7 @@ public final class WorldRuntime implements AutoCloseable {
                         .put("role", office.role().name()).put("purpose", purpose);
                 var minimum = goal.putObject("minimumIndependentSources");
                 policy.enabledTemplates().forEach((template, count) -> minimum.put(template.name(), count));
-                if (MediaModel.EIGHT_DESKS.equals(policy.templateCatalog())) MediaDesks.describe(goal, office.organizationPartyId());
+                if (MediaModel.EIGHT_DESKS.equals(policy.templateCatalog())) MediaDesks.describe(goal, office.organizationPartyId(), manifest);
                 if (policy.draftComparisonMillis() != null) {
                     root.put("crossBorderComparisonMillis", policy.draftComparisonMillis());
                     goal.put("timeAndLanguage", "实验本地按 UTC+08、境外编辑台按 UTC+00 记时。已读原件列两地发表时刻；"

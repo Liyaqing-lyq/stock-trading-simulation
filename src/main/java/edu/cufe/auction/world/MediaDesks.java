@@ -102,9 +102,15 @@ public final class MediaDesks {
                 inDay / 3_600_000, inDay / 60_000 % 60, inDay / 1_000 % 60, inDay % 1_000);
     }
 
-    static void describe(ObjectNode objective, String org) {
+    static void describe(ObjectNode objective, String org, RunManifest manifest) {
         for (var desk : DESKS) if (desk.org().equals(org)) {
-            objective.put("intendedAudience", desk.audience()).put("editorialPractice", desk.practice());
+            String practice = desk.practice();
+            if (desk.template() == MediaModel.TemplateKind.AGGREGATOR && RunManifest.AGGREGATOR_EVIDENCE_VERSION.equals(
+                    manifest.dataVersions().get(RunManifest.AGGREGATOR_EVIDENCE_POLICY))) {
+                practice = "AGGREGATOR 投稿至少引用一篇已刊媒体稿。evidence 每一项都须是本人读完且仍可引用的已刊媒体稿版本。"
+                        + "原合同、章程及私人证据即使读完也不能用于汇编投稿，不能和已刊稿混用。保留原始出处，转发不增加独立来源。";
+            }
+            objective.put("intendedAudience", desk.audience()).put("editorialPractice", practice);
             objective.put("outsideInterests", "核对本人其他任职、公司候选身份及自有持仓；公开陈述利益关系。读稿与私人资料按各自权限。");
             return;
         }

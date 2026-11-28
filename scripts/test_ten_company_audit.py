@@ -86,6 +86,16 @@ class OpeningPolicyTest(unittest.TestCase):
                     checked_opening(self.frame(version, wrong))
 
 
+    def test_v21_aggregator_evidence_belongs_only_to_its_opening(self):
+        old_run, new_run = "web-ten-company-autonomy-v20", "web-ten-company-autonomy-v21"
+        key = "aggregator-evidence"
+        old = OPENING_POLICIES[old_run]
+        current = {**old, key: "read-published-stories-only-v1"}
+        checked_opening(self.frame(new_run, current))
+        for run, invalid in ((old_run, current), (new_run, old), (new_run, {**current, key: "unknown"})):
+            with self.subTest(run=run, value=invalid.get(key)), self.assertRaises(ValueError):
+                checked_opening(self.frame(run, invalid))
+
     def test_v20_bank_and_board_arguments_require_the_new_opening(self):
         previous, current = "web-ten-company-autonomy-v19", "web-ten-company-autonomy-v20"
         old = OPENING_POLICIES[previous]

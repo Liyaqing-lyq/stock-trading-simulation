@@ -721,6 +721,15 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID);
     }
 
+    /** 新建普通十公司世界，为汇编岗位展示已刊稿的引用要求，恢复时沿用原档政策。
+     * @param journal 原生存档文件
+     * @return 恢复或新建的十公司世界
+     * @throws Exception 无法初始化或恢复存档时抛出
+     */
+    public static WorldRuntime openAggregatorEvidenceTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.AGGREGATOR_EVIDENCE_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
