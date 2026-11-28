@@ -209,7 +209,7 @@ public final class PublicationRun {
         for (PlatformPostModel.Post post : platform.posts()) {
             if (post.status() == PlatformPostModel.PostStatus.PUBLISHED
                     && post.publishedAt() <= at) {
-                addCandidate(candidates, post.docId(), post.version(), FeedKind.PLATFORM_POST, info);
+                addCandidate(candidates, post.docId(), post.version(), FeedKind.PLATFORM_POST, info, null);
             }
         }
         for (MediaModel.State media : outlets) {
@@ -217,10 +217,10 @@ public final class PublicationRun {
                 if (story.publicDocId().isEmpty()) {
                     continue;
                 }
-                long version = mediaVersionAt(media, story, at);
-                if (version > 0) {
-                    addCandidate(candidates, story.publicDocId(), version,
-                            FeedKind.MEDIA_STORY, info);
+                var revision = mediaVersionAt(media, story, at);
+                if (revision != null) {
+                    addCandidate(candidates, story.publicDocId(), revision.docVersion(),
+                            FeedKind.MEDIA_STORY, info, revision.status() == MediaModel.Status.WITHDRAWN ? revision.actorPartyId() : null);
                 }
             }
         }
@@ -342,30 +342,30 @@ public final class PublicationRun {
      * @param media 媒体状态
      * @param story 稿件
      * @param at    观察截止时刻
-     * @return 版本号；该时点尚无任何已发表版本返回 0
+     * @return 当时最新的正式发行或撤稿记录，尚未对外发表时为空
      */
-    private static long mediaVersionAt(MediaModel.State media, MediaModel.Story story, long at) {
-        long best = 0L;
+    private static MediaModel.Revision mediaVersionAt(MediaModel.State media, MediaModel.Story story, long at) {
+        MediaModel.Revision best = null;
         for (MediaModel.Revision revision : media.revisions()) {
             if (!revision.storyId().equals(story.storyId())
-                    || revision.status() != MediaModel.Status.PUBLISHED
+                    || (revision.status() != MediaModel.Status.PUBLISHED && revision.status() != MediaModel.Status.WITHDRAWN)
                     || !story.publicDocId().equals(revision.docId())
                     || revision.docVersion() < 1
                     || revision.atMillis() > at) {
                 continue;
             }
-            best = Math.max(best, revision.docVersion());
+            if (best == null || best.docVersion() < revision.docVersion()) best = revision;
         }
         return best;
     }
 
     private static void addCandidate(List<Candidate> candidates, String docId, long version,
-                                     FeedKind kind, InformationModel.State info) {
+                                     FeedKind kind, InformationModel.State info, String noticeSigner) {
         PublicationBinding.fromInformation(info, docId, version).ifPresent(doc -> {
             if (!"PUBLIC".equals(doc.audienceKind())) {
                 return;
             }
-            candidates.add(new Candidate(docId, version, doc.title(), doc.publisherPartyId(),
+            candidates.add(new Candidate(docId, version, doc.title(), noticeSigner == null ? doc.publisherPartyId() : noticeSigner,
                     doc.publishedAt(), kind));
         });
     }

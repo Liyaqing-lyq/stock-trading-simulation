@@ -453,6 +453,7 @@ public final class WorldWebHost implements AutoCloseable {
         if (localInputPolicy()) retainEligibleInputBlocks(roster.stream()
                 .flatMap(group -> group.persons().stream()).collect(java.util.stream.Collectors.toSet()));
         for (String person : roster.stream().flatMap(g -> g.persons().stream()).distinct().toList()) {
+            if (!runtime.autonomyDutyAvailable(person)) continue;
             if (runtime.autonomyRoleBusy(person)) {
                 autonomy.busy.add(person);
                 continue;
@@ -529,6 +530,8 @@ public final class WorldWebHost implements AutoCloseable {
         long now = snapshot.timeMillis();
         long target = Math.min(autonomy.target, now + autonomy.step);
         if (eventAutonomy()) {
+            if (RunManifest.PERSONAL_ATTENTION_VERSION.equals(runtime.profile().manifest().dataVersions().get(RunManifest.PERSONAL_ATTENTION_POLICY)))
+                target = edu.cufe.auction.world.PersonalDutyWindows.nextBoundary(now, target);
             if ("dated-facts-v1".equals(runtime.profile().manifest().dataVersions().get("wake-clock"))
                     && snapshot.exchange().isPresent() && !snapshot.exchange().get().closed())
                 target = edu.cufe.auction.world.MarketSessions.nextBoundary(now,target);
@@ -1183,12 +1186,23 @@ public final class WorldWebHost implements AutoCloseable {
             reports.sort(Comparator.comparingLong((Map<String, Object> row) ->
                     parseLong(row.get("timeMillis"))).reversed());
             List<Map<String, Object>> documents = new ArrayList<>();
+            Map<String,Long> withdrawalVersions = new HashMap<>();
+            if (RunManifest.MEDIA_WITHDRAWAL_VERSION.equals(current.profile().manifest().dataVersions().get(RunManifest.MEDIA_WITHDRAWAL_POLICY))) {
+                var visibleVersions = new HashSet<DocRef>();
+                for (var entry : view.catalog()) visibleVersions.add(new DocRef(entry.docId(), entry.version()));
+                for (var office : snapshot.media().orElseThrow().states()) for (var story : office.stories()) {
+                    if (story.status() == MediaModel.Status.WITHDRAWN && visibleVersions.contains(new DocRef(story.publicDocId(), story.publicVersion())))
+                        withdrawalVersions.put(story.publicDocId(), story.publicVersion());
+                }
+            }
             for (RoleView.Experience experience : view.observations()) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("docId", experience.ref().docId()); row.put("version", num(experience.ref().version()));
                 row.put("index", num(experience.ref().index())); row.put("title", experience.title());
                 row.put("body", experience.body()); row.put("sourceDescription", experience.publicSourceDescription());
                 row.put("publishedAtMillis", num(experience.publishedAt()));
+                Long withdrawn = withdrawalVersions.get(experience.ref().docId());
+                if (withdrawn != null && withdrawn > experience.ref().version()) row.put("withdrawalNoticeVersion", num(withdrawn));
                 row.put("completedAtMillis", num(experience.completedAt())); documents.add(row);
             }
             Map<String, Object> media = new LinkedHashMap<>();
@@ -1196,6 +1210,10 @@ public final class WorldWebHost implements AutoCloseable {
             media.put("stories", bounded(stories)); media.put("reports", bounded(reports));
             media.put("documents", bounded(documents));
             media.put("tools", trading.tools());
+            if (trading.tools().contains(RoleTradingView.TOOL_MEDIA_WITHDRAW)) {
+                media.put("withdrawal", PersonalObservations.page(current, personId, PersonalObservations.Page.MEDIA_WITHDRAWAL,
+                        mediaWithdrawalPage(trading)));
+            }
             Map<String, Object> research = new LinkedHashMap<>();
             if ("household-plans-v1".equals(current.profile().manifest().dataVersions().get("personal-opening-profiles"))) {
                 var input = current.autonomyRoleObservation(personId).path("engineering");
@@ -4921,6 +4939,31 @@ public final class WorldWebHost implements AutoCloseable {
         return page;
     }
 
+    private static Map<String,Object> mediaWithdrawalPage(RoleTradingView view) {
+        var reasons = new LinkedHashMap<String,String>();
+        for (var reason : MediaModel.WithdrawalReason.values()) reasons.put(reason.name(), reason.label());
+        var stories = view.media().stream().filter(s -> s.withdrawWorkMillis() != null)
+                .map(s -> Map.of("storyId", s.storyId(), "topic", s.topic(), "publicDocId", s.publicDocId(),
+                        "publicVersion", num(s.publicVersion()), "workMillis", num(s.withdrawWorkMillis()))).toList();
+        return Map.of("stories", stories, "reasons", reasons, "timeMillis", num(view.timeMillis()));
+    }
+
+    Object withdrawPublishedStory(String person, long expected, String command, WorldRoleSession.MediaWithdrawalDraft draft) throws Exception {
+        return personalWebCommand(person, expected, frame -> {
+            var world = readyNow();
+            var session = world.openRoleSession(person);
+            var view = session.view();
+            if (!view.tools().contains(RoleTradingView.TOOL_MEDIA_WITHDRAW))
+                throw new IllegalArgumentException("当前无正式撤稿权限");
+            var story = view.media().stream().filter(s -> s.withdrawWorkMillis() != null
+                    && s.storyId().equals(draft.storyId()) && s.publicVersion() == draft.expectedPublicVersion())
+                    .findFirst().orElseThrow(() -> new IllegalArgumentException("当前无权撤回这版公开稿"));
+            long due = Math.addExact(view.timeMillis(), story.withdrawWorkMillis());
+            var receipt = session.withdrawStory(command, command, due, draft);
+            return Map.of("receipt", receipt, "dueTimeMillis", num(due));
+        }, PersonalObservations.Page.MEDIA_WITHDRAWAL);
+    }
+
     Map<String, String> newsletterAction(String person, long observed, String command, String action, String target) throws Exception {
         return call(() -> {
             var world = readyNow();
@@ -5586,6 +5629,7 @@ public final class WorldWebHost implements AutoCloseable {
             case ENGINEERING -> personEngineeringOf(world, person);
             case GROUPS -> groupPageOf(world, person);
             case NEWSLETTERS -> newsletterPage(world, person);
+            case MEDIA_WITHDRAWAL -> mediaWithdrawalPage(world.openRoleSession(person).view());
         };
         return PersonalObservations.enabled(world, person) ? PersonalObservations.page(world, person, scope,raw) : raw;
     }

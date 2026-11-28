@@ -50,6 +50,8 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
     public static final String KIND_REVIEW = PendingTask.MEDIA_STORY_REVIEW_V1;
     /** 发布。 */
     public static final String KIND_PUBLISH = PendingTask.MEDIA_STORY_PUBLISH_V1;
+    /** 签发正式撤稿公告。 */
+    public static final String KIND_WITHDRAW = PendingTask.MEDIA_STORY_WITHDRAW_V1;
     /** 开启更正。 */
     public static final String KIND_CORRECTION = PendingTask.MEDIA_STORY_CORRECTION_V1;
     /** 取消本人未完成的媒体工作。 */
@@ -60,7 +62,7 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
 
     /** 本桥登记的全部媒体任务种类。 */
     public static final Set<String> KINDS = Set.of(KIND_PROPOSE, KIND_SUBMIT, KIND_REVIEW,
-            KIND_PUBLISH, KIND_CORRECTION, KIND_CANCEL, KIND_EVIDENCE_SHARE);
+            KIND_PUBLISH, KIND_WITHDRAW, KIND_CORRECTION, KIND_CANCEL, KIND_EVIDENCE_SHARE);
 
     /** 采访协调种类（schema14 才可能出现）：只进同一工时账，不进媒体故事流。 */
     public static final Set<String> INTERVIEW_KINDS = Set.of(
@@ -362,7 +364,7 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
             case KIND_PROPOSE -> config.proposeMillis();
             case KIND_SUBMIT -> policy.writeMillis();
             case KIND_REVIEW -> policy.reviewMillis();
-            case KIND_PUBLISH -> policy.publishMillis();
+            case KIND_PUBLISH, KIND_WITHDRAW -> policy.publishMillis();
             case KIND_CORRECTION -> config.correctionMillis();
             case KIND_CANCEL -> config.cancelMillis();
             default -> throw new IllegalArgumentException("未登记的媒体任务种类：" + kind);
@@ -406,7 +408,7 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
                 if (!docId.equals(entry.docId()) || version != entry.version()) continue;
                 var document = MediaModel.boundPublishedVersion(desk, entry, information);
                 if (document == null) return Optional.empty();
-                boolean confirmed = desk.revisions().stream().anyMatch(revision -> revision.status() == MediaModel.Status.PUBLISHED
+                boolean confirmed = desk.revisions().stream().anyMatch(revision -> (revision.status() == MediaModel.Status.PUBLISHED || revision.status() == MediaModel.Status.WITHDRAWN)
                         && docId.equals(revision.docId()) && revision.docVersion() == version
                         && revision.atMillis() == document.publishedAt());
                 return confirmed ? Optional.of(entry.roots()) : Optional.empty();
@@ -444,6 +446,14 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
             }
         }
         return reserved;
+    }
+
+    /** 按冻结规则计算观察时刻已获准使用的累计组织工时；已耗与预留仍分别记账。 */
+    long releasedMillis(String organization, long now, boolean scheduled) {
+        Budget budget = budgetOf(organization);
+        if (budget == null) return 0L;
+        return scheduled ? budget.totalMillis() / MediaDesks.CONTRACT_SHIFTS * MediaDesks.releasedShifts(now)
+                : budget.totalMillis();
     }
 
     /** @return 该组织可用工时；不含在途预留时传空表 */

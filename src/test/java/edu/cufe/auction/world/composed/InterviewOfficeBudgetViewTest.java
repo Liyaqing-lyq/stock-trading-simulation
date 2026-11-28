@@ -90,6 +90,64 @@ class InterviewOfficeBudgetViewTest {
                 .filter(r->r.requestId().equals(request) && r.timeMillis()==due).findFirst().orElseThrow();
     }
 
+    @Test void calendarReleasesOnlyEarnedShiftsWhileMediaAndInterviewsShareReservations() throws Exception {
+        var file = dir.resolve("calendar.journal");
+        long day = 86_400_000L;
+        long appointment = day + 90_000L;
+        long reserved;
+        try (var w = ComposedIndustryScenario.openMediaWithdrawalTenCompanyStudy(file)) {
+            var initial = own(w, "sam");
+            assertEquals(480_000L, initial.totalMillis());
+            assertEquals(260, initial.schedule().contractedShifts());
+            assertEquals(124_800_000L, initial.schedule().contractedMillis());
+            assertEquals(1, initial.schedule().releasedShifts());
+            long readAt = w.snapshot().timeMillis() + 1;
+            w.openRoleSession("sam").startReading("read", "read", readAt, "contact:investor-public", 1);
+            w.advanceTo(readAt);
+            w.advanceTo(w.roleView("sam").readings().get(0).dueAt());
+            w.advanceTo(day - 160_000);
+            var excessive = invite(w, "too-large", appointment, 600_000);
+            assertEquals("BUDGET", accept(w, "too-large", excessive, appointment).reason());
+            long topicMillis = w.snapshot().media().orElseThrow().config().proposeMillis();
+            reserved = own(w, "sam").availableMillis() - w.interviewRun().config().inviteMillis() - (topicMillis - 1);
+            var request = invite(w, "book", appointment, reserved);
+            assertTrue(accept(w, "book", request, appointment).accepted());
+            assertEquals(topicMillis - 1, own(w, "bea").availableMillis());
+            long due = w.snapshot().timeMillis() + topicMillis;
+            w.openRoleSession("sam").proposeStory("compete", "compete", due,
+                    new WorldRoleSession.MediaProposeDraft("compete", "INVESTIGATIVE", "核对次日交付"));
+            w.advanceTo(due);
+            assertTrue(w.snapshot().media().orElseThrow().reports().values().stream().anyMatch(r -> "BUDGET".equals(r.reason())));
+            assertEquals(reserved, own(w, "bea").interviewReservedMillis());
+
+            w.advanceTo(day - 1);
+            w.openRoleSession("rita").proposeStory("overnight", "overnight", day - 1 + topicMillis,
+                    new WorldRoleSession.MediaProposeDraft("overnight", "WIRE", "跨日报价记录"));
+            var pending = own(w, "ed");
+            assertEquals(topicMillis, pending.mediaReservedMillis());
+            w.advanceTo(day);
+            assertEquals(480_000L - topicMillis, own(w, "ed").availableMillis());
+            assertEquals(2, own(w, "ed").schedule().releasedShifts());
+            assertEquals(960_000L, own(w, "sam").totalMillis());
+            assertEquals(reserved, own(w, "sam").interviewReservedMillis());
+        }
+        try (var w = ComposedIndustryScenario.openMediaWithdrawalTenCompanyStudy(file)) {
+            var held = own(w, "bea");
+            assertEquals(reserved, held.interviewReservedMillis());
+            w.advanceTo(appointment + 60_000);
+            assertEquals(0, own(w, "sam").interviewReservedMillis());
+            assertEquals(held.spentMillis() + 60_000, own(w, "sam").spentMillis());
+            assertEquals(0, own(w, "ed").mediaReservedMillis());
+            assertEquals(w.snapshot().media().orElseThrow().config().proposeMillis(), own(w, "ed").spentMillis());
+            w.advanceTo(4 * day);
+            var friday = own(w, "sam");
+            w.advanceTo(6 * day);
+            assertEquals(friday, own(w, "sam"));
+            w.advanceTo(7 * day);
+            assertEquals(friday.totalMillis() + 480_000, own(w, "sam").totalMillis());
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(longs = {60_000L, 120_000L})
     void reservedWorkUsesExistingLedgerAndOutsiderNeverAcquiresTheInvitersBudget(long duration) throws Exception {

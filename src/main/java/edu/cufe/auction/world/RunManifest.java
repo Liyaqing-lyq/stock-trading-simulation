@@ -169,6 +169,24 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String ISSUER_DECISIONS_POLICY = "issuer-decisions";
     /** 工程发行人现金分红的角色决定政策。 */
     public static final String ISSUER_DECISIONS_VERSION = "engineering-cash-dividend-v1";
+    /** 第十四版普通世界，启用正式撤稿、跨期采编工时以及股利债权后续。 */
+    public static final String MEDIA_WITHDRAWAL_RUN_ID = "web-ten-company-autonomy-v14";
+    /** 有限个人活动时段与通信工时的政策键。 */
+    public static final String PERSONAL_ATTENTION_POLICY = "personal-attention";
+    /** 工作日普通注意力时段，已确认的约定可在时段外履行。 */
+    public static final String PERSONAL_ATTENTION_VERSION = "weekday-duty-windows-v1";
+    /** 已发表报道的撤稿政策。 */
+    public static final String MEDIA_WITHDRAWAL_POLICY = "media-withdrawal";
+    /** 按公开版本提交可追溯的撤稿公告。 */
+    public static final String MEDIA_WITHDRAWAL_VERSION = "published-version-notice-v1";
+    /** 编辑部跨期工时政策。 */
+    public static final String MEDIA_WORK_CALENDAR = "media-work-calendar";
+    /** 有限工作日排班。 */
+    public static final String FINITE_BUSINESS_SHIFTS = "finite-business-shifts-v1";
+    /** 未付股利的债权后续政策。 */
+    public static final String DIVIDEND_CLAIMS_POLICY = "dividend-claims";
+    /** 股东及发行人代表按各自权限办理股利债权。 */
+    public static final String DIVIDEND_CLAIMS_VERSION = "holder-and-issuer-followup-v1";
     /** 本人已获显示资格的新闻排序口径。 */
     public static final String PERSONAL_NEWS_RANKING = "personal-news-ranking";
     /** 已读、兴趣和来源探索共同决定新闻展示次序。 */
@@ -254,14 +272,19 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(MEDIA_WITHDRAWAL_RUN_ID, ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 是否继承个人消息、有限水文与药企许可的开局规则 */
     public static boolean usesPersonalNewsOpening(String id) {
-        return PERSONAL_NEWS_RUN_ID.equals(id) || INTERVIEW_AUTONOMY_RUN_ID.equals(id) || ISSUER_DECISIONS_RUN_ID.equals(id);
+        return PERSONAL_NEWS_RUN_ID.equals(id) || INTERVIEW_AUTONOMY_RUN_ID.equals(id) || usesIssuerDecisionsOpening(id);
+    }
+
+    /** @param id 开局政策标识 @return 是否启用独立董事分红议题和个人市价委托 */
+    public static boolean usesIssuerDecisionsOpening(String id) {
+        return ISSUER_DECISIONS_RUN_ID.equals(id) || MEDIA_WITHDRAWAL_RUN_ID.equals(id);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
@@ -304,11 +327,17 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 policies.put(PHARMA_LICENSING, APPROVED_USE_CONTRACT);
                 policies.put(HYDRO_INFLOW_PATH, FINITE_1080_DAYS);
             }
-            if (INTERVIEW_AUTONOMY_RUN_ID.equals(id) || ISSUER_DECISIONS_RUN_ID.equals(id))
+            if (INTERVIEW_AUTONOMY_RUN_ID.equals(id) || usesIssuerDecisionsOpening(id))
                 policies.put(INTERVIEW_AUTONOMY_POLICY, INTERVIEW_AUTONOMY_VERSION);
-            if (ISSUER_DECISIONS_RUN_ID.equals(id)) {
+            if (usesIssuerDecisionsOpening(id)) {
                 policies.put(ISSUER_DECISIONS_POLICY, ISSUER_DECISIONS_VERSION);
                 policies.put(PersonalMarket.MARKET_POLICY, PersonalMarket.MARKET_VERSION);
+            }
+            if (MEDIA_WITHDRAWAL_RUN_ID.equals(id)) {
+                policies.put(MEDIA_WITHDRAWAL_POLICY, MEDIA_WITHDRAWAL_VERSION);
+                policies.put(PERSONAL_ATTENTION_POLICY, PERSONAL_ATTENTION_VERSION);
+                policies.put(MEDIA_WORK_CALENDAR, FINITE_BUSINESS_SHIFTS);
+                policies.put(DIVIDEND_CLAIMS_POLICY, DIVIDEND_CLAIMS_VERSION);
             }
             return Map.copyOf(policies);
         }

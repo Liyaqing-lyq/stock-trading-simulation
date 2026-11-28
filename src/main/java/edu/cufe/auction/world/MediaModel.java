@@ -67,6 +67,7 @@ import java.util.TreeSet;
  */
 public final class MediaModel {
     static final String REVIEW_NOTE_PREFIX = "media-review:";
+    static final String WITHDRAWAL_NOTICE_PREFIX = "withdrawal-notice:";
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
@@ -147,7 +148,7 @@ public final class MediaModel {
         INDEPENDENT
     }
 
-    /** 稿件状态；没有「撤回」状态，未提交的稿件自然没有公开影响。 */
+    /** 稿件状态；撤稿保留此前公开版本与审计记录。 */
     public enum Status {
         /** 编辑中：记者可提交或重新提交。 */
         DRAFT,
@@ -158,7 +159,9 @@ public final class MediaModel {
         /** 编辑已批准，等待发布。 */
         APPROVED,
         /** 已公开发布。 */
-        PUBLISHED
+        PUBLISHED,
+        /** 已经对外发表正式撤稿公告。 */
+        WITHDRAWN
     }
 
     /**
@@ -1813,6 +1816,60 @@ public final class MediaModel {
         } catch (NumberFormatException notNumeric) {
             return Long.MAX_VALUE;
         }
+    }
+
+    /** 编辑选择的公开原因。固定表述避免把内部审阅意见和匿名采访标识带进公开公告。 */
+    public enum WithdrawalReason {
+        /** 可复核事实出现错误。 */
+        FACTUAL_ERROR("原稿存在事实错误"),
+        /** 原发表依据不足。 */
+        INSUFFICIENT_EVIDENCE("支持原稿的证据不足"),
+        /** 授权口径发生问题。 */
+        QUOTATION_PERMISSION("引述授权存在问题"),
+        /** 未达到本社发布标准。 */
+        EDITORIAL_STANDARDS("原稿未达到本社发布标准");
+
+        private final String label;
+        WithdrawalReason(String label) { this.label = label; }
+        /** @return 允许公开的撤稿原因 */
+        public String label() { return label; }
+    }
+
+    static BridgeOutcome withdraw(State state, Policy policy, RoleAccess.State access, InformationModel.State info,
+                                  String editor, WorldRoleSession.MediaWithdrawalDraft request, long start, long now) {
+        if (!frozen(state, policy)) return bridgeReject(state, info, REASON_POLICY_MISMATCH);
+        if (!authorized(access, editor, Action.PUBLISH_STORY, policy, start)
+                || !authorized(access, editor, Action.PUBLISH_STORY, policy, now)) return bridgeReject(state, info, REASON_NOT_AUTHORIZED);
+        if (!windowOk(start, now, policy.publishMillis()) || now < watermark(state)) return bridgeReject(state, info, REASON_TIME);
+        var story = findStory(state, request.storyId());
+        if (story == null) return bridgeReject(state, info, REASON_UNKNOWN_STORY);
+        if (story.publicVersion() == 0 || story.status() == Status.WITHDRAWN) return bridgeReject(state, info, REASON_STATE);
+        if (request.expectedPublicVersion() != story.publicVersion()) return bridgeReject(state, info, REASON_VERSION);
+        var document = documentOf(info, story.publicDocId());
+        if (document == null || document.versions().size() != story.publicVersion()
+                || !document.publisherPartyId().equals(story.authorPartyId())
+                || document.audience().kind() != AudienceKind.PUBLIC) return bridgeReject(state, info, REASON_STATE);
+        var prior = document.at(story.publicVersion());
+        if (prior.publishedAt() >= now) return bridgeReject(state, info, REASON_TIME);
+        String title = "撤稿公告 · " + prior.title();
+        String body = "本社撤回《" + prior.title() + "》公开第 " + story.publicVersion()
+                + " 版。" + request.publicReason().label() + "。签发编辑：" + editor + "。";
+        String source = policy.mediaOrganizationPartyId() + " 编辑部正式撤稿公告";
+        String prefix = WITHDRAWAL_NOTICE_PREFIX + story.publicVersion() + ":" + story.publicDocId();
+        String noticeId = prefix;
+        for (int n = 1; documentOf(info, noticeId) != null; n++) noticeId = prefix + ":" + n;
+        var notice = new InformationModel.VersionDraft(title, body, source, now, policy.publicReadMillis(), List.of());
+        var next = InformationModel.publish(info, noticeId, editor, InformationModel.Audience.publicAudience(), notice);
+        next = InformationModel.publishVersion(next, story.publicDocId(),
+                new InformationModel.VersionDraft(title, body, source, now, policy.publicReadMillis(), List.of(noticeId)));
+        long version = story.publicVersion() + 1;
+        var updated = new Story(story.storyId(), story.template(), story.authorPartyId(), story.topic(),
+                Status.WITHDRAWN, story.revisionNo(), story.draftDocId(), story.draftVersion(), story.publicDocId(), version,
+                story.evidence(), story.roots(), story.sourceGroups(), null, -1, 0, story.createdAtMillis(), now);
+        var revised = append(state, updated, new Revision(story.storyId(), story.revisionNo(), Status.WITHDRAWN,
+                editor, now, story.publicDocId(), version, request.publicReason().name()));
+        revised = withLineage(revised, new Lineage(story.publicDocId(), version, List.of(new Ref(noticeId, 1))));
+        return new BridgeOutcome(true, "WITHDRAWN", revised, next);
     }
 
     private static DocumentVersion draftVersion(InformationModel.State information, Story story) {

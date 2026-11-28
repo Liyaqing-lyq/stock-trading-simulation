@@ -11,7 +11,7 @@ import java.util.*;
 
 /** 本人页面的乐观并发凭据。只比较获准观察的业务内容，世界审计序号留在服务端。 */
 final class PersonalObservations {
-    enum Page { GROUPS, ENGINEERING, MANUFACTURING, RESEARCH, OPERATIONS, NEWSLETTERS }
+    enum Page { GROUPS, ENGINEERING, MANUFACTURING, RESEARCH, OPERATIONS, NEWSLETTERS, MEDIA_WITHDRAWAL }
 
     private record Key(String person, Page page) {}
     private record Seen(JsonNode facts, long token) {}

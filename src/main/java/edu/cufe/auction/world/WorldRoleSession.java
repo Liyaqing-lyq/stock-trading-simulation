@@ -745,6 +745,20 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
         }
     }
 
+    /** 在任编辑指明已有公开版和允许公开的撤稿原因。 */
+    public record MediaWithdrawalDraft(String storyId, long expectedPublicVersion, MediaModel.WithdrawalReason publicReason) {
+        /** 要求明确的稿件、公开版次和原因。 */
+        public MediaWithdrawalDraft {
+            requireText(storyId, "稿件标识");
+            if (expectedPublicVersion < 1 || publicReason == null) throw new IllegalArgumentException("撤稿须指明公开版本和原因");
+        }
+    }
+
+    /** 依本次本人观察排程正式撤稿。 */
+    public String withdrawStory(String command, String task, long due, MediaWithdrawalDraft draft) throws IOException {
+        return runtime.scheduleMediaStory(this, PendingTask.MEDIA_STORY_WITHDRAW_V1, command, task, due, draft);
+    }
+
     /**
      * 记者提出选题。
      *

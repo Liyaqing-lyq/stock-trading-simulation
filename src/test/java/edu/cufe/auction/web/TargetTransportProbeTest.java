@@ -118,9 +118,9 @@ class TargetTransportProbeTest {
         exchange.getResponseBody().write(bytes);
     }
 
-    @ParameterizedTest @ValueSource(strings={"EMPTY","V6_EMPTY","V7_EMPTY","V8_EMPTY","V9_EMPTY","V10_EMPTY","V11_EMPTY","V12_EMPTY", "V13_EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
+    @ParameterizedTest @ValueSource(strings={"EMPTY","V6_EMPTY","V7_EMPTY","V8_EMPTY","V9_EMPTY","V10_EMPTY","V11_EMPTY","V12_EMPTY", "V13_EMPTY", "V14_EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
     void measuredNonBusinessReceiptNeedsAttributableIdentityUsageAndFinish(String sample) throws Exception {
-        String variant = List.of("V6_EMPTY", "V7_EMPTY", "V8_EMPTY", "V9_EMPTY", "V10_EMPTY", "V11_EMPTY", "V12_EMPTY", "V13_EMPTY").contains(sample) ? "EMPTY" : sample;
+        String variant = List.of("V6_EMPTY", "V7_EMPTY", "V8_EMPTY", "V9_EMPTY", "V10_EMPTY", "V11_EMPTY", "V12_EMPTY", "V13_EMPTY", "V14_EMPTY").contains(sample) ? "EMPTY" : sample;
         var http=HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
         var actors=new CopyOnWriteArrayList<String>();
         http.createContext("/chat/completions",exchange->{
@@ -155,6 +155,7 @@ class TargetTransportProbeTest {
                 case "V11_EMPTY" -> "TEN_COMPANY_PERSONAL_NEWS_STUDY";
                 case "V12_EMPTY" -> "TEN_COMPANY_INTERVIEW_AUTONOMY_STUDY";
                 case "V13_EMPTY" -> "TEN_COMPANY_ISSUER_DECISIONS_STUDY";
+                case "V14_EMPTY" -> "TEN_COMPANY_MEDIA_WITHDRAWAL_STUDY";
                 case "V7_EMPTY" -> "TEN_COMPANY_INTERVIEW_STUDY";
                 case "V6_EMPTY" -> "TEN_COMPANY_PERSONAL_STUDY";
                 case "EMPTY" -> "TEN_COMPANY_GOVERNANCE_STUDY";
@@ -162,7 +163,9 @@ class TargetTransportProbeTest {
                 case "TOOL_CALLS" -> "TEN_COMPANY_EDITORIAL_STUDY";
                 default -> "TEN_COMPANY_AUTONOMY";
             };
-            var first=run(mode,"first",null,100,people,provider);
+            // 十四版两名在岗基金职员在周一 09:00 开始接受普通邀请。
+            long shiftStart = sample.equals("V14_EMPTY") ? 9L * 3_600_000L : 0L;
+            var first=run(mode,"first",null,shiftStart+100,people,provider);
             if (!List.of("EMPTY","FILTERED","TOOL_CALLS").contains(variant)) {
                 assertTrue(first.path("probeStop").asText().startsWith("PROBE_PROVIDER_"));
                 assertEquals(List.of("alice"),actors);
@@ -175,8 +178,8 @@ class TargetTransportProbeTest {
             assertEquals(0,first.at("/providerProvenance/transport/consecutive").asInt());
             var seed=root.resolve("first");
             assertThrows(IllegalArgumentException.class,()->run(mode.equals("TEN_COMPANY_GOVERNANCE_STUDY") ? "TEN_COMPANY_STUDY" : "TEN_COMPANY_GOVERNANCE_STUDY",
-                    "wrong-mode",seed,200,people,provider));
-            var second=run(mode,"second",seed,200,people,provider);
+                    "wrong-mode",seed,shiftStart+200,people,provider));
+            var second=run(mode,"second",seed,shiftStart+200,people,provider);
             String runId=switch(sample) {
                 case "V8_EMPTY" -> edu.cufe.auction.world.RunManifest.MEETING_TEN_COMPANY_RUN_ID;
                 case "V9_EMPTY" -> edu.cufe.auction.world.RunManifest.DIGITAL_WIND_DOWN_RUN_ID;
@@ -184,6 +187,7 @@ class TargetTransportProbeTest {
                 case "V11_EMPTY" -> edu.cufe.auction.world.RunManifest.PERSONAL_NEWS_RUN_ID;
                 case "V12_EMPTY" -> edu.cufe.auction.world.RunManifest.INTERVIEW_AUTONOMY_RUN_ID;
                 case "V13_EMPTY" -> edu.cufe.auction.world.RunManifest.ISSUER_DECISIONS_RUN_ID;
+                case "V14_EMPTY" -> edu.cufe.auction.world.RunManifest.MEDIA_WITHDRAWAL_RUN_ID;
                 case "V7_EMPTY" -> edu.cufe.auction.world.RunManifest.INTERVIEW_TEN_COMPANY_RUN_ID;
                 case "V6_EMPTY" -> edu.cufe.auction.world.RunManifest.PERSONAL_TEN_COMPANY_RUN_ID;
                 case "EMPTY" -> edu.cufe.auction.world.RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID;

@@ -4093,14 +4093,14 @@ $("performance-history-recent").addEventListener("click", () => {
 // 采编观察：管理员原件与个人真实经历分别由服务器投影，正文始终作为文字显示。
 const MEDIA_TABLES = ["media-organizations", "media-stories", "media-works", "media-reports", "media-pending", "media-citations", "media-roots"];
 const MEDIA_LABELS = { WIRE: "快讯", INVESTIGATIVE: "调查", DRAFT: "编辑中", SUBMITTED: "待审阅",
-  RETURNED: "已退回", APPROVED: "待发布", PUBLISHED: "已发布", PUBLIC: "公开成稿",
+  RETURNED: "已退回", APPROVED: "待发布", PUBLISHED: "已发布", WITHDRAWN: "已撤稿", PUBLIC: "公开成稿",
   COMPLETED: "已完成", CANCELED: "已取消", NOT_AUTHORIZED: "当前任职无权操作",
   BUDGET: "工时不足", BUSY: "已有专注工作", VERSION: "版本已变化",
   EVIDENCE_NOT_READ: "证据尚未读完", EVIDENCE_NOT_RECALLABLE: "证据当前不可回忆",
   DRAFT_NOT_READ: "草稿尚未读完", DRAFT_NOT_RECALLABLE: "草稿当前不可回忆",
   MEDIA_STORY_PROPOSE_V1: "提出选题", MEDIA_STORY_SUBMIT_V1: "提交草稿",
   MEDIA_STORY_REVIEW_V1: "编辑审阅", MEDIA_STORY_PUBLISH_V1: "发布",
-  MEDIA_STORY_CORRECTION_V1: "开启更正", MEDIA_WORK_CANCEL_V1: "取消工作" };
+  MEDIA_STORY_CORRECTION_V1: "开启更正", MEDIA_WORK_CANCEL_V1: "取消工作", MEDIA_STORY_WITHDRAW_V1: "签发撤稿公告" };
 function mediaLabel(value) { return MEDIA_LABELS[value] || text(value); }
 function mediaTable(id, section, columns) {
   fillTable(id, (section || {}).rows, (tr, row) => {
@@ -4154,7 +4154,8 @@ function renderMediaDocuments(id, section) {
     summary.textContent = (item.kind ? (item.kind === "DRAFT" ? "组织草稿" : mediaLabel(item.kind)) + " · " : "") + item.title + " · v" + item.version;
     const meta = document.createElement("p"); meta.className = "hint";
     meta.textContent = item.docId + " · 发布 " + item.publishedAtMillis + " 毫秒"
-      + (item.completedAtMillis ? " · 本人读完 " + item.completedAtMillis + " 毫秒" : "");
+      + (item.completedAtMillis ? " · 本人读完 " + item.completedAtMillis + " 毫秒" : "")
+      + (item.withdrawalNoticeVersion ? " · 本版为历史已读，当前公开目录列有撤稿公告 v" + item.withdrawalNoticeVersion : "");
     const source = document.createElement("p"); source.textContent = item.sourceDescription || "未提供自由文字来源描述";
     const body = document.createElement("pre"); body.className = "media-body"; body.textContent = item.body;
     detail.append(summary, meta, source, body); list.appendChild(detail);
@@ -4191,6 +4192,9 @@ function clearPersonalMedia() {
   $("person-media-reviews").hidden = true;
   $("person-media-review-list").replaceChildren();
   setMessage("person-media-review-feedback", "");
+  $("person-media-withdrawals").hidden = true;
+  $("person-media-withdraw-list").replaceChildren();
+  setMessage("person-media-withdraw-feedback", "");
   for (const id of ["person-media-stories", "person-media-reports"]) mediaTable(id, null, []);
   $("person-media-documents").replaceChildren(); $("person-media-tools").textContent = "";
 }
@@ -4223,6 +4227,38 @@ function renderPersonalMedia(media) {
     }
   }
   $("person-media-reviews").hidden = !list.childElementCount;
+  const withdrawals = media.withdrawal;
+  for (const story of withdrawals?.stories || []) {
+    const row = document.createElement("div"), title = document.createElement("p");
+    title.textContent = story.topic + " · " + story.publicDocId + " v" + story.publicVersion;
+    const reasons = document.createElement("select");
+    reasons.dataset.personWrite = "true";
+    reasons.setAttribute("aria-label", "公开撤稿原因");
+    reasons.add(new Option("选择公开撤稿原因", ""));
+    for (const [code, label] of Object.entries(withdrawals.reasons)) reasons.add(new Option(label, code));
+    const button = document.createElement("button");
+    button.type = "button"; button.dataset.personWrite = "true"; button.textContent = "签发撤稿公告";
+    button.addEventListener("click", () => guard(submitMediaWithdrawal(withdrawals, story, reasons.value, button)));
+    row.append(title, reasons, button);
+    $("person-media-withdraw-list").appendChild(row);
+    $("person-media-withdrawals").hidden = false;
+  }
+}
+async function submitMediaWithdrawal(page, story, reason, button) {
+  const feedback = "person-media-withdraw-feedback", generation = state.generation;
+  if (!reason) { setMessage(feedback, "请选择将向读者公开的撤稿原因。"); return; }
+  button.disabled = true;
+  try {
+    const result = await request("POST", "/api/me/media/withdraw", {observationToken: page.observationToken,
+      commandId: "web-withdraw-" + crypto.randomUUID(), storyId: story.storyId,
+      expectedPublicVersion: story.publicVersion, publicReason: reason});
+    if (!isCurrent(generation)) return;
+    if (result.status === 401) { sessionLost(); return; }
+    setMessage(feedback, result.status === 200 ? "已排程签发撤稿公告，完成时点 " + result.payload.dueTimeMillis
+      : (result.payload?.message || "撤稿排程未被受理，请刷新后核对。"));
+  } finally {
+    if (isCurrent(generation)) button.disabled = false;
+  }
 }
 async function refreshCapabilities(generation, current) {
   const result = await request("GET", "/api/admin/capabilities");
@@ -5151,7 +5187,11 @@ function renderOfficeWorkBudgets(budgets) {
     cell(tr, row.organizationPartyId);
     for (const value of [row.totalMillis, row.spentMillis, row.mediaReservedMillis,
       row.interviewReservedMillis, row.availableMillis]) cell(tr, researchDuration(value), "num");
-    cell(tr, "单次最长 " + researchDuration(row.maxDurationMillis) + "，至少提前 " + researchDuration(row.minLeadMillis)
+    const schedule = row.schedule;
+    const allocation = schedule ? "每个营业日 " + researchDuration(schedule.millisPerShift)
+      + "，已释放 " + schedule.releasedShifts + "/" + schedule.contractedShifts + " 份，合同共 "
+      + researchDuration(schedule.contractedMillis) + "。 " : "";
+    cell(tr, allocation + "单次最长 " + researchDuration(row.maxDurationMillis) + "，至少提前 " + researchDuration(row.minLeadMillis)
       + "，邀请有效期 " + researchDuration(row.inviteTtlMillis));
   });
 }

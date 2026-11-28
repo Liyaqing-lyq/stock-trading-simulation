@@ -12,6 +12,20 @@ public final class MediaDesks {
 
     /** 双时区试验中每版跨市场初稿或修订稿的内部编译核对工时。 */
     public static final long COMPARISON_MILLIS = 60_000L;
+    /** 八社有限服务合同的营业日数（周一至周五，共 52 周）。 */
+    public static final int CONTRACT_SHIFTS = 260;
+
+    /** 是否按本档冻结的营业日工时合同核算。 */
+    public static boolean scheduled(RunManifest manifest) {
+        return RunManifest.FINITE_BUSINESS_SHIFTS.equals(manifest.dataVersions().get(RunManifest.MEDIA_WORK_CALENDAR));
+    }
+
+    /** 在指定模拟时刻已释放的营业日数，第零日为周一。 */
+    static int releasedShifts(long now) {
+        long day = now / MarketSessions.DAY;
+        return (int) Math.min(CONTRACT_SHIFTS, day / 7 * 5 + Math.min(day % 7 + 1, 5));
+    }
+
     private record Desk(String org, MediaModel.TemplateKind template, int sources, String author, String editor,
                         String name, String audience, String practice, long reading, long budget) { }
 
@@ -56,6 +70,11 @@ public final class MediaDesks {
 
     /** @param base 原采编配置 @param compareClocks 是否对跨市场内稿另计编译核对工时 @return 各编辑部的冻结配置 */
     public static MediaRun.Config media(MediaRun.Config base, boolean compareClocks) {
+        return media(base, compareClocks, false);
+    }
+
+    /** 为新档冻结有限编辑部服务合同，旧档沿用整次运行的一次性工时。 */
+    public static MediaRun.Config media(MediaRun.Config base, boolean compareClocks, boolean scheduled) {
         var policies = new ArrayList<MediaModel.Policy>();
         var budgets = new TreeMap<String, Long>();
         var timing = base.policyOf("wire");
@@ -63,7 +82,7 @@ public final class MediaDesks {
             policies.add(new MediaModel.Policy(desk.org(), Map.of(desk.template(), desk.sources()), timing.writeMillis(),
                     timing.reviewMillis(), timing.publishMillis(), desk.reading(), desk.reading(), timing.recallPolicy(), MediaModel.EIGHT_DESKS,
                     compareClocks && desk.template() == MediaModel.TemplateKind.CROSS_BORDER ? COMPARISON_MILLIS : null));
-            budgets.put(desk.org(), desk.budget());
+            budgets.put(desk.org(), scheduled ? Math.multiplyExact(desk.budget(), CONTRACT_SHIFTS) : desk.budget());
         }
         return new MediaRun.Config(policies, budgets, base.proposeMillis(), base.correctionMillis(), base.cancelMillis());
     }

@@ -359,6 +359,16 @@ public final class ComposedWorldScenario {
                     .thenComparingLong(edu.cufe.auction.world.InterviewRun.ContactEntry::version));
         }
         appointments.addAll(extras.appointments());
+        boolean personalHours = RunManifest.PERSONAL_ATTENTION_VERSION.equals(
+                manifest.dataVersions().get(RunManifest.PERSONAL_ATTENTION_POLICY));
+        var social = personalHours ? new edu.cufe.auction.world.SocialMessageModel.Config(
+                WorldWebScenario.PERSONAL_MESSAGE_WRITE_MILLIS, WorldWebScenario.SOCIAL_DELIVERY_MILLIS,
+                WorldWebScenario.PERSONAL_MESSAGE_READ_MILLIS) : WorldWebScenario.socialConfig();
+        var groups = personalHours ? WorldWebScenario.groupsConfig(WorldWebScenario.PERSONAL_MESSAGE_WRITE_MILLIS)
+                : WorldWebScenario.groupsConfig();
+        var platform = personalHours ? new edu.cufe.auction.world.PlatformPostModel.Config(
+                WorldWebScenario.PERSONAL_MESSAGE_WRITE_MILLIS, WorldWebScenario.GROUPS_DELIVERY_MILLIS)
+                : WorldWebScenario.groupsPlatformConfig();
         return new WorldRuntime(journal, manifest, openings, registry,
                 baseline ? null : new edu.cufe.auction.world.ManufacturingRun.Config(
                         new edu.cufe.auction.world.ManufacturingModel.Opening("company", "CO",
@@ -369,13 +379,12 @@ public final class ComposedWorldScenario {
                 info,
                 decisions, null,
                 eightDesks ? MediaDesks.media(WorldWebScenario.mediaConfig(), RunManifest.DUAL_CLOCK_EDITING.equals(
-                        manifest.dataVersions().get(RunManifest.CROSS_BORDER_EDITING))) : WorldWebScenario.mediaConfig(),
+                        manifest.dataVersions().get(RunManifest.CROSS_BORDER_EDITING)), MediaDesks.scheduled(manifest)) : WorldWebScenario.mediaConfig(),
                 eightDesks ? MediaDesks.interviews(WorldWebScenario.interviewConfig()) : WorldWebScenario.interviewConfig(),
                 WorldWebScenario.dialogueConfig(), WorldWebScenario.evidenceConfig(),
-                WorldWebScenario.socialConfig(), WorldWebScenario.SOCIAL_BLOCK_MILLIS,
-                contacts, engineering,
-                WorldWebScenario.groupsConfig(), WorldWebScenario.groupsPlatformConfig(),
-                WorldWebScenario.GROUPS_FEED_LIMIT, WorldWebScenario.GROUPS_READ_MILLIS,
+                social, WorldWebScenario.SOCIAL_BLOCK_MILLIS, contacts, engineering,
+                groups, platform, WorldWebScenario.GROUPS_FEED_LIMIT,
+                personalHours ? WorldWebScenario.PERSONAL_MESSAGE_READ_MILLIS : WorldWebScenario.GROUPS_READ_MILLIS,
                 governed, bankOpening, manifest.hasManufacturingFunding()
                         ? edu.cufe.auction.world.ManufacturingFunding.cash(
                                 new edu.cufe.auction.world.ManufacturingModel.Opening("company", "CO",

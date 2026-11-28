@@ -114,6 +114,8 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     public static final String TOOL_MEDIA_REVIEW = "media.story.review";
     /** 媒体工具：发布已批准版本。 */
     public static final String TOOL_MEDIA_PUBLISH = "media.story.publish";
+    /** 编辑撤回已刊的指定公开版本。 */
+    public static final String TOOL_MEDIA_WITHDRAW = "media.story.withdraw";
     /** 媒体工具：开启更正轮。 */
     public static final String TOOL_MEDIA_CORRECTION = "media.story.correction";
     /** 媒体工具：取消本人未完成的媒体工作。 */
@@ -232,6 +234,7 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
      * @param draftDocId 本社可读的内稿文档，新口径下尚未投稿时为空
      * @param draftVersion 对应内稿版次，新口径下尚未投稿时为空
      * @param reviewNotes  本人有权读取的历次退稿意见索引，旧档为空
+     * @param withdrawWorkMillis 有权对这份公开稿签发撤稿公告时须用的工时，其余为空
      */
     public record MediaStory(String storyId, String template, String status, int revisionNo,
                              String topic, String authorPartyId, boolean own, boolean canReview,
@@ -242,7 +245,9 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
                              Long draftVersion, String publicDocId,
                              long publicVersion,
                              @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-                             List<ReviewNote> reviewNotes) {
+                             List<ReviewNote> reviewNotes,
+                             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                             Long withdrawWorkMillis) {
 
         /** 固定本次观察中本人仍有阅读权的退稿目录。 */
         public MediaStory {
@@ -256,7 +261,7 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
                           String draftDocId, Long draftVersion, String publicDocId, long publicVersion) {
             this(storyId, template, status, revisionNo, topic, authorPartyId, own, canReview,
                     canPublish, sourceGroups, updatedAtMillis, draftDocId, draftVersion,
-                    publicDocId, publicVersion, null);
+                    publicDocId, publicVersion, null, null);
         }
 
         /** 旧十参构造：没有实际可读标识（旧档案与新模型输入都不使用）。 */

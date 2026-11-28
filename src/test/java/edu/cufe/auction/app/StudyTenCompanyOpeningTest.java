@@ -337,14 +337,24 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void issuerDecisionsAreFrozenOnlyForTheNewWorldAndItsBranches() throws Exception {
-        Path current = WorldWebApp.tenCompanyJournal(dir);
+        Path current = dir.resolve("world-ten-company-autonomy-v13.journal");
         Path previous = dir.resolve("world-ten-company-autonomy-v12.journal");
-        assertEquals(dir.resolve("world-ten-company-autonomy-v13.journal"), current);
         try (var old = ComposedIndustryScenario.openInterviewAutonomyTenCompanyStudy(previous)) {
             assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.ISSUER_DECISIONS_POLICY));
         }
         verifyVersionedPolicy(current, previous, RunManifest.ISSUER_DECISIONS_RUN_ID,
                 RunManifest.ISSUER_DECISIONS_POLICY, RunManifest.ISSUER_DECISIONS_VERSION);
+    }
+
+    @Test void publishedStoryAndClaimFollowupsAreFrozenOnTheNewOpening() throws Exception {
+        var current = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v14.journal"), current);
+        var previous = dir.resolve("world-ten-company-autonomy-v13.journal");
+        try (var old = ComposedIndustryScenario.openIssuerDecisionsTenCompanyStudy(previous)) {
+            assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.MEDIA_WITHDRAWAL_POLICY));
+        }
+        verifyVersionedPolicy(current, previous, RunManifest.MEDIA_WITHDRAWAL_RUN_ID,
+                RunManifest.MEDIA_WITHDRAWAL_POLICY, RunManifest.MEDIA_WITHDRAWAL_VERSION);
     }
 
     private void verifyVersionedPolicy(Path current, Path previous, String expectedId, String key, String value) throws Exception {
@@ -355,8 +365,13 @@ class StudyTenCompanyOpeningTest {
                 assertEquals(expectedId, created.profile().manifest().runId());
             }
         }
-        try (var old = ComposedIndustryScenario.openIssuerDecisionsTenCompanyStudy(previous);
-             var world = ComposedIndustryScenario.openIssuerDecisionsTenCompanyStudy(current)) {
+        if (RunManifest.ISSUER_DECISIONS_RUN_ID.equals(expectedId)) {
+            try (var created = ComposedIndustryScenario.openIssuerDecisionsTenCompanyStudy(current)) {
+                assertEquals(expectedId, created.profile().manifest().runId());
+            }
+        }
+        try (var old = ComposedIndustryScenario.openMediaWithdrawalTenCompanyStudy(previous);
+             var world = ComposedIndustryScenario.openMediaWithdrawalTenCompanyStudy(current)) {
             var manifest = world.profile().manifest();
             var oldManifest = old.profile().manifest();
             assertEquals(expectedId, manifest.runId());
@@ -368,6 +383,16 @@ class StudyTenCompanyOpeningTest {
                 var withoutMarket = new TreeMap<>(expected);
                 withoutMarket.remove(edu.cufe.auction.world.PersonalMarket.MARKET_POLICY);
                 assertThrows(IllegalArgumentException.class, () -> withPolicies(manifest, withoutMarket));
+            }
+            if (RunManifest.MEDIA_WITHDRAWAL_RUN_ID.equals(expectedId)) {
+                expected.put(RunManifest.MEDIA_WORK_CALENDAR, RunManifest.FINITE_BUSINESS_SHIFTS);
+                expected.put(RunManifest.PERSONAL_ATTENTION_POLICY, RunManifest.PERSONAL_ATTENTION_VERSION);
+                expected.put(RunManifest.DIVIDEND_CLAIMS_POLICY, RunManifest.DIVIDEND_CLAIMS_VERSION);
+                for (String added : java.util.List.of(RunManifest.MEDIA_WORK_CALENDAR, RunManifest.DIVIDEND_CLAIMS_POLICY, RunManifest.PERSONAL_ATTENTION_POLICY)) {
+                    var missing = new TreeMap<>(expected);
+                    missing.remove(added);
+                    assertThrows(IllegalArgumentException.class, () -> withPolicies(manifest, missing));
+                }
             }
             assertEquals(expected, manifest.dataVersions());
             assertEquals(old.openingRegistry(), world.openingRegistry());
@@ -381,7 +406,7 @@ class StudyTenCompanyOpeningTest {
         }
         assertArrayEquals(saved, Files.readAllBytes(previous));
         assertEquals(current, WorldWebApp.tenCompanyJournal(dir));
-        try (var restored = ComposedIndustryScenario.openIssuerDecisionsTenCompanyStudy(current);
+        try (var restored = ComposedIndustryScenario.openMediaWithdrawalTenCompanyStudy(current);
              var child = new BranchRepository(dir.resolve("runs")).open("policy-child", restored.profile())) {
             assertEquals(expectedId, child.profile().manifest().policyRunId());
             assertEquals(restored.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());

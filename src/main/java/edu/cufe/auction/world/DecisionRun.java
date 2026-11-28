@@ -722,6 +722,7 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 }
                 node.put("publicDocId", story.publicDocId());
                 node.put("publicVersion", story.publicVersion());
+                if (story.withdrawWorkMillis() != null) node.put("withdrawWorkMillis", story.withdrawWorkMillis());
                 if (story.reviewNotes() != null) {
                     ArrayNode notes = node.putArray("reviewNotes");
                     for (var note : story.reviewNotes())
@@ -793,6 +794,11 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("name", tool);
             Long millis = config.actionMillisByTool().get(tool);
             node.put("actionMillis", millis == null ? 0L : millis);
+            if (RoleTradingView.TOOL_MEDIA_WITHDRAW.equals(tool)) {
+                var reasons = node.putObject("publicReasons");
+                for (var reason : MediaModel.WithdrawalReason.values()) reasons.put(reason.name(), reason.label());
+                node.put("publicVersionRule", "列有 withdrawWorkMillis 的本社稿件可签发撤稿公告。expectedPublicVersion 取该稿的 publicVersion，publicReason 选公开原因代码。历次公开版本保留。");
+            }
             if (RoleTradingView.TOOL_MEDIA_SUBMIT.equals(tool) && editorialOffice
                     && "personal-read-index-v1".equals(engineering.path("editorialEvidenceContract").asText())) {
                 var items = node.putObject("arrayItems");
@@ -1015,6 +1021,12 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 }
                 case RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE -> {
                     return List.of(new String[]{"companyPartyId","string"},new String[]{"meetingId","string"});
+                }
+                case DividendClaimDecisions.IMPAIR -> {
+                    return List.of(new String[]{"claimId","string"},new String[]{"amount","string"},new String[]{"evidenceRef","string"});
+                }
+                case DividendClaimDecisions.RETRY -> {
+                    return java.util.Collections.singletonList(new String[]{"schemeId","string"});
                 }
                 case RoleTradingView.TOOL_BOARD_CONVENE -> {
                     return List.of(new String[]{"companyPartyId", "string"},
@@ -1323,6 +1335,8 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             case RoleTradingView.TOOL_MEDIA_REVIEW -> List.of(
                     new String[]{"storyId", "string"}, new String[]{"expectedRevision", "int"},
                     new String[]{"approve", "boolean"}, new String[]{"note", "string"});
+            case RoleTradingView.TOOL_MEDIA_WITHDRAW -> List.of(new String[]{"storyId", "string"},
+                    new String[]{"expectedPublicVersion", "long"}, new String[]{"publicReason", "string"});
             case RoleTradingView.TOOL_MEDIA_PUBLISH -> List.of(
                     new String[]{"storyId", "string"}, new String[]{"expectedRevision", "int"});
             case RoleTradingView.TOOL_MEDIA_CORRECTION -> List.of(

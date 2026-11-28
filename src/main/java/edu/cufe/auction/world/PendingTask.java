@@ -316,6 +316,8 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
 
     /** 媒体：发布已批准版本（COMPLETION，schema13）。 */
     public static final String MEDIA_STORY_PUBLISH_V1 = "MEDIA_STORY_PUBLISH_V1";
+    /** 编辑对已刊版本发布撤稿公告。 */
+    public static final String MEDIA_STORY_WITHDRAW_V1 = "MEDIA_STORY_WITHDRAW_V1";
 
     /** 媒体：开启更正轮（COMPLETION，schema13）。 */
     public static final String MEDIA_STORY_CORRECTION_V1 = "MEDIA_STORY_CORRECTION_V1";
@@ -522,7 +524,7 @@ public record PendingTask(String taskId, long dueTimeMillis, WorldScheduler.Phas
                 }
             }
             case MEDIA_STORY_PROPOSE_V1, MEDIA_STORY_SUBMIT_V1, MEDIA_STORY_REVIEW_V1,
-                 MEDIA_STORY_PUBLISH_V1, MEDIA_STORY_CORRECTION_V1, MEDIA_WORK_CANCEL_V1,
+                 MEDIA_STORY_PUBLISH_V1, MEDIA_STORY_WITHDRAW_V1, MEDIA_STORY_CORRECTION_V1, MEDIA_WORK_CANCEL_V1,
                  INTERVIEW_INVITE_V1, INTERVIEW_RESPOND_V1,
                  OPEN_FUND_ORDER_V1, INTERVIEW_CANCEL_V1, INTERVIEW_END_V1, INTERVIEW_SPEAK_V1, ONSITE_ACTION_V1, ONSITE_GATE_V1,
                  MEDIA_EVIDENCE_SHARE_V1, SOCIAL_BEGIN_V1, SOCIAL_FINISH_V1, SOCIAL_DELIVER_V1,

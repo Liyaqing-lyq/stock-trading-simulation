@@ -35,6 +35,10 @@ PERSONAL_NEWS_POLICIES = {**FEEDBACK_POLICIES, "personal-news-ranking": "visible
 INTERVIEW_AUTONOMY_POLICIES = {**PERSONAL_NEWS_POLICIES, "interview-autonomy": "active-session-turn-v1"}
 ISSUER_DECISIONS_POLICIES = {**INTERVIEW_AUTONOMY_POLICIES, "issuer-decisions": "engineering-cash-dividend-v1",
                             "personal-market-orders": "immediate-unfilled-cancel-v1"}
+MEDIA_FOLLOWUP_POLICIES = {**ISSUER_DECISIONS_POLICIES, "media-withdrawal": "published-version-notice-v1",
+                          "media-work-calendar": "finite-business-shifts-v1",
+                          "personal-attention": "weekday-duty-windows-v1",
+                          "dividend-claims": "holder-and-issuer-followup-v1"}
 OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
                     "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES,
                     "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES,
@@ -42,12 +46,13 @@ OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy
                     "web-ten-company-autonomy-v10": FEEDBACK_POLICIES,
                     "web-ten-company-autonomy-v11": PERSONAL_NEWS_POLICIES,
                     "web-ten-company-autonomy-v12": INTERVIEW_AUTONOMY_POLICIES,
-                    "web-ten-company-autonomy-v13": ISSUER_DECISIONS_POLICIES}
+                    "web-ten-company-autonomy-v13": ISSUER_DECISIONS_POLICIES,
+                    "web-ten-company-autonomy-v14": MEDIA_FOLLOWUP_POLICIES}
 
 
 def check_policies(run_id, data_versions):
     expected = OPENING_POLICIES[run_id]
-    actual = {k: data_versions[k] for k in ISSUER_DECISIONS_POLICIES if k in data_versions}
+    actual = {k: data_versions[k] for k in MEDIA_FOLLOWUP_POLICIES if k in data_versions}
     if data_versions.get("branch-profile-run") != run_id or actual != expected:
         raise ValueError("原生开局声明的政策与该版运行身份不符")
 
@@ -249,7 +254,50 @@ def dividend_board_receipt(frame, now, meetings):
     return None
 
 
-def checked_dividend(frame, now, book, previous_cash, cash, issuer_symbol):
+def dividend_followup_context(opening, registry):
+    board = opening["engineering"]["boards"]["eng-a"]["board"]["charter"]
+    chair, = [s["partyId"] for s in board["seats"] if s["seatId"] == board["chairSeatId"]]
+    people = {r["ownerId"]:r["partyId"] for r in registry["owners"] if r["kind"] == "PERSON"}
+    holders = {k:(v["ownerId"],people[v["ownerId"]]) for k,v in opening["accounts"].items() if v["ownerId"] in people}
+    return {"chair":chair,"holders":holders,"failures":{},"scheduled":{}}
+
+
+def track_dividend_decisions(events, context):
+    for event in events:
+        if event["type"] == "DECISION_ACTION_SCHEDULED_V1":
+            task = decode(event["payload"])
+            if task.get("decisionWork") and not task["meetingId"]:
+                if not event["eventId"].startswith("dec-scheduled:"):
+                    raise ValueError("分红跟进的决定任务标识不符")
+                task_id = event["eventId"].removeprefix("dec-scheduled:")
+                context["scheduled"][task_id] = task
+
+
+def checked_followup(report, task, book, context):
+    scheme = report["schemeId"]
+    work = task.get("decisionWork")
+    placed = context["scheduled"].pop(report["taskId"], None)
+    if not work:
+        if placed is not None:
+            raise ValueError("原本人决定的分红任务缺少执行主体")
+        return {}
+    person = work["person"]
+    if placed != task:
+        raise ValueError("股利债权跟进缺少同一本人决定排程")
+    if scheme not in context["failures"]:
+        raise ValueError("股利债权跟进缺少原定付款日拒付凭据")
+    if report["kind"] == "DIVIDEND_SETTLE_V1":
+        if person != context["chair"] or task["seatId"] != book["schemes"][scheme]["issuerOwnerId"]:
+            raise ValueError("补付并非由发行人主席沿原账户办理")
+        return {"followup":"RETRY_PAYMENT", "personPartyId":person, "originalFailureRef":context["failures"][scheme]}
+    claim = book["claims"].get(task["claimId"])
+    if (claim is None or claim["schemeId"] != scheme or task["evidenceRef"] != context["failures"][scheme]
+            or context["holders"].get(claim["accountId"]) != (task["seatId"], person)):
+        raise ValueError("减值的债权、个人账户持有人或原始拒付凭据不符")
+    return {"followup":"HOLDER_IMPAIRMENT", "personPartyId":person, "originalFailureRef":task["evidenceRef"]}
+
+
+def checked_dividend(frame, now, book, previous_cash, cash, issuer_symbol, previous_claims=None, followup=None):
     rows = [e for e in frame["events"] if e["type"] == "DIVIDEND_REPORT_V1"]
     proofs = [e for e in frame["events"] if e["type"] == "DIVIDEND_CASH_PAYMENT_V1"]
     if not rows and not proofs:
@@ -273,6 +321,8 @@ def checked_dividend(frame, now, book, previous_cash, cash, issuer_symbol):
             or len(proofs) != int(accepted and stage == "SETTLED")):
         raise ValueError("分红结算标记与现金凭证数不符")
     row = {"issuer": "eng-a", "stage": stage, **report}
+    if followup is not None and stage in ("SETTLED","IMPAIRMENT"):
+        row.update(checked_followup(report,task,book,followup))
     if task.get("seatId") and stage in ("PROPOSED", "AUTHORIZED"):
         row["seatId"] = task["seatId"]
     if not proofs and cash != previous_cash:
@@ -281,6 +331,9 @@ def checked_dividend(frame, now, book, previous_cash, cash, issuer_symbol):
         row.update(stage="REJECTED", attemptedStage=stage)
         if stage == "SETTLED" and scheme in book["schemes"]:
             row["holderFaceStillUnpaid"] = sum(c["face"]-c["paid"] for c in book["claims"].values() if c["schemeId"]==scheme)
+            if (followup is not None and task.get("request") is not None and task["commandId"] == "div-pay:"+scheme
+                    and now == book["schemes"][scheme]["payAtMillis"]):
+                followup["failures"][scheme] = rows[0]["eventId"]
         return row
     terms = book["schemes"][scheme]
     if (terms["symbol"] != issuer_symbol or terms["companyAccountId"] not in cash
@@ -291,6 +344,21 @@ def checked_dividend(frame, now, book, previous_cash, cash, issuer_symbol):
         row["authorizationRef"] = terms["authorizationRef"]
         if not row["authorizationRef"]:
             raise ValueError("已授权分红缺少实际决议引用")
+    if stage == "IMPAIRMENT":
+        claim_id = task["claimId"]
+        claim = book["claims"][claim_id]
+        increases = [i for i in book["impairments"] if i["position"] == frame["position"]]
+        expected = {"impairmentId":"div-impair:"+report["taskId"],"position":frame["position"],"claimId":claim_id,
+                    "atMillis":now,"amount":task["amount"],"evidenceRef":task["evidenceRef"]}
+        if (increases != [expected] or claim["schemeId"] != scheme or terms["phase"] != "EX_BOOKED"
+                or task["amount"] <= 0 or previous_claims is None or claim_id not in previous_claims
+                or {**previous_claims,claim_id:{**previous_claims[claim_id],
+                    "impairment":previous_claims[claim_id]["impairment"]+task["amount"]}} != book["claims"]
+                or claim["impairment"] > claim["face"]-claim["paid"]):
+            raise ValueError("减值记录与任务、证据、增提金额或原债权不符")
+        return {**row,"claimId":claim_id,"accountId":claim["accountId"],"evidenceRef":task["evidenceRef"],
+                "claimImpairmentAdded":task["amount"],"holderNetReceivable":claim["face"]-claim["paid"]-claim["impairment"],
+                "issuerFaceStillUnpaid":sum(c["face"]-c["paid"] for c in book["claims"].values() if c["schemeId"]==scheme)}
     if stage not in ("REGISTERED", "EX_BOOKED", "SETTLED"):
         return row
     rights = book["snapshots"][scheme]
@@ -333,6 +401,12 @@ def checked_dividend(frame, now, book, previous_cash, cash, issuer_symbol):
         changes[leg["accountId"]] += leg["amount"]
     if set(cash) != set(previous_cash) or any(cash[k] - previous_cash[k] != changes[k] for k in cash):
         raise ValueError("分红实付与发行人及逐户现金腿不同")
+    if followup is not None:
+        released = {k:previous_claims[k]["impairment"] for k in claims}
+        if (payments[0]["impairmentReleased"] != released or any(c["impairment"] != 0 for c in claims.values())
+                or any(previous_claims[k]["face"] != c["face"] or previous_claims[k]["paid"] != 0 for k,c in claims.items())):
+            raise ValueError("实付后逐户转回的减值与付款前债权不同")
+        row["claimImpairmentReleased"] = sum(released.values())
     return {**row, "cashPaid": proof["total"], "recipients": legs}
 
 
@@ -349,6 +423,7 @@ def audit(source, target_days=None):
     confirmed_trade_ids, filled_by_order = set(), Counter()
     orders, symbols = [], []
     dividends, issuer_symbol = None, None
+    dividend_followup = None
     dividend_meetings = set()
     for frame in checked_frames(source, file_digest):
         position = frame["position"]
@@ -359,12 +434,15 @@ def audit(source, target_days=None):
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
         if run_id not in OPENING_POLICIES or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2 至 v13 紧凑日志")
+            raise ValueError("此脚本仅复算标准十公司 v2 至 v14 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")
         prior_digest = delta["resultDigest"]
         patch = delta["patch"]
+        previous_claims = None
+        if dividends is not None and any(e["type"] == "DIVIDEND_REPORT_V1" for e in events):
+            previous_claims = {key:claim.copy() for key,claim in dividends["claims"].items()}
         if position == 1:
             registries = [decode(e["payload"]) for e in events if e["type"] == "OPENING_REGISTRY_V1"]
             command = checked_opening(frame)
@@ -376,6 +454,8 @@ def audit(source, target_days=None):
             if "issuer-decisions" in OPENING_POLICIES[run_id]:
                 dividends = patch["value"]["dividends"]
                 issuer_symbol, = [s["symbol"] for s in registries[0]["securities"] if s["issuerOrganizationId"] == "eng-a"]
+            if "dividend-claims" in OPENING_POLICIES[run_id]:
+                dividend_followup = dividend_followup_context(patch["value"],registries[0])
         else:
             for name in FIELDS:
                 if name in patch["changes"]:
@@ -474,10 +554,15 @@ def audit(source, target_days=None):
             board_receipt = dividend_board_receipt(frame, now, dividend_meetings)
             if board_receipt is not None:
                 entries.append(board_receipt)
-            receipt = checked_dividend(frame, now, dividends, previous_cash, cash, issuer_symbol)
+            if dividend_followup is not None:
+                track_dividend_decisions(events,dividend_followup)
+            receipt = checked_dividend(frame, now, dividends, previous_cash, cash, issuer_symbol, previous_claims, dividend_followup)
             if position > 1 and "dividends" in patch["changes"] and (receipt is None or not receipt["accepted"]):
                 raise ValueError("分红账有变但缺少同帧已接受任务")
             totals = row.setdefault("issuerDividendTotals", dict.fromkeys(("registeredFace","receivablesBooked","cashPaid"),0))
+            if dividend_followup is not None:
+                totals.setdefault("claimImpairmentAdded",0)
+                totals.setdefault("claimImpairmentReleased",0)
             if receipt is not None:
                 entries.append(receipt)
                 for metric in totals:

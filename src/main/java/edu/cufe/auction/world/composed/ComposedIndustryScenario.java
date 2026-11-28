@@ -652,6 +652,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.ISSUER_DECISIONS_RUN_ID);
     }
 
+    /**
+     * 打开含撤稿、按营业日释放采编工时和未付股利后续办理的十公司世界。
+     * @param journal 世界日志，已有档案沿用原规则
+     * @return 正常十公司世界
+     * @throws Exception 日志恢复或初始化失败
+     */
+    public static WorldRuntime openMediaWithdrawalTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.MEDIA_WITHDRAWAL_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
@@ -823,7 +833,15 @@ public final class ComposedIndustryScenario {
                 for (String tool : List.of("media.subscription.join", "media.subscription.leave", "media.subscription.releaseTurn"))
                     timings.put(tool, 1000L);
             }
-            if (RunManifest.ISSUER_DECISIONS_RUN_ID.equals(thinkingRunId)) {
+            if (RunManifest.MEDIA_WITHDRAWAL_RUN_ID.equals(thinkingRunId)) {
+                timings.put(RoleTradingView.TOOL_MEDIA_WITHDRAW, timings.get(RoleTradingView.TOOL_MEDIA_PUBLISH));
+                for (String tool : List.of(RoleTradingView.TOOL_SOCIAL_SEND, RoleTradingView.TOOL_GROUP_POST,
+                        RoleTradingView.TOOL_GROUP_CORRECT, RoleTradingView.TOOL_PLATFORM_POST, RoleTradingView.TOOL_PLATFORM_CORRECT))
+                    timings.put(tool, WorldWebScenario.PERSONAL_MESSAGE_WRITE_MILLIS);
+                timings.put("dividend.claim.impair", 1_000L);
+                timings.put("issuer.dividend.retryPayment", 1_000L);
+            }
+            if (RunManifest.usesIssuerDecisionsOpening(thinkingRunId)) {
                 timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_CONVENE, timings.get(RoleTradingView.TOOL_BOARD_CONVENE));
                 timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE, timings.get(RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET));
                 timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE, timings.get(RoleTradingView.TOOL_BOARD_IMPLEMENT));

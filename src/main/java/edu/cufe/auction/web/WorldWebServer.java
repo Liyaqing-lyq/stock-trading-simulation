@@ -627,6 +627,10 @@ public final class WorldWebServer implements AutoCloseable {
                 requirePerson(exchange, session.get(), () -> newsletters(exchange, session.get()));
                 return;
             }
+            if ("/api/me/media/withdraw".equals(path) && "POST".equals(method)) {
+                requirePerson(exchange, session.get(), () -> withdrawPublishedStory(exchange, session.get()));
+                return;
+            }
             if ("/api/me/orders".equals(path) && ("GET".equals(method) || "POST".equals(method))) {
                 requirePerson(exchange, session.get(), () -> personalOrders(exchange, session.get()));
                 return;
@@ -721,6 +725,7 @@ public final class WorldWebServer implements AutoCloseable {
         if ("/api/me/interview/site-visit".equals(path) && "POST".equals(method)) return true;
         if ("/api/me/interview/coordination".equals(path) && "POST".equals(method)) return true;
         if ("/api/me/newsletters".equals(path) && ("GET".equals(method) || "POST".equals(method))) return true;
+        if ("/api/me/media/withdraw".equals(path) && "POST".equals(method)) return true;
         if ("/api/me/orders".equals(path) && ("GET".equals(method) || "POST".equals(method))) return true;
         if ("/api/me/fund-units".equals(path) && "POST".equals(method)) return true;
         if ("/api/me/dialogue".equals(path) && "GET".equals(method)) {
@@ -2075,6 +2080,25 @@ public final class WorldWebServer implements AutoCloseable {
             send(exchange, 409, error("VISIT_CHANGED", "行程或时点已变化，请刷新后核对"));
         } catch (IllegalArgumentException invalid) {
             send(exchange, 400, error("INVALID", "当前无法排程此现场采访动作"));
+        } catch (Exception failure) {
+            throw new WorldIoFailure();
+        }
+    }
+
+    private void withdrawPublishedStory(HttpExchange exchange, WebSessions.Session session)
+            throws IOException, WorldWebHost.BusyException, WorldWebHost.PositionMismatch {
+        try {
+            var body = jsonBody(exchange, Set.of("commandId", "observationToken", "storyId", "expectedPublicVersion", "publicReason"));
+            var draft = new edu.cufe.auction.world.WorldRoleSession.MediaWithdrawalDraft(requiredText(body, "storyId"),
+                    researchInteger(body, "expectedPublicVersion"),
+                    edu.cufe.auction.world.MediaModel.WithdrawalReason.valueOf(requiredText(body, "publicReason")));
+            var result = host.withdrawPublishedStory(session.personId(), researchInteger(body, "observationToken"),
+                    requiredText(body, "commandId"), draft);
+            send(exchange, 200, mapper.writeValueAsString(result));
+        } catch (WorldWebHost.PositionMismatch | WorldWebHost.BusyException failure) {
+            throw failure;
+        } catch (IllegalArgumentException invalid) {
+            send(exchange, 400, error("INVALID", "请核对本社已刊稿件、公开版本及撤稿原因"));
         } catch (Exception failure) {
             throw new WorldIoFailure();
         }

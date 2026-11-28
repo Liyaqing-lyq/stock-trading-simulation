@@ -561,6 +561,10 @@ public final class WorldWebScenario {
 
     /** 社交冻结工时（实验参数，未按现实校准）。 */
     public static final long SOCIAL_SEND_MILLIS = 1_000L;
+    /** 普通个人日程实验中，撰写一封短私信、群帖或平台帖占本人一分钟。 */
+    public static final long PERSONAL_MESSAGE_WRITE_MILLIS = 60_000L;
+    /** 普通个人日程实验中，简讯的最低实际阅读时间为半分钟。 */
+    public static final long PERSONAL_MESSAGE_READ_MILLIS = 30_000L;
     public static final long SOCIAL_DELIVERY_MILLIS = 2_000L;
     public static final long SOCIAL_READ_MILLIS = 500L;
     public static final long SOCIAL_BLOCK_MILLIS = 250L;
@@ -1514,13 +1518,18 @@ public final class WorldWebScenario {
      * @return 冻结群组配置
      */
     public static GroupModel.Config groupsConfig() {
+        return groupsConfig(GROUPS_POST_MILLIS);
+    }
+
+    /** @param postMillis 本开局真实的发帖与更正工时 @return 冻结的两群开局和日程 */
+    public static GroupModel.Config groupsConfig(long postMillis) {
         return new GroupModel.Config(List.of(
                 new GroupModel.Group(GROUPS_OPEN, "alice", GroupModel.JoinPolicy.OPEN,
                         GroupModel.HistoryPolicy.JOIN_TIME, 0L, List.of("bob", "carol")),
                 new GroupModel.Group(GROUPS_INVITE_ONLY, "bob", GroupModel.JoinPolicy.INVITE_ONLY,
                         GroupModel.HistoryPolicy.JOIN_TIME, 0L, List.of("alice"))),
                 GROUPS_JOIN_MILLIS, GROUPS_INVITE_MILLIS, GROUPS_RESPOND_MILLIS,
-                GROUPS_LEAVE_MILLIS, GROUPS_POST_MILLIS, GROUPS_DELIVERY_MILLIS);
+                GROUPS_LEAVE_MILLIS, postMillis, GROUPS_DELIVERY_MILLIS);
     }
 
     /** @return 平台写帖冻结配置 */

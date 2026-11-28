@@ -70,6 +70,22 @@ class OpeningPolicyTest(unittest.TestCase):
             checked_opening(self.frame(run, {k: v for k, v in current.items() if k != "interview-autonomy"}))
 
 
+    def test_v14_rejects_missing_changed_or_backdated_followup_policies(self):
+        previous, run = "web-ten-company-autonomy-v13", "web-ten-company-autonomy-v14"
+        added = {"media-withdrawal": "published-version-notice-v1",
+                 "media-work-calendar": "finite-business-shifts-v1",
+                 "personal-attention": "weekday-duty-windows-v1",
+                 "dividend-claims": "holder-and-issuer-followup-v1"}
+        current = {**OPENING_POLICIES[previous], **added}
+        checked_opening(self.frame(run, current))
+        for key, value in added.items():
+            for version, wrong in ((previous, {**OPENING_POLICIES[previous], key: value}),
+                                   (run, {k: v for k, v in current.items() if k != key}),
+                                   (run, {**current, key: "unknown"})):
+                with self.subTest(version=version, key=key), self.assertRaises(ValueError):
+                    checked_opening(self.frame(version, wrong))
+
+
 class DividendEvidenceTest(unittest.TestCase):
     def test_registration_booking_and_cash_legs_are_separate(self):
         before = {"issuer": 10, "a": 2, "b": 0}
@@ -125,6 +141,67 @@ class DividendEvidenceTest(unittest.TestCase):
         for wrong in (None, {**proof,"companyAccountId":"b"}, {**proof,"legs":proof["legs"][:1]}):
             with self.subTest(proof=wrong), self.assertRaises(ValueError):
                 checked_dividend(frame("DIVIDEND_SETTLE_V1",300,proof=wrong),300,book,before,after,"ENG")
+
+
+class DividendClaimAuditTest(unittest.TestCase):
+    def test_retry_requires_issuer_chair_and_releases_only_the_previously_booked_amount(self):
+        prior = {"a":{"claimId":"a","schemeId":"s","accountId":"A","face":4,"paid":0,"impairment":2,"quantity":1}}
+        failure = "dividend-report:unpaid"
+        proof = {"schemeId":"s","companyAccountId":"issuer","total":4,"legs":[{"claimId":"a","accountId":"A","amount":4}]}
+        def pay(person="alice", release=2, evidence=True):
+            task = {"commandId":"c","meetingId":"","schemeId":"s","seatId":"company-owner","decisionWork":{"person":person,"duration":1000}}
+            raw = json.dumps(task)
+            report = {"taskId":"t","kind":"DIVIDEND_SETTLE_V1","commandId":"c","meetingId":"","position":20,
+                      "atMillis":50,"schemeId":"s","accepted":True,"reason":"PAID"}
+            events = [{"type":"TASK_COMPLETED_V1","eventId":"task-completed:t","payload":raw},
+                      {"type":"DIVIDEND_REPORT_V1","eventId":"dividend-report:t","payload":json.dumps(report)},
+                      {"type":"DIVIDEND_CASH_PAYMENT_V1","eventId":"dividend-cash:s","payload":json.dumps(proof)}]
+            book = {"schemes":{"s":{"phase":"SETTLED","symbol":"ENG","issuerOwnerId":"company-owner","companyAccountId":"issuer",
+                                    "perShare":4,"recordAtMillis":20}},
+                    "claims":{"a":{**prior["a"],"paid":4,"impairment":0}},
+                    "snapshots":{"s":{"schemeId":"s","recordAtMillis":20,"totalQuantity":1,"totalAmount":4,
+                                      "entries":[{"accountId":"A","quantity":1,"face":4}]}},
+                    "payments":[{"schemeId":"s","position":20,"cashEvidenceId":"dividend-cash:s","atMillis":50,
+                                 "perClaim":{"a":4},"amount":4,"impairmentReleased":{"a":release}}]}
+            context = {"chair":"alice","scheduled":{"t":task},"failures":{"s":failure} if evidence else {}}
+            return checked_dividend({"position":20,"result":"ACCEPTED","commandContent":raw,"events":events},50,book,
+                                    {"issuer":6,"A":1},{"issuer":2,"A":5},"ENG",prior,context)
+        actual = pay()
+        self.assertEqual((actual["personPartyId"],actual["cashPaid"],actual["claimImpairmentReleased"]),("alice",4,2))
+        for broken in ({"person":"manager"},{"release":0},{"release":4},{"evidence":False}):
+            with self.subTest(broken=broken), self.assertRaises(ValueError):
+                pay(**broken)
+
+    def test_holder_impairment_requires_original_failure_and_changes_only_the_personal_claim(self):
+        old = {"claimId":"a","schemeId":"s","accountId":"A","face":100,"paid":0,"impairment":4}
+        prior = {"a":old}
+        task = {"commandId":"c","meetingId":"","claimId":"a","amount":6,"evidenceRef":"dividend-report:failed",
+                "seatId":"owner-a","schemeId":"","decisionWork":{"person":"nina","duration":1000}}
+        record = {"impairmentId":"div-impair:t","position":19,"claimId":"a","atMillis":42,
+                  "amount":6,"evidenceRef":"dividend-report:failed"}
+        cash = {"issuer":1,"A":1}
+
+        def read(*, actor="nina", proof=None, entered=10, face=100, authority=True, failure="dividend-report:failed"):
+            source = {**task,"decisionWork":{"person":actor,"duration":1000}}
+            raw = json.dumps(source)
+            receipt = {"taskId":"t","kind":"DIVIDEND_IMPAIR_V1","commandId":"c","meetingId":"","position":19,
+                       "atMillis":42,"schemeId":"s","accepted":True,"reason":"OK"}
+            events = [{"type":"TASK_COMPLETED_V1","eventId":"task-completed:t","payload":raw},
+                      {"type":"DIVIDEND_REPORT_V1","eventId":"dividend-report:t","payload":json.dumps(receipt)}]
+            book = {"schemes":{"s":{"symbol":"ENG","phase":"EX_BOOKED","companyAccountId":"issuer","perShare":5}},
+                    "claims":{"a":{**old,"impairment":entered,"face":face}},"impairments":[proof or record]}
+            context = {"holders":{"A":("owner-a","nina")},"scheduled":{"t":source} if authority else {},
+                       "failures":{"s":failure}}
+            return checked_dividend({"position":19,"result":"ACCEPTED","commandContent":raw,"events":events},
+                                    42,book,cash,cash,"ENG",prior,context)
+
+        ok = read()
+        self.assertEqual((ok["claimImpairmentAdded"],ok["holderNetReceivable"],ok["issuerFaceStillUnpaid"]),(6,90,100))
+        self.assertNotIn("cashPaid",ok)
+        for broken in ({"actor":"fund-manager"},{"authority":False},{"failure":"other-failure"},{"entered":6},{"face":94},
+                       {"proof":{**record,"claimId":"b"}},{"proof":{**record,"amount":7}},{"proof":{**record,"position":20}}):
+            with self.subTest(broken=broken),self.assertRaises(ValueError):
+                read(**broken)
 
 
 class RepeatedReadingTest(unittest.TestCase):
