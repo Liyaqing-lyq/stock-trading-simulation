@@ -86,6 +86,20 @@ class OpeningPolicyTest(unittest.TestCase):
                     checked_opening(self.frame(version, wrong))
 
 
+    def test_v22_requires_role_arguments_and_wake_policy_and_rejects_backdating(self):
+        old_run, new_run = "web-ten-company-autonomy-v21", "web-ten-company-autonomy-v22"
+        old = OPENING_POLICIES[old_run]
+        changes = {"role-tool-arguments": "conditional-fields-and-readable-errors-v1",
+                   "public-post-review-wake": "defer-catalog-count-with-post-v1"}
+        current = {**old, **changes}
+        checked_opening(self.frame(old_run, old))
+        checked_opening(self.frame(new_run, current))
+        for key, value in changes.items():
+            for run, invalid in ((old_run, {**old, key: value}), (new_run, {k: v for k, v in current.items() if k != key}),
+                                 (new_run, {**current, key: "unknown"})):
+                with self.subTest(run=run, key=key), self.assertRaises(ValueError):
+                    checked_opening(self.frame(run, invalid))
+
     def test_v21_aggregator_evidence_belongs_only_to_its_opening(self):
         old_run, new_run = "web-ten-company-autonomy-v20", "web-ten-company-autonomy-v21"
         key = "aggregator-evidence"

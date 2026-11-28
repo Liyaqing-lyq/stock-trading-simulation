@@ -493,7 +493,9 @@ public final class WorldWebHost implements AutoCloseable {
             deferRoutineMarketSession(input, previous, facts, last, review);
         if (facts.equals(previous)) return false;
         if ("role-choice-v1".equals(runtime.profile().manifest().dataVersions().get("public-post-wake"))) {
-            return !BoardWaitBroadcast.deferChosenPosts(previous, facts, input, last, review);
+            boolean deferPostCount = RunManifest.PUBLIC_POST_REVIEW_WAKE_VERSION.equals(
+                    runtime.profile().manifest().dataVersions().get(RunManifest.PUBLIC_POST_REVIEW_WAKE_POLICY));
+            return !BoardWaitBroadcast.deferChosenPosts(previous, facts, input, last, review, deferPostCount);
         }
         return !edu.cufe.auction.world.EngineeringCustomerPolicy.VERSION.equals(
                 runtime.profile().manifest().dataVersions().get(edu.cufe.auction.world.EngineeringCustomerPolicy.KEY))
@@ -5648,6 +5650,15 @@ public final class WorldWebHost implements AutoCloseable {
     @FunctionalInterface
     interface PersonSubmission { Object submit(long position) throws Exception; }
 
+    boolean roleArgumentsEnabled() throws Exception {
+        return onWriter(() -> roleArgumentsEnabled(readyNow()));
+    }
+
+    private static boolean roleArgumentsEnabled(WorldRuntime world) {
+        return RunManifest.ROLE_ARGUMENTS_VERSION.equals(world.profile().manifest().dataVersions()
+                .get(RunManifest.ROLE_ARGUMENTS_POLICY));
+    }
+
     Object personalWebPage(String person, PersonalObservations.Page scope) throws Exception {
         return call(() -> personalWebPageOf(readyNow(), person, scope));
     }
@@ -5662,6 +5673,12 @@ public final class WorldWebHost implements AutoCloseable {
             case NEWSLETTERS -> newsletterPage(world, person);
             case MEDIA_WITHDRAWAL -> mediaWithdrawalPage(world.openRoleSession(person).view());
         };
+        if ((scope == PersonalObservations.Page.ENGINEERING || scope == PersonalObservations.Page.GROUPS)
+                && roleArgumentsEnabled(world)) {
+            com.fasterxml.jackson.databind.node.ObjectNode page = PAYLOAD_MAPPER.valueToTree(raw);
+            page.put("roleToolArguments", RunManifest.ROLE_ARGUMENTS_VERSION);
+            raw = page;
+        }
         return PersonalObservations.enabled(world, person) ? PersonalObservations.page(world, person, scope,raw) : raw;
     }
 

@@ -2,6 +2,7 @@
 
 // 真实执行 groups.js 的按钮 handler 与字段绑定（不联网）：用最小 DOM 桩加载真实文件。
 const fs = require("fs");
+const strict = require("node:assert/strict");
 const path = require("path");
 const vm = require("vm");
 
@@ -10,7 +11,7 @@ const root = path.join(__dirname, "..", "..", "main", "resources", "web");
 function element(id) {
   return {
     id: id, hidden: false, textContent: "", value: "", checked: false, children: [],
-    listeners: {},
+    listeners: {}, focus() { this.focused = true; },
     appendChild(child) { this.children.push(child); return child; },
     addEventListener(type, handler) { (this.listeners[type] = this.listeners[type] || []).push(handler); },
     replaceChildren() { this.children = []; }
@@ -24,7 +25,7 @@ for (const id of ["groups-mine", "groups-invites", "groups-posts", "groups-feed"
   "groups-audit-frames", "groups-audit-reports", "groups-mine-empty",
   "groups-invites-empty", "groups-posts-empty", "groups-note", "groups-result",
   "groups-action", "groups-group-id", "groups-invitee", "groups-invite-id",
-  "groups-accept", "groups-doc-id", "groups-based-on", "groups-title", "groups-body",
+  "groups-accept", "groups-legacy-answer", "groups-explicit-answer", "groups-answer", "groups-doc-id", "groups-based-on", "groups-title", "groups-body",
   "groups-cites", "groups-form", "groups-person", "groups-admin", "person", "admin"]) {
   elements.set(id, element(id));
 }
@@ -121,6 +122,45 @@ function assert(flag, message) {
   assert(acceptCall[2].inviteId === "GINV-1:dave:1:cmd", "必须带真实邀请标识");
   assert(acceptCall[2].accept === true, "接受按钮必须带 accept=true");
   assert(!("personPartyId" in acceptCall[2]), "请求不得自填人物");
+
+  // 新开局的手填表单不能把未选择的答复代填为拒绝。
+  const currentPage = { ...pageView(), roleToolArguments: "conditional-fields-and-readable-errors-v1" };
+  state.personGroups = currentPage;
+  context.renderGroupPerson(currentPage);
+  strict.equal(elements.get("groups-legacy-answer").hidden, true);
+  strict.equal(elements.get("groups-explicit-answer").hidden, false);
+  elements.get("groups-action").value = "RESPOND";
+  elements.get("groups-invite-id").value = currentPage.invitations[0].inviteId;
+  const submissions = () => calls.filter(call => call[0] === "POST" && call[1] === "/api/me/groups/action");
+  const count = submissions().length;
+  await context.submitGroupAction({});
+  strict.equal(submissions().length, count);
+  strict.match(elements.get("groups-result").textContent, /接受或拒绝/);
+  for (const answer of [false, true]) {
+    state.personGroups = currentPage;
+    elements.get("groups-answer").value = String(answer);
+    await context.submitGroupAction({});
+    strict.equal(submissions().at(-1)[2].accept, answer);
+    strict.equal(elements.get("groups-answer").value, "");
+  }
+  for (const action of ["POST", "CORRECTION", "PLATFORM_POST", "PLATFORM_CORRECTION"]) {
+    state.personGroups = currentPage;
+    elements.get("groups-action").value = action;
+    elements.get("groups-cites").value = "read-doc#1#obsolete";
+    const before = submissions().length;
+    await context.submitGroupAction({});
+    strict.equal(submissions().length, before);
+    strict.match(elements.get("groups-result").textContent, /docId#version/);
+  }
+  state.personGroups = currentPage;
+  elements.get("groups-cites").value = "read-doc#12";
+  await context.submitGroupAction({});
+  strict.equal(submissions().at(-1)[2].cites[0].docId, "read-doc");
+  strict.equal(String(submissions().at(-1)[2].cites[0].version), "12");
+  state.personGroups = pageView();
+  context.renderGroupPerson(state.personGroups);
+  strict.equal(elements.get("groups-legacy-answer").hidden, false);
+  strict.equal(elements.get("groups-explicit-answer").hidden, true);
 
   // 2) 动作表单：due = 当前时点 + 冻结工时；cites 解析为真实版本
   elements.get("groups-action").value = "POST";

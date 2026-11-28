@@ -1,8 +1,11 @@
 package edu.cufe.auction.world;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
+import com.fasterxml.jackson.databind.exc.ValueInstantiationException;
 import edu.cufe.auction.model.OrderType;
 import edu.cufe.auction.model.Side;
 import edu.cufe.auction.world.CashLedger.OpeningAccount;
@@ -8069,7 +8072,7 @@ public final class WorldRuntime implements AutoCloseable {
         } catch (IOException | RuntimeException failure) {
             // 静态参数失败必须落在**原未消费状态**上：不能先持久 RECORDED 再改回。
             DecisionModel.Result rejected = DecisionModel.rejectReply(run.state(), reply,
-                    DecisionModel.REASON_TOOL_ARGS_INVALID + ":" + shortReason(failure));
+                    DecisionModel.REASON_TOOL_ARGS_INVALID + ":" + toolArgumentReason(failure));
             if (rejected.verdict() != DecisionModel.Verdict.ACCEPTED
                     && rejected.verdict() != DecisionModel.Verdict.DUPLICATE) {
                 throw new IllegalStateException("无法记录工具参数技术失败：" + rejected.reason(),
@@ -9191,6 +9194,12 @@ public final class WorldRuntime implements AutoCloseable {
             }
             if (subscriptionOverlaps(base,binding.personPartyId(),begin,due))
                 return focusRejection(recorded, args, "BUSY");
+        }
+        if (usesRoleToolArguments()) {
+            for (String[] field : DecisionRun.toolParameters(tool, toolContractVersion())) {
+                if ("boolean".equals(field[1]) && !args.path(field[0]).isBoolean())
+                    throw new IOException("参数 " + field[0] + " 须明确填写布尔值 true 或 false");
+            }
         }
         MediaTaskBody originalMedia = forcedTaskId != null && tool.startsWith("media.") && !tool.startsWith("media.subscription.")
                 ? recordedMediaBody(base, recorded.actionId()) : null;
@@ -10338,16 +10347,34 @@ public final class WorldRuntime implements AutoCloseable {
             return List.of();
         }
         List<BoardModel.BudgetLine> lines = new ArrayList<>();
+        boolean requireDeclared = usesRoleToolArguments();
         for (JsonNode item : node) {
+            if (requireDeclared && (!item.path("period").isIntegralNumber() || !item.path("period").canConvertToLong()
+                    || !item.path("category").isTextual() || !item.has("amount")))
+                throw new IllegalArgumentException("每项预算均须填写整数期号 period、类别 category 和金额 amount；零上限请明确填 0.00");
             String category = item.path("category").asText("");
             if (!"PRODUCTION_LABOR".equals(category) && !"PROCUREMENT".equals(category)) {
                 return List.of();
             }
             lines.add(new BoardModel.BudgetLine(item.path("period").asLong(0L),
                     BoardModel.BudgetCategory.valueOf(category),
-                    CashLedger.money(new BigDecimal(item.path("amount").asText("0")))));
+                    budgetAmount(item.path("amount"), requireDeclared)));
         }
         return lines;
+    }
+
+    private static BigDecimal budgetAmount(JsonNode amount, boolean requireDeclared) {
+        if (!requireDeclared) return CashLedger.money(new BigDecimal(amount.asText("0")));
+        String condition = "amount 须为非负金额，精确到分；零上限可明确填 0.00";
+        if (!(amount.isNumber() || amount.isTextual())) throw new IllegalArgumentException(condition);
+        BigDecimal cap;
+        try {
+            cap = CashLedger.money(new BigDecimal(amount.asText()));
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException(condition, invalid);
+        }
+        if (cap.signum() < 0) throw new IllegalArgumentException(condition);
+        return cap;
     }
 
     private static String textArg(JsonNode args, String field) {
@@ -10554,6 +10581,36 @@ public final class WorldRuntime implements AutoCloseable {
             }
         }
         return false;
+    }
+
+    private boolean usesRoleToolArguments() {
+        return RunManifest.ROLE_ARGUMENTS_VERSION.equals(manifest.dataVersions().get(RunManifest.ROLE_ARGUMENTS_POLICY));
+    }
+
+    private String toolArgumentReason(Throwable failure) {
+        if (!usesRoleToolArguments() || !(failure instanceof JsonMappingException mapping)) {
+            return shortReason(failure);
+        }
+        if (mapping instanceof UnrecognizedPropertyException unknown) {
+            String name = unknown.getPropertyName();
+            String prefix = name.matches("[a-zA-Z0-9_-]{1,40}") ? "未声明字段 " + name : "含未声明字段";
+            var known = unknown.getKnownPropertyIds();
+            if (known == null || known.isEmpty()) return prefix + "，请查看本次工具的字段说明";
+            return prefix + "，可用字段为 " + String.join("、", known.stream().map(Object::toString).sorted().toList());
+        }
+        if (mapping instanceof ValueInstantiationException value && value.getType().getRawClass().isRecord()
+                && value.getCause() instanceof IllegalArgumentException rule && rule.getClass() == IllegalArgumentException.class
+                && rule.getMessage() != null && !rule.getMessage().isBlank() && !rule.getMessage().startsWith("No enum constant ")) {
+            if (value.getType().getRawClass() == WorldRoleSession.InterviewRespondDraft.class
+                    && "拒绝不携带开始时刻".equals(rule.getMessage())) {
+                return "拒绝邀请须显式填写 startMillis=-1";
+            }
+            return shortReason(rule);
+        }
+        var fields = mapping.getPath().stream().map(JsonMappingException.Reference::getFieldName)
+                .filter(java.util.Objects::nonNull).toList();
+        String subject = fields.isEmpty() ? "参数" : "参数 " + String.join(".", fields);
+        return subject + " 的类型或取值不符合本次工具契约";
     }
 
     private static String shortReason(Throwable failure) {
@@ -11282,7 +11339,7 @@ public final class WorldRuntime implements AutoCloseable {
                     throw new IOException("DECISION_REPLIED_V1 不得承载合法业务计划");
                 }
                 DecisionModel.Result rejected = DecisionModel.rejectReply(run.state(), reply,
-                        DecisionModel.REASON_TOOL_ARGS_INVALID + ":" + shortReason(dtoFailure));
+                        DecisionModel.REASON_TOOL_ARGS_INVALID + ":" + toolArgumentReason(dtoFailure));
                 if (rejected.verdict() != DecisionModel.Verdict.ACCEPTED
                         && rejected.verdict() != DecisionModel.Verdict.DUPLICATE) {
                     throw new IOException("无法重建静态参数技术失败：" + rejected.reason());
@@ -31593,6 +31650,8 @@ public final class WorldRuntime implements AutoCloseable {
             return null;
         }
         var root = mapper.createObjectNode();
+        if (usesRoleToolArguments())
+            root.put("roleToolArguments", RunManifest.ROLE_ARGUMENTS_VERSION);
         var directorships = root.putArray("directorships");
         var managerships = root.putArray("managerships");
         if (engineeringCustomerEnabled() && engineeringConfig.companies().stream().anyMatch(c ->
@@ -37715,6 +37774,47 @@ public final class WorldRuntime implements AutoCloseable {
             case RoleTradingView.TOOL_PLATFORM_CORRECT -> "PLATFORM_CORRECTION";
             default -> throw new IOException("未知群组工具：" + tool);
         };
+        GroupTaskPayload payload;
+        if (usesRoleToolArguments()) {
+            Class<?> type = switch (action) {
+                case "JOIN" -> WorldRoleSession.GroupJoinDraft.class;
+                case "INVITE" -> WorldRoleSession.GroupInviteDraft.class;
+                case "RESPOND" -> WorldRoleSession.GroupRespondDraft.class;
+                case "LEAVE" -> WorldRoleSession.GroupLeaveDraft.class;
+                case "POST" -> WorldRoleSession.GroupPostDraft.class;
+                case "CORRECTION" -> WorldRoleSession.GroupCorrectDraft.class;
+                case "PLATFORM_POST" -> WorldRoleSession.PlatformPostDraft.class;
+                case "PLATFORM_CORRECTION" -> WorldRoleSession.PlatformCorrectDraft.class;
+                default -> throw new IOException("未知群组动作：" + action);
+            };
+            for (String[] field : DecisionRun.toolParameters(tool, toolContractVersion())) {
+                JsonNode value = args.path(field[0]);
+                if (("string".equals(field[1]) && !value.isTextual())
+                        || ("long".equals(field[1]) && !(value.isIntegralNumber() && value.canConvertToLong())))
+                    throw new IOException("参数 " + field[0] + " 须使用菜单中的 " + field[1] + " 类型");
+            }
+            if (args.has("cites")) {
+                JsonNode refs = args.get("cites");
+                if (!refs.isArray()) throw new IOException("参数 cites 须为引用数组；没有引用可省略或填 []");
+                for (JsonNode ref : refs) {
+                    if (!ref.path("docId").isTextual() || !ref.path("version").isIntegralNumber()
+                            || !ref.path("version").canConvertToLong())
+                        throw new IOException("cites 中每项须给文号 docId 和整数版本 version");
+                }
+            }
+            payload = groupPayload(person, action, strict(type, args), commandId);
+        } else {
+            payload = legacyGroupDecisionPayload(args, person, action, commandId);
+            if (payload == null) return GroupPlanned.rejected("INVALID_ARGUMENT");
+        }
+        long due = DecisionModel.actionDueMillis(model, recorded.actionId());
+        if (due != recorded.barrierAtMillis() + payload.durationOf(run)) {
+            return GroupPlanned.rejected("ACTION_MILLIS_INVALID");
+        }
+        return new GroupPlanned(PendingTask.GROUP_BEGIN_V1, payload, null);
+    }
+
+    private GroupTaskPayload legacyGroupDecisionPayload(JsonNode args, String person, String action, String commandId) {
         String groupId = textArg(args, "groupId");
         String title = textArg(args, "title");
         String body = textArg(args, "body");
@@ -37728,27 +37828,21 @@ public final class WorldRuntime implements AutoCloseable {
                 String citeDoc = textArg(cite, "docId");
                 long citeVersion = longArg(cite, "version");
                 if (citeDoc == null || citeVersion < 1) {
-                    return GroupPlanned.rejected("INVALID_ARGUMENT");
+                    return null;
                 }
                 refs.add(new GroupModel.Ref(citeDoc, citeVersion));
             }
         }
         long basedOnVersion = longArg(args, "basedOnVersion");
         boolean accept = args.has("accept") && args.get("accept").asBoolean(false);
-        GroupTaskPayload payload;
         try {
-            payload = new GroupTaskPayload(person, commandId, action, groupId == null ? "" : groupId,
+            return new GroupTaskPayload(person, commandId, action, groupId == null ? "" : groupId,
                     target == null ? "" : target, title == null ? "" : title,
                     body == null ? "" : body, refs, basedOnVersion, accept, "", docId == null ? ""
                             : docId, 0L);
         } catch (RuntimeException invalid) {
-            return GroupPlanned.rejected("INVALID_ARGUMENT");
+            return null;
         }
-        long due = DecisionModel.actionDueMillis(model, recorded.actionId());
-        if (due != recorded.barrierAtMillis() + payload.durationOf(run)) {
-            return GroupPlanned.rejected("ACTION_MILLIS_INVALID");
-        }
-        return new GroupPlanned(PendingTask.GROUP_BEGIN_V1, payload, null);
     }
 
     /** 群组工具工时必须与冻结配置一致（构造期拒绝，不留两套真值）。 */

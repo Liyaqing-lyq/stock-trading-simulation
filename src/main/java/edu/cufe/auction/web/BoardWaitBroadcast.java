@@ -28,7 +28,8 @@ final class BoardWaitBroadcast {
     }
 
     // 只在本人最近一次有效 WAIT 明确选择后合并；到期、自己或联系人的帖子、媒体成稿、更正等仍及时处理。
-    static boolean deferChosenPosts(JsonNode previous, JsonNode facts, JsonNode input, long last, long review) {
+    static boolean deferChosenPosts(JsonNode previous, JsonNode facts, JsonNode input, long last, long review,
+                                    boolean deferPostCount) {
         JsonNode decision = input.at("/engineering/deliberation/recentDecisions/0");
         long now = input.path("time").asLong();
         if (previous == null || now < last || now >= review
@@ -56,6 +57,7 @@ final class BoardWaitBroadcast {
             else added.put(id, row);
         }
         // 旧目录条目仍须一字不变，新目录条目须全部在可见 feed 内证明是陌生人的首版广场帖。
+        int newPosts = added.size();
         int retained = 0;
         for (var row : feed) {
             JsonNode entry = added.remove(row.path("docId").asText());
@@ -74,6 +76,15 @@ final class BoardWaitBroadcast {
         }
         if (!added.isEmpty()) return false;
         restored.withObject("/groups").set("feed", oldFeed);
+        if (deferPostCount) {
+            if (retained != oldFeed.size()) return false;
+            JsonNode oldTotal = previous.at("/engineering/librarySearch/totalVisible");
+            JsonNode total = facts.at("/engineering/librarySearch/totalVisible");
+            // 目录只给部分条目时，净增数不能证明期间没有其他授权资料移入或移出。
+            if (!oldTotal.isInt() || !total.isInt() || oldTotal.intValue() != oldCatalog.size()
+                    || total.intValue() != catalog.size() || total.longValue() - oldTotal.longValue() != newPosts) return false;
+            restored.withObject("/engineering/librarySearch").set("totalVisible", oldTotal);
+        }
         return previous.equals(restored);
     }
 

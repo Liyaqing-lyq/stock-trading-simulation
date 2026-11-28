@@ -22,6 +22,78 @@ class PublicPostWaitChoiceTest {
     @TempDir Path directory;
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    @Test void aStrangersPostAndItsOwnLibraryCountFollowTheReadersChoice() throws Exception {
+        for (boolean current : List.of(false, true)) {
+            Path file = directory.resolve("count-" + current + ".journal");
+            String person = "aged-manager";
+            long last = 32_400_000L, review = last + 3_600_000;
+            var ref = new AtomicReference<WorldRuntime>();
+            try (var host = new WorldWebHost(() -> {
+                var world = current ? ComposedIndustryScenario.openRoleArgumentsTenCompanyStudy(file)
+                        : ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(file);
+                ref.set(world);
+                return new WorldWebHost.Opened(world,world.profile().manifest().runId());
+            })) {
+                host.adminSnapshot();
+                host.call(() -> {
+                    var world = ref.get();
+                    world.advanceTo(last);
+                    world.beginDecisionSession("session");
+                    var route = new DecisionModel.Route("media","key-4","deepseek-flash",1L,20,1_000_000,1024,1);
+                    world.openDecisions("open",List.of(new DecisionRun.Request(person,"wait","wake",route)));
+                    var call = world.dispatchLiveDecision("dispatch","wait").call();
+                    var before = JSON.readTree(call.inputText());
+                    var reply = JSON.createObjectNode().put("tool","role.wait");
+                    reply.putObject("decision").put("objective",before.at("/engineering/deliberation/objectives/0/id").asText())
+                            .put("basis","等到复查时再看广场").put("reviewAfterMillis",review-last).put("publicPostWake","ON_REVIEW");
+                    assertEquals("QUEUED",world.offerDecisionCallback(new DecisionModel.Reply(call.runId(),call.actionId(),
+                            call.attemptId(),call.attemptNo(),call.recoveryGeneration(),reply.toString(),
+                            DecisionModel.Usage.unknownCost(1,50,30),"fixture")));
+                    assertEquals(1,world.drainDecisionCallbacks());
+                    world.advanceTo(last+1100);
+                    assertEquals(review,world.autonomyNextReviewAt(person,-1));
+                    var config=world.groupsRun().platformConfig();
+                    long end=world.snapshot().timeMillis()+config.postMillis();
+                    world.openRoleSession("ed").postToPlatform("post","post",end,
+                            new WorldRoleSession.PlatformPostDraft("广场手记","公开记录。",List.of()));
+                    world.advanceTo(end+config.deliveryMillis());
+                    var previous=host.wakeFacts(before);
+                    var observed=(ObjectNode)world.autonomyRoleObservation(person);
+                    assertEquals(before.at("/engineering/librarySearch/totalVisible").asInt()+1,
+                            observed.at("/engineering/librarySearch/totalVisible").asInt());
+                    assertEquals(!current,host.newFactsRequireWake(observed,previous,last,review));
+                    assertTrue(host.newFactsRequireWake(observed.deepCopy().put("time",review),previous,last,review));
+                    var contact=observed.deepCopy();
+                    contact.withArray("/social/contacts").addObject().put("targetPartyId","ed");
+                    var oldContact=previous.deepCopy();
+                    ((ObjectNode)oldContact).set("social",contact.path("social").deepCopy());
+                    assertTrue(host.newFactsRequireWake(contact,oldContact,last,review));
+                    var extraCount=observed.deepCopy();
+                    extraCount.withObject("/engineering/librarySearch").put("totalVisible",
+                            observed.at("/engineering/librarySearch/totalVisible").asInt()+1);
+                    assertTrue(host.newFactsRequireWake(extraCount,previous,last,review));
+                    var oldPartial=(ObjectNode)previous.deepCopy();
+                    oldPartial.withObject("/engineering/librarySearch").put("totalVisible",
+                            previous.at("/engineering/librarySearch/totalVisible").asInt()+1);
+                    assertTrue(host.newFactsRequireWake(extraCount,oldPartial,last,review));
+                    var offset=observed.deepCopy();
+                    offset.withObject("/engineering/librarySearch").set("totalVisible",
+                            previous.at("/engineering/librarySearch/totalVisible"));
+                    assertEquals(current,host.newFactsRequireWake(offset,previous,last,review));
+                    var mail=observed.deepCopy();
+                    mail.withArray("/social/inbox").addObject().put("messageId","new-mail");
+                    assertTrue(host.newFactsRequireWake(mail,previous,last,review));
+                    long next=world.snapshot().timeMillis()+1;
+                    world.schedulePublishDocument("direct","direct",next,"private-fact","nina",
+                            InformationModel.Audience.direct(person),"书面回复","只给收件人","原件",1000L,List.of());
+                    world.advanceTo(next);
+                    assertTrue(host.newFactsRequireWake(world.autonomyRoleObservation(person),previous,last,review));
+                    return null;
+                });
+            }
+        }
+    }
+
     @Test void onlyTheNewWaitContractAcceptsAChoiceAboutPublicPosts() {
         var input = JSON.createObjectNode().put("time", 100);
         var engineering = input.putObject("engineering").put("roleContextVersion", "deliberation-v5");

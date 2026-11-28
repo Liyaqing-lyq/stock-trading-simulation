@@ -2676,7 +2676,7 @@ public final class WorldWebServer implements AutoCloseable {
         Object view;
         try {
             view = host.personalWebCommand(session.personId(), expected,
-                    frame -> host.scheduleEngineering(session.personId(), engineeringCommand(atFrame(body, frame))),
+                    frame -> host.scheduleEngineering(session.personId(), engineeringCommand(atFrame(body, frame), host.roleArgumentsEnabled())),
                     PersonalObservations.Page.ENGINEERING);
         } catch (WorldWebHost.BusyException busy) {
             throw busy;
@@ -2754,7 +2754,7 @@ public final class WorldWebServer implements AutoCloseable {
         return (int) version;
     }
 
-    private WorldWebHost.EngineeringCommand engineeringCommand(JsonNode body) {
+    private WorldWebHost.EngineeringCommand engineeringCommand(JsonNode body, boolean explicitFields) {
         Long expected = strictLong(body.get("expectedPosition"));
         Long due = strictLong(body.get("dueTimeMillis"));
         if (expected == null || expected < 0) {
@@ -2773,6 +2773,9 @@ public final class WorldWebServer implements AutoCloseable {
         int tranche = (int) boundedLong(body, "trancheIndex", 0L, 0L, Integer.MAX_VALUE);
         long units = boundedLong(body, "units", 0L, 0L, Long.MAX_VALUE / 2);
         long docVersion = boundedLong(body, "docVersion", 1L, 1L, Long.MAX_VALUE / 2);
+        if (explicitFields && "board.proposeBudget".equals(tool) && !body.hasNonNull("period")) {
+            throw new IllegalArgumentException("预算期间 period 必须填写，可明确填写 0");
+        }
         long period = boundedLong(body, "period", 0L, 0L, Long.MAX_VALUE / 2);
         long effectiveAt = boundedLong(body, "effectiveAt", 0L, 0L, Long.MAX_VALUE / 2);
         long endsAt = boundedLong(body, "endsAt", 0L, 0L, Long.MAX_VALUE / 2);
@@ -2938,7 +2941,7 @@ public final class WorldWebServer implements AutoCloseable {
         Object view;
         try {
             view = host.personalWebCommand(session.personId(), expected,
-                    frame -> host.groupAction(session.personId(), groupCommand(atFrame(body, frame))),
+                    frame -> host.groupAction(session.personId(), groupCommand(atFrame(body, frame), host.roleArgumentsEnabled())),
                     PersonalObservations.Page.GROUPS);
         } catch (WorldWebHost.BusyException busy) {
             throw busy;
@@ -3073,7 +3076,7 @@ public final class WorldWebServer implements AutoCloseable {
         send(exchange, 200, mapper.writeValueAsString(view));
     }
 
-    private WorldWebHost.GroupActionRequest groupCommand(JsonNode body) {
+    private WorldWebHost.GroupActionRequest groupCommand(JsonNode body, boolean explicitFields) {
         Long expected = strictLong(body.get("expectedPosition"));
         Long due = strictLong(body.get("dueTimeMillis"));
         Long basedOn = strictLong(body.get("basedOnVersion"));
@@ -3083,12 +3086,20 @@ public final class WorldWebServer implements AutoCloseable {
         if (due == null || due < 0) {
             throw new IllegalArgumentException("dueTimeMillis 必须是规范整数");
         }
+        String action = body.path("action").asText();
+        if (explicitFields && "RESPOND".equals(action) && !body.hasNonNull("accept")) {
+            throw new IllegalArgumentException("请通过 accept 明确接受或拒绝邀请");
+        }
         JsonNode accept = body.get("accept");
         if (accept != null && !accept.isNull() && !accept.isBoolean()) {
             throw new IllegalArgumentException("accept 必须是布尔值");
         }
         List<WorldWebHost.GroupRef> cites = new ArrayList<>();
         JsonNode node = body.get("cites");
+        if (explicitFields && node != null && node.isNull()
+                && Set.of("POST", "CORRECTION", "PLATFORM_POST", "PLATFORM_CORRECTION").contains(action)) {
+            throw new IllegalArgumentException("cites 必须是数组；没有引用时可省略或填 []");
+        }
         if (node != null && !node.isNull()) {
             if (!node.isArray()) {
                 throw new IllegalArgumentException("cites 必须是数组");

@@ -97,6 +97,41 @@ class InterviewActionFeedbackTest {
         }
     }
 
+    @Test void responderCanUseBothShapesFromThePersonalMenuBeforeExpiry() throws Exception {
+        Path seed = dir.resolve("response-menu.journal");
+        String id = InterviewModel.requestId("sam", "choices");
+        long start;
+        try (var world = ComposedIndustryScenario.openRoleArgumentsTenCompanyStudy(seed)) {
+            world.advanceTo(9 * 3_600_000L);
+            readContact(world, "sam");
+            start = world.snapshot().timeMillis() + 100_000;
+            var invite = JSON.createObjectNode().put("requestClientId", "choices").put("toPartyId", "investor")
+                    .put("topic", "工程机会条款").put("windowStartMillis", start)
+                    .put("windowEndMillis", start + 50_000).put("durationMillis", 50_000);
+            applied(act(world, "sam", "create", "interview.invite", invite, true), id, PendingTask.INTERVIEW_INVITE_V1);
+        }
+        var parentBytes = java.nio.file.Files.readAllBytes(seed);
+        for (String choice : List.of("accept", "decline")) {
+            Path file = dir.resolve(choice + ".journal");
+            java.nio.file.Files.write(file, parentBytes);
+            try (var world = ComposedIndustryScenario.openRoleArgumentsTenCompanyStudy(file)) {
+                var observation = world.autonomyRoleObservation("investor");
+                var tool = observation.required("tools").findParents("parameters").stream()
+                        .filter(t -> "interview.respond".equals(t.path("name").asText())).findFirst().orElseThrow();
+                var contract = tool.required("responseArguments");
+                assertTrue(contract.required("deadline").asText().contains("expiresAtMillis"));
+                assertTrue(contract.at("/accept/startMillis").asText().contains("windowEndMillis"));
+                assertTrue(contract.at("/decline/startMillis").isIntegralNumber());
+                var args = ((ObjectNode) contract.required(choice)).deepCopy().put("requestId", id);
+                if ("accept".equals(choice)) args.put("startMillis", start);
+                var row = act(world, "investor", "respond", "interview.respond", args, true);
+                applied(row, id, PendingTask.INTERVIEW_RESPOND_V1);
+                assertEquals("accept".equals(choice) ? "ACCEPTED" : "DECLINED",
+                        world.autonomyRoleObservation("investor").at("/interview/invites/0/status").asText());
+            }
+        }
+    }
+
     private static void applied(JsonNode result,String requestId,String kind) {
         assertEquals("APPLIED",result.required("execution").textValue(),result.toString());
         assertEquals(requestId,result.required("requestId").textValue());

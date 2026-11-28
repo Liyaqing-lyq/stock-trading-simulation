@@ -6934,7 +6934,9 @@ function engineeringToolDefaults(tool, now) {
       defaults.docVersion = String(card.governanceDocVersion || "1");
     }
   }
-  if (tool === "board.proposeBudget") defaults.period = "0";
+  if (tool === "board.proposeBudget" && state.personEngineering?.roleToolArguments !== "conditional-fields-and-readable-errors-v1") {
+    defaults.period = "0";
+  }
   if (tool === "engineering.requestAcceptance" || tool === "engineering.requestPayment"
       || tool === "engineering.requestRetention") {
     defaults.trancheIndex = "0";
@@ -7162,6 +7164,12 @@ function renderPeriodicScoreFields(tool, spec, now) {
   }
 }
 
+function engineeringRequiredFields(tool) {
+  const fields = ENGINEERING_TOOL_FIELDS[tool].required;
+  return tool === "board.proposeBudget" && state.personEngineering?.roleToolArguments === "conditional-fields-and-readable-errors-v1"
+    ? [...fields, "period"] : fields;
+}
+
 /** 按所选工具重建字段：上一个工具的旧值随容器一起清掉，不会混进新请求。 */
 function renderEngineeringFields(tool) {
   state.engineeringTool = tool;
@@ -7196,7 +7204,7 @@ function renderEngineeringFields(tool) {
     wrapper.dataset.field = key;
     const label = document.createElement("label");
     label.htmlFor = field.id;
-    label.textContent = field.label + (spec.required.includes(key) ? "（必填）" : "（可选）");
+    label.textContent = field.label + (engineeringRequiredFields(tool).includes(key) ? "（必填）" : "（可选）");
     let control;
     if (field.source) {
       control = document.createElement("select");
@@ -7221,7 +7229,7 @@ function renderEngineeringFields(tool) {
     const fallback = key === "periodicPeriod" ? periodicPeriod
       : (defaults[key] === undefined ? "" : defaults[key]);
     control.value = fallback;
-    control.required = spec.required.includes(key);
+    control.required = engineeringRequiredFields(tool).includes(key);
     wrapper.append(label, control);
     if (tool === "issuer.dividend.amend" && DIVIDEND_TERMS.includes(key)) {
       label.textContent = field.label + "（必填）";
@@ -7314,7 +7322,7 @@ function engineeringValidate(tool, values) {
   } else if (!/^\d+$/.test(values.dueTimeMillis)) {
     errors.push("「排程到期」必须是世界毫秒整数");
   }
-  for (const key of spec.required) {
+  for (const key of engineeringRequiredFields(tool)) {
     if (!values[key]) errors.push("「" + fieldLabel(key) + "」必须填写");
   }
   if ((tool === "board.vote" || tool === "board.implement") && currentPeriodicCard()?.periods?.some(row =>
@@ -7427,7 +7435,7 @@ function engineeringValidate(tool, values) {
 function engineeringFocusFirstInvalid(tool, values) {
   const spec = ENGINEERING_TOOL_FIELDS[tool];
   if (!spec) return;
-  for (const key of spec.required) {
+  for (const key of engineeringRequiredFields(tool)) {
     if (values[key]) continue;
     const field = ENGINEERING_FIELD_SPECS[key];
     const node = field ? $(field.id) : null;

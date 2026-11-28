@@ -27,6 +27,7 @@ function clearGroupsDom() {
   for (const id of ["groups-title", "groups-body", "groups-cites", "groups-doc-id",
     "groups-invite-id", "groups-invitee", "groups-group-id", "groups-based-on"]) $(id).value = "";
   $("groups-accept").checked = false;
+  $("groups-answer").value = "";
 }
 
 /** 群组页：管理员读审计，人物只读本人有权限的投影。 */
@@ -64,6 +65,9 @@ async function loadGroups(generation, pageVersion) {
 }
 
 function renderGroupPerson(view) {
+  const explicit = view.roleToolArguments === "conditional-fields-and-readable-errors-v1";
+  $("groups-legacy-answer").hidden = explicit;
+  $("groups-explicit-answer").hidden = !explicit;
   $("groups-person").hidden = false;
   $("groups-admin").hidden = true;
   const groups = view.groups || [];
@@ -182,12 +186,36 @@ async function submitGroupAction(extra) {
   if (!view || state.mode !== "person") return;
   const generation = state.generation;
   const action = extra.action || $("groups-action").value;
+  const explicit = view.roleToolArguments === "conditional-fields-and-readable-errors-v1";
+  let answer = extra.accept;
+  if (explicit) {
+    if (action === "RESPOND" && typeof answer !== "boolean") {
+      const selected = $("groups-answer").value;
+      if (selected !== "true" && selected !== "false") {
+        $("groups-result").hidden = false;
+        $("groups-result").textContent = "请先选择接受或拒绝邀请。";
+        $("groups-answer").focus();
+        return;
+      }
+      answer = selected === "true";
+    }
+  } else if (answer === undefined) {
+    answer = $("groups-accept").checked;
+  }
   const stamp = String(Date.now());
   const cites = [];
-  for (const item of ($("groups-cites").value || "").split(",")) {
+  const publishing = ["POST", "CORRECTION", "PLATFORM_POST", "PLATFORM_CORRECTION"].includes(action);
+  const rawCites = publishing || !explicit ? $("groups-cites").value || "" : "";
+  for (const item of rawCites.split(",")) {
     const text = item.trim();
     if (!text) continue;
     const parts = text.split("#");
+    if (explicit && (parts.length !== 2 || !parts[0].trim() || !/^[1-9][0-9]*$/.test(parts[1]))) {
+      $("groups-result").hidden = false;
+      $("groups-result").textContent = "请按 docId#version 填写每项引用，版本从 1 开始。";
+      $("groups-cites").focus();
+      return;
+    }
     cites.push({ docId: parts[0], version: groupRequestInteger(parts[1]) });
   }
   const payload = {
@@ -199,7 +227,7 @@ async function submitGroupAction(extra) {
     groupId: extra.groupId || $("groups-group-id").value || "",
     inviteePartyId: extra.inviteePartyId || $("groups-invitee").value || "",
     inviteId: extra.inviteId || $("groups-invite-id").value || "",
-    accept: extra.accept !== undefined ? extra.accept : $("groups-accept").checked,
+    accept: answer,
     docId: extra.docId || $("groups-doc-id").value || "",
     basedOnVersion: groupRequestInteger(extra.basedOnVersion || $("groups-based-on").value || "0"),
     title: extra.title || $("groups-title").value || "",
@@ -228,6 +256,7 @@ async function submitGroupAction(extra) {
     $("groups-result").textContent = "动作未被接受（" + result.status + "）。";
     return;
   }
+  $("groups-answer").value = "";
   $("groups-result").textContent = "已排程：" + (result.payload.receipt || "—")
     + "（完成与阅读以世界记录为准）";
   await loadGroups(state.generation, null);

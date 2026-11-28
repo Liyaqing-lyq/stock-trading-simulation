@@ -420,8 +420,7 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void aggregatorSourceGuideUsesNewOpeningAndPreservesTheOldOfficeInput() throws Exception {
-        var current = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v21.journal"), current);
+        var current = dir.resolve("world-ten-company-autonomy-v21.journal");
         var previous = dir.resolve("world-ten-company-autonomy-v20.journal");
         try (var old = ComposedIndustryScenario.openCrisisArgumentsTenCompanyStudy(previous)) {
             assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.AGGREGATOR_EVIDENCE_POLICY));
@@ -431,6 +430,21 @@ class StudyTenCompanyOpeningTest {
         }
         verifyVersionedPolicy(current, previous, RunManifest.AGGREGATOR_EVIDENCE_RUN_ID,
                 RunManifest.AGGREGATOR_EVIDENCE_POLICY, RunManifest.AGGREGATOR_EVIDENCE_VERSION);
+    }
+
+    @Test void conditionalRoleArgumentsUseNewOpeningAndKeepOldMenus() throws Exception {
+        var current = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v22.journal"), current);
+        var previous = dir.resolve("world-ten-company-autonomy-v21.journal");
+        try (var old = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(previous)) {
+            assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.ROLE_ARGUMENTS_POLICY));
+            assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.PUBLIC_POST_REVIEW_WAKE_POLICY));
+            var observation = old.autonomyRoleObservation("investor");
+            assertFalse(observation.required("engineering").has("roleToolArguments"));
+            assertFalse(observation.required("tools").toString().contains("responseArguments"));
+        }
+        verifyVersionedPolicy(current, previous, RunManifest.ROLE_ARGUMENTS_RUN_ID,
+                RunManifest.ROLE_ARGUMENTS_POLICY, RunManifest.ROLE_ARGUMENTS_VERSION);
     }
 
     private void verifyVersionedPolicy(Path current, Path previous, String expectedId, String key, String value) throws Exception {
@@ -481,14 +495,26 @@ class StudyTenCompanyOpeningTest {
                 assertEquals(expectedId, created.profile().manifest().runId());
             }
         }
-        try (var old = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(previous);
-             var world = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(current)) {
+        if (RunManifest.AGGREGATOR_EVIDENCE_RUN_ID.equals(expectedId)) {
+            try (var created = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(current)) {
+                assertEquals(expectedId, created.profile().manifest().runId());
+            }
+        }
+        try (var old = ComposedIndustryScenario.openRoleArgumentsTenCompanyStudy(previous);
+             var world = ComposedIndustryScenario.openRoleArgumentsTenCompanyStudy(current)) {
             var manifest = world.profile().manifest();
             var oldManifest = old.profile().manifest();
             assertEquals(expectedId, manifest.runId());
             var expected = new TreeMap<>(oldManifest.dataVersions());
             expected.put("branch-profile-run", manifest.runId());
             expected.put(key, value);
+            if (RunManifest.ROLE_ARGUMENTS_RUN_ID.equals(expectedId)) {
+                assertThrows(IllegalArgumentException.class, () -> withPolicies(manifest, expected));
+                expected.put(RunManifest.PUBLIC_POST_REVIEW_WAKE_POLICY, RunManifest.PUBLIC_POST_REVIEW_WAKE_VERSION);
+                var backdated = new TreeMap<>(oldManifest.dataVersions());
+                backdated.put(RunManifest.PUBLIC_POST_REVIEW_WAKE_POLICY, RunManifest.PUBLIC_POST_REVIEW_WAKE_VERSION);
+                assertThrows(IllegalArgumentException.class, () -> withPolicies(oldManifest, backdated));
+            }
             if (RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID.equals(expectedId)) {
                 expected.put(RunManifest.BOARD_RESEARCH_ARGUMENTS_POLICY, RunManifest.BOARD_RESEARCH_ARGUMENTS_VERSION);
                 var missing = new TreeMap<>(expected);
@@ -541,7 +567,7 @@ class StudyTenCompanyOpeningTest {
         }
         assertArrayEquals(saved, Files.readAllBytes(previous));
         assertEquals(current, WorldWebApp.tenCompanyJournal(dir));
-        try (var restored = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(current);
+        try (var restored = ComposedIndustryScenario.openRoleArgumentsTenCompanyStudy(current);
              var child = new BranchRepository(dir.resolve("runs")).open("policy-child", restored.profile())) {
             assertEquals(expectedId, child.profile().manifest().policyRunId());
             assertEquals(restored.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());

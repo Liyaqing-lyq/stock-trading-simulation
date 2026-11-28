@@ -252,6 +252,21 @@ check("budget-period-zero-default", () => {
   api.renderEngineeringFields("board.proposeBudget");
   assert.equal(api.engineeringFieldValues().period, "0");
 });
+check("explicit-budget-period-follows-opening-policy", () => {
+  person(1000);
+  for (const current of [false, true]) {
+    if (current) api.state.personEngineering.roleToolArguments = "conditional-fields-and-readable-errors-v1";
+    openTool("board.proposeBudget");
+    const period = document.getElementById(api.ENGINEERING_FIELD_SPECS.period.id);
+    assert.equal(period.required, current);
+    assert.equal(period.value, current ? "" : "0");
+    const fields = { dueTimeMillis: "1001", meetingId: "m", procurementLimit: "0.00", period: "" };
+    assert.equal(api.engineeringValidate("board.proposeBudget", fields).length, current ? 1 : 0);
+    fields.period = "0";
+    assert.equal(api.engineeringValidate("board.proposeBudget", fields).length, 0);
+    assert.equal(api.engineeringActionBody("board.proposeBudget", fields).period, "0");
+  }
+});
 check("material-version-default", () => {
   person(1000);
   api.renderEngineeringFields("board.addMaterial");

@@ -813,6 +813,31 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                             + "REPLACE 另须填齐 perShare、recordAtMillis、exAtMillis、payAtMillis。"
                             + "本次提交是新会议的提案。须经董事表决和主席实施，在原登记时点前发布新公告。");
             }
+            if (engineering != null && RunManifest.ROLE_ARGUMENTS_VERSION.equals(engineering.path("roleToolArguments").asText())) {
+                if (RoleTradingView.TOOL_TARGET_REVIEW.equals(tool)) {
+                    var review = node.putObject("reviewArguments");
+                    review.put("target", "targetId、expectedVersion 取自本人能审的母目标及当前版本。");
+                    review.put("priceLimit", "批准与拒绝都须给正价格，精确到分。拒绝时可沿用母目标的限价。");
+                    review.put("validUntilMillis", "批准与拒绝都用绝对模拟毫秒，须晚于审核实际办结，且不晚于该版本的 deadlineMillis。");
+                    review.put("approved", "批准时总数不超过目标变动股数且不少于已执行数量，单笔为正且不超过总数。买价不得高于母目标限价，卖价不得低于母目标限价。");
+                    review.put("rejected", "拒绝用 approved=false、非空 reason；maxTotalQuantity 和 maxChildQuantity 可同时为 0。拒绝不会授权报单。");
+                }
+                if (RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET.equals(tool))
+                    node.put("lines", "每项均须给 period（非负整数期号）、category（PROCUREMENT 或 PRODUCTION_LABOR）、amount（非负金额，精确到分）。明确填 0.00 表示该期该类新承诺上限为零；表决并实施后才生效。");
+                if (RoleTradingView.TOOL_GROUP_POST.equals(tool) || RoleTradingView.TOOL_GROUP_CORRECT.equals(tool)
+                        || RoleTradingView.TOOL_PLATFORM_POST.equals(tool) || RoleTradingView.TOOL_PLATFORM_CORRECT.equals(tool)) {
+                    node.putObject("arrayItems").putObject("cites").put("docId", "string").put("version", "long");
+                    node.put("citationSource", "引用本人实际读完且可引用的文号与版次。无引用可省略 cites 或给空数组 []。");
+                }
+                if (RoleTradingView.TOOL_INTERVIEW_RESPOND.equals(tool)) {
+                    var shape = node.putObject("responseArguments");
+                    shape.put("requestId", "取自本人作为收件人的待回应邀请。");
+                    shape.putObject("accept").put("accept", true).put("startMillis",
+                            "整数毫秒，不早于回应办结时刻和 windowStartMillis，两者取较晚值。开始时间加 durationMillis 不得超过 windowEndMillis。");
+                    shape.putObject("decline").put("accept", false).put("startMillis", -1);
+                    shape.put("deadline", "接受或拒绝都须在 expiresAtMillis 之前办结。拒绝时须显式填整数 -1。接受时还要核对双方预约冲突和发起媒体的可用工时。");
+                }
+            }
             if (RoleTradingView.TOOL_INTERVIEW_SPEAK.equals(tool) && interview != null && interview.has("deadlineTerms")) {
                 node.put("readingTime", "readDurationMillis 是对方阅读这段发言的正整数毫秒下限。正文每个汉字计一单位，"
                         + "其余连续的非汉字字母和数字合计一单位，标点和空格分隔单位；每单位 200 毫秒。实际读时取两者较大值。"
