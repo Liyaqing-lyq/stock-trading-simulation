@@ -5,7 +5,8 @@ window.WorldHome = (() => {
   let periodSelection = null;
   const $ = id => document.getElementById(id);
   const element = (tag, value, className) => { const n=document.createElement(tag); if(value!=null)n.textContent=String(value); if(className)n.className=className; return n; };
-  const money = value => value == null ? "暂无成交" : Number(value).toLocaleString("zh-CN", {minimumFractionDigits:2,maximumFractionDigits:2});
+  const moneyFormat = new Intl.NumberFormat("zh-CN", {minimumFractionDigits:2,maximumFractionDigits:2});
+  const money = value => value == null ? "暂无成交" : moneyFormat.format(value);
   const detail = (id = selected) => view?.connected?.enabled || view?.marketOrders ? view?.liveDetails?.[id] : (view?.experiment?.details?.[id] || view?.liveDetails?.[id]);
   const company = () => view?.companies.find(c=>c.id===selected);
   const personName = id => view?.names?.[id] || id || "世界";
@@ -44,6 +45,7 @@ window.WorldHome = (() => {
     const values=valid.map(r=>Number(r[field]));let low=Math.min(...values),high=Math.max(...values);
     const pad=Math.max((high-low)*.15,Math.abs(high)*.015,.05);low-=pad;high+=pad;
     const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");svg.setAttribute("viewBox","0 0 900 260");svg.setAttribute("role","img");svg.setAttribute("aria-label",company().name+(priceMode?"实际成交价与无成交时段":"实际现金观察记录"));
+    if(priceMode)svg.setAttribute("aria-describedby","world-price-note");
     const add=(tag,attrs,text)=>{const n=document.createElementNS(ns,tag);Object.entries(attrs).forEach(([k,v])=>n.setAttribute(k,String(v)));if(text!=null)n.textContent=text;svg.append(n);return n;};
     const first=Math.min(...rows.map(r=>Number(r.day))),last=Math.max(...rows.map(r=>Number(r.day)));
     const x=d=>last===first?468:64+(d-first)*808/(last-first),y=p=>216-(Number(p)-low)*184/(high-low);
@@ -117,7 +119,7 @@ window.WorldHome = (() => {
       table("world-behavior-decisions",["实验时点","决定","规模","依据","实际结果"],decisions.slice(-12).reverse().map(d=>[
         "第 "+Math.floor(Number(d.timeMillis)/86400000)+" 日 "+Math.floor(Number(d.timeMillis)%86400000/3600000)+" 时",
         actions[d.action]||d.action,d.fields?.quantity!=null?d.fields.quantity+(d.action==="ORDER_MATERIAL"?" 单位原料":" 件产品"):
-          d.action==="COLLECT"&&d.results.some(r=>r.accepted)?money(d.results.filter(r=>r.accepted).reduce((sum,r)=>sum+Number(r.amount),0))+" 元":"—",
+          d.action==="COLLECT"&&d.collectedAmount!=null?money(d.collectedAmount)+" 元":"—",
         d.limitingFactor||d.reason,d.action==="WAIT"?"未新增业务":d.results.length?d.results.map(r=>r.accepted?"已执行" : "未执行："+r.reason).join("；"):"待执行"]));
     }
     renderConnected();
@@ -206,13 +208,13 @@ window.WorldHome = (() => {
     if (c.issuerResolution) $("world-market-business").textContent += " · " +
       (c.issuerResolution.openedAtMillis == null ? "银行处置规则" : "发行人待处置，股票已停牌") + "。" + c.issuerResolution.rule;
     const change=c.lastPrice==null||c.referencePrice==null||Number(c.referencePrice)<=0?null:(Number(c.lastPrice)/Number(c.referencePrice)-1)*100;
-    $("world-quote").replaceChildren(metric("最近成交价",money(c.lastPrice),"开局参考价 "+money(c.referencePrice)),metric("相对开局参考",change==null?"—":(change>=0?"+":"")+change.toFixed(2)+"%","不代表实际投资收益"),metric("累计成交量",c.volume+" 股",c.trades+" 笔成交"));
+    $("world-quote").replaceChildren(metric("最近成交价（元/股）",money(c.lastPrice),"开局参考价（元/股） "+money(c.referencePrice)),metric("相对开局参考",change==null?"—":(change>=0?"+":"")+change.toFixed(2)+"%","不代表实际投资收益"),metric("累计成交量",c.volume+" 股",c.trades+" 笔成交"));
     chart("world-price-chart",d?.days||[],"lastPrice",true);
-    $("world-price-note").textContent=d?((d.days||[]).some(r=>r.trades>0)?"当前世界实际记录。圆点是有实际成交的日子；虚线延续上次成交价，不代表当日成交。第一笔成交前不画价格。":"当前世界尚无实际成交；参考价不是收盘价，不生成价格曲线。"):"当前运行尚无行情记录；不会使用其他世界的季度数据补图。";
-    table("world-trade-days",["实验日","收盘成交价","成交笔数","成交量","成交额"],(d?.days||[]).filter(r=>r.trades>0).map(r=>["第"+r.day+"日",money(r.close),r.trades,r.volume+" 股",money(r.turnover)]));
+    $("world-price-note").textContent=d?((d.days||[]).some(r=>r.trades>0)?"横轴为实验日，纵轴为成交价（元/股）。圆点是有实际成交的日子；虚线延续上次成交价，不代表当日成交。第一笔成交前不画价格。":"当前世界尚无实际成交；参考价不是收盘价，不生成价格曲线。"):"当前运行尚无行情记录；不会使用其他世界的季度数据补图。";
+    table("world-trade-days",["实验日","收盘成交价（元/股）","成交笔数","成交量","成交额（元）"],(d?.days||[]).filter(r=>r.trades>0).map(r=>["第"+r.day+"日",money(r.close),r.trades,r.volume+" 股",money(r.turnover)]));
     const market=view.marketOrders?.[c.id],orders=market?.rows||(view.connected?.orders||[]).filter(o=>o.symbol===c.symbol),total=market?.total??orders.length;
     $("world-orders-panel").hidden=!orders.length&&!view.connected?.enabled;
-    table("world-orders",["账户","方向","价格","委托数量","已成交","状态"],orders.slice(-40).reverse().map(o=>[personName(o.accountId),
+    table("world-orders",["账户","方向","价格（元/股）","委托数量","已成交","状态"],orders.slice(-40).reverse().map(o=>[personName(o.accountId),
       o.side==="BUY"?"买入":o.side==="SELL"?"卖出":o.side||"—",
       o.type==="MARKET"||o.price==null?"市价":money(o.price),o.quantity+" 股",o.filled+" 股",statusName(o.status)]));
     $("world-orders-note").textContent=orders.length?"此股票共 "+total+" 条委托记录，显示最近 "+Math.min(total,40)+" 条。":"这只股票尚无委托。可在世界动态中查看人物的判断与等待原因。";

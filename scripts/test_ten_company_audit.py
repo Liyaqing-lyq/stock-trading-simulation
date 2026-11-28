@@ -86,6 +86,18 @@ class OpeningPolicyTest(unittest.TestCase):
                     checked_opening(self.frame(version, wrong))
 
 
+    def test_v23_requires_exact_decimals_only_in_the_new_opening(self):
+        previous, run = "web-ten-company-autonomy-v22", "web-ten-company-autonomy-v23"
+        key = "decision-argument-decimals"
+        inherited = OPENING_POLICIES[previous]
+        current = {**inherited, key: "exact-json-decimal-v1"}
+        self.assertEqual(OPENING_POLICIES[run], current)
+        checked_opening(self.frame(run, current))
+        for version, invalid in ((previous, current), (run, inherited), (run, {**current, key: "wrong"}),
+                                 (run, {k: v for k, v in current.items() if k != "role-tool-arguments"})):
+            with self.subTest(version=version, policies=invalid), self.assertRaises(ValueError):
+                checked_opening(self.frame(version, invalid))
+
     def test_v22_requires_role_arguments_and_wake_policy_and_rejects_backdating(self):
         old_run, new_run = "web-ten-company-autonomy-v21", "web-ten-company-autonomy-v22"
         old = OPENING_POLICIES[old_run]

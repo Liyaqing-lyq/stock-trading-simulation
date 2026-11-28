@@ -118,9 +118,9 @@ class TargetTransportProbeTest {
         exchange.getResponseBody().write(bytes);
     }
 
-    @ParameterizedTest @ValueSource(strings={"EMPTY","V6_EMPTY","V7_EMPTY","V8_EMPTY","V9_EMPTY","V10_EMPTY","V11_EMPTY","V12_EMPTY", "V13_EMPTY", "V14_EMPTY", "V15_EMPTY", "V16_EMPTY", "V17_EMPTY", "V18_EMPTY", "V19_EMPTY", "V20_EMPTY", "V21_EMPTY", "V22_EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
+    @ParameterizedTest @ValueSource(strings={"EMPTY","V6_EMPTY","V7_EMPTY","V8_EMPTY","V9_EMPTY","V10_EMPTY","V11_EMPTY","V12_EMPTY", "V13_EMPTY", "V14_EMPTY", "V15_EMPTY", "V16_EMPTY", "V17_EMPTY", "V18_EMPTY", "V19_EMPTY", "V20_EMPTY", "V21_EMPTY", "V22_EMPTY", "V23_EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
     void measuredNonBusinessReceiptNeedsAttributableIdentityUsageAndFinish(String sample) throws Exception {
-        String variant = List.of("V6_EMPTY", "V7_EMPTY", "V8_EMPTY", "V9_EMPTY", "V10_EMPTY", "V11_EMPTY", "V12_EMPTY", "V13_EMPTY", "V14_EMPTY", "V15_EMPTY", "V16_EMPTY", "V17_EMPTY", "V18_EMPTY", "V19_EMPTY", "V20_EMPTY", "V21_EMPTY", "V22_EMPTY").contains(sample) ? "EMPTY" : sample;
+        String variant = List.of("V6_EMPTY", "V7_EMPTY", "V8_EMPTY", "V9_EMPTY", "V10_EMPTY", "V11_EMPTY", "V12_EMPTY", "V13_EMPTY", "V14_EMPTY", "V15_EMPTY", "V16_EMPTY", "V17_EMPTY", "V18_EMPTY", "V19_EMPTY", "V20_EMPTY", "V21_EMPTY", "V22_EMPTY", "V23_EMPTY").contains(sample) ? "EMPTY" : sample;
         var http=HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
         var actors=new CopyOnWriteArrayList<String>();
         http.createContext("/chat/completions",exchange->{
@@ -160,6 +160,7 @@ class TargetTransportProbeTest {
                 case "V16_EMPTY" -> "TEN_COMPANY_PERSONAL_BELIEF_STUDY";
                 case "V17_EMPTY" -> "TEN_COMPANY_INTERVIEW_TIME_STUDY";
                 case "V18_EMPTY" -> "TEN_COMPANY_DIVIDEND_AMENDMENT_STUDY";
+                case "V23_EMPTY" -> "TEN_COMPANY_EXACT_DECIMAL_STUDY";
                 case "V22_EMPTY" -> "TEN_COMPANY_ROLE_ARGUMENTS_STUDY";
                 case "V21_EMPTY" -> "TEN_COMPANY_AGGREGATOR_EVIDENCE_STUDY";
                 case "V20_EMPTY" -> "TEN_COMPANY_CRISIS_ARGUMENTS_STUDY";
@@ -172,7 +173,7 @@ class TargetTransportProbeTest {
                 default -> "TEN_COMPANY_AUTONOMY";
             };
             // 十四版两名在岗基金职员在周一 09:00 开始接受普通邀请。
-            long shiftStart = (sample.equals("V14_EMPTY") || sample.equals("V15_EMPTY") || sample.equals("V16_EMPTY") || sample.equals("V17_EMPTY") || sample.equals("V18_EMPTY") || sample.equals("V19_EMPTY") || sample.equals("V20_EMPTY") || sample.equals("V21_EMPTY") || sample.equals("V22_EMPTY")) ? 9L * 3_600_000L : 0L;
+            long shiftStart = (sample.equals("V14_EMPTY") || sample.equals("V15_EMPTY") || sample.equals("V16_EMPTY") || sample.equals("V17_EMPTY") || sample.equals("V18_EMPTY") || sample.equals("V19_EMPTY") || sample.equals("V20_EMPTY") || sample.equals("V21_EMPTY") || sample.equals("V22_EMPTY") || sample.equals("V23_EMPTY")) ? 9L * 3_600_000L : 0L;
             var first=run(mode,"first",null,shiftStart+100,people,provider);
             if (!List.of("EMPTY","FILTERED","TOOL_CALLS").contains(variant)) {
                 assertTrue(first.path("probeStop").asText().startsWith("PROBE_PROVIDER_"));
@@ -200,6 +201,7 @@ class TargetTransportProbeTest {
                 case "V16_EMPTY" -> edu.cufe.auction.world.RunManifest.PERSONAL_BELIEF_RUN_ID;
                 case "V17_EMPTY" -> edu.cufe.auction.world.RunManifest.INTERVIEW_TIME_RUN_ID;
                 case "V18_EMPTY" -> edu.cufe.auction.world.RunManifest.DIVIDEND_AMENDMENT_RUN_ID;
+                case "V23_EMPTY" -> edu.cufe.auction.world.RunManifest.EXACT_DECIMAL_RUN_ID;
                 case "V22_EMPTY" -> edu.cufe.auction.world.RunManifest.ROLE_ARGUMENTS_RUN_ID;
                 case "V21_EMPTY" -> edu.cufe.auction.world.RunManifest.AGGREGATOR_EVIDENCE_RUN_ID;
                 case "V20_EMPTY" -> edu.cufe.auction.world.RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID;

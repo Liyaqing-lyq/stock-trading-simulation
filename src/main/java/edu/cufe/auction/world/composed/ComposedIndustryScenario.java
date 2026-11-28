@@ -739,6 +739,15 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.ROLE_ARGUMENTS_RUN_ID);
     }
 
+    /** 新建按原始十进制数办理人物决定的十公司世界，恢复时按原档政策办理。
+     * @param journal 原生存档文件
+     * @return 新建或恢复的十公司世界
+     * @throws Exception 无法创建或恢复存档时抛出
+     */
+    public static WorldRuntime openExactDecimalTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.EXACT_DECIMAL_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {

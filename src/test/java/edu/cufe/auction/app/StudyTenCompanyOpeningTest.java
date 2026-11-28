@@ -433,8 +433,7 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void conditionalRoleArgumentsUseNewOpeningAndKeepOldMenus() throws Exception {
-        var current = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v22.journal"), current);
+        var current = dir.resolve("world-ten-company-autonomy-v22.journal");
         var previous = dir.resolve("world-ten-company-autonomy-v21.journal");
         try (var old = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(previous)) {
             assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.ROLE_ARGUMENTS_POLICY));
@@ -445,6 +444,17 @@ class StudyTenCompanyOpeningTest {
         }
         verifyVersionedPolicy(current, previous, RunManifest.ROLE_ARGUMENTS_RUN_ID,
                 RunManifest.ROLE_ARGUMENTS_POLICY, RunManifest.ROLE_ARGUMENTS_VERSION);
+    }
+
+    @Test void exactDecimalOpeningPreservesPreviousJournalsAndBranchPolicy() throws Exception {
+        var current = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v23.journal"), current);
+        var previous = dir.resolve("world-ten-company-autonomy-v22.journal");
+        try (var old = ComposedIndustryScenario.openRoleArgumentsTenCompanyStudy(previous)) {
+            assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.EXACT_DECIMAL_POLICY));
+        }
+        verifyVersionedPolicy(current, previous, RunManifest.EXACT_DECIMAL_RUN_ID,
+                RunManifest.EXACT_DECIMAL_POLICY, RunManifest.EXACT_DECIMAL_VERSION);
     }
 
     private void verifyVersionedPolicy(Path current, Path previous, String expectedId, String key, String value) throws Exception {
@@ -497,6 +507,11 @@ class StudyTenCompanyOpeningTest {
         }
         if (RunManifest.AGGREGATOR_EVIDENCE_RUN_ID.equals(expectedId)) {
             try (var created = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(current)) {
+                assertEquals(expectedId, created.profile().manifest().runId());
+            }
+        }
+        if (RunManifest.EXACT_DECIMAL_RUN_ID.equals(expectedId)) {
+            try (var created = ComposedIndustryScenario.openExactDecimalTenCompanyStudy(current)) {
                 assertEquals(expectedId, created.profile().manifest().runId());
             }
         }

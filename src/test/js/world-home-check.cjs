@@ -24,6 +24,11 @@ const days=[{day:1,cash:'10.00',lastPrice:null,trades:0},{day:2,cash:'10.00',las
 const company={id:'one',name:'公司甲',business:'经营甲',prototype:'原型甲',boundary:'模拟边界',referencePrice:'10.00',lastPrice:'9.90',trades:1,volume:1,cash:'10.00',profit:'0.00',statement};
 context.window.WorldHome.render({available:true,timeMillis:'259200000',companies:[company],people:[{id:'alice',name:'林知微',roles:['公司甲 · 董事'],system:false}],names:{},experiment:{days,note:'存档说明',details:{one:{openingCash:'10.00',cashChange:'0.00',days,periods:[]}}}});
 const svg=nodes.get('world-price-chart').children[0];
+assert.equal(svg.attributes['aria-describedby'],'world-price-note');
+assert.match(nodes.get('world-price-note').textContent,/实验日.*元\/股/);
+const dailyHeaders=nodes.get('world-trade-days').children[0].children[0].children.map(n=>n.textContent);
+assert(dailyHeaders.includes('收盘成交价（元/股）') && dailyHeaders.includes('成交额（元）'));
+assert(nodes.get('world-orders').children[0].children[0].children.some(n=>n.textContent==='价格（元/股）'));
 assert.equal(svg.children.filter(n=>n.tag==='circle').length,1,'only actual trade days get dots');
 assert.equal(svg.children.filter(n=>n.tag==='path').length,1,'no price before first trade');
 assert.equal(svg.children.find(n=>n.tag==='path').attributes.class,'world-line carried','no-trade day must be dashed');
@@ -53,6 +58,24 @@ context.window.WorldHome.render(connectedView);
 assert.equal(nodes.get('world-price-chart').children[0].children.filter(n=>n.tag==='circle').length,1,'live prices render without an experiment attachment');
 assert(!nodes.get('world-price-note').textContent.includes('季度'),'live market does not claim a fixed quarter');
 const content=n=>[n.textContent,...n.children.map(content)].join(' ');
+const large = '123456789012345.68', exact = '123,456,789,012,345.68';
+const precise = {...connectedView, companies:[{...company, symbol:'ONE', lastPrice:large, cash:large, profit:'-'+large}],
+  liveDetails:{one:{days:[{day:1,lastPrice:large,close:large,trades:1,volume:1,turnover:large}],periods:[]}},
+  connected:{...connectedView.connected, orders:[{...connectedView.connected.orders[0],price:large}]}};
+context.window.WorldHome.render(precise);
+for(const id of ['world-quote','world-trade-days','world-orders','world-cash-summary'])
+  assert(content(nodes.get(id)).includes(exact), id+' must preserve cents from decimal strings');
+assert(content(nodes.get('world-company-list')).includes('-'+exact));
+const dot=nodes.get('world-price-chart').children[0].children.find(node=>node.tag==='circle');
+assert(content(dot).includes(exact), 'the actual trade point must preserve cents in its text');
+const collect={timeMillis:1,action:'COLLECT',results:[]};
+context.window.WorldHome.render({...precise,connected:null,behavior:{enabled:true,decisions:[
+  collect,{...collect,results:[{accepted:false,amount:0}]},
+  {...collect,collectedAmount:'0.00',results:[{accepted:true,amount:0}]},
+  {...collect,collectedAmount:large,results:[{accepted:true,amount:Number(large)}]}]}});
+const collected=nodes.get('world-behavior-decisions').children[1].children.map(row=>row.children[2].textContent);
+assert.deepEqual(collected,[exact+' 元','0.00 元','—','—']);
+context.window.WorldHome.render(connectedView);
 assert(content(nodes.get('world-activities')).includes('读过交付公告后调整判断'));
 assert(content(nodes.get('world-person-cards')).includes('形成研究判断'));
 assert(content(nodes.get('world-orders')).includes('尚有未成交委托'));

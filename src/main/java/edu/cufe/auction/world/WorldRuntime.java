@@ -10523,7 +10523,11 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 从回执外壳取 args 对象；外壳已由纯核验证。 */
     private JsonNode replyArgs(String replyBody) throws IOException {
-        JsonNode root = decisionMapper.readerFor(JsonNode.class).readValue(replyBody);
+        var reader = decisionMapper.readerFor(JsonNode.class);
+        if (RunManifest.EXACT_DECIMAL_VERSION.equals(manifest.dataVersions().get(RunManifest.EXACT_DECIMAL_POLICY))) {
+            reader = reader.with(com.fasterxml.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
+        }
+        JsonNode root = reader.readValue(replyBody);
         JsonNode args = root == null ? null : root.get("args");
         if (args == null || !args.isObject()) {
             throw new IOException("工具参数必须是对象");

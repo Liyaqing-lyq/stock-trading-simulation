@@ -4,9 +4,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.cufe.auction.world.composed.ComposedManufacturingThreeScenario;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /** Web 与实验共用的持续经营入口。决策笔记、业务待办和回报全部进入原世界日志。 */
 public final class ManufacturingBehaviorLoop {
@@ -83,12 +86,21 @@ public final class ManufacturingBehaviorLoop {
                     && d.choice().reason().equals("营运资金、产能、供货或董事会授权不足")
                     && d.observation().path("capacityThisPeriod").asLong() == 0
                     ? "本期剩余产能为 0 件，等待下一期；不继续接单或虚构产能" : d.choice().reason();
-            rows.add(Map.of("timeMillis", d.observedAt(), "company", d.company(), "person", d.person(),
+            var row = new LinkedHashMap<String, Object>(Map.of("timeMillis", d.observedAt(), "company", d.company(), "person", d.person(),
                     "action", d.choice().action(), "reason", d.choice().reason(), "fields", d.choice().fields(), "results", reports,
                     "limitingFactor", limitingFactor));
+            if ("COLLECT".equals(d.choice().action())) {
+                collectedAmount(reports).ifPresent(amount -> row.put("collectedAmount", amount));
+            }
+            rows.add(Map.copyOf(row));
         }
         rows.sort(java.util.Comparator.comparingLong(r -> ((Number) r.get("timeMillis")).longValue()));
         return List.copyOf(rows);
+    }
+
+    static Optional<String> collectedAmount(List<CompanyOperationsRun.ReportEntry> reports) {
+        return reports.stream().filter(r -> r.accepted() && "COLLECT".equals(r.action()))
+                .map(CompanyOperationsRun.ReportEntry::amount).reduce(BigDecimal::add).map(BigDecimal::toPlainString);
     }
 
     private static Decision find(WorldRuntime world, String id) throws IOException {
