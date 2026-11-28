@@ -36,6 +36,11 @@ public final class RoleEvidenceDocuments {
             AgedIndustryConfig.COMPANY, List.of(AgedIndustryConfig.MANAGER_PERSON));
     private RoleEvidenceDocuments() { }
 
+    /** 该发行人在开局资料合同中已登记的额外候选人，章程席位另取真实董事会。 */
+    public static List<String> openingCandidates(String company) {
+        return CANDIDATES_V1.getOrDefault(company, List.of());
+    }
+
     /** @param company 公司标识 @return 新版资料的稳定标识 */
     public static String documentId(String company) { return "role-evidence:" + company + ":1"; }
 

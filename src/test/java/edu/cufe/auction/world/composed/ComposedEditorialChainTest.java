@@ -137,7 +137,7 @@ class ComposedEditorialChainTest {
         assertTrue(outcome.accepted(), outcome.reason());
     }
 
-    private MediaRun.Report result(WorldRuntime world, String person, String tool, Map<String, ?> args) throws Exception {
+    MediaRun.Report result(WorldRuntime world, String person, String tool, Map<String, ?> args) throws Exception {
         var decision = choose(world, person, tool, args);
         var action = world.snapshot().decisions().orElseThrow().actionRef(decision.actionId());
         assertNotNull(action, tool);
@@ -255,11 +255,11 @@ class ComposedEditorialChainTest {
         assertArrayEquals(bytes, java.nio.file.Files.readAllBytes(file));
     }
 
-    private JsonNode read(WorldRuntime world, String person, String document) throws Exception {
+    JsonNode read(WorldRuntime world, String person, String document) throws Exception {
         return read(world, person, document, 1);
     }
 
-    private JsonNode read(WorldRuntime world, String person, String document, long version) throws Exception {
+    JsonNode read(WorldRuntime world, String person, String document, long version) throws Exception {
         long at = world.snapshot().timeMillis() + 1;
         var session = world.openRoleSession(person);
         session.startReading("read-" + at, "task-read-" + at, at, document, version);
@@ -272,7 +272,7 @@ class ComposedEditorialChainTest {
         throw new AssertionError("读完后缺少引用 " + document);
     }
 
-    private String publish(WorldRuntime world, String author, String editor, String otherEditor,
+    String publish(WorldRuntime world, String author, String editor, String otherEditor,
                            String template, List<String> sources, String title, String text) throws Exception {
         var goal = office(world.autonomyRoleObservation(author));
         assertEquals(sources.size(), goal.path("minimumIndependentSources").required(template).asInt());
@@ -467,6 +467,184 @@ class ComposedEditorialChainTest {
             assertEquals(2, world.groupsRun().publication().platform().posts().get(0).originRefs().size());
         }
         assertArrayEquals(bytes, java.nio.file.Files.readAllBytes(file));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void sourceCountsOnlyReachTheSubmitterAfterAllCitationsQualify(boolean current) throws Exception {
+        var file = directory.resolve("source-counts.journal");
+        String author = "digital-manager", editor = "aged-manager";
+        var privateId = "private-source-answer";
+        JsonNode history;
+        try (var world = current ? ComposedIndustryScenario.openEditorialSourceTenCompanyStudy(file)
+                : ComposedIndustryScenario.openExactDecimalTenCompanyStudy(file)) {
+            world.advanceTo(9 * 3_600_000L);
+            var guide = world.autonomyRoleObservation(author).at("/engineering/editorialProcedure").asText();
+            assertEquals(current, guide.contains("按原始发行机构分组"));
+            assertEquals(current, guide.contains("个人原件按原始提供者分组"));
+            assertEquals(current, guide.contains("提问或未核实的发言不增加独立来源组数"));
+            assertEquals(current, guide.contains("会话结束后，只有发言者本人可以授权"));
+            assertFalse(world.autonomyRoleObservation("bob").at("/engineering").has("editorialProcedure"));
+            long due = world.snapshot().timeMillis() + 1;
+            world.schedulePublishDocument("original", "original-task", due, "original-source", "investor",
+                    InformationModel.Audience.publicAudience(), "公开原件", "公开事实", "", 1000, List.of());
+            world.schedulePublishDocument("answer", "answer-task", due, privateId, "investor",
+                    InformationModel.Audience.direct(author), "单独答复", "私下说明", "", 1000, List.of());
+            world.schedulePublishDocument("other", "other-task", due, "other-readers-copy", "investor",
+                    InformationModel.Audience.direct("bob"), "单独答复", "仅供另一收件人阅读", "", 1000, List.of());
+            world.advanceTo(due);
+            String edition = publish(world, "rita", "ed", "bea", "WIRE", List.of("original-source"), "快讯", "公开事实");
+            var original = read(world, author, "original-source");
+            var reprint = read(world, author, edition);
+            String story = result(world, author, TOOL_MEDIA_PROPOSE, Map.of("storyId", "comparison",
+                    "template", "CROSS_BORDER", "topic", "核对同一登记人发表的资料")).storyId();
+            var args = new java.util.HashMap<String,Object>(Map.of("storyId", story, "expectedRevision", 0,
+                    "title", "比较", "body", "根据已读材料复核。", "publicSourceDescription", "公开资料与私下说明"));
+            args.put("evidence", List.of(original, reprint, Map.of("docId",privateId,"version",1,"index",3)));
+            var unread = result(world, author, TOOL_MEDIA_SUBMIT, args);
+            assertFalse(unread.accepted());
+            assertNotEquals(MediaModel.REASON_INSUFFICIENT_SOURCES, unread.reason());
+            assertNull(unread.sourceShortfall());
+            assertFalse(world.autonomyRoleObservation(author).at("/engineering/deliberation/lastActionResult").has("countedIndependentSources"));
+            var privateRef = read(world, author, privateId);
+            if (current) {
+                var wrongIndex = ((com.fasterxml.jackson.databind.node.ObjectNode) privateRef).deepCopy();
+                wrongIndex.put("index",privateRef.required("index").asLong()+1);
+                for (var invalid : List.of(wrongIndex, Map.of("docId","other-readers-copy","version",1,"index",1))) {
+                    args.put("evidence", List.of(original, invalid));
+                    var rejected = result(world, author, TOOL_MEDIA_SUBMIT, args);
+                    assertFalse(rejected.accepted()); assertNull(rejected.sourceShortfall());
+                    assertNotEquals(MediaModel.REASON_INSUFFICIENT_SOURCES,rejected.reason());
+                }
+            }
+            args.put("evidence", List.of(original, reprint, privateRef));
+            var denied = result(world, author, TOOL_MEDIA_SUBMIT, args);
+            assertEquals(MediaModel.REASON_INSUFFICIENT_SOURCES, denied.reason());
+            var own = world.autonomyRoleObservation(author).at("/engineering/deliberation/lastActionResult");
+            assertEquals(current, JSON.valueToTree(denied).has("sourceShortfall"));
+            if (current) {
+                assertEquals(new MediaModel.SourceShortfall(1,2), denied.sourceShortfall());
+                assertEquals(1, own.required("countedIndependentSources").asInt());
+                assertEquals(2, own.required("requiredIndependentSources").asInt());
+            } else {
+                assertFalse(own.has("countedIndependentSources"));
+                assertFalse(own.has("requiredIndependentSources"));
+            }
+            for (var other : List.of(editor, "bob")) {
+                var their = world.autonomyRoleObservation(other);
+                assertNull(their.findValue("countedIndependentSources"));
+                assertFalse(their.toString().contains(privateId));
+            }
+            var independent = read(world, author, "engineering-opportunity:A1");
+            args.put("evidence", List.of(independent, privateRef));
+            assertTrue(result(world, author, TOOL_MEDIA_SUBMIT, args).accepted());
+            if (current) {
+                var prior = world.snapshot().roles().orElseThrow().access().appointments().stream()
+                        .filter(a -> editor.equals(a.personPartyId()) && "cross-border-desk".equals(a.organizationPartyId())
+                                && a.role() == RoleAccess.Role.EDITOR && a.activeAt(world.snapshot().timeMillis()))
+                        .findFirst().orElseThrow();
+                long at = world.snapshot().timeMillis() + 1;
+                world.scheduleRevokeAppointment("revoke", "revoke", at, prior.id());
+                world.scheduleAppointment("appoint", "appoint", at + 1, "successor", "bob", "cross-border-desk",
+                        RoleAccess.Role.EDITOR, at + 1, at + 60000);
+                world.advanceTo(at + 1);
+                assertTrue(story(world, "bob", "CROSS_BORDER").required("canReview").asBoolean());
+                assertNull(world.autonomyRoleObservation("bob").findValue("countedIndependentSources"));
+            }
+            history = world.autonomyRoleObservation(author).at("/engineering/deliberation");
+            assertFalse(history.required("lastActionResult").has("countedIndependentSources"));
+        }
+        byte[] originalBytes = java.nio.file.Files.readAllBytes(file);
+        try (var reopened = ComposedIndustryScenario.openEditorialSourceTenCompanyStudy(file)) {
+            assertEquals(history, reopened.autonomyRoleObservation(author).at("/engineering/deliberation"));
+        }
+        if (current) verifySourceCountOverHttp(file, author, editor);
+        assertArrayEquals(originalBytes, java.nio.file.Files.readAllBytes(file));
+    }
+
+    @Test void aReadSubscriberCopyOfAnUnverifiedInterviewTurnCountsZeroForItsOwnAuthor() throws Exception {
+        var file = directory.resolve("unverified.journal");
+        String author = "digital-manager";
+        JsonNode feedback;
+        try (var world = ComposedIndustryScenario.openEditorialSourceTenCompanyStudy(file)) {
+            InterviewSourceBasisTest.readyAnswer(world);
+            var interview = world.autonomyRoleObservation("investor").required("interview");
+            var question = interview.at("/sessions/0/turns/0");
+            assertEquals("UNVERIFIED",question.required("sourceKind").asText());
+            String turn = question.required("docId").asText();
+            long end = interview.at("/activeTurn/scheduledEndMillis").longValue();
+            assertTrue(world.canCite("investor", turn, 1));
+            world.advanceTo(end);
+            world.scheduleMediaSubscription(author, "JOIN", "wire", "subscribe");
+            world.advanceTo(world.snapshot().timeMillis() + 1_000);
+            var trip = world.siteVisitsFor("rita").appointments().get(0);
+            assertEquals("RETURNING",trip.stage());
+            world.advanceTo(trip.returnMillis());
+            world.scheduleMediaSubscription("rita", "RELEASE_TURN", turn, "release");
+            world.advanceTo(world.snapshot().timeMillis() + 1_000);
+            var deliveries = JSON.valueToTree(world.mediaSubscriptionsOf(author)).required("deliveries");
+            assertEquals(1, deliveries.size());
+            String envelope = deliveries.required(0).required("docId").asText();
+            assertFalse(world.canCite(author, turn, 1));
+            assertFalse(world.canCite(author, envelope, 1));
+            var cited = read(world, author, envelope);
+            String story = result(world, author, TOOL_MEDIA_PROPOSE, Map.of("storyId","source-check","template","CROSS_BORDER","topic","核对采访附页")).storyId();
+            var report = result(world, author, TOOL_MEDIA_SUBMIT, Map.of("storyId",story,"expectedRevision",0,
+                    "title","来源核对","body","附页只列出一个待回答的问题。","publicSourceDescription","已读附页","evidence",List.of(cited)));
+            assertEquals(MediaModel.REASON_INSUFFICIENT_SOURCES,report.reason());
+            assertEquals(new MediaModel.SourceShortfall(0,2), report.sourceShortfall());
+            feedback = world.autonomyRoleObservation(author).at("/engineering/deliberation/lastActionResult");
+            assertEquals(0, feedback.required("countedIndependentSources").intValue());
+            assertEquals(2, feedback.required("requiredIndependentSources").intValue());
+            assertNull(world.autonomyRoleObservation("aged-manager").findValue("countedIndependentSources"));
+            assertFalse(world.canCite("aged-manager", envelope, 1));
+        }
+        byte[] saved = java.nio.file.Files.readAllBytes(file);
+        try (var reopened = ComposedIndustryScenario.openEditorialSourceTenCompanyStudy(file)) {
+            assertEquals(feedback,reopened.autonomyRoleObservation(author).at("/engineering/deliberation/lastActionResult"));
+        }
+        assertArrayEquals(saved,java.nio.file.Files.readAllBytes(file));
+    }
+
+    private void verifySourceCountOverHttp(Path file, String author, String editor) throws Exception {
+        var keys = directory.resolve("keys.txt");
+        java.nio.file.Files.writeString(keys, String.join("\n", java.util.stream.IntStream.range(0,5)
+                .mapToObj(i -> "sk-local-editorial-fixture-0000" + i).toList()));
+        try (var routes = edu.cufe.auction.web.SceneRoutes.open(directory);
+             var host = new WorldWebHost(() -> {
+                 var world = ComposedIndustryScenario.openEditorialSourceTenCompanyStudy(file);
+                 return new WorldWebHost.Opened(world, world.profile().manifest().runId());
+             });
+             var server = new edu.cufe.auction.web.WorldWebServer(host, edu.cufe.auction.web.KeySlots.load(keys),
+                     routes, 0, "local-editorial-source-test", null, ignored -> {})) {
+            server.enableLocalAccess(); server.start();
+            var http = java.net.http.HttpClient.newHttpClient();
+            for (var person : List.of(author, editor, "bob")) {
+                String cookie = "";
+                for (String route : List.of("/api/session/local", "/api/session/person", "/api/me/view")) {
+                    var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(server.baseUrl()+route));
+                    if (!cookie.isEmpty()) request.header("Cookie", cookie);
+                    if (!route.endsWith("/view")) {
+                        String body = route.endsWith("/local") ? "{}" : JSON.writeValueAsString(Map.of("personId",person));
+                        request.header("Origin", server.baseUrl()).header("X-World-Request","1").header("Content-Type","application/json")
+                                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body));
+                    }
+                    var response = http.send(request.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+                    assertEquals(200, response.statusCode(), route);
+                    if (route.endsWith("/view")) {
+                        var reports = JSON.readTree(response.body()).at("/media/reports/rows");
+                        if (person.equals(author)) {
+                            var counted = reports.findValues("countedIndependentSources");
+                            assertEquals(List.of(JSON.getNodeFactory().numberNode(1)), counted);
+                            assertEquals(List.of(JSON.getNodeFactory().numberNode(2)), reports.findValues("requiredIndependentSources"));
+                            var rejection = java.util.stream.StreamSupport.stream(reports.spliterator(), false)
+                                    .filter(row -> row.has("countedIndependentSources")).findFirst().orElseThrow();
+                            assertEquals(MediaModel.REASON_INSUFFICIENT_SOURCES, rejection.required("reason").asText());
+                        } else assertFalse(response.body().contains("countedIndependentSources"));
+                    } else cookie = response.headers().firstValue("Set-Cookie").orElseThrow().split(";", 2)[0];
+                }
+            }
+        }
     }
 
     @Test void aggregatorOfficeExplainsWhichReadSourcesCanBeSubmitted() throws Exception {

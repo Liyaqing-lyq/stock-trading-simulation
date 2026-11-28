@@ -4167,6 +4167,8 @@ function mediaTable(id, section, columns) {
   fillTable(id, (section || {}).rows, (tr, row) => {
     for (const key of columns) {
       const value = key === "accepted" ? (row[key] ? "通过" : "拒绝")
+        : key === "reason" && row.reason === "INSUFFICIENT_SOURCES" && row.countedIndependentSources != null && row.requiredIndependentSources != null
+          ? "原始来源不足：计得 " + row.countedIndependentSources + " 组，需 " + row.requiredIndependentSources + " 组"
         : key === "templates" ? Object.entries(row[key] || {}).map(([name, count]) => mediaLabel(name) + " · 至少 " + count + " 组原始来源").join("；")
         : ["kind", "template", "status", "outcome", "reason"].includes(key) ? mediaLabel(row[key]) : row[key];
       cell(tr, value);

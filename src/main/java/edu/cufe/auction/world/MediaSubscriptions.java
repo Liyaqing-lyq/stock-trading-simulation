@@ -131,13 +131,19 @@ final class MediaSubscriptions {
         for (var r : latest.values()) {
             if (!JOIN_TASK.equals(r.kind())) continue;
             String reader = r.personPartyId();
-            String id = PREFIX + digest(List.of(kind, organization, source.docId(), String.valueOf(version), reader));
+            String id = deliveryId(kind,organization,source.docId(),version,reader);
+            String description = supplement ? "发言者本人授权本社向当期订户署名送达" : "所订媒体公开发刊通知";
+            if (supplement && !original.internalSourceIds().isEmpty())
+                description += "；" + InterviewSourceBasis.recorded(original).description();
             info = InformationModel.publish(info, id, source.publisherPartyId(), InformationModel.Audience.direct(reader),
-                    new InformationModel.VersionDraft(prefix + original.title(), body,
-                            supplement ? "发言者本人授权本社向当期订户署名送达" : "所订媒体公开发刊通知", now,
+                    new InformationModel.VersionDraft(prefix + original.title(), body, description, now,
                             supplement ? original.readDurationMillis() : 1L, provenance));
         }
         return info;
+    }
+
+    static String deliveryId(String kind,String organization,String document,long version,String reader) {
+        return PREFIX + digest(List.of(kind,organization,document,String.valueOf(version),reader));
     }
 
     private static String digest(List<String> parts) {

@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -573,6 +574,26 @@ public final class MediaModel {
          */
         Optional<List<Ref>> originsOf(InformationModel.State information, String docId,
                                       long version);
+
+        /** 此档是否采用已登记的机构和采访来源规则。 */
+        default boolean registeredSourceGroups() { return false; }
+
+        /** 返回规范原件所属的独立来源组；未核实的原件没有独立来源组。 */
+        default String sourceGroup(Document document, long version) {
+            return "person:" + document.publisherPartyId();
+        }
+    }
+
+    /**
+     * 已核验来源组数不足时，供投稿人核对的两个数字。
+     * @param counted 按该档规则从合格原始来源核得的组数
+     * @param required 冻结模板要求的最低组数
+     */
+    public record SourceShortfall(int counted, int required) {
+        /** 仅接受已经成立的来源不足结果。 */
+        public SourceShortfall {
+            if (counted < 0 || counted >= required) throw new IllegalArgumentException("来源不足计数非法");
+        }
     }
 
     /**
@@ -583,10 +604,17 @@ public final class MediaModel {
      * @param state       媒体状态
      * @param information 信息状态
      * @param evidence    追加别名后的证据状态
+     * @param sourceShortfall 仅在已验来源不足时返回计数
      */
     public record EvidenceBridgeOutcome(boolean accepted, String reason, State state,
                                         InformationModel.State information,
-                                        MediaEvidence.State evidence) {
+                                        MediaEvidence.State evidence,
+                                        @JsonInclude(JsonInclude.Include.NON_NULL) SourceShortfall sourceShortfall) {
+        /** 未附来源计数的既有结果。 */
+        public EvidenceBridgeOutcome(boolean accepted, String reason, State state,
+                                     InformationModel.State information, MediaEvidence.State evidence) {
+            this(accepted, reason, state, information, evidence, null);
+        }
     }
 
     /**
@@ -945,13 +973,13 @@ public final class MediaModel {
             return evidenceReject(state, information, context.evidence(),
                     REASON_EVIDENCE_PROVENANCE);
         }
-        int groups = sourceGroups(information, roots);
-        if (groups < 1) {
+        int groups = sourceGroups(information, roots, origins);
+        if (groups < 0 || (groups == 0 && !origins.registeredSourceGroups())) {
             return evidenceReject(state, information, context.evidence(), REASON_EVIDENCE);
         }
         if (groups < minGroups) {
-            return evidenceReject(state, information, context.evidence(),
-                    REASON_INSUFFICIENT_SOURCES);
+            return new EvidenceBridgeOutcome(false, REASON_INSUFFICIENT_SOURCES, state, information,
+                    context.evidence(), origins.registeredSourceGroups() ? new SourceShortfall(groups, minGroups) : null);
         }
         MediaEvidence.State nextEvidence;
         try {
@@ -1629,8 +1657,8 @@ public final class MediaModel {
                     collectOrigins(bindings, information, new Ref(ref.docId(), ref.version()),
                             origins, fromPrivate, inheritPrivate, catalog, new ArrayList<>(), roots);
                 } else {
-                    roots.add(resolveShared(bindings, information,
-                            new Ref(ref.docId(), ref.version())));
+                    addSharedRoot(bindings, information, new Ref(ref.docId(), ref.version()), origins,
+                            fromPrivate, inheritPrivate, catalog, new ArrayList<>(), roots);
                 }
             } else {
                 DocumentVersion cited = versionOf(information, ref.docId(), ref.version());
@@ -1646,7 +1674,8 @@ public final class MediaModel {
                             && document.audience().kind() != AudienceKind.PUBLIC) {
                         throw new IllegalArgumentException("媒体来源根不是公开资料");
                     }
-                    roots.add(resolveShared(bindings, information, root));
+                    addSharedRoot(bindings, information, root, origins, fromPrivate, inheritPrivate,
+                            catalog, new ArrayList<>(), roots);
                 }
             }
         }
@@ -1680,7 +1709,7 @@ public final class MediaModel {
             throw new IllegalArgumentException("群/平台帖缺少可信版本来源");
         }
         if (declared.get().isEmpty()) {
-            roots.add(resolveShared(bindings, information, ref));
+            addSharedRoot(bindings, information, ref, origins, fromPrivate, inheritPrivate, catalog, path, roots);
             return;
         }
         DocumentVersion cited = versionOf(information, ref.docId(), ref.version());
@@ -1747,7 +1776,8 @@ public final class MediaModel {
                         collectOrigins(bindings, information, deep, origins, fromPrivate,
                                 inheritPrivate, catalog, path, roots);
                     } else {
-                        roots.add(resolveShared(bindings, information, deep));
+                        addSharedRoot(bindings, information, deep, origins, fromPrivate, inheritPrivate,
+                                catalog, path, roots);
                     }
                 }
             } finally {
@@ -1759,21 +1789,32 @@ public final class MediaModel {
             collectOrigins(bindings, information, root, origins, fromPrivate, inheritPrivate,
                     catalog, path, roots);
         } else {
-            roots.add(resolveShared(bindings, information, root));
+            addSharedRoot(bindings, information, root, origins, fromPrivate, inheritPrivate, catalog, path, roots);
         }
     }
 
-    /** 独立来源组数：根资料的不同发布人物个数。 */
-    private static int sourceGroups(InformationModel.State information, List<Ref> roots) {
-        Set<String> publishers = new TreeSet<>();
+    /** 身份共享信封不构成新来源，信封指向受核验的转述原件时继续展开。 */
+    private static void addSharedRoot(Map<String, IdentityBinding> bindings, InformationModel.State information,
+            Ref ref, SourceOrigins origins, boolean fromPrivate, boolean inheritPrivate,
+            Map<Ref, Lineage> catalog, List<Ref> path, List<Ref> roots) {
+        Ref original = resolveShared(bindings, information, ref);
+        if (origins.registeredSourceGroups() && !original.equals(ref) && origins.covers(original.docId())) {
+            collectOrigins(bindings, information, original, origins, fromPrivate, inheritPrivate, catalog, path, roots);
+        } else {
+            roots.add(original);
+        }
+    }
+
+    /** 按原始来源分组。已阅读但尚未核实的采访原件可以引用，不增加独立组数。 */
+    private static int sourceGroups(InformationModel.State information, List<Ref> roots, SourceOrigins origins) {
+        Set<String> groups = new TreeSet<>();
         for (Ref root : roots) {
             Document document = documentOf(information, root.docId());
-            if (document == null) {
-                return 0;
-            }
-            publishers.add(document.publisherPartyId());
+            if (document == null || document.at(root.version()) == null) return -1;
+            String group = origins.sourceGroup(document, root.version());
+            if (group != null) groups.add(group);
         }
-        return publishers.size();
+        return groups.size();
     }
 
     /** 本人阅读序号：与运行层 readingOrdinals 同一口径（READ-n 序，其后按标识）。 */

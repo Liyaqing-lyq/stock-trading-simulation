@@ -86,6 +86,18 @@ class OpeningPolicyTest(unittest.TestCase):
                     checked_opening(self.frame(version, wrong))
 
 
+    def test_v24_requires_registered_origin_groups_and_preserves_exact_decimals(self):
+        previous, run = "web-ten-company-autonomy-v23", "web-ten-company-autonomy-v24"
+        key = "editorial-source-accounting"
+        inherited = OPENING_POLICIES[previous]
+        current = {**inherited, key: "registered-origin-groups-v1"}
+        self.assertEqual(OPENING_POLICIES[run], current)
+        checked_opening(self.frame(run, current))
+        for version, invalid in ((previous, current), (run, inherited), (run, {**current, key: "wrong"}),
+                                 (run, {k: v for k, v in current.items() if k != "decision-argument-decimals"})):
+            with self.subTest(version=version, policies=invalid), self.assertRaises(ValueError):
+                checked_opening(self.frame(version, invalid))
+
     def test_v23_requires_exact_decimals_only_in_the_new_opening(self):
         previous, run = "web-ten-company-autonomy-v22", "web-ten-company-autonomy-v23"
         key = "decision-argument-decimals"

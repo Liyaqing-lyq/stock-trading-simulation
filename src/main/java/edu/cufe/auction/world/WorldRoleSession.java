@@ -945,6 +945,22 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
     }
 
     /**
+     * 按本人声明的来源发送采访发言，确切原件需本人实际读完并仍有权阅读。
+     * @param clientCommandId 本人命令标识
+     * @param clientTaskId 本人任务标识
+     * @param dueMillis 发言办结的模拟时点
+     * @param draft 会话、标题与发言正文
+     * @param basis 本人自述、按原件转述或未核实
+     * @return 本次排程回执
+     * @throws IOException 持久提交失败
+     */
+    public String speakInterview(String clientCommandId, String clientTaskId, long dueMillis,
+                                 DialogueSpeakDraft draft, InterviewSourceBasis basis) throws IOException {
+        return runtime.scheduleInterview(this, PendingTask.INTERVIEW_SPEAK_V1, clientCommandId,
+                clientTaskId, dueMillis, new InterviewSourceBasis.Speech(draft, basis));
+    }
+
+    /**
      * 写一封私人消息：只给对象、渠道、标题与正文。
      *
      * <p>发送者、消息标识、文档标识与命令标识一律由受信上下文派生，模型不能自填；

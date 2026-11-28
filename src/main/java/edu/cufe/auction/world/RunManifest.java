@@ -201,6 +201,12 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     public static final String EXACT_DECIMAL_POLICY = "decision-argument-decimals";
     /** 保留原始十进制数值，交给具体工具校验金额精度。 */
     public static final String EXACT_DECIMAL_VERSION = "exact-json-decimal-v1";
+    /** 普通采编岗位按已核实的原始发布人统计独立来源的开局。 */
+    public static final String EDITORIAL_SOURCE_RUN_ID = "web-ten-company-autonomy-v24";
+    /** 编辑部向投稿人说明来源计算办法并返回不足数量的政策。 */
+    public static final String EDITORIAL_SOURCE_POLICY = "editorial-source-accounting";
+    /** 按登记来源归组，只向本人报告计得与所需的组数。 */
+    public static final String EDITORIAL_SOURCE_VERSION = "registered-origin-groups-v1";
     /** 岗位工具条件参数和参数错误说明的政策。 */
     public static final String ROLE_ARGUMENTS_POLICY = "role-tool-arguments";
     /** 按操作说明条件字段并向本人返回可读错误。 */
@@ -352,7 +358,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
 
     /** @return 普通十公司存档可恢复的运行标识，最新开局列在前面 */
     public static java.util.List<String> standardTenCompanyRuns() {
-        return java.util.List.of(EXACT_DECIMAL_RUN_ID, ROLE_ARGUMENTS_RUN_ID, AGGREGATOR_EVIDENCE_RUN_ID, CRISIS_ARGUMENTS_STUDY_RUN_ID, ONSITE_DECISION_CLOCK_RUN_ID, DIVIDEND_AMENDMENT_RUN_ID, INTERVIEW_TIME_RUN_ID, PERSONAL_BELIEF_RUN_ID, BANK_LOAN_LOSS_RUN_ID, MEDIA_WITHDRAWAL_RUN_ID, ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
+        return java.util.List.of(EDITORIAL_SOURCE_RUN_ID, EXACT_DECIMAL_RUN_ID, ROLE_ARGUMENTS_RUN_ID, AGGREGATOR_EVIDENCE_RUN_ID, CRISIS_ARGUMENTS_STUDY_RUN_ID, ONSITE_DECISION_CLOCK_RUN_ID, DIVIDEND_AMENDMENT_RUN_ID, INTERVIEW_TIME_RUN_ID, PERSONAL_BELIEF_RUN_ID, BANK_LOAN_LOSS_RUN_ID, MEDIA_WITHDRAWAL_RUN_ID, ISSUER_DECISIONS_RUN_ID, INTERVIEW_AUTONOMY_RUN_ID, PERSONAL_NEWS_RUN_ID, EDITORIAL_FEEDBACK_RUN_ID, DIGITAL_WIND_DOWN_RUN_ID, MEETING_TEN_COMPANY_RUN_ID, INTERVIEW_TEN_COMPANY_RUN_ID, PERSONAL_TEN_COMPANY_RUN_ID, READABLE_DRAFT_TEN_COMPANY_RUN_ID,
                 GOVERNANCE_TEN_COMPANY_RUN_ID, STUDY_TEN_COMPANY_AUTONOMY_RUN_ID,
                 TEN_COMPANY_AUTONOMY_RUN_ID, ORIGINAL_TEN_COMPANY_RUN_ID);
     }
@@ -404,7 +410,7 @@ public record RunManifest(String runId, long seed, String rulesVersion,
     }
 
     private static boolean usesRoleArgumentsOpening(String id) {
-        return ROLE_ARGUMENTS_RUN_ID.equals(id) || EXACT_DECIMAL_RUN_ID.equals(id);
+        return ROLE_ARGUMENTS_RUN_ID.equals(id) || EXACT_DECIMAL_RUN_ID.equals(id) || EDITORIAL_SOURCE_RUN_ID.equals(id);
     }
 
     /** @param id 普通开局或分支继承的政策标识 @return 该版本冻结的个人决定、阅读、采编与期末考核口径 */
@@ -453,7 +459,9 @@ public record RunManifest(String runId, long seed, String rulesVersion,
                 policies.put(ISSUER_DECISIONS_POLICY, ISSUER_DECISIONS_VERSION);
                 policies.put(PersonalMarket.MARKET_POLICY, PersonalMarket.MARKET_VERSION);
             }
-            if (EXACT_DECIMAL_RUN_ID.equals(id)) policies.put(EXACT_DECIMAL_POLICY, EXACT_DECIMAL_VERSION);
+            if (EXACT_DECIMAL_RUN_ID.equals(id) || EDITORIAL_SOURCE_RUN_ID.equals(id))
+                policies.put(EXACT_DECIMAL_POLICY, EXACT_DECIMAL_VERSION);
+            if (EDITORIAL_SOURCE_RUN_ID.equals(id)) policies.put(EDITORIAL_SOURCE_POLICY, EDITORIAL_SOURCE_VERSION);
             if (usesRoleArgumentsOpening(id)) {
                 policies.put(ROLE_ARGUMENTS_POLICY, ROLE_ARGUMENTS_VERSION);
                 policies.put(PUBLIC_POST_REVIEW_WAKE_POLICY, PUBLIC_POST_REVIEW_WAKE_VERSION);

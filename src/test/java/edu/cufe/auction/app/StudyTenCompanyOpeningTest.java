@@ -447,14 +447,24 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void exactDecimalOpeningPreservesPreviousJournalsAndBranchPolicy() throws Exception {
-        var current = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v23.journal"), current);
+        var current = dir.resolve("world-ten-company-autonomy-v23.journal");
         var previous = dir.resolve("world-ten-company-autonomy-v22.journal");
         try (var old = ComposedIndustryScenario.openRoleArgumentsTenCompanyStudy(previous)) {
             assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.EXACT_DECIMAL_POLICY));
         }
         verifyVersionedPolicy(current, previous, RunManifest.EXACT_DECIMAL_RUN_ID,
                 RunManifest.EXACT_DECIMAL_POLICY, RunManifest.EXACT_DECIMAL_VERSION);
+    }
+
+    @Test void editorialSourcesUseNewOpeningAndPreservePriorPolicy() throws Exception {
+        var current = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v24.journal"), current);
+        var previous = dir.resolve("world-ten-company-autonomy-v23.journal");
+        try (var old = ComposedIndustryScenario.openExactDecimalTenCompanyStudy(previous)) {
+            assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.EDITORIAL_SOURCE_POLICY));
+        }
+        verifyVersionedPolicy(current, previous, RunManifest.EDITORIAL_SOURCE_RUN_ID,
+                RunManifest.EDITORIAL_SOURCE_POLICY, RunManifest.EDITORIAL_SOURCE_VERSION);
     }
 
     private void verifyVersionedPolicy(Path current, Path previous, String expectedId, String key, String value) throws Exception {
@@ -507,6 +517,11 @@ class StudyTenCompanyOpeningTest {
         }
         if (RunManifest.AGGREGATOR_EVIDENCE_RUN_ID.equals(expectedId)) {
             try (var created = ComposedIndustryScenario.openAggregatorEvidenceTenCompanyStudy(current)) {
+                assertEquals(expectedId, created.profile().manifest().runId());
+            }
+        }
+        if (RunManifest.EDITORIAL_SOURCE_RUN_ID.equals(expectedId)) {
+            try (var created = ComposedIndustryScenario.openEditorialSourceTenCompanyStudy(current)) {
                 assertEquals(expectedId, created.profile().manifest().runId());
             }
         }

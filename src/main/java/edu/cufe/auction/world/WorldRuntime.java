@@ -26,6 +26,7 @@ import edu.cufe.auction.world.bank.FundState;
 import edu.cufe.auction.world.bank.Money;
 import edu.cufe.auction.world.composed.BankCompanyReport;
 import edu.cufe.auction.world.composed.BankLoanPromotionOpening;
+import edu.cufe.auction.world.composed.CompanyOpeningDocuments;
 import edu.cufe.auction.world.composed.OpeningEntityCopies;
 
 import java.io.IOException;
@@ -4385,6 +4386,20 @@ public final class WorldRuntime implements AutoCloseable {
                                                        List<String> internalSourceIds)
             throws IOException {
         requireRoleReadingEnabled();
+        if (usesEditorialSourceAccounting()) {
+            String issuer = CompanyOpeningDocuments.registeredIssuer(registry, docId);
+            if (issuer != null && !state.commandContents().containsKey(commandId)) {
+                if (state.timeMillis() != 0 || dueTimeMillis != 1 || !("opening-note:" + issuer).equals(commandId)
+                        || !("opening-note-task:" + issuer).equals(taskId)
+                        || !edu.cufe.auction.web.WorldWebScenario.INVESTOR.equals(publisherPartyId)
+                        || !InformationModel.Audience.publicAudience().equals(audience))
+                    throw new IllegalArgumentException("发行人开局章程须由真实开局登记");
+                var actual = new InformationModel.VersionDraft(title, body, publicSourceDescription, dueTimeMillis,
+                        readDurationMillis, internalSourceIds);
+                if (!CompanyOpeningDocuments.registeredVersion(this, issuer).equals(actual))
+                    throw new IllegalArgumentException("开局章程与发行人冻结登记不符");
+            }
+        }
         if (engineeringCustomerEnabled() && (EngineeringCustomerPolicy.REPRESENTATIVE.equals(publisherPartyId)
                 || docId != null && docId.startsWith(EngineeringCustomerPolicy.PREFIX)))
             throw new IllegalArgumentException("工程客户代表发布的机会必须取自冻结的真实委托");
@@ -9772,9 +9787,8 @@ public final class WorldRuntime implements AutoCloseable {
             }
             case RoleTradingView.TOOL_INTERVIEW_SPEAK -> {
                 kind = PendingTask.INTERVIEW_SPEAK_V1;
-                WorldRoleSession.DialogueSpeakDraft draft =
-                        strict(WorldRoleSession.DialogueSpeakDraft.class, args);
-                InterviewModel.Invite invite = interviewInvite(base, draft.requestId());
+                Object draft = interviewSpeech(args);
+                InterviewModel.Invite invite = interviewInvite(base, interviewSpeechRequest(draft));
                 if (invite == null) {
                     throw new IOException(InterviewModel.REASON_UNKNOWN);
                 }
@@ -22755,11 +22769,15 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 该人物的工程焦点是否与给定区间重叠：供阅读/媒体/采访/社交方向的互斥判定。 */
     private boolean engineeringFocusConflicts(WorldState base, String person, long from, long to) {
+        return engineeringFocusConflicts(base,person,from,to,null);
+    }
+
+    private boolean engineeringFocusConflicts(WorldState base,String person,long from,long to,String atInterview) {
         if (person == null || person.isBlank() || to <= from) {
             return false;
         }
         InterviewModel.Interval slot = new InterviewModel.Interval(from, to);
-        if (travelIntervals(base,person,null).stream().anyMatch(i->i.overlaps(slot))) return true;
+        if (travelIntervals(base,person,null,atInterview).stream().anyMatch(i->i.overlaps(slot))) return true;
         for (InterviewModel.Interval busy : engineeringBusyOf(base, person, null)) {
             if (busy.overlaps(slot)) {
                 return true;
@@ -22838,13 +22856,15 @@ public final class WorldRuntime implements AutoCloseable {
         InterviewRun run = requireInterviewRun();
         long now = state.timeMillis();
         if (PendingTask.INTERVIEW_SPEAK_V1.equals(kind)) {
-            WorldRoleSession.DialogueSpeakDraft speak = (WorldRoleSession.DialogueSpeakDraft) draft;
+            if (draft instanceof InterviewSourceBasis.Speech && !usesEditorialSourceAccounting())
+                throw new IllegalArgumentException("此档未登记采访发言来源声明");
+            String requestId = interviewSpeechRequest(draft);
             InterviewModel.State stateBefore = run.stateOf(
                     interviewOrganizationForDraft(run, session.personPartyId(), kind, draft, now));
             InterviewModel.Session target = stateBefore == null ? null
-                    : sessionById(stateBefore, "SESSION-" + speak.requestId());
+                    : sessionById(stateBefore, "SESSION-" + requestId);
             InterviewModel.Invite invite = stateBefore == null ? null
-                    : findInvite(stateBefore, speak.requestId());
+                    : findInvite(stateBefore, requestId);
             if (target == null || invite == null || !target.open()
                     || (!invite.fromPartyId().equals(session.personPartyId())
                     && !invite.toPartyId().equals(session.personPartyId()))) {
@@ -22859,7 +22879,9 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("采访动作到期必须等于当前时点加冻结时长："
                     + kind + " -> " + duration);
         }
-        requireInterviewFocusFree(person, state, kind, dueMillis);
+        requireInterviewFocusFree(person, state, kind, dueMillis,
+                usesEditorialSourceAccounting() && PendingTask.INTERVIEW_SPEAK_V1.equals(kind)
+                        ? interviewSpeechRequest(draft) : null);
         long available = availableFor(organization, state, now);
         // 记者发起的动作按真实预留判预算；控制动作与受访者动作永远不被预算卡住
         boolean budgetRejected = chargesOrganization(run, kind, person, draft)
@@ -22907,6 +22929,36 @@ public final class WorldRuntime implements AutoCloseable {
         }
         return false;
     }
+    private Object interviewSpeech(JsonNode args) throws IOException {
+        if (!usesEditorialSourceAccounting() || !args.has("sourceBasis"))
+            return strict(WorldRoleSession.DialogueSpeakDraft.class,args);
+        var speech = (com.fasterxml.jackson.databind.node.ObjectNode) args.deepCopy();
+        var basis = InterviewSourceBasis.parse(speech.remove("sourceBasis"));
+        return new InterviewSourceBasis.Speech(strict(WorldRoleSession.DialogueSpeakDraft.class,speech),basis);
+    }
+
+    /** 发言者当时已读且有权使用该版本，办结时仍有读权。 */
+    private boolean interviewSourcesAvailable(WorldState current, InterviewTaskBody body, String person,
+                                              InterviewSourceBasis basis, long now) throws IOException {
+        if (basis.sources().isEmpty()) return true;
+        var commit = commitSource.commitAt(body.observedPosition())
+                .orElseThrow(() -> new IOException("采访发言缺少原观察帧"));
+        WorldState observed = decodeHistoricalMediaCut(commit);
+        if (observed.timeMillis() != body.observedAtMillis())
+            throw new IOException("采访发言原观察时刻不符");
+        for (var ref : basis.sources()) {
+            if (!InformationModel.canCite(observed.information().information(),person,ref.docId(),ref.version(),observed.timeMillis())
+                    || !visibleDocumentVersion(observed,person,ref.docId(),ref.version(),observed.timeMillis())
+                    || !visibleDocumentVersion(current,person,ref.docId(),ref.version(),now)) return false;
+        }
+        return true;
+    }
+
+    private static String interviewSpeechRequest(Object draft) {
+        return draft instanceof InterviewSourceBasis.Speech sourced ? sourced.requestId()
+                : ((WorldRoleSession.DialogueSpeakDraft) draft).requestId();
+    }
+
     /** schema15 对话配置；旧档调用即失败。 */
     private InterviewDialogue.Config requireDialogueConfig() {
         if (dialogueConfig == null) {
@@ -22936,8 +22988,8 @@ public final class WorldRuntime implements AutoCloseable {
             requestId = respond.requestId();
         } else if (draft instanceof WorldRoleSession.InterviewRequestDraft request) {
             requestId = request.requestId();
-        } else if (draft instanceof WorldRoleSession.DialogueSpeakDraft speak) {
-            requestId = speak.requestId();
+        } else if (PendingTask.INTERVIEW_SPEAK_V1.equals(kind)) {
+            requestId = interviewSpeechRequest(draft);
         } else {
             throw new IllegalArgumentException("未知采访参数：" + kind);
         }
@@ -22950,7 +23002,7 @@ public final class WorldRuntime implements AutoCloseable {
 
     /** 本人单焦点：已有未完成采访任务、正在阅读或正在采访都不能再排；结束/取消不受限。 */
     private void requireInterviewFocusFree(String person, WorldState base, String kind,
-            long dueMillis) {
+            long dueMillis, String atInterview) {
         boolean control = PendingTask.INTERVIEW_CANCEL_V1.equals(kind)
                 || PendingTask.INTERVIEW_END_V1.equals(kind);
         for (PendingTask task : base.pending()) {
@@ -22979,7 +23031,7 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IllegalArgumentException("本人正在进行采访会话");
         }
         if (manifest.hasEngineering()
-                && engineeringFocusConflicts(base, person, base.timeMillis(), dueMillis)) {
+                && engineeringFocusConflicts(base, person, base.timeMillis(), dueMillis, atInterview)) {
             throw new IllegalArgumentException("本人还有未完成的董事/经理动作，不能同时发起采访动作");
         }
     }
@@ -23282,8 +23334,12 @@ public final class WorldRuntime implements AutoCloseable {
                     reason = outcome.reason();
                 }
                 case PendingTask.INTERVIEW_SPEAK_V1 -> {
-                    WorldRoleSession.DialogueSpeakDraft draft = mapper.readValue(body.body(),
-                            WorldRoleSession.DialogueSpeakDraft.class);
+                    Object stored = interviewSpeech(mapper.readTree(body.body()));
+                    var sourced = stored instanceof InterviewSourceBasis.Speech speech ? speech : null;
+                    var draft = sourced == null ? (WorldRoleSession.DialogueSpeakDraft) stored
+                            : new WorldRoleSession.DialogueSpeakDraft(sourced.requestId(),sourced.title(),sourced.body(),sourced.readDurationMillis());
+                    var basis = !usesEditorialSourceAccounting() ? null
+                            : sourced == null ? InterviewSourceBasis.UNVERIFIED : sourced.sourceBasis();
                     requestId = draft.requestId();
                     String sessionId = "SESSION-" + requestId;
                     InterviewModel.Session session = sessionById(stateBefore, sessionId);
@@ -23298,13 +23354,16 @@ public final class WorldRuntime implements AutoCloseable {
                         reason="SITE_ACCESS_NOT_CONFIRMED"; break;
                     }
                     long startedAt = now - requireDialogueConfig().speakMillis();
+                    if (basis != null && !interviewSourcesAvailable(base,body,person,basis,now)) {
+                        reason = "INTERVIEW_SOURCE_UNAVAILABLE"; break;
+                    }
                     String turnId = dialogueTurnId(task.taskId());
                     InterviewDialogue.Outcome sent = InterviewDialogue.send(dialogue,
                             information.information(), stateBefore,
                             interviewContext(base, invite.fromPartyId(), organization, now),
                             requireDialogueConfig(), person,
                             new InterviewDialogue.SpeakRequest(turnId, sessionId, draft.title(),
-                                    draft.body(), draft.readDurationMillis(), startedAt), now);
+                                    draft.body(), draft.readDurationMillis(), startedAt), now, basis);
                     accepted = sent.accepted();
                     reason = sent.reason();
                     if (accepted) {
@@ -31444,6 +31503,8 @@ public final class WorldRuntime implements AutoCloseable {
             if (showTimeContract) activeTurn.window().describe(focus);
             else focus.put("deadlineMillis", activeTurn.window().deadlineMillis());
             if (activeTurn.nextTool() != null) focus.put("nextTurnTool", activeTurn.nextTool());
+            if (usesEditorialSourceAccounting() && RoleTradingView.TOOL_INTERVIEW_SPEAK.equals(activeTurn.nextTool()))
+                focus.put("sourceBasisEnabled",true);
             if (activeTurn.docId() != null) focus.put("docId", activeTurn.docId()).put("version", activeTurn.version());
         }
         boolean history = ParticipantHistory.enabled(manifest);
@@ -31536,6 +31597,11 @@ public final class WorldRuntime implements AutoCloseable {
                     item.put("publishedAtMillis", published);
                     item.put("readByMe", InformationModel.canCite(information, person,
                             turn.docId(), turn.docVersion(), now));
+                    if (usesEditorialSourceAccounting() && (person.equals(turn.speakerPartyId()) || item.path("readByMe").asBoolean())) {
+                        var version = information.documents().stream().filter(d -> d.docId().equals(turn.docId()))
+                                .findFirst().orElseThrow().at(turn.docVersion());
+                        item.put("sourceKind", InterviewSourceBasis.recorded(version).kind().name());
+                    }
                 }
             }
         }
@@ -32211,7 +32277,12 @@ public final class WorldRuntime implements AutoCloseable {
                 String reviewGuide = RunManifest.SUBMITTED_DOCUMENT.equals(manifest.dataVersions().get(RunManifest.EDITORIAL_DRAFT_VISIBILITY))
                         ? "待投稿（AWAITING_SUBMISSION）的选题尚无可读内稿。投稿完成后才出现draftDocId及draftVersion；审阅须先读完该版内稿，批准后才可发布。"
                         : "审阅须先读完当前draftDocId及其版本，批准后才可发布。";
-                root.put("editorialProcedure", templateGuide + "后续使用media内的storyId与revisionNo。投稿的evidence使用本人已读且仍能引用的lastReadRef，同源转载共算一组。" + reviewGuide);
+                String sourceGuide = usesEditorialSourceAccounting()
+                        ? "已刊稿和注明依据的转述追溯到原始资料版本。正式开局章程第一版按原始发行机构分组，个人原件按原始提供者分组；同源材料合计一组。"
+                        + "采访发言声明亲历时按发言人分组，仍须判断其自述是否属实；声明转述时按已读依据追溯原始来源；提问或未核实的发言不增加独立来源组数。"
+                        + "允许原始材料的模板可使用本人实读且仍可引用的采访答复作为私证，公众仍按原有权限阅读。会话结束后，只有发言者本人可以授权向采访所属媒体的当期订户署名派送该轮原话。"
+                        : "同源转载共算一组。";
+                root.put("editorialProcedure", templateGuide + "后续使用media内的storyId与revisionNo。投稿的evidence使用本人已读且仍能引用的lastReadRef，" + sourceGuide + reviewGuide);
             }
         }
         if (hasOpenFund()) {
@@ -33799,6 +33870,7 @@ public final class WorldRuntime implements AutoCloseable {
         boolean accepted = false;
         String reason = MediaModel.REASON_NOT_AUTHORIZED;
         String storyId = "";
+        MediaModel.SourceShortfall sourceShortfall = null;
         List<MediaRun.Work> extraWorks = new ArrayList<>();
         long extraCharge = 0L;
         // 观察帧必须是真实历史帧；缺失或不可解析一律拒绝，不能退回"当前状态按旧毫秒查询"
@@ -33883,6 +33955,11 @@ public final class WorldRuntime implements AutoCloseable {
                             new PostOrigins(base.groups().state(),
                                     base.groups().publication().platform()));
                 }
+                if (usesEditorialSourceAccounting()) {
+                    var prior = groupOrigins == null ? MediaModel.SourceOrigins.NONE : groupOrigins;
+                    groupOrigins = new IssuerCharterOrigins(InterviewSourceOrigins.wrap(prior, base.interviews()),
+                            registry, base.information());
+                }
                 for (RoleView.ReadingRef ref : refs) {
                     InformationModel.Document document = informationDocument(observedInfo,
                             ref.docId());
@@ -33912,6 +33989,7 @@ public final class WorldRuntime implements AutoCloseable {
                         : MediaModel.submitWithGroupSources(mediaBefore, policy, access,
                                 informationBefore, person, privateRequest,
                                 mediaContext(run, organization), evidenceContext, groupOrigins);
+                sourceShortfall = result.sourceShortfall();
                 accepted = result.accepted();
                 reason = result.reason();
                 if (accepted) {
@@ -34086,7 +34164,7 @@ public final class WorldRuntime implements AutoCloseable {
         finished.addAll(extraWorks);
         runAfter = runAfter.withOutcome(organization, selfCharge + extraCharge, finished,
                 new MediaRun.Report(task.taskId(), person, task.kind(), accepted, reason, storyId,
-                        completedAt, base.position() + 1));
+                        completedAt, base.position() + 1, sourceShortfall));
 
         List<PendingTask> pending = new ArrayList<>(base.pending());
         pending.removeAll(removed);
@@ -36715,6 +36793,10 @@ public final class WorldRuntime implements AutoCloseable {
         return new GroupTaskPayload(body.person(), body.commandId(), body.action(), body.groupId(),
                 body.targetId(), body.title(), body.body(), body.refs(), body.basedOnVersion(),
                 body.accept(), postId, docId, version);
+    }
+
+    private boolean usesEditorialSourceAccounting() {
+        return RunManifest.EDITORIAL_SOURCE_VERSION.equals(manifest.dataVersions().get(RunManifest.EDITORIAL_SOURCE_POLICY));
     }
 
     private boolean hasConfirmedPublicationOrigins() {

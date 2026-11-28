@@ -1,5 +1,6 @@
 package edu.cufe.auction.world;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -229,9 +230,17 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
      * @param storyId      关联稿件；无关联为空串
      * @param timeMillis   完成时点
      * @param position     提交位置
+     * @param sourceShortfall 新版投稿人的来源不足计数，其他回执省略
      */
     public record Report(String taskId, String personPartyId, String kind, boolean accepted,
-                         String reason, String storyId, long timeMillis, long position) {
+                         String reason, String storyId, long timeMillis, long position,
+                         @JsonInclude(JsonInclude.Include.NON_NULL) MediaModel.SourceShortfall sourceShortfall) {
+
+        /** 创建不带来源计数的任务回报。 */
+        public Report(String taskId, String personPartyId, String kind, boolean accepted,
+                      String reason, String storyId, long timeMillis, long position) {
+            this(taskId, personPartyId, kind, accepted, reason, storyId, timeMillis, position, null);
+        }
 
         /** 校验字段。 */
         public Report {
@@ -241,6 +250,10 @@ public record MediaRun(Config config, List<MediaModel.State> states, List<Budget
             }
             if (reason == null || reason.isBlank()) {
                 throw new IllegalArgumentException("媒体报告缺少结果代码：" + taskId);
+            }
+            if (sourceShortfall != null && (accepted || !KIND_SUBMIT.equals(kind)
+                    || !MediaModel.REASON_INSUFFICIENT_SOURCES.equals(reason))) {
+                throw new IllegalArgumentException("媒体报告与来源不足结果不符：" + taskId);
             }
             if (storyId == null) {
                 storyId = "";

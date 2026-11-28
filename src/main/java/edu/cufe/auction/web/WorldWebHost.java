@@ -1196,6 +1196,10 @@ public final class WorldWebHost implements AutoCloseable {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("kind", report.kind()); row.put("accepted", report.accepted());
                 row.put("reason", report.reason()); row.put("storyId", report.storyId());
+                if (report.sourceShortfall() != null) {
+                    row.put("countedIndependentSources", report.sourceShortfall().counted());
+                    row.put("requiredIndependentSources", report.sourceShortfall().required());
+                }
                 row.put("timeMillis", num(report.timeMillis())); reports.add(row);
             }
             reports.sort(Comparator.comparingLong((Map<String, Object> row) ->

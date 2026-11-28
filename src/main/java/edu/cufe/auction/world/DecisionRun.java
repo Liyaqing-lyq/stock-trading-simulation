@@ -885,6 +885,13 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                 parameter.put("name", field[0]);
                 parameter.put("type", field[1]);
             }
+            if (RoleTradingView.TOOL_INTERVIEW_SPEAK.equals(tool) && interview != null
+                    && interview.at("/activeTurn/sourceBasisEnabled").asBoolean()) {
+                parameters.addObject().put("name","sourceBasis").put("type","object (optional)");
+                node.put("sourceBasis", "可省略。亲身观察用 {kind:'DIRECT_OBSERVATION'}，是发言者自述。"
+                        + "转述用 {kind:'READ_SOURCE',sources:[{docId,version},…]}，列出本人已读且仍有权阅读的原件及准确版次；同一来源不重复计。"
+                        + "提问或未核实用 {kind:'UNVERIFIED'}。省略也按未核实处理，可正常发言，不增加独立佐证。");
+            }
             if (discovery && PersonalLibrarySearch.TOOL.equals(tool)) {
                 parameters.addObject().put("name","cursor").put("type","string (optional)");
             }

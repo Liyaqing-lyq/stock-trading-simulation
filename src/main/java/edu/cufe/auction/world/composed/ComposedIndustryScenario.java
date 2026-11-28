@@ -748,6 +748,15 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.EXACT_DECIMAL_RUN_ID);
     }
 
+    /** 新建向投稿人说明独立来源计数的十公司世界，恢复时使用原档的采编政策。
+     * @param journal 原生存档文件
+     * @return 新建或恢复的十公司世界
+     * @throws Exception 无法创建或恢复存档时抛出
+     */
+    public static WorldRuntime openEditorialSourceTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.EDITORIAL_SOURCE_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {

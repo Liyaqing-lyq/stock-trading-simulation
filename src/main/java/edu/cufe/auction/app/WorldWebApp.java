@@ -169,7 +169,8 @@ public final class WorldWebApp {
         boolean routesAbsent = !Files.exists(workDir.resolve(SceneRoutes.FILE_NAME));
         SceneRoutes routes = SceneRoutes.open(workDir);
         if (thinkingInformedOperatingMode && routesAbsent) {
-            boolean longStudy = tenCompanyPath(workDir, RunManifest.EXACT_DECIMAL_RUN_ID).equals(ordinaryJournal)
+            boolean longStudy = tenCompanyPath(workDir, RunManifest.EDITORIAL_SOURCE_RUN_ID).equals(ordinaryJournal)
+                    || tenCompanyPath(workDir, RunManifest.EXACT_DECIMAL_RUN_ID).equals(ordinaryJournal)
                     || tenCompanyPath(workDir, RunManifest.ROLE_ARGUMENTS_RUN_ID).equals(ordinaryJournal)
                     || tenCompanyPath(workDir, RunManifest.AGGREGATOR_EVIDENCE_RUN_ID).equals(ordinaryJournal)
                     || tenCompanyPath(workDir, RunManifest.CRISIS_ARGUMENTS_STUDY_RUN_ID).equals(ordinaryJournal)
@@ -199,7 +200,7 @@ public final class WorldWebApp {
                     var runtime=sessionsMode ? ComposedIndustryScenario.openMarketSessionsOperating(workDir.resolve("world-market-sessions-operating-v1.journal"))
                             : manufacturingUpgradeMode ? ComposedIndustryScenario.openManufacturingUpgradeOperating(workDir.resolve("world-manufacturing-upgrade-v1.journal"))
                             : openFundMode ? ComposedIndustryScenario.openOpenFundOperating(workDir.resolve("world-open-fund-v1.journal"))
-                            : ordinaryJournal != null ? ComposedIndustryScenario.openExactDecimalTenCompanyStudy(ordinaryJournal)
+                            : ordinaryJournal != null ? ComposedIndustryScenario.openEditorialSourceTenCompanyStudy(ordinaryJournal)
                             : personPauseMode ? ComposedIndustryScenario.openPersonPauseOperating(workDir.resolve("world-person-pause-v1.journal"), workDir.resolve("opening-copies.json"))
                             : issuerResolutionMode ? ComposedIndustryScenario.openIssuerResolutionOperating(workDir.resolve("world-issuer-resolution-v1.journal"), workDir.resolve("opening-copies.json"))
                             : unpricedReferenceMode ? ComposedIndustryScenario.openUnpricedReferenceOperating(workDir.resolve("world-unpriced-reference-v1.journal"), workDir.resolve("opening-copies.json"))

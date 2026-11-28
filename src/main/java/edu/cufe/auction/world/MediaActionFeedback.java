@@ -31,6 +31,10 @@ final class MediaActionFeedback {
                     .put("reason",report.reason()).put("resultKind",kind).put("resultAt",report.timeMillis());
             if (!report.accepted()) row.put("businessReject",report.reason());
             else if (!report.storyId().isEmpty()) row.put("storyId",report.storyId());
+            if (report.sourceShortfall() != null) {
+                row.put("countedIndependentSources", report.sourceShortfall().counted());
+                row.put("requiredIndependentSources", report.sourceShortfall().required());
+            }
         } else if (report == null) {
             for (var work : media.works()) {
                 if (work.taskId().equals(ref.taskId()) && person.equals(work.personPartyId()) && kind.equals(work.kind())
