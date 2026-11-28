@@ -118,9 +118,9 @@ class TargetTransportProbeTest {
         exchange.getResponseBody().write(bytes);
     }
 
-    @ParameterizedTest @ValueSource(strings={"EMPTY","V6_EMPTY","V7_EMPTY","V8_EMPTY","V9_EMPTY","V10_EMPTY","V11_EMPTY","V12_EMPTY", "V13_EMPTY", "V14_EMPTY", "V15_EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
+    @ParameterizedTest @ValueSource(strings={"EMPTY","V6_EMPTY","V7_EMPTY","V8_EMPTY","V9_EMPTY","V10_EMPTY","V11_EMPTY","V12_EMPTY", "V13_EMPTY", "V14_EMPTY", "V15_EMPTY", "V16_EMPTY","FILTERED","TOOL_CALLS","MISSING_MODEL","MISSING_FINISH","MIXED_TOOL","SUCCESS_WITHOUT_MODEL"})
     void measuredNonBusinessReceiptNeedsAttributableIdentityUsageAndFinish(String sample) throws Exception {
-        String variant = List.of("V6_EMPTY", "V7_EMPTY", "V8_EMPTY", "V9_EMPTY", "V10_EMPTY", "V11_EMPTY", "V12_EMPTY", "V13_EMPTY", "V14_EMPTY", "V15_EMPTY").contains(sample) ? "EMPTY" : sample;
+        String variant = List.of("V6_EMPTY", "V7_EMPTY", "V8_EMPTY", "V9_EMPTY", "V10_EMPTY", "V11_EMPTY", "V12_EMPTY", "V13_EMPTY", "V14_EMPTY", "V15_EMPTY", "V16_EMPTY").contains(sample) ? "EMPTY" : sample;
         var http=HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),0),0);
         var actors=new CopyOnWriteArrayList<String>();
         http.createContext("/chat/completions",exchange->{
@@ -157,6 +157,7 @@ class TargetTransportProbeTest {
                 case "V13_EMPTY" -> "TEN_COMPANY_ISSUER_DECISIONS_STUDY";
                 case "V14_EMPTY" -> "TEN_COMPANY_MEDIA_WITHDRAWAL_STUDY";
                 case "V15_EMPTY" -> "TEN_COMPANY_LOAN_LOSS_STUDY";
+                case "V16_EMPTY" -> "TEN_COMPANY_PERSONAL_BELIEF_STUDY";
                 case "V7_EMPTY" -> "TEN_COMPANY_INTERVIEW_STUDY";
                 case "V6_EMPTY" -> "TEN_COMPANY_PERSONAL_STUDY";
                 case "EMPTY" -> "TEN_COMPANY_GOVERNANCE_STUDY";
@@ -165,7 +166,7 @@ class TargetTransportProbeTest {
                 default -> "TEN_COMPANY_AUTONOMY";
             };
             // 十四版两名在岗基金职员在周一 09:00 开始接受普通邀请。
-            long shiftStart = (sample.equals("V14_EMPTY") || sample.equals("V15_EMPTY")) ? 9L * 3_600_000L : 0L;
+            long shiftStart = (sample.equals("V14_EMPTY") || sample.equals("V15_EMPTY") || sample.equals("V16_EMPTY")) ? 9L * 3_600_000L : 0L;
             var first=run(mode,"first",null,shiftStart+100,people,provider);
             if (!List.of("EMPTY","FILTERED","TOOL_CALLS").contains(variant)) {
                 assertTrue(first.path("probeStop").asText().startsWith("PROBE_PROVIDER_"));
@@ -190,6 +191,7 @@ class TargetTransportProbeTest {
                 case "V13_EMPTY" -> edu.cufe.auction.world.RunManifest.ISSUER_DECISIONS_RUN_ID;
                 case "V14_EMPTY" -> edu.cufe.auction.world.RunManifest.MEDIA_WITHDRAWAL_RUN_ID;
                 case "V15_EMPTY" -> edu.cufe.auction.world.RunManifest.BANK_LOAN_LOSS_RUN_ID;
+                case "V16_EMPTY" -> edu.cufe.auction.world.RunManifest.PERSONAL_BELIEF_RUN_ID;
                 case "V7_EMPTY" -> edu.cufe.auction.world.RunManifest.INTERVIEW_TEN_COMPANY_RUN_ID;
                 case "V6_EMPTY" -> edu.cufe.auction.world.RunManifest.PERSONAL_TEN_COMPANY_RUN_ID;
                 case "EMPTY" -> edu.cufe.auction.world.RunManifest.GOVERNANCE_TEN_COMPANY_RUN_ID;

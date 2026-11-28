@@ -9410,7 +9410,7 @@ public final class WorldRuntime implements AutoCloseable {
             }
             case RoleTradingView.TOOL_BELIEF_ASSERT -> {
                 kind = PendingTask.ROLE_TRADING_BELIEF_V1;
-                body = strict(WorldRoleSession.BeliefDraft.class, args);
+                body = decisionBeliefDraft(args, binding.personPartyId());
             }
             case RoleTradingView.TOOL_FORECAST_PUBLISH -> {
                 kind = PendingTask.ROLE_TRADING_FORECAST_V1;
@@ -10340,6 +10340,27 @@ public final class WorldRuntime implements AutoCloseable {
             throw new IOException("工具参数必须是对象");
         }
         return args;
+    }
+
+    private boolean hasPersonalBeliefContract() {
+        return RunManifest.PERSONAL_BELIEF_VERSION.equals(manifest.dataVersions().get(RunManifest.PERSONAL_BELIEF_POLICY));
+    }
+
+    private WorldRoleSession.BeliefDraft decisionBeliefDraft(JsonNode args, String person) throws IOException {
+        if (!hasPersonalBeliefContract()) return strict(WorldRoleSession.BeliefDraft.class, args);
+
+        JsonNode bound = args.deepCopy();
+        if (!bound.path("evidence").isArray()) throw new IOException("判断须列出本人的阅读凭据");
+        for (JsonNode item : bound.path("evidence")) {
+            if (!(item instanceof com.fasterxml.jackson.databind.node.ObjectNode ref)
+                    || !ref.path("docId").isTextual() || !ref.path("version").isIntegralNumber()
+                    || !ref.path("index").isIntegralNumber())
+                throw new IOException("判断证据须含本人已读的 docId、version 和 index");
+            if (ref.has("personPartyId") && !person.equals(ref.path("personPartyId").textValue()))
+                throw new IOException("判断不能引用他人的阅读经历");
+            ref.put("personPartyId", person);
+        }
+        return strict(WorldRoleSession.BeliefDraft.class, bound);
     }
 
     /** 严格反序列化：未知字段、尾随内容、空值与浮点整数一律失败。 */
@@ -23607,6 +23628,10 @@ public final class WorldRuntime implements AutoCloseable {
                     requireBeliefActionReport(candidate, task, payload, false, "UNKNOWN_COMPANY", draft.claimId());
                     return base;
                 }
+                if (hasPersonalBeliefContract() && draft.targetAsOfMillis() <= now) {
+                    requireBeliefActionReport(candidate, task, payload, false, "PAST_ASOF", draft.claimId());
+                    return base;
+                }
                 try {
                     InformationModel.State published = InformationModel.publish(
                             previous.information().information(), draft.docId(), payload.personPartyId(),
@@ -31703,6 +31728,27 @@ public final class WorldRuntime implements AutoCloseable {
         if (hasMediaSubscriptions()) root.set("mediaSubscriptions", canonicalMapper.valueToTree(mediaSubscriptionsAt(snap, person)));
         if ("declared-fields-v1".equals(manifest.dataVersions().get("tool-argument-guide")))
             root.put("toolArgumentGuide", "declared-fields-v1");
+        if (hasPersonalBeliefContract()) {
+            var rules = root.putObject("orderPredictionRules");
+            rules.put("metric", BeliefModel.METRIC_ORDERS_CONFIRMED);
+            rules.put("meaning", "截至目标模拟时刻，该公司累计已签销售合同的笔数。threshold 的单位是笔。");
+            var companyIds = rules.putArray("companyIds");
+            var canReport = rules.putArray("canReportCompanyIds");
+            registry.securities().stream().map(OpeningRegistry.Security::issuerOrganizationId).distinct().sorted()
+                    .filter(id -> orderPredictionCharter(snap, id) != null).forEach(id -> {
+                        companyIds.add(id);
+                        if (isOrderReportChair(snap, id, person)) canReport.add(id);
+                    });
+            var comparators = rules.putArray("comparators");
+            for (var comparator : BeliefModel.Comparator.values()) comparators.add(comparator.name());
+            rules.put("maxHorizonMillis", informationConfig.beliefPolicy().maxHorizonMillis());
+            rules.put("deadline", "AT_LEAST 表示不少于，AT_MOST 表示不多于。私人判断的 targetAsOfMillis 是精确模拟毫秒，"
+                    + "须晚于实际形成时点，且距形成时点不超过 maxHorizonMillis。");
+            rules.put("adoption", "自拟判断可将 adoptedClaimId 留空。采纳他人预测时，从本人已读的 cognition.claims 取 claimId，"
+                    + "并使用同一 companyId、comparator、threshold 和 targetAsOf；证据须包含亲自读过的该版预测。");
+            rules.put("verification", "有权的公司主席可以申请未来精确时点的正式订单公告。本人读完同公司、同指标、"
+                    + "同一截止毫秒的正式事实原件后才会核验。已到期但尚未读到匹配事实的判断仍可未决。");
+        }
         if ("visible-index-v1".equals(manifest.dataVersions().get("person-library-search")))
             PersonalLibrarySearch.append(root, person, snap.trading(), snap.decisions(),
                     () -> roleView(snap, person, snap.roles().access()));
@@ -34360,6 +34406,10 @@ public final class WorldRuntime implements AutoCloseable {
                 BoardModel.Charter verifier = orderPredictionCharter(state, draft.companyId());
                 if (!manifest.hasBelief() || verifier == null) {
                     reason = "UNKNOWN_COMPANY";
+                    break;
+                }
+                if (hasPersonalBeliefContract() && draft.targetAsOfMillis() <= now) {
+                    reason = "PAST_ASOF";
                     break;
                 }
                 BeliefRun runB = requireBeliefRun();

@@ -672,6 +672,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.BANK_LOAN_LOSS_RUN_ID);
     }
 
+    /**
+     * 打开具有本人订单预测工具合同的普通十公司世界，恢复时沿用存档版本。
+     * @param journal 普通十公司世界的原生日志
+     * @return 已恢复或新建的普通世界
+     * @throws Exception 初始化或恢复失败
+     */
+    public static WorldRuntime openPersonalBeliefTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.PERSONAL_BELIEF_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
@@ -843,7 +853,7 @@ public final class ComposedIndustryScenario {
                 for (String tool : List.of("media.subscription.join", "media.subscription.leave", "media.subscription.releaseTurn"))
                     timings.put(tool, 1000L);
             }
-            if (RunManifest.BANK_LOAN_LOSS_RUN_ID.equals(thinkingRunId)) IssuerCreditDecisions.addLossTimings(timings);
+            if (RunManifest.usesLoanLossOpening(thinkingRunId)) IssuerCreditDecisions.addLossTimings(timings);
             if (RunManifest.usesMediaFollowupOpening(thinkingRunId)) {
                 timings.put(RoleTradingView.TOOL_MEDIA_WITHDRAW, timings.get(RoleTradingView.TOOL_MEDIA_PUBLISH));
                 for (String tool : List.of(RoleTradingView.TOOL_SOCIAL_SEND, RoleTradingView.TOOL_GROUP_POST,

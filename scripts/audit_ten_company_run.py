@@ -42,6 +42,7 @@ MEDIA_FOLLOWUP_POLICIES = {**ISSUER_DECISIONS_POLICIES, "media-withdrawal": "pub
 BANK_LOSS_POLICIES = {**MEDIA_FOLLOWUP_POLICIES, "bank-loan-loss": "manager-impair-writeoff-v1",
                       "material-information-trading": "issuer-disclosure-window-v1",
                       "customer-personal-tools": "personal-communication-v1"}
+BELIEF_CONTRACT_POLICIES = {**BANK_LOSS_POLICIES, "personal-belief-contract": "visible-orders-evidence-v1"}
 OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
                     "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES,
                     "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES,
@@ -51,12 +52,13 @@ OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy
                     "web-ten-company-autonomy-v12": INTERVIEW_AUTONOMY_POLICIES,
                     "web-ten-company-autonomy-v13": ISSUER_DECISIONS_POLICIES,
                     "web-ten-company-autonomy-v14": MEDIA_FOLLOWUP_POLICIES,
-                    "web-ten-company-autonomy-v15": BANK_LOSS_POLICIES}
+                    "web-ten-company-autonomy-v15": BANK_LOSS_POLICIES,
+                    "web-ten-company-autonomy-v16": BELIEF_CONTRACT_POLICIES}
 
 
 def check_policies(run_id, data_versions):
     expected = OPENING_POLICIES[run_id]
-    actual = {k: data_versions[k] for k in BANK_LOSS_POLICIES if k in data_versions}
+    actual = {k: data_versions[k] for k in BELIEF_CONTRACT_POLICIES if k in data_versions}
     if data_versions.get("branch-profile-run") != run_id or actual != expected:
         raise ValueError("原生开局声明的政策与该版运行身份不符")
 
@@ -526,7 +528,7 @@ def audit(source, target_days=None):
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
         if run_id not in OPENING_POLICIES or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2 至 v15 紧凑日志")
+            raise ValueError("此脚本仅复算标准十公司 v2 至 v16 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")

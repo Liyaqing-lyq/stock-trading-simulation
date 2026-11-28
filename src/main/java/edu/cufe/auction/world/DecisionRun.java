@@ -808,6 +808,19 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                         + "index 是本人该版本的阅读序号，目录、他人提及和转述均不授予原件引用权。"
                         + "aliases 可省略。每个标签需绑定本版证据中的真实根及版本。");
             }
+            if (engineering != null && engineering.has("orderPredictionRules")) {
+                if (RoleTradingView.TOOL_BELIEF_ASSERT.equals(tool)) {
+                    node.putObject("arrayItems").putObject("evidence")
+                            .put("docId", "string").put("version", "long").put("index", "long");
+                    node.put("evidenceSource", "从本人 profile.readExperiences 中取 1 至 " + BeliefModel.MAX_EVIDENCE
+                            + " 条仍可引用的 lastReadRef。人物由当前身份确定。对象、比较方式、期限与核验见 engineering.orderPredictionRules。");
+                }
+                if (RoleTradingView.TOOL_FORECAST_PUBLISH.equals(tool))
+                    node.put("publication", "署名发布公开预测，targetAsOfMillis 须晚于实际发表时刻。指标、公司和比较方式见 engineering.orderPredictionRules。");
+                if (RoleTradingView.TOOL_COMPANY_REPORT_ORDERS.equals(tool))
+                    node.put("publication", "从 engineering.orderPredictionRules.canReportCompanyIds 选择本人有权披露的公司。"
+                            + "asOfMillis 须为未来精确模拟毫秒；到点从公司账取数并公开。");
+            }
             ArrayNode parameters = node.putArray("parameters");
             for (String[] field : toolParameters(tool, toolContractVersion)) {
                 ObjectNode parameter = parameters.addObject();
