@@ -298,6 +298,47 @@ defineCase("admin-interview-cleared-on-switch-person", async () => {
   return "切人物清空四表、提示文案与 cache";
 });
 
+defineCase("identity-transition-keyboard-focus", async () => {
+  let actor = "", localAdmin = false, finishView;
+  const fallback = baseRouter();
+  const world = makeWorld(async (method, url, options, context) => {
+    if (url === "/api/session/person") {
+      actor = JSON.parse(options.body).personId;
+      return { status: 200, payload: { personId: actor } };
+    }
+    if (url === "/api/me/view") return new Promise(resolve => { finishView = resolve; });
+    if (url === "/api/admin/view") return { status: 200, payload: {
+      runId: "run-1", position: 20, timeMillis: 9000, accounts: [], owners: [], pending: [],
+      trades: [], dividendReports: [], pendingCount: 0, deliveredCount: 0 } };
+    if (url === "/api/session/local") return { status: localAdmin ? 200 : 403,
+      payload: localAdmin ? { role: "ADMIN" } : {} };
+    return fallback(method, url, options, context);
+  }, "identity-focus");
+  await bootSettled(world);
+  const html = fs.readFileSync(path.join(webDir, "index.html"), "utf8");
+  assert.match(html, /<h1\b[^>]*\bid="person-title"[^>]*\btabindex="-1"/);
+  let active;
+  for (const id of ["person-title", "page-title", "library-query", "bootstrap"]) {
+    world.$(id).focus = () => { active = id; };
+  }
+  for (const who of ["frank", "nina"]) {
+    finishView = null;
+    const switching = world.context.switchPerson(who);
+    await waitFor(() => !!finishView, "开始读取本人资料");
+    assert.equal(active, "person-title");
+    assert.equal(world.$("person-name").textContent, "正在读取人物…");
+    world.$("library-query").focus();
+    finishView({ status: 200, payload: personView(who) });
+    await switching;
+    assert.equal(active, "library-query", "本人资料到达不应抢回焦点");
+    localAdmin = who === "frank";
+    await world.context.backToAdmin();
+    assert.equal(world.state.mode, localAdmin ? "admin" : "login", world.$("status").textContent);
+    assert.equal(active, localAdmin ? "page-title" : "bootstrap");
+  }
+  return "切换至个人标题、本人资料回报保留输入焦点，退出后按真实会话进入管理标题或登录框";
+});
+
 defineCase("admin-interview-cleared-on-leave-page", async () => {
   const world = await adminRendered();
   world.context.selectPage("overview", false);

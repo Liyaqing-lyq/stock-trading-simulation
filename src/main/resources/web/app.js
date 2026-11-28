@@ -310,10 +310,11 @@ function providerLabel(kind) {
 
 // ---------------------------------------------------------------- 管理员
 
-async function enterAdmin(resume = false) {
+async function enterAdmin(resume = false, focusHeading = false) {
   if (!resume) writeHistoryBookmark(null);
   showMode("admin");
   selectPage("overview", false);
+  if (focusHeading) $("page-title").focus();
   setStatus("管理员视角");
   await refreshAdmin(resume);
   await globalThis.PersonTakeover?.admin();
@@ -623,9 +624,10 @@ async function advance() {
 
 // ---------------------------------------------------------------- 个人
 
-async function enterPerson(personId) {
+async function enterPerson(personId, focusHeading = false) {
   showMode("person");
   $("person-name").textContent = "正在读取人物…";
+  if (focusHeading) $("person-title").focus();
   setStatus("个人视角");
   await refreshPerson();
 }
@@ -1154,7 +1156,7 @@ async function switchPerson(personId) {
     show("login", true);
     return;
   }
-  await enterPerson(result.payload.personId);
+  await enterPerson(result.payload.personId, true);
 }
 
 // ---------------------------------------------------------------- 会话
@@ -1189,29 +1191,30 @@ async function logout() {
 
 async function backToAdmin() {
   await logout();
-  await boot();
+  await boot(true);
 }
 
-async function boot() {
+async function boot(focusHeading = false) {
   try {
     const session = await request("GET", "/api/session");
     if (session.status === 200 && session.payload && session.payload.role === "ADMIN") {
       state.localAccess = session.payload.localAccess === true;
       if (await globalThis.PersonTakeover?.enterMarkedChild()) return;
-      await enterAdmin(true);
+      await enterAdmin(true, focusHeading);
       return;
     }
     if (session.status === 200 && session.payload && session.payload.role === "PERSON") {
-      await enterPerson(session.payload.personId);
+      await enterPerson(session.payload.personId, focusHeading);
       return;
     }
     const local = await request("POST", "/api/session/local", {});
     if (local.status === 200 && local.payload?.role === "ADMIN") {
       state.localAccess = true;
-      await enterAdmin();
+      await enterAdmin(false, focusHeading);
       return;
     }
     showMode("login");
+    if (focusHeading) $("bootstrap").focus();
     setStatus("请先登录");
   } catch (failure) {
     showMode("login", false);
