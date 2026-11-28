@@ -166,6 +166,8 @@ public record RoleTradingView(long observedAtMillis, long timeMillis, String per
     public static final String TOOL_ISSUER_DIVIDEND_CONVENE = "issuer.dividend.convene";
     /** 工程发行人董事提交现金分红方案。 */
     public static final String TOOL_ISSUER_DIVIDEND_PROPOSE = "issuer.dividend.propose";
+    /** 工程发行人董事提请在登记前撤销或更正已公告的指定版本。 */
+    public static final String TOOL_ISSUER_DIVIDEND_AMEND = "issuer.dividend.amend";
     /** 工程发行人主席实施已通过的分红决议。 */
     public static final String TOOL_ISSUER_DIVIDEND_AUTHORIZE = "issuer.dividend.authorize";
     public static final String TOOL_BOARD_ATTEND = "board.attend";

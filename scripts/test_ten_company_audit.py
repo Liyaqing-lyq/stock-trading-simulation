@@ -3,7 +3,7 @@ import json
 import unittest
 from copy import deepcopy
 
-from audit_ten_company_run import OPENING_POLICIES, checked_dividend, checked_loan_loss, checked_loan_receipt, checked_opening, checked_reread
+from audit_ten_company_run import OPENING_POLICIES, checked_amendment_notice, checked_dividend, checked_loan_loss, checked_loan_receipt, checked_opening, checked_reread
 
 
 class OpeningPolicyTest(unittest.TestCase):
@@ -85,6 +85,15 @@ class OpeningPolicyTest(unittest.TestCase):
                 with self.subTest(version=version, key=key), self.assertRaises(ValueError):
                     checked_opening(self.frame(version, wrong))
 
+
+    def test_v18_dividend_amendments_is_bound_to_its_opening(self):
+        previous, current = "web-ten-company-autonomy-v17", "web-ten-company-autonomy-v18"
+        old = OPENING_POLICIES[previous]
+        new = {**old, "issuer-dividend-amendments": "board-correction-before-record-v1"}
+        checked_opening(self.frame(current, new))
+        for run, invalid in ((previous, new), (current, old), (current, {**new, "issuer-dividend-amendments": "unknown"})):
+            with self.subTest(run=run), self.assertRaises(ValueError):
+                checked_opening(self.frame(run, invalid))
 
     def test_v17_interview_timing_is_bound_to_its_opening(self):
         previous, current = "web-ten-company-autonomy-v16", "web-ten-company-autonomy-v17"
@@ -177,6 +186,81 @@ class LoanLossEvidenceTest(unittest.TestCase):
 
 
 class DividendEvidenceTest(unittest.TestCase):
+    def test_dividend_amendments_require_a_matching_proposal_and_audit_receipt(self):
+        original = {"schemeId":"old","symbol":"ENG","issuerOwnerId":"company","companyAccountId":"issuer",
+                    "perShare":2,"recordAtMillis":100,"exAtMillis":200,"payAtMillis":300,
+                    "phase":"AUTHORIZED","authorizationRef":"original-approval","cancelReason":""}
+        cash = {"issuer":10}
+        def frame(kind, reason, request, position):
+            task = {"commandId":"c","schemeId":"next" if request else "","meetingId":"m","request":request}
+            report = {"taskId":"t","kind":kind,"commandId":"c","meetingId":"m","position":position,
+                      "atMillis":position,"schemeId":"old","accepted":True,"reason":reason}
+            payload = json.dumps(task)
+            return {"runId":"web-ten-company-autonomy-v18","position":position,"commandContent":payload,
+                    "result":reason if not request else "ACCEPTED","events":[
+                        {"eventId":"task-completed:t","type":"TASK_COMPLETED_V1","payload":payload},
+                        {"eventId":"dividend-report:t","type":"DIVIDEND_REPORT_V1","payload":json.dumps(report)}]}
+        for operation, completed in (("CANCEL","CANCELLED"),("REPLACE","REPLACED")):
+            with self.subTest(operation=operation):
+                book = {"schemes":{"old":original.copy()},"snapshots":{},"claims":{},"payments":[],"receipts":{}}
+                ctx = {}
+                amendment = {"currentSchemeId":"old","expectedVersion":1,"operation":operation,"reason":"cash revision"}
+                new = {k:v for k,v in original.items() if k not in ("phase","authorizationRef","cancelReason")}
+                new.update(schemeId="next",perShare=1 if operation=="REPLACE" else original["perShare"])
+                offer = {**new,"amendment":amendment}
+                proposed = frame("GOVERNANCE_DIVIDEND_PROPOSAL_V1","AMENDMENT_PROPOSED",offer,10)
+                self.assertEqual(checked_dividend(proposed,10,book,cash,cash,"ENG",followup=ctx)["stage"],
+                                 "AMENDMENT_PROPOSED")
+                old_mode = {**proposed,"runId":"web-ten-company-autonomy-v17"}
+                with self.assertRaises(ValueError):
+                    checked_dividend(old_mode,10,book,cash,cash,"ENG",followup=ctx)
+                book["schemes"]["old"].update(phase="CANCELLED",cancelReason=amendment["reason"])
+                applied = frame("GOVERNANCE_DIVIDEND_IMPLEMENT_V1",completed,None,20)
+                notice = json.dumps({"docId":"dividend-public:old","commandId":"div-publish:next","audienceKind":"PUBLIC","body":"revised"})
+                child = {"kind":"INFORMATION_PUBLISH_VERSION_V1","taskId":"notice","dueTimeMillis":21,"payload":notice}
+                applied["events"].append({"eventId":"task-scheduled:notice","type":"TASK_SCHEDULED_V1","payload":json.dumps(child)})
+                request = {**amendment,"authorizationRef":"m-approved","replacement":new if operation=="REPLACE" else None}
+                if operation=="REPLACE":
+                    book["schemes"]["next"] = {**new,"phase":"AUTHORIZED","authorizationRef":"m-approved","cancelReason":""}
+                receipt = {"eventId":"div-amend:m","position":20,"atMillis":20,"action":"AMEND","requestJson":json.dumps(request)}
+                book["receipts"]["div-amend:m"] = receipt
+                actual = checked_dividend(applied,20,book,cash,cash,"ENG",followup=ctx)
+                self.assertEqual(actual["stage"],completed)
+                self.assertNotIn("cashPaid",actual)
+                self.assertEqual(actual["noticeScheduledAtMillis"],21)
+                info = {"taskId":"notice","kind":child["kind"],"accepted":True,"subjectId":"dividend-public:old",
+                        "commandId":"div-publish:next","position":21,"timeMillis":21,"reason":"OK"}
+                publication = {"position":21,"commandContent":notice,"result":"OK","events":[
+                    {"type":"TASK_COMPLETED_V1","eventId":"task-completed:notice","payload":notice},
+                    {"type":"INFORMATION_REPORT_V1","eventId":"information-report:notice","payload":json.dumps(info)}]}
+                with self.assertRaises(ValueError):
+                    checked_amendment_notice({"events":[]},22,ctx)
+                self.assertEqual(checked_amendment_notice(publication,21,ctx)["stage"],"REANNOUNCED")
+
+                with self.assertRaises(ValueError):
+                    checked_dividend(applied,20,book,cash,{"issuer":9},"ENG",followup=ctx)
+                receipt["requestJson"] = json.dumps({**request,"expectedVersion":2})
+                with self.assertRaises(ValueError):
+                    checked_dividend(applied,20,book,cash,cash,"ENG",followup=ctx)
+                receipt["requestJson"] = json.dumps(request)
+                book["schemes"]["old"]["perShare"] = 3
+                with self.assertRaises(ValueError):
+                    checked_dividend(applied,20,book,cash,cash,"ENG",followup=ctx)
+                book["schemes"]["old"]["perShare"] = 2
+                expired_frame = frame("DIVIDEND_SETTLE_V1","INVALID_PHASE",None,300)
+                expired_frame["result"] = "REJECTED"
+                task = {"commandId":"div-pay:old","schemeId":"old","meetingId":"","request":original}
+                expired_frame["events"][0]["payload"] = expired_frame["commandContent"] = json.dumps(task)
+                rejected = json.loads(expired_frame["events"][1]["payload"])
+                rejected.update(accepted=False,meetingId="",commandId="div-pay:old")
+                expired_frame["events"][1]["payload"] = json.dumps(rejected)
+                ctx.update(scheduled={},failures={})
+                self.assertTrue(checked_dividend(expired_frame,300,book,cash,cash,"ENG",followup=ctx)["retiredBeforeRecord"])
+                self.assertEqual(ctx["failures"], {})
+                book["claims"]["early"] = {"schemeId":"old"}
+                with self.assertRaises(ValueError):
+                    checked_dividend(applied,20,book,cash,cash,"ENG",followup=ctx)
+
     def test_registration_booking_and_cash_legs_are_separate(self):
         before = {"issuer": 10, "a": 2, "b": 0}
         after = {"issuer": 4, "a": 6, "b": 2}

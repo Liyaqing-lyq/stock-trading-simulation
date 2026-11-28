@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -71,6 +72,45 @@ class WorldBranchRunHttpTest {
     }
 
     // ------------------------------------------------------------------ 主链
+
+    @Test
+    void boardMemberCanProposeCancellingOnlyInTheirOwnTakeover() throws Exception {
+        startParentWorkOnly();
+        long now;
+        try (var world = edu.cufe.auction.world.composed.ComposedIndustryScenario.openDividendAmendmentTenCompanyStudy(journal)) {
+            DividendAmendmentDecisionTest.announceOriginal(world);
+            DividendAmendmentDecisionTest.prepareMeeting(world, "revision", world.snapshot().timeMillis());
+            now = world.snapshot().timeMillis();
+        }
+        byte[] original = Files.readAllBytes(journal);
+        startProtectedParent();
+        login();
+        String person = cookieOf(post("/api/session/person", "{\"personId\":\"bob\"}"));
+        var observed = json(request(base, "GET", "/api/me/engineering", person, null));
+        String take = JSON.writeValueAsString(Map.of("expectedPosition", observed.required("observationToken").asText()));
+        var entered = request(base, "POST", "/api/me/takeover", person, take);
+        int port = URI.create(json(entered).required("location").asText()).getPort();
+        String bound = cookieOf(entered);
+        var child = childJson(port, "/api/me/engineering", bound);
+        var card = java.util.stream.StreamSupport.stream(child.required("companies").spliterator(), false)
+                .filter(row -> "eng-a".equals(row.path("companyId").asText())).findFirst().orElseThrow();
+        assertEquals("div-1", card.at("/amendableAnnouncements/0/schemeId").asText());
+        assertEquals(1, card.at("/amendableAnnouncements/0/expectedVersion").asInt());
+        var form = JSON.createObjectNode().put("expectedPosition", child.required("observationToken").asText())
+                .put("commandId", "web-amend").put("taskId", "web-amend-task").put("dueTimeMillis", now + 1)
+                .put("companyId", "eng-a").put("meetingId", "revision").put("tool", "issuer.dividend.amend")
+                .put("operation", "CANCEL").put("schemeId", "div-1").put("expectedVersion", 1)
+                .put("reason", "重新核算支出");
+        String endpoint = "/api/me/issuer-dividend";
+        assertEquals(403, request(base, "POST", endpoint, person, form.toString()).statusCode());
+        assertEquals(400, childPost(port, endpoint, bound, form.deepCopy().put("perShare", "0.02").toString()).statusCode());
+        assertEquals(400, childPost(port, endpoint, bound, form.deepCopy().put("operation", "REPLACE").toString()).statusCode());
+        assertEquals(400, childPost(port, endpoint, bound, form.deepCopy().put("expectedVersion", 2147483648L).toString()).statusCode());
+        var accepted = childJson(port, endpoint, bound, form.toString());
+        assertTrue(accepted.hasNonNull("receipt"), accepted::toString);
+        close(); launcher = null; server = null; host = null; routes = null;
+        assertArrayEquals(original, Files.readAllBytes(journal));
+    }
 
     @Test
     void protectedParentKeepsManualActionsInMarkedChildren() throws Exception {

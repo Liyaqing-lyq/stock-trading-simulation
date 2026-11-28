@@ -1430,6 +1430,14 @@ public record WorldRoleSession(WorldRuntime runtime, String personPartyId, long 
                 materialDeadline, opensAt, closesAt, request);
     }
 
+    /** 以本人席位提议撤销或替换未登记的已公告股利，等待本场董事会真实表决。 */
+    public String amendIssuerDividend(String commandId, String taskId, long dueMillis, String meetingId,
+            String schemeId, int expectedVersion, String operation, String reason, String perShare,
+            Long recordAtMillis, Long exAtMillis, Long payAtMillis) throws IOException {
+        return runtime.amendIssuerDividend(this, commandId, taskId, dueMillis, meetingId, schemeId, expectedVersion,
+                operation, reason, perShare, recordAtMillis, exAtMillis, payAtMillis);
+    }
+
     /** 安排本人陈酿经营工作，真实任职和工时由世界复核。 */
     public String agedAction(String commandId, String taskId, long dueMillis, String companyPartyId,
             AgedOperations.Request request, long durationMillis) throws java.io.IOException {

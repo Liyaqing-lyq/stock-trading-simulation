@@ -69,7 +69,7 @@ class AutonomousIssuerDividendTest {
         return w.snapshot().decisions().orElseThrow().actionRef(call.actionId());
     }
 
-    private static JsonNode choose(WorldRuntime w, String actor, String id, String tool, ObjectNode args) throws Exception {
+    static JsonNode choose(WorldRuntime w, String actor, String id, String tool, ObjectNode args) throws Exception {
         var sent = call(w, actor, id);
         var input = (ObjectNode) JSON.readTree(sent.inputText());
         RoleInputTables.expand(input);

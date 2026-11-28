@@ -794,6 +794,17 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
             node.put("name", tool);
             Long millis = config.actionMillisByTool().get(tool);
             node.put("actionMillis", millis == null ? 0L : millis);
+            if (RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND.equals(tool)
+                    || (RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE.equals(tool)
+                        && tools.contains(RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND))) {
+                node.put("terms", "每股现金股息 perShare 为正金额。登记、除息和付款使用模拟毫秒，"
+                        + "recordAtMillis < exAtMillis <= payAtMillis，除息须在交易日当天 09:30 开市之前。");
+                if (RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND.equals(tool))
+                    node.put("procedure", "schemeId 与 expectedVersion 取自本公司董事席位下的 amendableAnnouncements。"
+                            + "operation 与 reason 分别为处理方式及公开理由。CANCEL 只填这两项及公司、会议、方案和版本。"
+                            + "REPLACE 另须填齐 perShare、recordAtMillis、exAtMillis、payAtMillis。"
+                            + "本次提交是新会议的提案。须经董事表决和主席实施，在原登记时点前发布新公告。");
+            }
             if (RoleTradingView.TOOL_INTERVIEW_SPEAK.equals(tool) && interview != null && interview.has("deadlineTerms")) {
                 node.put("readingTime", "readDurationMillis 是对方阅读这段发言的正整数毫秒下限。正文每个汉字计一单位，"
                         + "其余连续的非汉字字母和数字合计一单位，标点和空格分隔单位；每单位 200 毫秒。实际读时取两者较大值。"
@@ -1036,6 +1047,13 @@ public record DecisionRun(DecisionModel.State state, Map<String, Binding> bindin
                     return List.of(new String[]{"companyPartyId","string"},new String[]{"meetingId","string"},
                             new String[]{"schemeId","string"},new String[]{"perShare","string"},
                             new String[]{"recordAtMillis","long"},new String[]{"exAtMillis","long"},new String[]{"payAtMillis","long"});
+                }
+                case RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND -> {
+                    return List.of(new String[]{"companyPartyId", "string"}, new String[]{"meetingId", "string"},
+                            new String[]{"schemeId", "string"}, new String[]{"expectedVersion", "int"},
+                            new String[]{"operation", "CANCEL|REPLACE"}, new String[]{"reason", "string"},
+                            new String[]{"perShare", "string"}, new String[]{"recordAtMillis", "long"},
+                            new String[]{"exAtMillis", "long"}, new String[]{"payAtMillis", "long"});
                 }
                 case RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE -> {
                     return List.of(new String[]{"companyPartyId","string"},new String[]{"meetingId","string"});

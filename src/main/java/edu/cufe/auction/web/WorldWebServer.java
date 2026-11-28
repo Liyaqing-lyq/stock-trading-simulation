@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
+import edu.cufe.auction.world.RoleTradingView;
 import edu.cufe.auction.world.BranchOrigin;
 import edu.cufe.auction.world.BranchRejectedException;
 import edu.cufe.auction.world.RoleView;
@@ -2697,9 +2698,14 @@ public final class WorldWebServer implements AutoCloseable {
             var fields = new java.util.HashSet<>(common);
             fields.addAll(agenda);
             fields.addAll(terms);
+            var amendmentFields = Set.of("schemeId", "expectedVersion", "operation", "reason");
+            fields.addAll(amendmentFields);
             JsonNode body = jsonBody(exchange, fields);
             String tool = requiredText(body, "tool");
+            boolean amendment = RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND.equals(tool);
+            String operation = amendment ? requiredText(body, "operation") : "";
             var extras = switch (tool) {
+                case RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND -> amendmentFields;
                 case "issuer.dividend.propose" -> terms;
                 case "issuer.dividend.convene" -> agenda;
                 case "issuer.dividend.authorize" -> Set.<String>of();
@@ -2707,10 +2713,13 @@ public final class WorldWebServer implements AutoCloseable {
             };
             var required = new java.util.HashSet<>(common);
             required.addAll(extras);
+            boolean replacement = amendment && "REPLACE".equals(operation);
+            if (replacement) required.addAll(terms);
+            else if (amendment && !"CANCEL".equals(operation)) throw new IllegalArgumentException("更正动作须为 CANCEL 或 REPLACE");
             if (body.size() != required.size() || !required.stream().allMatch(body::hasNonNull)) {
                 throw new IllegalArgumentException("字段与该分红董事动作不符");
             }
-            boolean propose = terms.equals(extras), convene = agenda.equals(extras);
+            boolean propose = terms.equals(extras) || replacement, convene = agenda.equals(extras);
             var perShare = propose ? new java.math.BigDecimal(moneyText(body, "perShare")) : null;
             if (propose && perShare.signum() <= 0) throw new IllegalArgumentException("每股股息须为正");
             Object result = host.personalWebCommand(session.personId(), researchInteger(body, "expectedPosition"),
@@ -2718,9 +2727,10 @@ public final class WorldWebServer implements AutoCloseable {
                     requiredText(body, "commandId"), requiredText(body, "taskId"), researchInteger(body, "dueTimeMillis"),
                     requiredText(body, "companyId"), tool, requiredText(body, "meetingId"),
                     convene ? researchInteger(body, "materialDeadline") : 0, convene ? researchInteger(body, "opensAt") : 0,
-                    convene ? researchInteger(body, "closesAt") : 0, propose ? requiredText(body, "schemeId") : "",
+                    convene ? researchInteger(body, "closesAt") : 0, propose || amendment ? requiredText(body, "schemeId") : "",
                     perShare, propose ? researchInteger(body, "recordAt") : 0, propose ? researchInteger(body, "exAt") : 0,
-                    propose ? researchInteger(body, "payAt") : 0)),
+                    propose ? researchInteger(body, "payAt") : 0, operation,
+                    amendment ? amendmentVersion(body) : 0, amendment ? requiredText(body, "reason") : "")),
                     PersonalObservations.Page.ENGINEERING);
             send(exchange, 200, mapper.writeValueAsString(result));
         } catch (WorldWebHost.BusyException busy) {
@@ -2732,6 +2742,12 @@ public final class WorldWebServer implements AutoCloseable {
         } catch (Exception failure) {
             throw new WorldIoFailure();
         }
+    }
+
+    private int amendmentVersion(JsonNode body) {
+        long version = researchInteger(body, "expectedVersion");
+        if (version < 1 || version > Integer.MAX_VALUE) throw new IllegalArgumentException("方案版本须为有效正整数");
+        return (int) version;
     }
 
     private WorldWebHost.EngineeringCommand engineeringCommand(JsonNode body) {

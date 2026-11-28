@@ -13,6 +13,14 @@ public final class MarketSessions {
     private static final java.util.List<Long> WEEKDAY_BOUNDARIES = java.util.List.of(OPEN,BREAK,AFTERNOON,CLOSE);
     private MarketSessions() { }
 
+    /**
+     * @param timeMillis 拟定除息的模拟毫秒
+     * @return 该时点是否位于交易日当天第一次开市之前
+     */
+    public static boolean isPreopenTradingDay(long timeMillis) {
+        return timeMillis >= 0 && "PREOPEN".equals(status("", timeMillis, false));
+    }
+
     static String rejection(String symbol, long now) {
         return switch (status(symbol, now, false)) {
             case "OPEN" -> null;

@@ -5309,6 +5309,12 @@ async function submitSiteVisit(view, row, action, button, generation) {
 
 const ENGINEERING_FIELD_SPECS = {
   schemeId: { id: "eng-dividend-scheme", label: "分红方案编号" },
+  expectedVersion: { id: "eng-dividend-version", label: "待更正的公告版本" },
+  operation: {
+    id: "eng-dividend-operation", label: "更正方式", kind: "select",
+    options: [{ value: "", label: "请选择" }, { value: "CANCEL", label: "撤销方案" }, { value: "REPLACE", label: "替换条款" }]
+  },
+  reason: { id: "eng-dividend-reason", label: "更正原因" },
   perShare: { id: "eng-dividend-per-share", label: "每股现金股息（元）" },
   recordAt: { id: "eng-dividend-record", label: "股权登记时点（世界毫秒）" },
   exAt: { id: "eng-dividend-ex", label: "除息时点（世界毫秒）" },
@@ -5450,6 +5456,11 @@ const ENGINEERING_TOOL_FIELDS = {
     required: ["meetingId", "schemeId", "perShare", "recordAt", "exAt", "payAt"],
     note: "由出席的董事提交本公司方案。登记、除息和派息使用世界时点。"
   },
+  "issuer.dividend.amend": {
+    fields: ["meetingId", "schemeId", "expectedVersion", "operation", "reason", "perShare", "recordAt", "exAt", "payAt"],
+    required: ["meetingId", "schemeId", "expectedVersion", "operation", "reason"],
+    note: "填写现行方案编号和公告版本。须在原方案登记前完成表决和签发。替换条款时须重新指定每股金额和三个时点。"
+  },
   "issuer.dividend.authorize": {
     fields: ["meetingId"], required: ["meetingId"],
     note: "主席签发已通过的分红决议，系统在方案规定的时点登记和派付。"
@@ -5589,6 +5600,7 @@ const ENGINEERING_TOOL_LABELS = {
   "issuer.dividend.convene": "召集分红会议",
   "issuer.dividend.propose": "提出每股股息方案",
   "issuer.dividend.authorize": "签发已通过的分红决议",
+  "issuer.dividend.amend": "提出撤销或更正分红方案",
   "board.convene": "召集会议",
   "board.conveneWaiver": "召集豁免会议",
   "board.attend": "参与登记",
@@ -5815,6 +5827,11 @@ const ENGINEERING_KIND_TEXT = {
 
 function meetingProposalText(row) {
   const dividend = row.dividendRequest;
+  const change = row.dividendAmendment;
+  const subject = change ? change.schemeId + " · 公告第 " + change.expectedVersion + " 版 · " + change.reason : "";
+  if (change?.operation === "CANCEL") return "拟撤销分红方案 " + subject;
+  if (change?.operation === "REPLACE" && dividend) return "拟更正 " + subject + " · 每股 " + dividend.perShare
+    + " 元 · 登记 " + dividend.recordAt + " · 除息 " + dividend.exAt + " · 派息 " + dividend.payAt;
   if (dividend) return dividend.schemeId + " · " + dividend.symbol + " 每股 " + dividend.perShare
     + " 元 · 登记 " + dividend.recordAt + " · 除息 " + dividend.exAt + " · 派息 " + dividend.payAt;
   const request = row.appointmentRequest;
@@ -7163,6 +7180,7 @@ function renderEngineeringFields(tool) {
     return;
   }
   const periodicPeriod = periodicDefaultPeriod(currentPeriodicCard());
+  const replacementFields = [];
   for (const key of spec.fields) {
     const field = ENGINEERING_FIELD_SPECS[key];
     if (!field) continue;
@@ -7198,6 +7216,10 @@ function renderEngineeringFields(tool) {
     control.value = fallback;
     control.required = spec.required.includes(key);
     wrapper.append(label, control);
+    if (tool === "issuer.dividend.amend" && DIVIDEND_TERMS.includes(key)) {
+      label.textContent = field.label + "（必填）";
+      replacementFields.push({ wrapper, control });
+    }
     if (field.hint) {
       const hint = document.createElement("p");
       hint.className = "hint";
@@ -7210,6 +7232,18 @@ function renderEngineeringFields(tool) {
     container.appendChild(wrapper);
     state.engineeringFieldIds.push(key);
   }
+  if (tool === "issuer.dividend.amend") {
+    const operation = $("eng-dividend-operation");
+    const showTerms = () => {
+      for (const { wrapper, control } of replacementFields) {
+        control.required = operation.value === "REPLACE";
+        control.disabled = !control.required;
+        wrapper.hidden = control.disabled;
+      }
+    };
+    operation.addEventListener("change", showTerms);
+    showTerms();
+  }
   if (spec.fields.includes("draftId")) syncDraftVersion();
   if (tool === "periodic.publish") applyPublishGrant();
   if (note) {
@@ -7218,6 +7252,16 @@ function renderEngineeringFields(tool) {
     note.textContent = hasPeriodReview
       ? "预算、任免等议题使用普通表决与决议实施。期末考核会议通过提交本席评分与批准草稿分别登记。"
       : spec.note || "";
+    if (tool === "issuer.dividend.amend") {
+      const plans = currentPersonCompany()?.amendableAnnouncements || [];
+      note.textContent += plans.length
+        ? " 当前可更正的方案：" + plans.map(plan => plan.schemeId + "（公告第 " + plan.expectedVersion + " 版）").join("、") + "。"
+        : " 当前没有已公告且仍可更正的方案。";
+    }
+    if ((tool === "issuer.dividend.propose" || tool === "issuer.dividend.amend")
+        && currentPersonCompany()?.tools?.includes("issuer.dividend.amend")) {
+      note.textContent += " 除息时点须在交易日当天 09:30 开市前。";
+    }
   }
   if (toolNote) {
     toolNote.textContent = "将发起：" + engineeringToolLabel(tool) + "（" + tool + "）";
@@ -7231,7 +7275,7 @@ function engineeringFieldValues() {
   for (const key of state.engineeringFieldIds || []) {
     const field = ENGINEERING_FIELD_SPECS[key];
     const node = field ? $(field.id) : null;
-    values[key] = node ? String(node.value == null ? "" : node.value).trim() : "";
+    values[key] = node && !node.disabled ? String(node.value == null ? "" : node.value).trim() : "";
   }
   if (state.engineeringTool === "periodic.score") {
     values.metrics = [];
@@ -7247,7 +7291,8 @@ function engineeringFieldValues() {
   return values;
 }
 
-const ENGINEERING_INT_FIELDS = ["trancheIndex", "units", "docVersion", "durationMillis",
+const DIVIDEND_TERMS = ["perShare", "recordAt", "exAt", "payAt"];
+const ENGINEERING_INT_FIELDS = ["expectedVersion", "trancheIndex", "units", "docVersion", "durationMillis",
   "materialDeadline", "opensAt", "closesAt", "effectiveAt", "endsAt", "period", "recordAt", "exAt", "payAt"];
 const ENGINEERING_MONEY_FIELDS = ["amount", "laborLimit", "procurementLimit", "perShare"];
 
@@ -7285,7 +7330,14 @@ function engineeringValidate(tool, values) {
   if (values.amount && /^\d+(\.\d{1,2})?$/.test(values.amount) && Number(values.amount) <= 0) {
     errors.push("「" + fieldLabel("amount") + "」必须大于 0");
   }
-  if (tool === "issuer.dividend.propose") {
+  const replacement = tool === "issuer.dividend.amend" && values.operation === "REPLACE";
+  if (tool === "issuer.dividend.amend" && values.expectedVersion && !/^[1-9]\d*$/.test(values.expectedVersion)) {
+    errors.push("公告版本须为正整数");
+  }
+  if (replacement) for (const key of DIVIDEND_TERMS) {
+    if (!values[key]) errors.push("替换条款须填写「" + fieldLabel(key) + "」");
+  }
+  if (tool === "issuer.dividend.propose" || replacement) {
     if (values.perShare && Number(values.perShare) <= 0) errors.push("每股股息须大于 0");
     if (values.recordAt && values.exAt && values.payAt
         && !(Number(values.dueTimeMillis) <= Number(values.recordAt) && Number(values.recordAt) < Number(values.exAt)

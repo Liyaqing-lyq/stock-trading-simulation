@@ -8725,6 +8725,16 @@ public final class WorldWebHost implements AutoCloseable {
                     boolean issuerBoard = current.engineeringDividendIssuer().filter(companyId::equals).isPresent();
                     if (issuerBoard) {
                         withAttend.add("issuer.dividend.propose");
+                        if (RunManifest.DIVIDEND_AMENDMENT_VERSION.equals(
+                                current.profile().manifest().dataVersions().get(RunManifest.DIVIDEND_AMENDMENT_POLICY))) {
+                            withAttend.add(RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND);
+                            for (var seat : current.engineeringRoleInput(personPartyId).path("directorships")) {
+                                if (companyId.equals(seat.path("companyPartyId").asText())) {
+                                    card.put("amendableAnnouncements", seat.path("amendableAnnouncements"));
+                                    break;
+                                }
+                            }
+                        }
                         if (ownSeat.equals(charter.chairSeatId())) {
                             withAttend.add("issuer.dividend.convene");
                             withAttend.add("issuer.dividend.authorize");
@@ -8777,9 +8787,17 @@ public final class WorldWebHost implements AutoCloseable {
                         putMeetingProposal(row, meeting, showAppointmentRequest(current));
                         if (eligibleForDividend && meeting.dividendProposal() != null) {
                             var terms = meeting.dividendProposal().request();
-                            row.put("dividendRequest", Map.of("schemeId", terms.schemeId(), "symbol", terms.symbol(),
-                                    "perShare", dec(terms.perShare()), "recordAt", num(terms.recordAtMillis()),
-                                    "exAt", num(terms.exAtMillis()), "payAt", num(terms.payAtMillis())));
+                            var change = terms.amendment();
+                            if (change != null) {
+                                row.put("dividendAmendment", Map.of("schemeId", change.currentSchemeId(),
+                                        "expectedVersion", Integer.toString(change.expectedVersion()),
+                                        "operation", change.operation(), "reason", change.reason()));
+                            }
+                            if (change == null || "REPLACE".equals(change.operation())) {
+                                row.put("dividendRequest", Map.of("schemeId", terms.schemeId(), "symbol", terms.symbol(),
+                                        "perShare", dec(terms.perShare()), "recordAt", num(terms.recordAtMillis()),
+                                        "exAt", num(terms.exAtMillis()), "payAt", num(terms.payAtMillis())));
+                            }
                         }
                         row.put("failureReason", meeting.failureReason());
                         meetings.add(row);
@@ -9064,7 +9082,8 @@ public final class WorldWebHost implements AutoCloseable {
 
     record IssuerDividendCommand(long position, String command, String task, long due, String company,
             String tool, String meeting, long materials, long opens, long closes,
-            String scheme, BigDecimal perShare, long recordAt, long exAt, long payAt) { }
+            String scheme, BigDecimal perShare, long recordAt, long exAt, long payAt,
+            String operation, int expectedVersion, String reason) { }
 
     EngineeringActionView scheduleIssuerDividend(String person, IssuerDividendCommand action) throws Exception {
         return onWriter(() -> {
@@ -9074,25 +9093,37 @@ public final class WorldWebHost implements AutoCloseable {
             if (world.engineeringDividendIssuer().filter(action.company()::equals).isEmpty()) {
                 throw new IllegalArgumentException("该档案未登记这家分红发行人");
             }
-            DividendModel.SchemeRequest request = null;
-            if ("issuer.dividend.propose".equals(action.tool())) {
-                var issuer = snapshot.engineering().orElseThrow().config().specOf(action.company());
-                var security = world.openingRegistry().orElseThrow().securities().stream()
-                        .filter(s -> action.company().equals(s.issuerOrganizationId())).findFirst().orElseThrow();
-                request = new DividendModel.SchemeRequest(action.scheme(), security.symbol(), issuer.companyOwnerId(),
-                        issuer.companyAccountId(), action.perShare(), action.recordAt(), action.exAt(), action.payAt());
-            }
-            String operation = switch (action.tool()) {
-                case "issuer.dividend.propose" -> "PROPOSE";
-                case "issuer.dividend.convene" -> "CONVENE";
-                case "issuer.dividend.authorize" -> "AUTHORIZE";
-                default -> throw new IllegalArgumentException("未知分红董事动作");
-            };
-            String receipt = world.openRoleSession(person).issuerDividend(action.command(), action.task(), action.due(),
-                    operation, action.meeting(), action.materials(), action.opens(), action.closes(), request);
+            String receipt = submitIssuerDividend(world, person, action);
             var after = world.snapshot();
             return new EngineeringActionView(runId, num(after.position()), num(after.timeMillis()), action.company(), action.tool(), receipt);
         });
+    }
+
+    private static String submitIssuerDividend(WorldRuntime world, String person, IssuerDividendCommand action) throws Exception {
+        var session = world.openRoleSession(person);
+        if (RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND.equals(action.tool())) {
+            boolean replacement = "REPLACE".equals(action.operation());
+            return session.amendIssuerDividend(action.command(), action.task(), action.due(), action.meeting(), action.scheme(),
+                    action.expectedVersion(), action.operation(), action.reason(),
+                    replacement ? action.perShare().toPlainString() : null, replacement ? action.recordAt() : null,
+                    replacement ? action.exAt() : null, replacement ? action.payAt() : null);
+        }
+        DividendModel.SchemeRequest request = null;
+        if ("issuer.dividend.propose".equals(action.tool())) {
+            var issuer = world.snapshot().engineering().orElseThrow().config().specOf(action.company());
+            var security = world.openingRegistry().orElseThrow().securities().stream()
+                    .filter(s -> action.company().equals(s.issuerOrganizationId())).findFirst().orElseThrow();
+            request = new DividendModel.SchemeRequest(action.scheme(), security.symbol(), issuer.companyOwnerId(),
+                    issuer.companyAccountId(), action.perShare(), action.recordAt(), action.exAt(), action.payAt());
+        }
+        String operation = switch (action.tool()) {
+            case "issuer.dividend.propose" -> "PROPOSE";
+            case "issuer.dividend.convene" -> "CONVENE";
+            case "issuer.dividend.authorize" -> "AUTHORIZE";
+            default -> throw new IllegalArgumentException("未知分红董事动作");
+        };
+        return session.issuerDividend(action.command(), action.task(), action.due(),
+                operation, action.meeting(), action.materials(), action.opens(), action.closes(), request);
     }
 
     private static boolean isChair(WorldRuntime current, String companyId, String personPartyId) {

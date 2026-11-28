@@ -9623,7 +9623,7 @@ public final class WorldRuntime implements AutoCloseable {
                 return planDividendClaim(binding, recorded, model, forcedTaskId, base, args);
             }
             case RoleTradingView.TOOL_ISSUER_DIVIDEND_CONVENE, RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE,
-                 RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE -> {
+                 RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND, RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE -> {
                 return planIssuerDividend(binding, recorded, model, forcedTaskId, base, args);
             }
             case RoleTradingView.TOOL_INTERVIEW_SPEAK -> {
@@ -9842,13 +9842,15 @@ public final class WorldRuntime implements AutoCloseable {
         String task = forcedTaskId == null ? freeTaskId(base, DecisionRun.actionTaskId(id)) : forcedTaskId;
         var charter = dividendCharter();
         String seat = charter.seatOf(person);
-        boolean propose = RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE.equals(tool);
+        boolean amend = RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND.equals(tool);
+        boolean propose = amend || RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE.equals(tool);
         boolean convene = RoleTradingView.TOOL_ISSUER_DIVIDEND_CONVENE.equals(tool);
         String reject = null;
         if (!EngineeringIssuerDividend.decisions(manifest) || !EngineeringIssuerDividend.ISSUER.equals(company))
             reject = "UNSUPPORTED_COMPANY_ACTION";
         else if (seat == null || (!propose && !charter.chairSeatId().equals(seat))) reject = REASON_NOT_AUTHORIZED;
         else if (meeting == null) reject = "INVALID_ARGUMENT";
+        else if (amend && !dividendAmendments()) reject = "UNSUPPORTED_COMPANY_ACTION";
         String kind = PendingTask.ENGINEERING_BEGIN_V1;
         Object payload = null;
         if (reject == null && convene) {
@@ -9867,7 +9869,21 @@ public final class WorldRuntime implements AutoCloseable {
         } else if (reject == null) {
             var work = new DividendDecisionWork(person, due - start);
             DividendModel.SchemeRequest terms = null;
-            if (propose) {
+            if (amend) {
+                EngineeringIssuerDividend.requireTimes(args, "expectedVersion");
+                var a = strict(DividendAmendArgs.class, args);
+                var amendment = new DividendModel.Amendment(a.schemeId(), a.expectedVersion(), a.operation(), a.reason());
+                if ("REPLACE".equals(a.operation())) EngineeringIssuerDividend.requireTimes(args, "recordAtMillis", "exAtMillis", "payAtMillis");
+                else if (args.has("perShare") || args.has("recordAtMillis") || args.has("exAtMillis") || args.has("payAtMillis"))
+                    throw new IllegalArgumentException("撤销不能附带新经济条款");
+                boolean visible = false;
+                for (var director : mapper.readTree(decision.inputText()).at("/engineering/directorships"))
+                    if (company.equals(director.path("companyPartyId").asText()) && seat.equals(director.path("seatId").asText()))
+                        for (var row : director.path("amendableAnnouncements"))
+                            if (a.schemeId().equals(row.path("schemeId").asText()) && a.expectedVersion() == row.path("expectedVersion").asInt()) visible = true;
+                if (!visible) reject = "ANNOUNCEMENT_NOT_AVAILABLE";
+                else terms = amendmentTerms(base, amendment, a.perShare(), a.recordAtMillis(), a.exAtMillis(), a.payAtMillis());
+            } else if (propose) {
                 EngineeringIssuerDividend.requireTimes(args, "recordAtMillis", "exAtMillis", "payAtMillis");
                 var request = strict(EngineeringIssuerDividend.Propose.class, args);
                 var spec = engineeringConfig.specOf(company);
@@ -9877,8 +9893,9 @@ public final class WorldRuntime implements AutoCloseable {
                 terms = new DividendModel.SchemeRequest(request.schemeId(), security.symbol(), spec.companyOwnerId(), spec.companyAccountId(),
                         new BigDecimal(request.perShare()), request.recordAtMillis(), request.exAtMillis(), request.payAtMillis());
             } else strict(EngineeringIssuerDividend.Authorize.class, args);
+            if (reject != null) return new PlacedAction(id, tool, "", "", command, start, args.toString(), null, reject);
             kind = propose ? PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1 : PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1;
-            payload = new DividendActionPayload(command, meeting, seat, propose ? terms.schemeId() : "", "", null, "", List.of(), terms, work);
+            payload = new DividendActionPayload(command, meeting, seat, propose ? dividendSubject(terms) : "", "", null, "", List.of(), terms, work);
             if (forcedTaskId == null) {
                 reject = EngineeringIssuerDividend.frozenMeetingProblem(mapper.readTree(decision.inputText()), seat, meeting, propose);
                 var board = dividendBoard(base).board();
@@ -26601,7 +26618,7 @@ public final class WorldRuntime implements AutoCloseable {
                     && PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(consumed.kind());
             expectedCommand = authorizes ? report.commandId() : "div-batch:" + consumed.taskId();
             expectedResult = expected.accepted() ? "ACCEPTED" : "REJECTED";
-            if (authorizes) expectedResult = "AUTHORIZED";
+            if (authorizes) expectedResult = expected.reason();
         }
         List<WorldEvent> actualEvents = commit.events().stream()
                 .filter(event -> !stateEvent(event.type())).toList();
@@ -26614,7 +26631,8 @@ public final class WorldRuntime implements AutoCloseable {
                 || PendingTask.DIVIDEND_BOOK_EX_V1.equals(consumed.kind()))) {
             DividendActionPayload payload = mapper.readValue(consumed.payload(),
                     DividendActionPayload.class);
-            if (findDocument(candidate, "dividend-public:" + payload.schemeId()) == null) {
+            var notice = findDocument(candidate, "dividend-public:" + DividendModel.rootSchemeId(candidate.dividends(), payload.schemeId()));
+            if (notice == null || notice.at(DividendModel.versionOf(candidate.dividends(), payload.schemeId())) == null) {
                 throw new IOException("登记/除息前必须已实际发表分红公告："
                         + payload.schemeId());
             }
@@ -26687,7 +26705,7 @@ public final class WorldRuntime implements AutoCloseable {
         DividendActionPayload payload = mapper.readValue(task.payload(),
                 DividendActionPayload.class);
         if (PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1.equals(task.kind())) {
-            String binding = schemeBindingProblem(payload.request());
+            String binding = dividendTermsProblem(previous, payload.request(), task.dueTimeMillis());
             if (binding != null) {
                 return new DividendExpectation(run, d0, accounts, false, binding);
             }
@@ -26697,6 +26715,8 @@ public final class WorldRuntime implements AutoCloseable {
             if (!board.accepted()) {
                 return new DividendExpectation(run, d0, accounts, false, board.reason());
             }
+            if (payload.request().amendment() != null)
+                return new DividendExpectation(run.withBoard(board.state()), d0, accounts, true, "AMENDMENT_PROPOSED");
             DividendModel.Result proposed = proposeOrReuse(d0,
                     new DividendModel.Event("div-propose:" + payload.schemeId(), position,
                             task.dueTimeMillis()), payload.request());
@@ -26731,6 +26751,17 @@ public final class WorldRuntime implements AutoCloseable {
             if (afterIssue >= request.recordAtMillis()) {
                 return new DividendExpectation(run, d0, accounts, false,
                         BoardModel.REASON_INVALID_TIMELINE);
+            }
+            if (dividendAmendments() || request.amendment() != null) {
+                String problem = dividendTermsProblem(previous, request, task.dueTimeMillis());
+                if (problem != null) return new DividendExpectation(run, d0, accounts, false, problem);
+                if (request.amendment() != null) {
+                    var result = DividendModel.amend(d0, new DividendModel.Event("div-amend:" + payload.meetingId(),
+                            position, task.dueTimeMillis()), request, board.state().meeting(payload.meetingId()).dividendResolution().authorizationRef());
+                    if (!result.accepted()) return new DividendExpectation(run, d0, accounts, false, result.reason());
+                    String reason = "CANCEL".equals(request.amendment().operation()) ? "CANCELLED" : "REPLACED";
+                    return new DividendExpectation(run.withBoard(board.state()), result.state(), accounts, true, reason);
+                }
             }
             DividendModel.Result authorized = DividendModel.authorize(d0,
                     new DividendModel.Event("div-authorize:" + request.schemeId(), position,
@@ -26909,7 +26940,7 @@ public final class WorldRuntime implements AutoCloseable {
             BoardModel.Meeting meeting = expected.governance().board()
                     .meeting(payload.meetingId());
             scheduleDividendChildren(expectedPending, used, childEvents,
-                    meeting.dividendProposal().request(), consumed.dueTimeMillis());
+                    meeting.dividendProposal().request(), consumed.dueTimeMillis(), previous.dividends());
         }
         if (!candidate.pending().equals(expectedPending)) {
             throw new IOException("分红批次待办集合与重算不一致：" + consumed.taskId());
@@ -26941,7 +26972,7 @@ public final class WorldRuntime implements AutoCloseable {
                     && task.dueTimeMillis() > meeting.closesAt()) {
                 BoardModel.Outcome execution = BoardModel.executeAdoptedDividendResolution(
                         dividendBoard(previous).board(), task.dueTimeMillis(), payload.meetingId());
-                if (execution.accepted()) schemeId = meeting.dividendProposal().request().schemeId();
+                if (execution.accepted()) schemeId = dividendSubject(meeting.dividendProposal().request());
             }
         } else if (PendingTask.DIVIDEND_IMPAIR_V1.equals(task.kind())) {
             DividendModel.Claim claim = DividendModel.claim(previous.dividends(), payload.claimId());
@@ -26956,12 +26987,27 @@ public final class WorldRuntime implements AutoCloseable {
                                              WorldState previous) throws IOException {
         for (InformationModel.Document old : documentsOf(previous)) {
             if (old.docId().startsWith("dividend-public:")
-                    && !old.equals(findDocument(candidate, old.docId()))) {
+                    && (findDocument(candidate, old.docId()) == null || !dividendAmendments() && !old.equals(findDocument(candidate, old.docId())))) {
                 throw new IOException("已确认分红公告被修改或删除：" + old.docId());
             }
         }
         for (InformationModel.Document document : documentsOf(candidate)) {
             if (!document.docId().startsWith("dividend-public:")) continue;
+            var prior = findDocument(previous, document.docId());
+            if (dividendAmendments() && prior != null) {
+                if (prior.equals(document)) continue;
+                boolean found = false;
+                for (String id : completedTaskIds(commit)) {
+                    var task = pendingOf(previous, id);
+                    if (task == null || !PendingTask.INFORMATION_PUBLISH_VERSION_V1.equals(task.kind())) continue;
+                    var payload = decisionMapper.readValue(task.payload(), PublishPayload.class);
+                    if (!document.docId().equals(payload.docId())) continue;
+                    validateDividendPublicationBatch(commit, candidate, previous, task, payload);
+                    found = true;
+                }
+                if (!found) throw new IOException("已确认公告的更正缺少原授权任务：" + document.docId());
+                continue;
+            }
             String schemeId = document.docId().substring("dividend-public:".length());
             DividendModel.Scheme scheme = DividendModel.scheme(candidate.dividends(), schemeId);
             if (scheme == null) throw new IOException("公告引用未知方案：" + document.docId());
@@ -26994,8 +27040,12 @@ public final class WorldRuntime implements AutoCloseable {
         }
         for (String taskId : completedTaskIds(commit)) {
             PendingTask task = pendingOf(previous, taskId);
-            if (task == null || !PendingTask.INFORMATION_PUBLISH_V1.equals(task.kind())) continue;
+            if (task == null || !(PendingTask.INFORMATION_PUBLISH_V1.equals(task.kind())
+                    || PendingTask.INFORMATION_PUBLISH_VERSION_V1.equals(task.kind()))) continue;
             PublishPayload payload = decisionMapper.readValue(task.payload(), PublishPayload.class);
+            if (payload.docId().startsWith("dividend-public:") && PendingTask.INFORMATION_PUBLISH_VERSION_V1.equals(task.kind())
+                    && (!dividendAmendments() || Objects.equals(findDocument(candidate, payload.docId()), findDocument(previous, payload.docId()))))
+                throw new IOException("原授权公告更正缺少实际后继版本：" + payload.docId());
             if (payload.docId().startsWith("dividend-public:")
                     && findDocument(candidate, payload.docId()) == null) {
                 throw new IOException("分红公告发表批次缺少实际文档：" + payload.docId());
@@ -27019,8 +27069,11 @@ public final class WorldRuntime implements AutoCloseable {
 
     private void validateDividendPublicationBatch(WorldCommit commit, WorldState candidate, WorldState previous,
                                                    PendingTask task, PublishPayload payload) throws IOException {
-        InformationModel.State published = InformationModel.publish(previous.information().information(),
-                payload.docId(), payload.publisherPartyId(), audienceOf(payload), draftOf(payload, task.dueTimeMillis()));
+        var informationBefore = previous.information().information();
+        var draft = draftOf(payload, task.dueTimeMillis());
+        InformationModel.State published = PendingTask.INFORMATION_PUBLISH_VERSION_V1.equals(task.kind())
+                ? InformationModel.publishVersion(informationBefore, payload.docId(), draft)
+                : InformationModel.publish(informationBefore, payload.docId(), payload.publisherPartyId(), audienceOf(payload), draft);
         InformationRun.Report report = new InformationRun.Report(task.taskId(), payload.commandId(), task.kind(),
                 true, "OK", payload.docId(), "", task.dueTimeMillis(), commit.position());
         InformationRun information = previous.information().withInformation(published).withReport(report);
@@ -27136,7 +27189,7 @@ public final class WorldRuntime implements AutoCloseable {
             var payload = decisionMapper.readValue(added.payload(), DividendActionPayload.class);
             if (payload.decisionWork() != null) {
                 var work = payload.decisionWork();
-                String tool = DividendClaimDecisions.toolForKind(added.kind());
+                String tool = dividendTool(added.kind(), payload);
                 var run = candidate.decisions();
                 String taskId = added.taskId();
                 var ref = run == null ? null : run.actionRefs().values().stream()
@@ -27231,6 +27284,9 @@ public final class WorldRuntime implements AutoCloseable {
                     requireText(payload.seatId(), "提案席位");
                     Objects.requireNonNull(payload.request(), "方案请求");
                     requireText(payload.request().schemeId(), "方案标识");
+                    if (!Objects.equals(dividendSubject(payload.request()), payload.schemeId())
+                            || payload.request().amendment() != null && !dividendAmendments())
+                        throw new IOException("提案对象或更正版本与开局不符");
                 } else if (PendingTask.GOVERNANCE_DIVIDEND_IMPLEMENT_V1.equals(kind)) {
                     requireText(payload.meetingId(), "会议标识");
                     requireText(payload.seatId(), "主席席位");
@@ -29802,8 +29858,9 @@ public final class WorldRuntime implements AutoCloseable {
             throws IOException {
         requireDividend();
         Objects.requireNonNull(request, "方案请求");
+        if (request.amendment() != null && !dividendAmendments()) throw new IllegalArgumentException("本档未启用分红更正");
         DividendActionPayload payload = new DividendActionPayload(commandId, meetingId, seatId,
-                request.schemeId(), "", null, "", relatedSeatIds, request);
+                dividendSubject(request), "", null, "", relatedSeatIds, request);
         return scheduleDividendTask(commandId, taskId, dueTimeMillis,
                 WorldScheduler.Phase.COMPLETION, PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1, payload);
     }
@@ -30010,6 +30067,76 @@ public final class WorldRuntime implements AutoCloseable {
         return scheduleExternalTask(task, commandId, content);
     }
 
+    private record DividendAmendArgs(String companyPartyId, String meetingId, String schemeId, int expectedVersion,
+                                     String operation, String reason, String perShare, Long recordAtMillis, Long exAtMillis, Long payAtMillis) { }
+
+    private boolean dividendAmendments() {
+        return EngineeringIssuerDividend.decisions(manifest)
+                && RunManifest.DIVIDEND_AMENDMENT_VERSION.equals(manifest.dataVersions().get(RunManifest.DIVIDEND_AMENDMENT_POLICY));
+    }
+
+    private static String dividendSubject(DividendModel.SchemeRequest r) {
+        return r.amendment() == null ? r.schemeId() : r.amendment().currentSchemeId();
+    }
+
+    private String dividendTool(String kind, DividendActionPayload payload) {
+        if (PendingTask.GOVERNANCE_DIVIDEND_PROPOSAL_V1.equals(kind) && payload.request() != null
+                && payload.request().amendment() != null) return RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND;
+        return DividendClaimDecisions.toolForKind(kind);
+    }
+
+    private DividendModel.SchemeRequest amendmentTerms(WorldState base, DividendModel.Amendment a, String amount,
+                                                       Long record, Long ex, Long pay) {
+        var old = DividendModel.scheme(base.dividends(), a.currentSchemeId());
+        if (old == null) throw new IllegalArgumentException("找不到原分红方案");
+        boolean replace = "REPLACE".equals(a.operation());
+        if (replace ? amount == null || record == null || ex == null || pay == null
+                    : amount != null || record != null || ex != null || pay != null)
+            throw new IllegalArgumentException("更正动作与新条款不符");
+        return new DividendModel.SchemeRequest(DividendModel.revisionId(base.dividends(), a), old.symbol(),
+                old.issuerOwnerId(), old.companyAccountId(), replace ? new BigDecimal(amount) : old.perShare(),
+                replace ? record : old.recordAtMillis(), replace ? ex : old.exAtMillis(), replace ? pay : old.payAtMillis(), a);
+    }
+
+    private String dividendTermsProblem(WorldState base, DividendModel.SchemeRequest r, long now) {
+        String binding = schemeBindingProblem(r);
+        if (binding != null) return binding;
+        var a = r.amendment();
+        if (!dividendAmendments()) return a == null ? null : "AMENDMENTS_NOT_ENABLED";
+        if (a == null && r.schemeId() != null && r.schemeId().startsWith(DividendModel.REVISION_PREFIX)) return "RESERVED_SCHEME_ID";
+        if (!MarketSessions.isPreopenTradingDay(r.exAtMillis())) return "EX_DATE_NOT_PREOPEN";
+        if (a == null) return null;
+        var old = DividendModel.scheme(base.dividends(), a.currentSchemeId());
+        if (old == null || old.phase() != DividendModel.Phase.AUTHORIZED
+                || DividendModel.versionOf(base.dividends(), old.schemeId()) != a.expectedVersion()
+                || !DividendModel.revisionId(base.dividends(), a).equals(r.schemeId())) return "STALE_ANNOUNCEMENT";
+        String root = DividendModel.rootSchemeId(base.dividends(), old.schemeId());
+        var doc = findDocument(base, "dividend-public:" + root);
+        if (doc == null || doc.at(a.expectedVersion()) == null || doc.at(a.expectedVersion()).publishedAt() > now)
+            return "ANNOUNCEMENT_NOT_AVAILABLE";
+        if (now >= old.recordAtMillis() - 1 || now >= r.recordAtMillis() - 1) return BoardModel.REASON_INVALID_TIMELINE;
+        if ("CANCEL".equals(a.operation()) && (old.perShare().compareTo(r.perShare()) != 0
+                || r.recordAtMillis() != old.recordAtMillis() || r.exAtMillis() != old.exAtMillis()
+                || r.payAtMillis() != old.payAtMillis())) return "CANCELLATION_TERMS_MISMATCH";
+        return null;
+    }
+
+    synchronized String amendIssuerDividend(WorldRoleSession session, String command, String task, long due, String meeting,
+            String scheme, int expectedVersion, String operation, String reason, String amount, Long record, Long ex, Long pay) throws IOException {
+        if (!dividendAmendments()) throw new IllegalArgumentException("本档不支持分红公告更正");
+        String seat = dividendCharter().seatOf(session.personPartyId());
+        if (seat == null) throw new IllegalArgumentException("本人不是此发行人的董事");
+        var available = mapper.createObjectNode();
+        EngineeringIssuerDividend.projectAnnouncements(available, state.dividends(), state.information().information(),
+                state.timeMillis(), engineeringConfig.specOf(EngineeringIssuerDividend.ISSUER), registry);
+        boolean visible = false;
+        for (var row : available.path("amendableAnnouncements"))
+            if (Objects.equals(scheme, row.path("schemeId").asText()) && expectedVersion == row.path("expectedVersion").asInt()) visible = true;
+        if (!visible) throw new IllegalArgumentException("本席当前无此可更正公告");
+        var terms = amendmentTerms(state, new DividendModel.Amendment(scheme, expectedVersion, operation, reason), amount, record, ex, pay);
+        return scheduleDividendProposal(command, task, due, seat, meeting, List.of(), terms);
+    }
+
     private boolean scopedDividend() {
         return EngineeringIssuerDividend.enabled(manifest);
     }
@@ -30059,7 +30186,8 @@ public final class WorldRuntime implements AutoCloseable {
                         person, seat, meeting, materials, opens, closes, List.of(), List.of(), "", "", 0L, List.of(), "", null), DEFAULT_FOCUS_MILLIS);
             }
             case "PROPOSE" -> {
-                if (request == null || schemeBindingProblem(request) != null) throw new IllegalArgumentException("分红方案与发行人不符");
+                if (request == null || request.amendment() != null || schemeBindingProblem(request) != null)
+                    throw new IllegalArgumentException("分红方案与发行人不符");
                 yield scheduleDividendProposal(command, task, due, seat, meeting, List.of(), request);
             }
             case "AUTHORIZE" -> {
@@ -30174,85 +30302,22 @@ public final class WorldRuntime implements AutoCloseable {
 
     private void completeDividendProposal(PendingTask task, DividendActionPayload payload)
             throws IOException {
-        BoardRun run = dividendBoard(state);
-        String binding = schemeBindingProblem(payload.request());
-        if (binding != null) {
-            finishDividend(task, payload.commandId(), payload.meetingId(), payload.schemeId(),
-                    false, binding, List.of(), state.dividends(), run);
-            return;
-        }
-        BoardModel.Outcome board = BoardModel.proposeDividendAuthorization(run.board(),
-                task.dueTimeMillis(), payload.meetingId(), payload.seatId(),
-                payload.relatedSeatIds(), payload.request());
-        if (!board.accepted()) {
-            finishDividend(task, payload.commandId(), payload.meetingId(), payload.schemeId(),
-                    false, board.reason(), List.of(), state.dividends(), run);
-            return;
-        }
-        DividendModel.Result d0 = proposeOrReuse(state.dividends(),
-                new DividendModel.Event("div-propose:" + payload.schemeId(), state.position() + 1,
-                        task.dueTimeMillis()), payload.request());
-        boolean accepted = d0.accepted();
-        String reason = accepted ? board.reason() : d0.reason();
-        DividendModel.State dividends = accepted ? d0.state() : state.dividends();
-        BoardRun updated = accepted
-                ? new BoardRun(board.state(), run.reports(), run.periodEvidence()) : run;
+        var expected = recomputeDividend(state, task, state.position() + 1);
         finishDividend(task, payload.commandId(), payload.meetingId(), payload.schemeId(),
-                accepted, reason, List.of(), dividends, updated);
+                expected.accepted(), expected.reason(), List.of(), expected.dividends(), expected.governance());
     }
 
-    private void completeDividendAuthorize(PendingTask task, DividendActionPayload payload)
-            throws IOException {
-        BoardRun run = dividendBoard(state);
-        if (payload.seatId() == null || !payload.seatId().equals(dividendCharter().chairSeatId())) {
-            finishDividend(task, payload.commandId(), payload.meetingId(), "", false,
-                    REASON_NOT_AUTHORIZED, List.of(), state.dividends(), run);
+    private void completeDividendAuthorize(PendingTask task, DividendActionPayload payload) throws IOException {
+        long position = state.position() + 1;
+        var expected = recomputeDividend(state, task, position);
+        DividendReport report = expectedDividendReport(state, task, expected, position);
+        if (!expected.accepted()) {
+            finishDividend(task, payload.commandId(), payload.meetingId(), report.schemeId(),
+                    false, expected.reason(), List.of(), expected.dividends(), expected.governance());
             return;
         }
-        BoardModel.Meeting target = run.board().meeting(payload.meetingId());
-        if (target == null || task.dueTimeMillis() <= target.closesAt()) {
-            finishDividend(task, payload.commandId(), payload.meetingId(), "", false,
-                    BoardModel.REASON_NOT_DUE, List.of(), state.dividends(), run);
-            return;
-        }
-        BoardModel.Outcome board = BoardModel.executeAdoptedDividendResolution(run.board(),
-                task.dueTimeMillis(), payload.meetingId());
-        if (!board.accepted()) {
-            finishDividend(task, payload.commandId(), payload.meetingId(), "", false,
-                    board.reason(), List.of(), state.dividends(), run);
-            return;
-        }
-        BoardModel.Meeting meeting = board.state().meeting(payload.meetingId());
-        DividendModel.SchemeRequest request = meeting.dividendProposal().request();
-        long afterIssue;
-        try {
-            afterIssue = Math.addExact(task.dueTimeMillis(), 1L);
-        } catch (ArithmeticException overflow) {
-            finishDividend(task, payload.commandId(), payload.meetingId(), request.schemeId(),
-                    false, BoardModel.REASON_INVALID_TIMELINE, List.of(), state.dividends(), run);
-            return;
-        }
-        if (afterIssue >= request.recordAtMillis()) {
-            finishDividend(task, payload.commandId(), payload.meetingId(), request.schemeId(),
-                    false, BoardModel.REASON_INVALID_TIMELINE, List.of(), state.dividends(),
-                    run);
-            return;
-        }
-        String schemeId = request.schemeId();
-        DividendModel.Result d0 = DividendModel.authorize(state.dividends(),
-                new DividendModel.Event("div-authorize:" + schemeId, state.position() + 1,
-                        task.dueTimeMillis()), schemeId,
-                meeting.dividendResolution().authorizationRef());
-        if (!d0.accepted()) {
-            finishDividend(task, payload.commandId(), payload.meetingId(), schemeId, false,
-                    d0.reason(), List.of(), state.dividends(), run);
-            return;
-        }
-        BoardRun updated = new BoardRun(board.state(), run.reports(), run.periodEvidence());
-        List<DividendReport> reports = new ArrayList<>();
-        reports.add(new DividendReport(task.taskId(), payload.commandId(),
-                task.kind(), payload.meetingId(), schemeId, state.position() + 1,
-                task.dueTimeMillis(), true, "AUTHORIZED"));
+        BoardRun updated = expected.governance();
+        var request = updated.board().meeting(payload.meetingId()).dividendProposal().request();
         List<PendingTask> pending = new ArrayList<>(state.pending());
         List<WorldEvent> events = new ArrayList<>();
         Set<String> used = new LinkedHashSet<>(state.usedTaskIds());
@@ -30260,29 +30325,30 @@ public final class WorldRuntime implements AutoCloseable {
         used.add(task.taskId());
         events.add(new WorldEvent("task-completed:" + task.taskId(), "TASK_COMPLETED_V1",
                 task.payload()));
-        scheduleDividendChildren(pending, used, events, request, task.dueTimeMillis());
-        for (DividendReport report : reports) {
-            events.add(new WorldEvent("dividend-report:" + report.taskId(),
-                    "DIVIDEND_REPORT_V1", writeDividendReport(report)));
-        }
+        scheduleDividendChildren(pending, used, events, request, task.dueTimeMillis(), state.dividends());
+        events.add(new WorldEvent("dividend-report:" + report.taskId(),
+                "DIVIDEND_REPORT_V1", writeDividendReport(report)));
         WorldState candidate = next(task.dueTimeMillis(), WorldScheduler.Phase.COMPLETION.name(),
                 state.accounts(), pending, state.delivered(), used, state.commandContents(),
                 state.commandOutcomes(), state.securities(), state.exchange(),
                 state.manufacturing(), scopedDividend() ? state.governance() : updated, state.roles(), state.information(),
-                state.trading(), state.decisions(), d0.state(), state.beliefs(), state.media(), state.interviews(), state.evidence(), state.social(),
+                state.trading(), state.decisions(), expected.dividends(), state.beliefs(), state.media(), state.interviews(), state.evidence(), state.social(),
                 scopedDividend() ? state.engineering().withBoard(EngineeringIssuerDividend.ISSUER, updated) : state.engineering());
-        commitAndApply(payload.commandId(), task.payload(), "AUTHORIZED", events, candidate);
+        commitAndApply(payload.commandId(), task.payload(), expected.reason(), events, candidate);
     }
 
     private void scheduleDividendChildren(List<PendingTask> pending, Set<String> used,
                                           List<WorldEvent> events,
-                                          DividendModel.SchemeRequest request, long now)
+                                          DividendModel.SchemeRequest request, long now, DividendModel.State prior)
             throws IOException {
         String schemeId = request.schemeId();
-        String chair = chairPerson();
-        scheduleChild(pending, used, events, "div-publish:" + schemeId, now + 1L,
-                WorldScheduler.Phase.COMPLETION, PendingTask.INFORMATION_PUBLISH_V1,
-                mapper.writeValueAsString(announcementPayload(schemeId, request, chair)));
+        var a = request.amendment();
+        PublishPayload publication = a == null ? announcementPayload(schemeId, request, chairPerson())
+                : amendmentPublication(prior, request);
+        scheduleChild(pending, used, events, publication.commandId(), now + 1L, WorldScheduler.Phase.COMPLETION,
+                a == null ? PendingTask.INFORMATION_PUBLISH_V1 : PendingTask.INFORMATION_PUBLISH_VERSION_V1,
+                mapper.writeValueAsString(publication));
+        if (a != null && "CANCEL".equals(a.operation())) return;
         scheduleChild(pending, used, events, "div-record:" + schemeId, request.recordAtMillis(),
                 WorldScheduler.Phase.RULES, PendingTask.DIVIDEND_REGISTER_V1,
                 mapper.writeValueAsString(new DividendActionPayload("div-record:" + schemeId,
@@ -30295,6 +30361,18 @@ public final class WorldRuntime implements AutoCloseable {
                 WorldScheduler.Phase.COMPLETION, PendingTask.DIVIDEND_SETTLE_V1,
                 mapper.writeValueAsString(new DividendActionPayload("div-pay:" + schemeId,
                         "", request.issuerOwnerId(), schemeId, "", null, "", List.of(), request)));
+    }
+
+    private PublishPayload amendmentPublication(DividendModel.State prior, DividendModel.SchemeRequest r) {
+        var a = r.amendment();
+        String root = DividendModel.rootSchemeId(prior, a.currentSchemeId());
+        boolean cancel = "CANCEL".equals(a.operation());
+        String body = "董事会决议" + (cancel ? "撤销" : "更正") + "原方案 " + a.currentSchemeId() + "（公告第"
+                + a.expectedVersion() + "版）。理由：" + a.reason() + "。"
+                + (cancel ? "原方案停止登记和发放。" : "新方案 " + r.schemeId() + "，标的 " + r.symbol() + "，每股 "
+                + r.perShare().toPlainString() + "，登记 " + r.recordAtMillis() + "，除息 " + r.exAtMillis() + "，支付 " + r.payAtMillis() + "。");
+        return new PublishPayload("div-publish:" + r.schemeId(), "dividend-public:" + root, chairPerson(), "PUBLIC", "",
+                "现金分红" + (cancel ? "撤销" : "更正") + "公告 " + root, body, "公司董事会", 60_000L, List.of());
     }
 
     private PublishPayload announcementPayload(String schemeId, DividendModel.SchemeRequest request,
@@ -30509,7 +30587,7 @@ public final class WorldRuntime implements AutoCloseable {
             for (var event : frame.events()) {
                 if (!"DIVIDEND_REPORT_V1".equals(event.type()) || !("dividend-report:" + ref.taskId()).equals(event.eventId())) continue;
                 var report = readDividendReport(event.payload());
-                if (ref.taskId().equals(report.taskId()) && command.equals(report.commandId()) && ref.tool().equals(DividendClaimDecisions.toolForKind(report.kind()))
+                if (ref.taskId().equals(report.taskId()) && command.equals(report.commandId()) && ref.tool().equals(dividendTool(report.kind(), mapper.readValue(frame.commandContent(), DividendActionPayload.class)))
                         && ref.dueMillis() == report.atMillis() && frame.position() == report.position()) return report;
             }
         }
@@ -30524,6 +30602,14 @@ public final class WorldRuntime implements AutoCloseable {
     private DividendReport originalPaymentFailure(WorldState cut, DividendModel.Scheme scheme) {
         if (scheme.phase() != DividendModel.Phase.EX_BOOKED || cut.timeMillis() < scheme.payAtMillis()) return null;
         var authorization = cut.dividends().receipts().get("div-authorize:"+scheme.schemeId());
+        if (authorization == null && dividendAmendments()) {
+            for (var r : cut.dividends().receipts().values()) {
+                if ("AMEND".equals(r.action()) && scheme.authorizationRef().equals(DividendModel.amendRecord(r).authorizationRef())) {
+                    authorization = r;
+                    break;
+                }
+            }
+        }
         if (authorization == null) return null;
         var original = commitSource.nonSnapshotCommitAt(authorization.position()).orElseThrow();
         for (var event : original.events()) {
@@ -31023,6 +31109,7 @@ public final class WorldRuntime implements AutoCloseable {
             String issuerSeat = issuerBoard.seatOf(person);
             if (issuerSeat != null) {
                 tools.add(RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE);
+                if (dividendAmendments()) tools.add(RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND);
                 if (issuerBoard.chairSeatId().equals(issuerSeat)) {
                     tools.add(RoleTradingView.TOOL_ISSUER_DIVIDEND_CONVENE);
                     tools.add(RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE);
@@ -31361,6 +31448,8 @@ public final class WorldRuntime implements AutoCloseable {
                 }
                 if (EngineeringIssuerDividend.decisions(manifest) && EngineeringIssuerDividend.ISSUER.equals(company))
                     node.put("dividendProcedure", "主席可用 issuer.dividend.convene 召集现金分红会议。本公司董事可在材料截止前提交每股金额、登记、除息与付款时点。到会、材料和表决使用普通董事工具；决议通过后由主席用 issuer.dividend.authorize 实施。公告、登记、除息记账和付款各有自己的时点。");
+                if (dividendAmendments() && EngineeringIssuerDividend.ISSUER.equals(company))
+                    EngineeringIssuerDividend.projectAnnouncements(node, snap.dividends(), snap.information().information(), snap.timeMillis(), spec, registry);
                 if (resourceEquity(company)) node.put("primaryOfferTopic", ResourcePrimaryEquity.TERMS);
                 if (digitalCessation(company)) node.put("cessationTopic", DigitalDecisionTools.CESSATION_TERMS);
                 if (resourceCessation(company)) node.put("cessationTopic", "RESOURCE_CESSATION：主席可提请永久停止生产。五席中至少四席同意，经理执行；原应收、应付、库存和股东持股保留。");
@@ -31417,6 +31506,7 @@ public final class WorldRuntime implements AutoCloseable {
                                 .put("perShare",money(terms.perShare())).put("recordAtMillis",terms.recordAtMillis())
                                 .put("exAtMillis",terms.exAtMillis()).put("payAtMillis",terms.payAtMillis())
                                 .put("proposedAtMillis",meeting.dividendProposal().proposedAtMillis());
+                        if (dividendAmendments()) EngineeringIssuerDividend.projectAmendment(item, terms);
                     }
                     if ("v1".equals(manifest.dataVersions().get("role-decision-guide")) && meeting.appointmentProposal() != null) {
                         item.set("appointmentRequest", mapper.valueToTree(meeting.appointmentProposal().request()));

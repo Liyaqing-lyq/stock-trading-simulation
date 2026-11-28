@@ -81,6 +81,10 @@ public final class CompanyOpeningDocuments {
                 if (world.engineeringDividendIssuer().filter(company::equals).isPresent()) {
                     body.append("现金分红议题由本公司主席召集，董事可提交含每股金额、登记、除息和付款时点的方案。")
                             .append("表决通过后由主席办理授权，付款取自公司自有账户。\n");
+                    if (RunManifest.DIVIDEND_AMENDMENT_VERSION.equals(data.get(RunManifest.DIVIDEND_AMENDMENT_POLICY))) {
+                        body.append("登记前，董事可另行提请撤销或更正已公告的方案。新议案须经表决和主席签发，")
+                                .append("新公告在签发后的下一模拟毫秒发表，须早于原登记及新登记。除息安排在交易日当天 09:30 开市前。\n");
+                    }
                     if (RunManifest.DIVIDEND_CLAIMS_VERSION.equals(data.get(RunManifest.DIVIDEND_CLAIMS_POLICY)))
                         body.append("原定付款日未能结清时，在任主席可按同一已授权方案重试全额付款，收款人、原债额和公司付款账户均依原案。个人持有人可依本人的未付凭据评估账上应收，公司的合同应付仍按原额。基金产品的持仓不构成四岗个人处分其债权的授权。\n");
                 } else {

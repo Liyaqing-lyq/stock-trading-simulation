@@ -378,14 +378,24 @@ class StudyTenCompanyOpeningTest {
     }
 
     @Test void interviewTimeContractBelongsOnlyToTheNewOpening() throws Exception {
-        var current = WorldWebApp.tenCompanyJournal(dir);
-        assertEquals(dir.resolve("world-ten-company-autonomy-v17.journal"), current);
+        var current = dir.resolve("world-ten-company-autonomy-v17.journal");
         var previous = dir.resolve("world-ten-company-autonomy-v16.journal");
         try (var old = ComposedIndustryScenario.openPersonalBeliefTenCompanyStudy(previous)) {
             assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.INTERVIEW_TIME_POLICY));
         }
         verifyVersionedPolicy(current, previous, RunManifest.INTERVIEW_TIME_RUN_ID,
                 RunManifest.INTERVIEW_TIME_POLICY, RunManifest.INTERVIEW_TIME_VERSION);
+    }
+
+    @Test void dividendAmendmentsBelongOnlyToTheNewOpening() throws Exception {
+        var current = WorldWebApp.tenCompanyJournal(dir);
+        assertEquals(dir.resolve("world-ten-company-autonomy-v18.journal"), current);
+        var previous = dir.resolve("world-ten-company-autonomy-v17.journal");
+        try (var old = ComposedIndustryScenario.openInterviewTimeTenCompanyStudy(previous)) {
+            assertFalse(old.profile().manifest().dataVersions().containsKey(RunManifest.DIVIDEND_AMENDMENT_POLICY));
+        }
+        verifyVersionedPolicy(current, previous, RunManifest.DIVIDEND_AMENDMENT_RUN_ID,
+                RunManifest.DIVIDEND_AMENDMENT_POLICY, RunManifest.DIVIDEND_AMENDMENT_VERSION);
     }
 
     private void verifyVersionedPolicy(Path current, Path previous, String expectedId, String key, String value) throws Exception {
@@ -416,8 +426,13 @@ class StudyTenCompanyOpeningTest {
                 assertEquals(expectedId, created.profile().manifest().runId());
             }
         }
-        try (var old = ComposedIndustryScenario.openInterviewTimeTenCompanyStudy(previous);
-             var world = ComposedIndustryScenario.openInterviewTimeTenCompanyStudy(current)) {
+        if (RunManifest.INTERVIEW_TIME_RUN_ID.equals(expectedId)) {
+            try (var created = ComposedIndustryScenario.openInterviewTimeTenCompanyStudy(current)) {
+                assertEquals(expectedId, created.profile().manifest().runId());
+            }
+        }
+        try (var old = ComposedIndustryScenario.openDividendAmendmentTenCompanyStudy(previous);
+             var world = ComposedIndustryScenario.openDividendAmendmentTenCompanyStudy(current)) {
             var manifest = world.profile().manifest();
             var oldManifest = old.profile().manifest();
             assertEquals(expectedId, manifest.runId());
@@ -461,7 +476,7 @@ class StudyTenCompanyOpeningTest {
         }
         assertArrayEquals(saved, Files.readAllBytes(previous));
         assertEquals(current, WorldWebApp.tenCompanyJournal(dir));
-        try (var restored = ComposedIndustryScenario.openInterviewTimeTenCompanyStudy(current);
+        try (var restored = ComposedIndustryScenario.openDividendAmendmentTenCompanyStudy(current);
              var child = new BranchRepository(dir.resolve("runs")).open("policy-child", restored.profile())) {
             assertEquals(expectedId, child.profile().manifest().policyRunId());
             assertEquals(restored.profile().manifest().dataVersions(), child.profile().manifest().dataVersions());

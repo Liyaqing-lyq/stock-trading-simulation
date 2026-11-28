@@ -44,6 +44,7 @@ BANK_LOSS_POLICIES = {**MEDIA_FOLLOWUP_POLICIES, "bank-loan-loss": "manager-impa
                       "customer-personal-tools": "personal-communication-v1"}
 BELIEF_CONTRACT_POLICIES = {**BANK_LOSS_POLICIES, "personal-belief-contract": "visible-orders-evidence-v1"}
 INTERVIEW_TIME_POLICIES = {**BELIEF_CONTRACT_POLICIES, "interview-time-contract": "effective-window-reading-floor-v1"}
+DIVIDEND_AMENDMENT_POLICIES = {**INTERVIEW_TIME_POLICIES, "issuer-dividend-amendments": "board-correction-before-record-v1"}
 OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy-v3": READING_POLICY,
                     "web-ten-company-autonomy-v4": GOVERNANCE_POLICIES, "web-ten-company-autonomy-v5": DRAFT_POLICIES,
                     "web-ten-company-autonomy-v6": PERSONAL_POLICIES, "web-ten-company-autonomy-v7": INTERVIEW_POLICIES,
@@ -55,12 +56,13 @@ OPENING_POLICIES = {"web-ten-company-autonomy-v2": {}, "web-ten-company-autonomy
                     "web-ten-company-autonomy-v14": MEDIA_FOLLOWUP_POLICIES,
                     "web-ten-company-autonomy-v15": BANK_LOSS_POLICIES,
                     "web-ten-company-autonomy-v16": BELIEF_CONTRACT_POLICIES,
-                    "web-ten-company-autonomy-v17": INTERVIEW_TIME_POLICIES}
+                    "web-ten-company-autonomy-v17": INTERVIEW_TIME_POLICIES,
+                    "web-ten-company-autonomy-v18": DIVIDEND_AMENDMENT_POLICIES}
 
 
 def check_policies(run_id, data_versions):
     expected = OPENING_POLICIES[run_id]
-    actual = {k: data_versions[k] for k in INTERVIEW_TIME_POLICIES if k in data_versions}
+    actual = {k: data_versions[k] for k in DIVIDEND_AMENDMENT_POLICIES if k in data_versions}
     if data_versions.get("branch-profile-run") != run_id or actual != expected:
         raise ValueError("原生开局声明的政策与该版运行身份不符")
 
@@ -391,6 +393,116 @@ def checked_followup(report, task, book, context):
     return {"followup":"HOLDER_IMPAIRMENT", "personPartyId":person, "originalFailureRef":task["evidenceRef"]}
 
 
+def checked_dividend_amendment(frame, row, task, book, cash, issuer_symbol, context):
+    """Keep the board proposal, implementation and any later registered rights separate."""
+    scheme = row["schemeId"]
+    terms = book["schemes"].get(scheme)
+    now = row["atMillis"]
+    if (not terms or terms["symbol"] != issuer_symbol or terms["companyAccountId"] not in cash
+            or now >= terms["recordAtMillis"] or scheme in book["snapshots"]
+            or any(c["schemeId"] == scheme for c in book["claims"].values())
+            or any(p["schemeId"] == scheme for p in book["payments"])):
+        raise ValueError("分红变更不属于当前发行人登记前的无权益方案")
+    meeting = row["meetingId"]
+    meeting_proposals = context.setdefault("amendmentProposals", {})
+    roots = context.setdefault("amendmentVersions", {})
+    root, version = roots.get(scheme, (scheme, 1))
+    if row["reason"] == "AMENDMENT_PROPOSED":
+        request = task["request"]
+        amendment = request["amendment"]
+        if (terms["phase"] != "AUTHORIZED" or amendment["currentSchemeId"] != scheme
+                or any(terms[k] != request[k] for k in ("issuerOwnerId","companyAccountId","symbol"))
+                or amendment["operation"] == "CANCEL" and any(terms[k] != request[k] for k in ("perShare","recordAtMillis","exAtMillis","payAtMillis"))
+                or amendment["operation"] not in ("CANCEL", "REPLACE") or not amendment["reason"].strip()
+                or type(amendment["expectedVersion"]) is not int or amendment["expectedVersion"] != version):
+            raise ValueError("变更提案缺少获授权的原案、版本、理由或操作")
+        meeting_proposals[meeting] = (request, terms.copy())
+        return {**row, "stage":"AMENDMENT_PROPOSED", "operation":amendment["operation"],
+                "expectedVersion":amendment["expectedVersion"], "amendmentReason":amendment["reason"]}
+    proposal = meeting_proposals.get(meeting)
+    if proposal is None:
+        raise ValueError("分红变更实施缺少本次会议的原始提案")
+    request, original = proposal
+    amendment = request["amendment"]
+    operation = amendment["operation"]
+    receipts = [r for r in book["receipts"].values() if r["position"] == row["position"] and r["action"] == "AMEND"]
+    if (len(receipts) != 1 or receipts[0]["atMillis"] != now
+            or receipts[0]["eventId"] != "div-amend:" + meeting
+            or book["receipts"].get(receipts[0]["eventId"]) != receipts[0]):
+        raise ValueError("分红变更实施缺少唯一同帧分红账凭证")
+    change = decode(receipts[0]["requestJson"])
+    if (not change.get("authorizationRef") or amendment["currentSchemeId"] != scheme
+            or any(change.get(k) != amendment[k] for k in ("currentSchemeId","expectedVersion","operation","reason"))
+            or row["reason"] != {"CANCEL":"CANCELLED","REPLACE":"REPLACED"}[operation]
+            or terms != {**original, "phase":"CANCELLED", "cancelReason":amendment["reason"]}):
+        raise ValueError("分红更改凭证与原案、版本、原因或董事授权不同")
+    replacement = change.get("replacement")
+    publications = [decode(e["payload"]) for e in frame["events"] if e["type"] == "TASK_SCHEDULED_V1"]
+    publications = [t for t in publications if t["kind"] == "INFORMATION_PUBLISH_VERSION_V1"]
+    if len(publications) != 1 or publications[0]["dueTimeMillis"] != now + 1:
+        raise ValueError("分红更改未在下一毫秒安排唯一的再次公告")
+    scheduled = publications[0]
+    notice = decode(scheduled["payload"])
+    if (notice["docId"] != "dividend-public:" + root or notice["commandId"] != "div-publish:" + request["schemeId"]
+            or notice["audienceKind"] != "PUBLIC" or not notice["body"].strip()
+            or not any(e["eventId"] == "task-scheduled:" + scheduled["taskId"] for e in frame["events"])):
+        raise ValueError("再次公告未沿原方案文号或缺少正式发布待办")
+    out = {**row,"stage":row["reason"],"operation":operation,"expectedVersion":amendment["expectedVersion"],
+           "amendmentReason":amendment["reason"],"authorizationRef":change["authorizationRef"],
+           "noticeDocId":notice["docId"],"noticeVersion":version+1,"noticeScheduledAtMillis":scheduled["dueTimeMillis"]}
+    context.setdefault("pendingAmendmentNotices", {})[scheduled["taskId"]] = (scheduled, out)
+    if operation == "CANCEL":
+        if replacement is not None:
+            raise ValueError("已撤销方案含有替代付款条款")
+        return out
+    if not replacement or replacement["schemeId"] != request["schemeId"] or replacement["schemeId"] == scheme:
+        raise ValueError("替代分红方案的标识与原议案不同")
+    new = book["schemes"].get(replacement["schemeId"])
+    fields = ("schemeId","symbol","issuerOwnerId","companyAccountId","perShare","recordAtMillis","exAtMillis","payAtMillis")
+    if (not new or new["phase"] != "AUTHORIZED" or new["authorizationRef"] != change["authorizationRef"]
+            or new["symbol"] != issuer_symbol or new["companyAccountId"] != terms["companyAccountId"]
+            or new["issuerOwnerId"] != terms["issuerOwnerId"] or new["recordAtMillis"] <= now
+            or any(request[k] != replacement[k] or new[k] != replacement[k] for k in fields)
+            or replacement["schemeId"] in book["snapshots"]
+            or any(c["schemeId"] == replacement["schemeId"] for c in book["claims"].values())
+            or any(p["schemeId"] == replacement["schemeId"] for p in book["payments"])):
+        raise ValueError("替代分红金额、日程或发行人未按议案获准")
+    roots[new["schemeId"]] = (root, version+1)
+    return {**out,"replacementSchemeId":new["schemeId"],"perShare":new["perShare"],
+            "recordAtMillis":new["recordAtMillis"],"exAtMillis":new["exAtMillis"],"payAtMillis":new["payAtMillis"]}
+
+
+def checked_amendment_notice(frame, now, context):
+    """A pending board notice and its actual publication have different times and rows."""
+    pending = context.get("pendingAmendmentNotices", {})
+    if not pending:
+        return None
+    for event in frame["events"]:
+        if event["type"] != "INFORMATION_REPORT_V1":
+            continue
+        report = decode(event["payload"])
+        if report["taskId"] not in pending:
+            continue
+        scheduled, amendment = pending[report["taskId"]]
+        completed = [e["payload"] for e in frame["events"] if e["type"] == "TASK_COMPLETED_V1"
+                     and e["eventId"] == "task-completed:" + report["taskId"]]
+        notice = decode(scheduled["payload"])
+        if (not report["accepted"] or frame["result"] != report["reason"] or report["reason"] != "OK"
+                or report["kind"] != scheduled["kind"] or report["subjectId"] != amendment["noticeDocId"]
+                or report["commandId"] != notice["commandId"] or completed != [scheduled["payload"]]
+                or frame["commandContent"] != scheduled["payload"] or report["position"] != frame["position"]
+                or event["eventId"] != "information-report:" + report["taskId"]
+                or not (now == report["timeMillis"] == scheduled["dueTimeMillis"])):
+            raise ValueError("分红再次公告的真实时点、文号、任务或受理结果不符")
+        del pending[report["taskId"]]
+        return {"stage":"REANNOUNCED","issuer":amendment["issuer"],"accepted":True,"position":frame["position"],
+                "atMillis":now,"schemeId":amendment["schemeId"],"meetingId":amendment["meetingId"],
+                "noticeDocId":notice["docId"],"noticeVersion":amendment["noticeVersion"]}
+    if any(scheduled["dueTimeMillis"] < now for scheduled, _ in pending.values()):
+        raise ValueError("世界时钟已越过分红再次公告时点但缺少发布回执")
+    return None
+
+
 def checked_dividend(frame, now, book, previous_cash, cash, issuer_symbol, previous_claims=None, followup=None):
     rows = [e for e in frame["events"] if e["type"] == "DIVIDEND_REPORT_V1"]
     proofs = [e for e in frame["events"] if e["type"] == "DIVIDEND_CASH_PAYMENT_V1"]
@@ -407,11 +519,22 @@ def checked_dividend(frame, now, book, previous_cash, cash, issuer_symbol, previ
             or (report["position"], report["atMillis"]) != (frame["position"], now)):
         raise ValueError("分红回执与已完成的任务、位置或时点不同")
     task = decode(task_payloads[0])
+    amendment = (task.get("request") or {}).get("amendment") if stage == "PROPOSED" else None
+    changed = report["reason"] in ("CANCELLED", "REPLACED")
+    amend_proposal = report["reason"] == "AMENDMENT_PROPOSED"
+    if (changed or amend_proposal or amendment) and (
+            "issuer-dividend-amendments" not in OPENING_POLICIES.get(frame.get("runId"), {})
+            or changed and (stage != "AUTHORIZED" or not report["accepted"])
+            or amend_proposal and (stage != "PROPOSED" or not amendment or not report["accepted"])):
+        raise ValueError("分红变更没有匹配该版本的提案或实施任务")
     if (task["commandId"] != report["commandId"] or task["meetingId"] != report["meetingId"]
-            or (stage not in ("AUTHORIZED","IMPAIRMENT") and task["schemeId"] != scheme)):
+            or (stage not in ("AUTHORIZED","IMPAIRMENT") and (amendment["currentSchemeId"] if amendment else task["schemeId"]) != scheme)):
         raise ValueError("分红决议、任务和方案标识不符")
     accepted = report["accepted"]
-    if (frame["result"] != ("AUTHORIZED" if accepted and stage == "AUTHORIZED" else "ACCEPTED" if accepted else "REJECTED")
+    expected_result = "ACCEPTED" if accepted else "REJECTED"
+    if accepted and stage == "AUTHORIZED":
+        expected_result = report["reason"] if changed else "AUTHORIZED"
+    if (frame["result"] != expected_result
             or len(proofs) != int(accepted and stage == "SETTLED")):
         raise ValueError("分红结算标记与现金凭证数不符")
     row = {"issuer": "eng-a", "stage": stage, **report}
@@ -422,13 +545,27 @@ def checked_dividend(frame, now, book, previous_cash, cash, issuer_symbol, previ
     if not proofs and cash != previous_cash:
         raise ValueError("未付款的分红任务发生现金变动")
     if not accepted:
+        if amendment:
+            stage = "AMENDMENT_PROPOSED"
+        elif stage == "AUTHORIZED" and followup and task["meetingId"] in followup.get("amendmentProposals", {}):
+            stage = "AMENDMENT_IMPLEMENTATION"
         row.update(stage="REJECTED", attemptedStage=stage)
+        if (stage in ("REGISTERED", "EX_BOOKED", "SETTLED")
+                and "issuer-dividend-amendments" in OPENING_POLICIES.get(frame.get("runId"), {})
+                and book["schemes"].get(scheme, {}).get("phase") == "CANCELLED"):
+            if scheme in book["snapshots"] or any(c["schemeId"] == scheme for c in book["claims"].values()):
+                raise ValueError("登记前撤销的原方案仍有登记或债权")
+            return {**row,"retiredBeforeRecord":True}
         if stage == "SETTLED" and scheme in book["schemes"]:
             row["holderFaceStillUnpaid"] = sum(c["face"]-c["paid"] for c in book["claims"].values() if c["schemeId"]==scheme)
             if (followup is not None and task.get("request") is not None and task["commandId"] == "div-pay:"+scheme
                     and now == book["schemes"][scheme]["payAtMillis"]):
                 followup["failures"][scheme] = rows[0]["eventId"]
         return row
+    if changed or amend_proposal:
+        if followup is None:
+            raise ValueError("分红变更缺少从开局连续恢复的议案上下文")
+        return checked_dividend_amendment(frame, row, task, book, cash, issuer_symbol, followup)
     terms = book["schemes"][scheme]
     if (terms["symbol"] != issuer_symbol or terms["companyAccountId"] not in cash
             or stage != "IMPAIRMENT" and terms["phase"] != stage):
@@ -530,7 +667,7 @@ def audit(source, target_days=None):
         delta = decode(state_events[0]["payload"])
         run_id = run_id or frame["runId"]
         if run_id not in OPENING_POLICIES or delta["version"] != "delta-v1":
-            raise ValueError("此脚本仅复算标准十公司 v2 至 v17 紧凑日志")
+            raise ValueError("此脚本仅复算标准十公司 v2 至 v18 紧凑日志")
         if (frame["runId"] != run_id or delta["runId"] != run_id or delta["position"] != position
                 or delta["basePosition"] != position - 1 or delta["baseDigest"] != prior_digest):
             raise ValueError("运行、记录位置或相邻状态摘要不匹配")
@@ -661,6 +798,9 @@ def audit(source, target_days=None):
                 entries.append(board_receipt)
             if dividend_followup is not None:
                 track_dividend_decisions(events,dividend_followup)
+                notice = checked_amendment_notice(frame,now,dividend_followup)
+                if notice is not None:
+                    entries.append(notice)
             receipt = checked_dividend(frame, now, dividends, previous_cash, cash, issuer_symbol, previous_claims, dividend_followup)
             if position > 1 and "dividends" in patch["changes"] and (receipt is None or not receipt["accepted"]):
                 raise ValueError("分红账有变但缺少同帧已接受任务")

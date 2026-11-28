@@ -16,6 +16,20 @@ class MarketSessionsTest {
     @TempDir Path dir;
     private static final BigDecimal BID = new BigDecimal("1.00");
 
+    @Test void exDividendDateMustPrecedeTheFirstSessionOfATradingDay() {
+        assertFalse(isPreopenTradingDay(-1));
+        assertTrue(isPreopenTradingDay(0));
+        assertTrue(isPreopenTradingDay(OPEN - 1));
+        assertFalse(isPreopenTradingDay(OPEN));
+        assertFalse(isPreopenTradingDay(OPEN + 21_000));
+        assertFalse(isPreopenTradingDay(BREAK));
+        assertFalse(isPreopenTradingDay(CLOSE));
+        assertTrue(isPreopenTradingDay(4 * DAY + OPEN - 1));
+        assertFalse(isPreopenTradingDay(5 * DAY));
+        assertFalse(isPreopenTradingDay(6 * DAY + OPEN - 1));
+        assertTrue(isPreopenTradingDay(7 * DAY));
+    }
+
     @Test void sharedCalendarCancelsOnlyAffectedRemaindersAndRestoresAcrossWeekends() throws Exception {
         Path journal = dir.resolve("sessions");
         String other;

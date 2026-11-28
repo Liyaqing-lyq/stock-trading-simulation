@@ -150,7 +150,8 @@ public final class RoleDeliberation {
                 String openWindow = meeting.has("periodReviewProcedure") ? "PERIOD_REVIEW" : "VOTING";
                 meeting.put("window", now < opens ? "BEFORE_OPEN" : now < closes ? openWindow : "AFTER_CLOSE");
                 meeting.put("attendanceDeadlineExclusive", opens);
-                meeting.put("proposalPresent", meeting.has("appointmentRequest") || meeting.has("dividendRequest") || !meeting.path("proposedLines").isEmpty());
+                meeting.put("proposalPresent", meeting.has("appointmentRequest") || meeting.has("dividendRequest")
+                        || meeting.has("dividendAmendment") || !meeting.path("proposedLines").isEmpty());
                 if (meeting.has("periodReviewProcedure")) meeting.set("procedure", meeting.get("periodReviewProcedure"));
                 else if (director.has("dividendProcedure") && "DIVIDEND_AUTHORIZATION".equals(meeting.path("topic").asText()))
                     meeting.set("procedure", director.get("dividendProcedure"));

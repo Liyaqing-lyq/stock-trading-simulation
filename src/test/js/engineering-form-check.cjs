@@ -851,6 +851,38 @@ check("media-review-reading-keeps-revisions-and-person-separate", () => {
   assert.equal(document.getElementById("person-media-reviews").hidden, true);
 });
 
+check("dividend-cancel-omits-replacement-terms-and-keeps-the-notice-version", () => {
+  const card = governanceCompany();
+  card.tools = [...card.tools, "issuer.dividend.amend"];
+  card.amendableAnnouncements = [{schemeId:"a", expectedVersion:2}];
+  person(1000, [card]);
+  openTool("issuer.dividend.amend");
+  assert.match(document.getElementById("eng-fields-note").textContent, /a（公告第 2 版）/);
+  const control = key => document.getElementById(api.ENGINEERING_FIELD_SPECS[key].id);
+  const op = control("operation");
+  control("schemeId").value = "a";
+  control("expectedVersion").value = "2";
+  control("reason").value = "调低支出";
+  control("meetingId").value = "m";
+  op.value = "REPLACE";
+  fire(op, "change");
+  assert.equal(control("perShare").required, true);
+  assert.ok(api.engineeringValidate("issuer.dividend.amend", api.engineeringFieldValues()).length > 0);
+  control("perShare").value = "0.03";
+  control("recordAt").value = "8000";
+  control("exAt").value = "9000";
+  control("payAt").value = "10000";
+  const args = () => api.engineeringActionBody("issuer.dividend.amend", api.engineeringFieldValues());
+  assert.equal(args().perShare, "0.03");
+  assert.equal(api.engineeringValidate("issuer.dividend.amend", api.engineeringFieldValues()).length, 0);
+  op.value = "CANCEL";
+  fire(op, "change");
+  assert.equal(control("perShare").disabled, true);
+  assert.equal(api.engineeringValidate("issuer.dividend.amend", api.engineeringFieldValues()).length, 0);
+  for (const k of ["perShare","recordAt","exAt","payAt"]) assert.equal(args()[k], undefined);
+  assert.equal(args().expectedVersion, "2");
+});
+
 let failed = 0;
 for (const [verdict, name] of cases) {
   if (verdict === "FAIL") failed += 1;

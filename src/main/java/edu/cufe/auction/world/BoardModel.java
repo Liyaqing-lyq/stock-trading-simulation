@@ -2210,7 +2210,7 @@ public final class BoardModel {
         DividendModel.SchemeRequest normalized = new DividendModel.SchemeRequest(
                 request.schemeId(), request.symbol(), request.issuerOwnerId(),
                 request.companyAccountId(), perShare, request.recordAtMillis(),
-                request.exAtMillis(), request.payAtMillis());
+                request.exAtMillis(), request.payAtMillis(), request.amendment());
         for (Meeting other : state.meetings().values()) {
             if (other.topic() != Topic.DIVIDEND_AUTHORIZATION
                     || other.dividendProposal() == null) {
@@ -2223,7 +2223,8 @@ public final class BoardModel {
             if (other.status() == MeetingStatus.IMPLEMENTED) {
                 return rejected(state, REASON_INVALID_STATE);
             }
-            if (!sameEconomics(existing, normalized)) {
+            if (!sameEconomics(existing, normalized) && !(existing.amendment() != null && normalized.amendment() != null
+                    && !isActiveDividend(other.status()))) {
                 return rejected(state, REASON_INVALID_ARGUMENT);
             }
             if (isActiveDividend(other.status())) {
@@ -3698,7 +3699,7 @@ public final class BoardModel {
         }
         return new DividendModel.SchemeRequest(raw.schemeId(), raw.symbol(), raw.issuerOwnerId(),
                 raw.companyAccountId(), perShare, raw.recordAtMillis(), raw.exAtMillis(),
-                raw.payAtMillis());
+                raw.payAtMillis(), raw.amendment());
     }
 
     private static boolean sameEconomics(DividendModel.SchemeRequest first,
@@ -3710,7 +3711,8 @@ public final class BoardModel {
                 && first.perShare().compareTo(second.perShare()) == 0
                 && first.recordAtMillis() == second.recordAtMillis()
                 && first.exAtMillis() == second.exAtMillis()
-                && first.payAtMillis() == second.payAtMillis();
+                && first.payAtMillis() == second.payAtMillis()
+                && Objects.equals(first.amendment(), second.amendment());
     }
 
     private static boolean isActiveDividend(MeetingStatus status) {
@@ -3890,7 +3892,8 @@ public final class BoardModel {
             String schemeId = proposal.request().schemeId();
             DividendModel.SchemeRequest seen = economics.putIfAbsent(schemeId,
                     proposal.request());
-            if (seen != null && !sameEconomics(seen, proposal.request())) {
+            if (seen != null && !sameEconomics(seen, proposal.request())
+                    && (seen.amendment() == null || proposal.request().amendment() == null)) {
                 throw new IllegalArgumentException("同一方案经济内容不一致：" + schemeId);
             }
             if (isActiveDividend(meeting.status()) && !active.add(schemeId)) {
@@ -3941,6 +3944,7 @@ public final class BoardModel {
         request.put("recordAtMillis", value.recordAtMillis());
         request.put("exAtMillis", value.exAtMillis());
         request.put("payAtMillis", value.payAtMillis());
+        if (value.amendment() != null) request.put("amendment", value.amendment());
         source.put("request", request);
 
         Map<String, Object> charterSource = new TreeMap<>();

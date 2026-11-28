@@ -692,6 +692,16 @@ public final class ComposedIndustryScenario {
         return openStandardTenCompany(journal, RunManifest.INTERVIEW_TIME_RUN_ID);
     }
 
+    /**
+     * 打开可在登记前更正已公告分红的十公司世界，已有日志仍按原规则恢复。
+     * @param journal 普通十公司世界的原生日志
+     * @return 已恢复或新建的普通世界
+     * @throws Exception 初始化或恢复失败
+     */
+    public static WorldRuntime openDividendAmendmentTenCompanyStudy(Path journal) throws Exception {
+        return openStandardTenCompany(journal, RunManifest.DIVIDEND_AMENDMENT_RUN_ID);
+    }
+
     private static WorldRuntime openStandardTenCompany(Path journal, String defaultRunId) throws Exception {
         String runId = defaultRunId;
         if (java.nio.file.Files.isRegularFile(journal) && java.nio.file.Files.size(journal) > 0) {
@@ -876,6 +886,9 @@ public final class ComposedIndustryScenario {
                 timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_CONVENE, timings.get(RoleTradingView.TOOL_BOARD_CONVENE));
                 timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE, timings.get(RoleTradingView.TOOL_BOARD_PROPOSE_BUDGET));
                 timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_AUTHORIZE, timings.get(RoleTradingView.TOOL_BOARD_IMPLEMENT));
+                if (RunManifest.DIVIDEND_AMENDMENT_RUN_ID.equals(thinkingRunId)) {
+                    timings.put(RoleTradingView.TOOL_ISSUER_DIVIDEND_AMEND, timings.get(RoleTradingView.TOOL_ISSUER_DIVIDEND_PROPOSE));
+                }
                 timings.put(PersonalMarket.MARKET, timings.get(RoleTradingView.TOOL_CHILD_SUBMIT));
             }
             if (RunManifest.usesPersonalMarketRules(thinkingRunId)) {
